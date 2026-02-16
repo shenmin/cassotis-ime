@@ -1,0 +1,374 @@
+﻿param(
+    [string]$dll_path = (Join-Path $PSScriptRoot "cassotis_ime_svr.dll"),
+    [switch]$single
+)
+
+function get_pe_machine([string]$path)
+{
+    $stream = $null
+    $reader = $null
+    try
+    {
+        $stream = [System.IO.File]::OpenRead($path)
+        $reader = New-Object System.IO.BinaryReader $stream
+        if ($reader.ReadUInt16() -ne 0x5A4D)
+        {
+            return $null
+        }
+
+        $stream.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $pe_offset = $reader.ReadInt32()
+        $stream.Seek($pe_offset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        if ($reader.ReadUInt32() -ne 0x00004550)
+        {
+            return $null
+        }
+
+        return $reader.ReadUInt16()
+    }
+    catch
+    {
+        return $null
+    }
+    finally
+    {
+        if ($reader -ne $null)
+        {
+            $reader.Close()
+        }
+        elseif ($stream -ne $null)
+        {
+            $stream.Close()
+        }
+    }
+}
+
+function test_expected_machine([string]$path, [UInt16]$machine)
+{
+    $name = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
+    if ($name -eq 'cassotis_ime_svr.dll')
+    {
+        return $machine -eq 0x8664
+    }
+    if ($name -eq 'cassotis_ime_svr32.dll')
+    {
+        return $machine -eq 0x014c
+    }
+    return $true
+}
+
+function get_regsvr32_path([string]$path)
+{
+    $machine = get_pe_machine $path
+    $regsvr32_path = Join-Path $env:WINDIR "System32\\regsvr32.exe"
+    if ($machine -eq 0x014c)
+    {
+        $candidate = Join-Path $env:WINDIR "SysWOW64\\regsvr32.exe"
+        if (Test-Path $candidate)
+        {
+            $regsvr32_path = $candidate
+        }
+    }
+
+    return @($regsvr32_path, $machine)
+}
+
+function invoke_regsvr32([string]$regsvr32_path, [string[]]$arguments)
+{
+    $arg_text = $arguments -join ' '
+    $proc = Start-Process -FilePath $regsvr32_path -ArgumentList $arg_text -Wait -PassThru -WindowStyle Hidden
+    if ($null -eq $proc)
+    {
+        return 1
+    }
+
+    return $proc.ExitCode
+}
+
+function get_inproc_server_path([string]$clsid, [Microsoft.Win32.RegistryView]$view, [Microsoft.Win32.RegistryHive]$hive)
+{
+    $base = $null
+    $key = $null
+    try
+    {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $view)
+        $key_path = "Software\\Classes\\CLSID\\$clsid\\InprocServer32"
+        if ($hive -eq [Microsoft.Win32.RegistryHive]::ClassesRoot)
+        {
+            $key_path = "CLSID\\$clsid\\InprocServer32"
+        }
+
+        $key = $base.OpenSubKey($key_path)
+        if ($key -eq $null)
+        {
+            return $null
+        }
+
+        return $key.GetValue('')
+    }
+    finally
+    {
+        if ($key -ne $null)
+        {
+            $key.Close()
+        }
+        if ($base -ne $null)
+        {
+            $base.Close()
+        }
+    }
+}
+
+function get_com_registration_entries([string]$clsid, [Microsoft.Win32.RegistryView]$view)
+{
+    $entries = @()
+    foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryHive]::ClassesRoot))
+    {
+        $actual = get_inproc_server_path $clsid $view $hive
+        if ($actual -ne $null)
+        {
+            $entries += [PSCustomObject]@{
+                hive = $hive.ToString()
+                view = $view.ToString()
+                path = $actual
+            }
+        }
+    }
+
+    return $entries
+}
+
+function is_com_registered([string]$clsid, [string]$expected_path, [Microsoft.Win32.RegistryView]$view, [ref]$entries_out)
+{
+    $expected = ([System.IO.Path]::GetFullPath($expected_path)).ToLowerInvariant()
+    $expected_file = ([System.IO.Path]::GetFileName($expected_path)).ToLowerInvariant()
+    $entries = get_com_registration_entries $clsid $view
+    $entries_out.Value = $entries
+    foreach ($entry in $entries)
+    {
+        $actual = $entry.path
+        if ($actual -ne $null -and $actual -ne '')
+        {
+            $normalized = $actual.Trim('"')
+            try
+            {
+                $normalized = ([System.IO.Path]::GetFullPath($normalized)).ToLowerInvariant()
+            }
+            catch
+            {
+                $normalized = $normalized.ToLowerInvariant()
+            }
+
+            if ($normalized -eq $expected)
+            {
+                return $true
+            }
+
+            $actual_file = ([System.IO.Path]::GetFileName($normalized)).ToLowerInvariant()
+            if ($actual_file -eq $expected_file)
+            {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+function resolve_target_paths([string]$input_path, [bool]$unregister_single)
+{
+    $resolved = (Get-Item -LiteralPath $input_path).FullName
+    $targets = @($resolved)
+    if ($unregister_single)
+    {
+        return $targets
+    }
+
+    $dir = Split-Path -Parent $resolved
+    $name = [System.IO.Path]::GetFileName($resolved).ToLowerInvariant()
+    if ($name -eq 'cassotis_ime_svr.dll')
+    {
+        $other = Join-Path $dir 'cassotis_ime_svr32.dll'
+        if (Test-Path -LiteralPath $other)
+        {
+            $targets += (Get-Item -LiteralPath $other).FullName
+        }
+    }
+    elseif ($name -eq 'cassotis_ime_svr32.dll')
+    {
+        $other = Join-Path $dir 'cassotis_ime_svr.dll'
+        if (Test-Path -LiteralPath $other)
+        {
+            $targets += (Get-Item -LiteralPath $other).FullName
+        }
+    }
+
+    return ($targets | Select-Object -Unique)
+}
+
+function unregister_one_dll([string]$target_path, [string]$clsid_text_service)
+{
+    $regsvr32_info = get_regsvr32_path $target_path
+    $regsvr32_path = $regsvr32_info[0]
+    $machine = $regsvr32_info[1]
+    if ($null -eq $machine)
+    {
+        Write-Error ("Invalid PE file: {0}" -f $target_path)
+        return $false
+    }
+    if (-not (test_expected_machine $target_path $machine))
+    {
+        Write-Error ("Architecture mismatch for file name: {0} (machine=0x{1:X4})" -f $target_path, $machine)
+        return $false
+    }
+    $registry_view = [Microsoft.Win32.RegistryView]::Registry64
+    if ($machine -eq 0x014c)
+    {
+        $registry_view = [Microsoft.Win32.RegistryView]::Registry32
+    }
+
+    if ($null -ne $machine)
+    {
+        Write-Host ("regsvr32: {0} (machine=0x{1:X4})" -f $regsvr32_path, $machine)
+    }
+    else
+    {
+        Write-Host "regsvr32: $regsvr32_path"
+    }
+
+    $reg_exit = invoke_regsvr32 $regsvr32_path @('/u', '/s', $target_path)
+    if ($reg_exit -ne 0)
+    {
+        Write-Host "regsvr32 /u /s failed with exit code $reg_exit"
+        Write-Host "Retrying regsvr32 without /s to show error dialog..."
+        $reg_exit2 = invoke_regsvr32 $regsvr32_path @('/u', $target_path)
+        if ($reg_exit2 -ne 0)
+        {
+            Write-Host "regsvr32 /u failed with exit code $reg_exit2"
+        }
+    }
+
+    $entries = $null
+    $registered = is_com_registered $clsid_text_service $target_path $registry_view ([ref]$entries)
+    if ($registered)
+    {
+        if ($entries -ne $null -and $entries.Count -gt 0)
+        {
+            Write-Host "COM registry entries still present:"
+            $entries | ForEach-Object { Write-Host ("  {0} {1}: {2}" -f $_.hive, $_.view, $_.path) }
+        }
+        Write-Error ("COM registration still present after regsvr32 /u: {0}" -f $target_path)
+        return $false
+    }
+
+    Write-Host ("COM unregistered: {0}" -f $target_path)
+    return $true
+}
+
+if (-not (Test-Path -LiteralPath $dll_path))
+{
+    Write-Error "DLL not found: $dll_path"
+    exit 1
+}
+
+$is_admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $is_admin)
+{
+    Write-Host "Warning: not running as Administrator. Unregistration may fail with access denied."
+}
+
+$clsid_text_service = '{38D40A05-DCDB-49FB-81A4-C8745882DC21}'
+$target_paths = resolve_target_paths $dll_path ([bool]$single)
+Write-Host ("Unregister targets ({0}):" -f $target_paths.Count)
+$target_paths | ForEach-Object { Write-Host ("  " + $_) }
+
+$has_error = $false
+foreach ($target_path in $target_paths)
+{
+    if (-not (unregister_one_dll $target_path $clsid_text_service))
+    {
+        $has_error = $true
+    }
+}
+
+# Reconcile transient errors: if no target remains registered, treat as success.
+$residual_registration = $false
+foreach ($target_path in $target_paths)
+{
+    $machine = get_pe_machine $target_path
+    if ($null -eq $machine)
+    {
+        continue
+    }
+
+    $registry_view = [Microsoft.Win32.RegistryView]::Registry64
+    if ($machine -eq 0x014c)
+    {
+        $registry_view = [Microsoft.Win32.RegistryView]::Registry32
+    }
+
+    $entries_tmp = $null
+    if (is_com_registered $clsid_text_service $target_path $registry_view ([ref]$entries_tmp))
+    {
+        $residual_registration = $true
+    }
+}
+
+if ($has_error -and (-not $residual_registration))
+{
+    Write-Host "Warning: regsvr32 /u reported errors, but target COM mapping is already removed. Continue."
+    $has_error = $false
+}
+
+if ($has_error)
+{
+    exit 1
+}
+
+$script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root_dir = (Get-Item (Join-Path $script_dir "..")).FullName
+$profile_tool_candidates = @(
+    (Join-Path $script_dir "cassotis_ime_profile_reg.exe"),
+    (Join-Path $script_dir "cassotis_ime_profile_reg32.exe"),
+    (Join-Path $root_dir "out\\cassotis_ime_profile_reg.exe"),
+    (Join-Path $root_dir "out\\cassotis_ime_profile_reg32.exe")
+)
+$profile_tools = $profile_tool_candidates |
+    Where-Object { Test-Path $_ } |
+    ForEach-Object { (Get-Item -LiteralPath $_).FullName } |
+    Select-Object -Unique
+if ($profile_tools -and $profile_tools.Count -gt 0)
+{
+    $profile_ok = $false
+    foreach ($profile_tool in $profile_tools)
+    {
+        Write-Host ("Run profile tool: {0} unregister" -f $profile_tool)
+        & $profile_tool unregister
+        if ($LASTEXITCODE -eq 0)
+        {
+            $profile_ok = $true
+            break
+        }
+        else
+        {
+            Write-Host ("Profile tool failed: {0} (exit {1})" -f $profile_tool, $LASTEXITCODE)
+        }
+    }
+
+    if (-not $profile_ok)
+    {
+        if (-not $is_admin)
+        {
+            Write-Host "Warning: all TIP profile unregister tools failed in non-admin mode."
+        }
+        else
+        {
+            Write-Error "TIP profile unregister failed in all tools."
+            exit 1
+        }
+    }
+}
+else
+{
+    Write-Host "TIP profile tool not found. Tried: $($profile_tool_candidates -join '; ')"
+}

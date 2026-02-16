@@ -1,0 +1,546 @@
+unit nc_ai_llama;
+
+interface
+
+uses
+    Winapi.Windows,
+    System.SysUtils,
+    System.Classes,
+    System.SyncObjs,
+    nc_types,
+    nc_ai_intf,
+    nc_llama_bridge,
+    nc_ai_text_utils,
+    nc_config,
+    nc_log;
+
+type
+    TncAiLlamaProvider = class;
+
+    TncAiLlamaWorkerThread = class(TThread)
+    private
+        m_owner: TncAiLlamaProvider;
+    protected
+        procedure Execute; override;
+    public
+        constructor create(const owner: TncAiLlamaProvider);
+    end;
+
+    TncAiLlamaProvider = class(TncAiProvider)
+    private
+        m_bridge: TncLlamaBridge;
+        m_ready: Boolean;
+        m_last_error: string;
+        m_lock: TCriticalSection;
+        m_log_lock: TCriticalSection;
+        m_logger: TncLogger;
+        m_log_enabled: Boolean;
+        m_stop_event: TEvent;
+        m_worker: TncAiLlamaWorkerThread;
+        m_debounce_ms: Integer;
+        m_pending_request: TncAiRequest;
+        m_pending_signature: string;
+        m_pending_version: Int64;
+        m_pending_tick: UInt64;
+        m_has_pending: Boolean;
+        m_cached_signature: string;
+        m_cached_candidates: TncCandidateList;
+        m_cached_success: Boolean;
+        procedure init_logger;
+        procedure free_logger;
+        procedure log_message(const level: TncLogLevel; const msg: string; const force_debug_output: Boolean = False);
+        procedure log_debug(const msg: string);
+        procedure log_info(const msg: string);
+        procedure log_warn(const msg: string);
+        procedure log_error(const msg: string);
+        procedure clear_pending_locked;
+        function effective_timeout_ms(const request_timeout_ms: Integer): Integer;
+        function build_request_signature(const request: TncAiRequest): string;
+        procedure schedule_request(const request: TncAiRequest; const signature: string);
+        function try_get_cached_response(const signature: string; out response: TncAiResponse): Boolean;
+        function try_get_stable_request(out request: TncAiRequest; out signature: string; out version: Int64): Boolean;
+        function is_current_version(const version: Int64): Boolean;
+        procedure store_result(const signature: string; const candidates: TncCandidateList; const success: Boolean;
+            const version: Int64; const error_text: string);
+        procedure run_worker_once;
+        function get_last_error: string;
+    public
+        constructor create(const config: TncEngineConfig);
+        destructor Destroy; override;
+        function request_suggestions(const request: TncAiRequest; out response: TncAiResponse): Boolean; override;
+        property ready: Boolean read m_ready;
+        property last_error: string read get_last_error;
+    end;
+
+implementation
+
+const
+    c_default_ai_debounce_ms = 400;
+    c_worker_poll_ms = 20;
+    c_default_ai_timeout_ms = 1200;
+    c_worker_shutdown_timeout_ms = 3000;
+
+procedure copy_candidate_list(const source: TncCandidateList; out dest: TncCandidateList);
+var
+    i: Integer;
+begin
+    SetLength(dest, Length(source));
+    for i := 0 to High(source) do
+    begin
+        dest[i] := source[i];
+    end;
+end;
+
+constructor TncAiLlamaWorkerThread.create(const owner: TncAiLlamaProvider);
+begin
+    inherited create(False);
+    FreeOnTerminate := False;
+    m_owner := owner;
+end;
+
+procedure TncAiLlamaWorkerThread.Execute;
+begin
+    while WaitForSingleObject(m_owner.m_stop_event.Handle, c_worker_poll_ms) = WAIT_TIMEOUT do
+    begin
+        m_owner.run_worker_once;
+    end;
+end;
+
+constructor TncAiLlamaProvider.create(const config: TncEngineConfig);
+begin
+    inherited create;
+    m_lock := TCriticalSection.Create;
+    m_log_lock := TCriticalSection.Create;
+    m_stop_event := TEvent.Create(nil, True, False, '');
+    m_worker := nil;
+    m_debounce_ms := c_default_ai_debounce_ms;
+    m_pending_version := 0;
+    m_pending_tick := 0;
+    m_has_pending := False;
+    m_cached_signature := '';
+    SetLength(m_cached_candidates, 0);
+    m_cached_success := False;
+
+    init_logger;
+    log_info('AI llama provider create start');
+
+    m_bridge := TncLlamaBridge.create;
+    m_ready := m_bridge.initialize(config, m_last_error);
+    if m_ready then
+    begin
+        m_ready := m_bridge.load_model(config.ai_llama_model_path, m_last_error);
+    end;
+    if (not m_ready) and (m_last_error = '') then
+    begin
+        m_last_error := 'llama provider initialize failed';
+    end;
+
+    if m_ready then
+    begin
+        log_info(Format('AI llama ready backend=%s runtime=%s model=%s',
+            [llama_backend_to_text(m_bridge.resolved_backend), m_bridge.runtime_dir, m_bridge.loaded_model_path]));
+        m_worker := TncAiLlamaWorkerThread.create(Self);
+    end
+    else
+    begin
+        log_error('AI llama initialize failed: ' + m_last_error);
+    end;
+end;
+
+destructor TncAiLlamaProvider.Destroy;
+var
+    wait_result: DWORD;
+begin
+    if m_stop_event <> nil then
+    begin
+        m_stop_event.SetEvent;
+    end;
+
+    if m_bridge <> nil then
+    begin
+        m_bridge.request_abort;
+    end;
+
+    if m_worker <> nil then
+    begin
+        m_worker.Terminate;
+        wait_result := WaitForSingleObject(m_worker.Handle, c_worker_shutdown_timeout_ms);
+        if wait_result <> WAIT_OBJECT_0 then
+        begin
+            log_error(Format('AI worker shutdown timeout (%dms), force terminating thread',
+                [c_worker_shutdown_timeout_ms]));
+            TerminateThread(m_worker.Handle, 1);
+            WaitForSingleObject(m_worker.Handle, 200);
+        end;
+        m_worker.Free;
+        m_worker := nil;
+    end;
+
+    if m_bridge <> nil then
+    begin
+        m_bridge.Free;
+        m_bridge := nil;
+    end;
+
+    if m_stop_event <> nil then
+    begin
+        m_stop_event.Free;
+        m_stop_event := nil;
+    end;
+
+    if m_lock <> nil then
+    begin
+        m_lock.Free;
+        m_lock := nil;
+    end;
+
+    log_info('AI llama provider destroyed');
+    free_logger;
+
+    if m_log_lock <> nil then
+    begin
+        m_log_lock.Free;
+        m_log_lock := nil;
+    end;
+
+    inherited Destroy;
+end;
+
+procedure TncAiLlamaProvider.init_logger;
+var
+    config_manager: TncConfigManager;
+    log_config: TncLogConfig;
+begin
+    m_logger := nil;
+    m_log_enabled := False;
+    try
+        config_manager := TncConfigManager.create(get_default_config_path);
+        try
+            log_config := config_manager.load_log_config;
+        finally
+            config_manager.Free;
+        end;
+
+        if log_config.log_path = '' then
+        begin
+            log_config.log_path := get_default_log_path;
+        end;
+
+        m_logger := TncLogger.create(log_config.log_path, log_config.max_size_kb);
+        m_logger.set_level(log_config.level);
+        m_log_enabled := log_config.enabled;
+    except
+        on e: Exception do
+        begin
+            OutputDebugString(PChar('[ai_llama] init_logger failed: ' + e.Message));
+        end;
+    end;
+end;
+
+procedure TncAiLlamaProvider.free_logger;
+begin
+    if m_logger <> nil then
+    begin
+        m_logger.Free;
+        m_logger := nil;
+    end;
+end;
+
+procedure TncAiLlamaProvider.log_message(const level: TncLogLevel; const msg: string; const force_debug_output: Boolean);
+begin
+    if m_log_lock = nil then
+    begin
+        Exit;
+    end;
+
+    m_log_lock.Acquire;
+    try
+        try
+            if m_logger <> nil then
+            begin
+                if m_log_enabled or force_debug_output then
+                begin
+                    case level of
+                        ll_debug:
+                            m_logger.debug(msg);
+                        ll_info:
+                            m_logger.info(msg);
+                        ll_warn:
+                            m_logger.warn(msg);
+                        ll_error:
+                            m_logger.error(msg);
+                    end;
+                end;
+            end;
+        except
+        end;
+
+        if force_debug_output then
+        begin
+            OutputDebugString(PChar('[ai_llama] ' + msg));
+        end;
+    finally
+        m_log_lock.Release;
+    end;
+end;
+
+procedure TncAiLlamaProvider.log_debug(const msg: string);
+begin
+    log_message(ll_debug, msg, False);
+end;
+
+procedure TncAiLlamaProvider.log_info(const msg: string);
+begin
+    log_message(ll_info, msg, False);
+end;
+
+procedure TncAiLlamaProvider.log_warn(const msg: string);
+begin
+    log_message(ll_warn, msg, True);
+end;
+
+procedure TncAiLlamaProvider.log_error(const msg: string);
+begin
+    log_message(ll_error, msg, True);
+end;
+
+procedure TncAiLlamaProvider.clear_pending_locked;
+begin
+    m_has_pending := False;
+    m_pending_signature := '';
+    m_pending_tick := 0;
+end;
+
+function TncAiLlamaProvider.effective_timeout_ms(const request_timeout_ms: Integer): Integer;
+begin
+    Result := request_timeout_ms;
+    if Result <= 0 then
+    begin
+        Result := c_default_ai_timeout_ms;
+    end;
+end;
+
+function TncAiLlamaProvider.build_request_signature(const request: TncAiRequest): string;
+begin
+    Result := nc_ai_build_request_signature(request);
+end;
+
+procedure TncAiLlamaProvider.schedule_request(const request: TncAiRequest; const signature: string);
+begin
+    m_lock.Acquire;
+    try
+        m_pending_request := request;
+        m_pending_signature := signature;
+        Inc(m_pending_version);
+        m_pending_tick := GetTickCount64;
+        m_has_pending := True;
+    finally
+        m_lock.Release;
+    end;
+end;
+
+function TncAiLlamaProvider.try_get_cached_response(const signature: string; out response: TncAiResponse): Boolean;
+begin
+    response.success := False;
+    SetLength(response.candidates, 0);
+
+    m_lock.Acquire;
+    try
+        if m_cached_success and SameText(m_cached_signature, signature) and (Length(m_cached_candidates) > 0) then
+        begin
+            copy_candidate_list(m_cached_candidates, response.candidates);
+            response.success := True;
+            Result := True;
+            Exit;
+        end;
+    finally
+        m_lock.Release;
+    end;
+
+    Result := False;
+end;
+
+function TncAiLlamaProvider.try_get_stable_request(out request: TncAiRequest; out signature: string;
+    out version: Int64): Boolean;
+var
+    elapsed_ms: UInt64;
+begin
+    Result := False;
+    signature := '';
+    version := 0;
+    request.context.composition_text := '';
+    request.context.left_context := '';
+    request.max_suggestions := 0;
+    request.timeout_ms := 0;
+
+    m_lock.Acquire;
+    try
+        if not m_has_pending then
+        begin
+            Exit;
+        end;
+
+        elapsed_ms := GetTickCount64 - m_pending_tick;
+        if elapsed_ms < UInt64(m_debounce_ms) then
+        begin
+            Exit;
+        end;
+
+        request := m_pending_request;
+        signature := m_pending_signature;
+        version := m_pending_version;
+        Result := True;
+    finally
+        m_lock.Release;
+    end;
+end;
+
+function TncAiLlamaProvider.is_current_version(const version: Int64): Boolean;
+begin
+    m_lock.Acquire;
+    try
+        Result := m_has_pending and (m_pending_version = version);
+    finally
+        m_lock.Release;
+    end;
+end;
+
+procedure TncAiLlamaProvider.store_result(const signature: string; const candidates: TncCandidateList;
+    const success: Boolean; const version: Int64; const error_text: string);
+begin
+    m_lock.Acquire;
+    try
+        if (not m_has_pending) or (version <> m_pending_version) then
+        begin
+            Exit;
+        end;
+
+        if success and (Length(candidates) > 0) then
+        begin
+            m_cached_signature := signature;
+            copy_candidate_list(candidates, m_cached_candidates);
+            m_cached_success := True;
+        end
+        else
+        begin
+            if SameText(m_cached_signature, signature) then
+            begin
+                m_cached_signature := '';
+                SetLength(m_cached_candidates, 0);
+                m_cached_success := False;
+            end;
+            if error_text <> '' then
+            begin
+                m_last_error := error_text;
+            end;
+        end;
+
+        clear_pending_locked;
+    finally
+        m_lock.Release;
+    end;
+end;
+
+procedure TncAiLlamaProvider.run_worker_once;
+var
+    request: TncAiRequest;
+    signature: string;
+    version: Int64;
+    generated_text: string;
+    error_text: string;
+    prompt: string;
+    max_suggestions: Integer;
+    generation_tokens: Integer;
+    candidates: TncCandidateList;
+    success: Boolean;
+begin
+    if not m_ready then
+    begin
+        Exit;
+    end;
+
+    if not try_get_stable_request(request, signature, version) then
+    begin
+        Exit;
+    end;
+
+    if not is_current_version(version) then
+    begin
+        Exit;
+    end;
+
+    max_suggestions := nc_ai_clamp_int(request.max_suggestions, 1, 15);
+    generation_tokens := nc_ai_get_generation_tokens(max_suggestions);
+    prompt := nc_ai_build_prompt(request);
+    success := False;
+    generated_text := '';
+    error_text := '';
+    SetLength(candidates, 0);
+
+    if m_bridge.generate_text(prompt, generation_tokens, effective_timeout_ms(request.timeout_ms), generated_text, error_text) then
+    begin
+        nc_ai_parse_generated_candidates(generated_text, max_suggestions, candidates);
+        success := Length(candidates) > 0;
+        if not success then
+        begin
+            error_text := 'llama output has no usable candidates';
+        end;
+    end;
+
+    if not success then
+    begin
+        log_warn('AI generation failed: ' + error_text);
+    end
+    else
+    begin
+        log_debug(Format('AI generation success signature=%s count=%d', [signature, Length(candidates)]));
+    end;
+
+    store_result(signature, candidates, success, version, error_text);
+end;
+
+function TncAiLlamaProvider.get_last_error: string;
+begin
+    m_lock.Acquire;
+    try
+        Result := m_last_error;
+    finally
+        m_lock.Release;
+    end;
+end;
+
+function TncAiLlamaProvider.request_suggestions(const request: TncAiRequest; out response: TncAiResponse): Boolean;
+var
+    signature: string;
+begin
+    response.success := False;
+    SetLength(response.candidates, 0);
+    Result := False;
+
+    if not m_ready then
+    begin
+        Exit;
+    end;
+
+    if request.context.composition_text = '' then
+    begin
+        m_lock.Acquire;
+        try
+            clear_pending_locked;
+        finally
+            m_lock.Release;
+        end;
+        Exit;
+    end;
+
+    signature := build_request_signature(request);
+    if try_get_cached_response(signature, response) then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    schedule_request(request, signature);
+end;
+
+end.

@@ -1,0 +1,25 @@
+*.dcu
+*.res
+*.dproj.local
+.claude/
+src/tsf/__recovery/
+dcu/
+out/*
+!out/*.ps1
+data/lexicon/
+data/custom/*_dict*.txt
+*.identcache
+*.local
+*.stat
+*.local
+*.swp
+third_party/llama.cpp/
+# Public export guards
+DEVPROGRESS.md
+DEVPLAN.md
+AGENTS.md
+out/logs/
+out/config/
+out/data/
+out/models/
+out/_tmp_build/
