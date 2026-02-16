@@ -37,9 +37,9 @@ This file lists third-party software/data used by Cassotis IME and the related l
 - No local LLM runtime/model binaries are bundled by default in this repository.
 - If additional third-party models/runtimes are distributed in the future, add their licenses and notices here before release.
 
-## GPL-3.0 Compatibility Note
+## GPL-3.0 Notice
 
-If this project is licensed under GPL-3.0, the two third-party items listed above are generally GPL-compatible:
+This project is licensed under GPL-3.0. The two third-party items listed above are generally GPL-compatible:
 - SQLite (public domain)
 - Unicode data used under Unicode terms with required notices
 

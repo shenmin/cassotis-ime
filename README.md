@@ -93,9 +93,9 @@ Important options include:
 - Third-party notices: `THIRD_PARTY.md`
 
 ## License
-Add your final open-source license in `LICENSE` before publishing.
+This project is licensed under GPL-3.0. See `LICENSE` for the full license text.
 
-If you choose GPL-3.0, keep third-party notices and attribution files consistent with `THIRD_PARTY.md`.
+Keep third-party notices and attribution files consistent with `THIRD_PARTY.md`.
 
 ## Roadmap
 - improve candidate ranking quality and practical phrase coverage
