@@ -240,6 +240,9 @@ try {
 }
 finally {
     if ((-not $NoRestartHost) -and ($stopped_processes.Count -gt 0)) {
-        restart_ime_processes $stopped_processes $script_dir
+        $restart_targets = $stopped_processes | Where-Object { $_ -ieq 'cassotis_ime_host' }
+        if ($restart_targets.Count -gt 0) {
+            restart_ime_processes $restart_targets $script_dir
+        }
     }
 }

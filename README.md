@@ -6,6 +6,11 @@ English | [简体中文](README.CN.md)
 
 Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework).
 
+## Name Origin
+The English name **Cassotis** comes from the sacred spring inside the Temple of Delphi. Before delivering oracles, the priestess Pythia was said to drink from this spring to enter a prophetic state. The spring was regarded as the true source of prophecy and inspiration, where oracles were born, which resonates with the path from Delphi to human language.
+
+The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a prophetic spring, while also carrying the meaning of **言如泉涌** ("words flowing like a spring"), reflecting our expectation of a fluent and intelligent input experience.
+
 The project focus is:
 - build a stable TSF-based IME foundation,
 - keep the architecture modular (TSF DLL + host process + tools),
@@ -13,7 +18,7 @@ The project focus is:
 
 ## Current Status
 - TSF text service pipeline is available (registration, activation, composition lifecycle).
-- Win64 and Win32 TSF binaries are both supported.
+- TSF binaries support Win64 and Win32 (`svr.dll` / `svr32.dll`), while host process is Win64 only.
 - Candidate window, paging, selection, and commit flow are implemented.
 - Dictionary split is supported: simplified base DB, traditional base DB, and user DB.
 - Surrounding-text/context synchronization and key state synchronization are implemented.
@@ -38,7 +43,6 @@ The project focus is:
 - `cassotis_ime_svr.dll` (Win64 TSF in-proc COM server)
 - `cassotis_ime_svr32.dll` (Win32 TSF in-proc COM server)
 - `cassotis_ime_host.exe` (Win64 host process)
-- `cassotis_ime_host32.exe` (Win32 host process)
 - `cassotis_ime_profile_reg.exe` (TSF profile/category registration utility)
 
 Without TSF DLL + host process, IME input will not work.
@@ -47,7 +51,7 @@ Without TSF DLL + host process, IME input will not work.
 Prerequisites:
 - Windows 10/11
 - Delphi 10.4
-- SQLite runtime DLLs (`sqlite3_64.dll`, `sqlite3_32.dll`)
+- SQLite runtime DLL (`sqlite3_64.dll`; `sqlite3_32.dll` is optional for manual Win32 debugging)
 
 From `out/`:
 

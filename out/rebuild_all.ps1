@@ -842,28 +842,11 @@ function invoke_build([string]$project_rel, [string]$platform, [string]$exe_outp
     }
 }
 
-function get_win32_output_name([string]$file_name)
-{
-    $base = [System.IO.Path]::GetFileNameWithoutExtension($file_name)
-    $ext = [System.IO.Path]::GetExtension($file_name)
-    return ("{0}32{1}" -f $base, $ext)
-}
-
 function copy_sqlite_binaries
 {
-    $sqlite32_source = Join-Path $root_dir 'third_party\sqlite\win32\sqlite3.dll'
     $sqlite64_source = Join-Path $root_dir 'third_party\sqlite\win64\sqlite3.dll'
-    $sqlite32_target = Join-Path $script_dir 'sqlite3_32.dll'
     $sqlite64_target = Join-Path $script_dir 'sqlite3_64.dll'
-
-    if (Test-Path -LiteralPath $sqlite32_source)
-    {
-        Copy-Item -Force -LiteralPath $sqlite32_source -Destination $sqlite32_target
-    }
-    else
-    {
-        Write-Host "Warning: sqlite Win32 binary not found: $sqlite32_source"
-    }
+    $sqlite32_target = Join-Path $script_dir 'sqlite3_32.dll'
 
     if (Test-Path -LiteralPath $sqlite64_source)
     {
@@ -872,6 +855,11 @@ function copy_sqlite_binaries
     else
     {
         Write-Host "Warning: sqlite Win64 binary not found: $sqlite64_source"
+    }
+
+    if (Test-Path -LiteralPath $sqlite32_target)
+    {
+        remove_item_with_retry $sqlite32_target $false $false | Out-Null
     }
 }
 
@@ -908,12 +896,11 @@ $build_list = @(
 foreach ($item in $build_list)
 {
     $win64_output = Join-Path $win64_stage_dir $item.exe
-    $win32_output = Join-Path $win32_stage_dir $item.exe
     $win64_final = Join-Path $script_dir $item.exe
-    $win32_final = Join-Path $script_dir (get_win32_output_name $item.exe)
+    $exe_name = [System.IO.Path]::GetFileNameWithoutExtension($item.exe)
+    $win32_legacy_final = Join-Path $script_dir ($exe_name + '32.exe')
 
     invoke_build $item.path 'Win64' $win64_stage_dir $win64_output
-    invoke_build $item.path 'Win32' $win32_stage_dir $win32_output
 
     stop_engine_host
 
@@ -924,12 +911,10 @@ foreach ($item in $build_list)
     move_item_with_retry $win64_output $win64_final $true | Out-Null
     assert_expected_machine $win64_final 0x8664
 
-    if (Test-Path -LiteralPath $win32_final)
+    if (Test-Path -LiteralPath $win32_legacy_final)
     {
-        remove_item_with_retry $win32_final $false $false | Out-Null
+        remove_item_with_retry $win32_legacy_final $false $false | Out-Null
     }
-    move_item_with_retry $win32_output $win32_final $true | Out-Null
-    assert_expected_machine $win32_final 0x014c
 }
 
 if (Test-Path -LiteralPath $win32_stage_dir)

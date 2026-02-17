@@ -55,7 +55,7 @@ begin
                 if process_entry.th32ProcessID <> GetCurrentProcessId then
                 begin
                     exe_name := string(process_entry.szExeFile);
-                    if SameText(exe_name, 'cassotis_ime_host.exe') or SameText(exe_name, 'cassotis_ime_host32.exe') then
+                    if SameText(exe_name, 'cassotis_ime_host.exe') then
                     begin
                         Result := True;
                         Break;

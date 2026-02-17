@@ -36,6 +36,53 @@ function ensure_gitignore_line {
     }
 }
 
+function upsert_markdown_section {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$path,
+        [Parameter(Mandatory = $true)]
+        [string]$header,
+        [Parameter(Mandatory = $true)]
+        [string]$body,
+        [Parameter(Mandatory = $true)]
+        [string]$insert_before_header
+    )
+
+    if (-not (Test-Path -LiteralPath $path)) {
+        return
+    }
+
+    $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ([string]::IsNullOrEmpty($content)) {
+        return
+    }
+
+    $newline = "`n"
+    if ($content -match "`r`n") {
+        $newline = "`r`n"
+    }
+
+    $normalized_body = ($body -replace "`r`n", "`n" -replace "`n", $newline).TrimEnd()
+    $section_block = ($header + $newline + $normalized_body + $newline + $newline)
+
+    # Remove existing section first to guarantee stable section ordering.
+    $header_pattern = '(?ms)^' + [regex]::Escape($header) + '\r?\n.*?(?=^##\s|\z)'
+    if ([regex]::IsMatch($content, $header_pattern)) {
+        $content = [regex]::Replace($content, $header_pattern, '', 1)
+    }
+
+    $anchor_pattern = '(?m)^' + [regex]::Escape($insert_before_header) + '\s*$'
+    if ([regex]::IsMatch($content, $anchor_pattern)) {
+        $updated = [regex]::Replace($content, $anchor_pattern, $section_block + $insert_before_header, 1)
+    }
+    else {
+        $trimmed = $content.TrimEnd()
+        $updated = $trimmed + $newline + $newline + $section_block.TrimEnd() + $newline
+    }
+
+    Set-Content -LiteralPath $path -Value $updated -Encoding UTF8
+}
+
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $source_root = (Get-Item (Join-Path $script_dir '..')).FullName
 
@@ -139,6 +186,30 @@ if (Test-Path -LiteralPath $source_readme_cn) {
     Copy-Item -LiteralPath $source_readme_cn -Destination (Join-Path $Destination 'README.CN.md') -Force
 }
 
+$name_origin_en = @'
+The English name **Cassotis** comes from the sacred spring inside the Temple of Delphi. Before delivering oracles, the priestess Pythia was said to drink from this spring to enter a prophetic state. The spring was regarded as the true source of prophecy and inspiration, where oracles were born, which resonates with the path from Delphi to human language.
+
+The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a prophetic spring, while also carrying the meaning of **言如泉涌** ("words flowing like a spring"), reflecting our expectation of a fluent and intelligent input experience.
+'@
+
+$name_origin_cn = @'
+英文名 **Cassotis** 源自 Delphi 神庙内的一眼圣泉。传说女祭司皮媞亚（Pythia）在发布神谕前会饮用此泉水，以进入通灵状态。这眼泉水被视为预言与灵感的真正源头，也是神谕诞生之地，呼应了从 Delphi 到人类语言的路径。
+
+中文名 **言泉** 既契合 Cassotis 作为预言之泉的意象，也取“言如泉涌”的寓意，寄托了对流畅、智能输入体验的期许。
+'@
+
+upsert_markdown_section `
+    -path (Join-Path $Destination 'README.md') `
+    -header '## Name Origin' `
+    -body $name_origin_en `
+    -insert_before_header 'The project focus is:'
+
+upsert_markdown_section `
+    -path (Join-Path $Destination 'README.CN.md') `
+    -header '## 名称来源' `
+    -body $name_origin_cn `
+    -insert_before_header '项目当前重点：'
+
 $public_build = @'
 # Build Guide
 
@@ -149,8 +220,8 @@ $public_build = @'
 
 ## Core Build (Typical)
 Build these projects first:
-- `src/tsf/cassotis_ime_svr.dproj` (Win64 + Win32)
-- `tools/cassotis_ime_host.dproj` (Win64 + Win32)
+- `src/tsf/cassotis_ime_svr.dproj` (Win64 + Win32, TSF DLL only)
+- `tools/cassotis_ime_host.dproj` (Win64 only)
 - `tools/cassotis_ime_profile_reg.dproj`
 
 Optional helper tools:

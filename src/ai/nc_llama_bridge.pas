@@ -152,7 +152,9 @@ type
         procedure clear_runtime_exports;
         procedure unload_model_handles;
         function tokenize_prompt(const prompt: string; out tokens: TArray<TllamaToken>; out error_text: string): Boolean;
-        function token_to_piece_text(const token: TllamaToken; out piece: string; out error_text: string): Boolean;
+        function utf8_bytes_to_string_lossy(const buffer: TBytes; const count: Integer): string;
+        function token_to_piece_text(const token: TllamaToken; out piece_bytes: TBytes;
+            out error_text: string): Boolean;
         procedure initialize_context_threads;
         procedure reset_abort_flag;
         function is_abort_requested: Boolean;
@@ -897,7 +899,38 @@ begin
     Result := True;
 end;
 
-function TncLlamaBridge.token_to_piece_text(const token: TllamaToken; out piece: string;
+function TncLlamaBridge.utf8_bytes_to_string_lossy(const buffer: TBytes; const count: Integer): string;
+var
+    required_chars: Integer;
+    written_chars: Integer;
+begin
+    Result := '';
+    if count <= 0 then
+    begin
+        Exit;
+    end;
+
+    required_chars := MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(@buffer[0]), count, nil, 0);
+    if required_chars > 0 then
+    begin
+        SetLength(Result, required_chars);
+        written_chars := MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(@buffer[0]), count, PWideChar(Result), required_chars);
+        if written_chars <= 0 then
+        begin
+            Result := '';
+        end
+        else if written_chars <> required_chars then
+        begin
+            SetLength(Result, written_chars);
+        end;
+        Exit;
+    end;
+
+    // Avoid ANSI fallback to prevent mojibake (for example UTF-8 punctuation becoming CJK garbage).
+    Result := '';
+end;
+
+function TncLlamaBridge.token_to_piece_text(const token: TllamaToken; out piece_bytes: TBytes;
     out error_text: string): Boolean;
 var
     buffer: TBytes;
@@ -906,7 +939,7 @@ var
 begin
     Result := False;
     error_text := '';
-    piece := '';
+    SetLength(piece_bytes, 0);
 
     required_len := 64;
     SetLength(buffer, required_len);
@@ -937,7 +970,8 @@ begin
         Exit;
     end;
 
-    piece := TEncoding.UTF8.GetString(buffer, 0, written_len);
+    SetLength(piece_bytes, written_len);
+    Move(buffer[0], piece_bytes[0], written_len);
     Result := True;
 end;
 
@@ -950,7 +984,10 @@ var
     sampler: Pointer;
     i: Integer;
     sampled_token: TllamaToken;
-    token_piece: string;
+    token_piece_bytes: TBytes;
+    generated_bytes: TBytes;
+    generated_len: Integer;
+    piece_len: Integer;
     next_token: TllamaToken;
     next_batch: TllamaBatch;
     start_tick: UInt64;
@@ -959,6 +996,7 @@ var
 begin
     Result := False;
     generated_text := '';
+    SetLength(generated_bytes, 0);
     error_text := '';
     reset_abort_flag;
 
@@ -1041,15 +1079,18 @@ begin
 
             m_sampler_accept(sampler, sampled_token);
 
-            if not token_to_piece_text(sampled_token, token_piece, error_text) then
+            if not token_to_piece_text(sampled_token, token_piece_bytes, error_text) then
             begin
                 bridge_debug(error_text);
                 Exit(False);
             end;
 
-            if token_piece <> '' then
+            piece_len := Length(token_piece_bytes);
+            if piece_len > 0 then
             begin
-                generated_text := generated_text + token_piece;
+                generated_len := Length(generated_bytes);
+                SetLength(generated_bytes, generated_len + piece_len);
+                Move(token_piece_bytes[0], generated_bytes[generated_len], piece_len);
             end;
 
             next_token := sampled_token;
@@ -1066,10 +1107,14 @@ begin
         m_sampler_free(sampler);
     end;
 
-    if generated_text <> '' then
+    if Length(generated_bytes) > 0 then
     begin
-        Result := True;
-        Exit;
+        generated_text := utf8_bytes_to_string_lossy(generated_bytes, Length(generated_bytes));
+        if generated_text <> '' then
+        begin
+            Result := True;
+            Exit;
+        end;
     end;
 
     if timed_out then

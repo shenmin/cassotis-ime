@@ -18,6 +18,11 @@ function resolve_path([string]$path_value)
     return [System.IO.Path]::GetFullPath($path_value)
 }
 
+function to_cmake_path([string]$path_value)
+{
+    return $path_value.Replace('\', '/')
+}
+
 function ensure_directory([string]$path_value)
 {
     if (-not (Test-Path -LiteralPath $path_value))
@@ -174,6 +179,8 @@ function build_one_arch(
     [string]$resolved_cuda_root
 )
 {
+    $nvcc_path = ''
+    $cmake_cuda_root = ''
     if ($target_arch -eq 'win64')
     {
         $vs_arch = 'x64'
@@ -215,8 +222,16 @@ function build_one_arch(
     )
     if ($backend_name -eq 'cuda')
     {
+        $nvcc_path = Join-Path $resolved_cuda_root 'bin\nvcc.exe'
+        if (-not (Test-Path -LiteralPath $nvcc_path))
+        {
+            throw "nvcc not found: $nvcc_path"
+        }
+        $nvcc_path = to_cmake_path $nvcc_path
+        $cmake_cuda_root = to_cmake_path $resolved_cuda_root
         $cmake_defs += '-DGGML_CUDA=ON'
-        $cmake_defs += "-DCUDAToolkit_ROOT=`"$resolved_cuda_root`""
+        $cmake_defs += "-DCMAKE_CUDA_COMPILER=`"$nvcc_path`""
+        $cmake_defs += "-DCUDAToolkit_ROOT=`"$cmake_cuda_root`""
     }
     else
     {
@@ -255,6 +270,36 @@ function build_one_arch(
         if (Test-Path -LiteralPath $src_file)
         {
             Copy-Item -LiteralPath $src_file -Destination (Join-Path $out_bin $name) -Force
+        }
+    }
+
+    if ($backend_name -eq 'cuda')
+    {
+        $cuda_bin = Join-Path $resolved_cuda_root 'bin'
+        $cuda_runtime_dlls = @(
+            'cudart64_12.dll',
+            'cublas64_12.dll',
+            'cublasLt64_12.dll'
+        )
+        foreach ($name in $cuda_runtime_dlls)
+        {
+            $src_file = Join-Path $cuda_bin $name
+            if (Test-Path -LiteralPath $src_file)
+            {
+                Copy-Item -LiteralPath $src_file -Destination (Join-Path $out_bin $name) -Force
+            }
+            else
+            {
+                Write-Warning "CUDA runtime dll not found: $src_file"
+            }
+        }
+
+        $nvrtc_file = Get-ChildItem -LiteralPath $cuda_bin -Filter 'nvrtc64_*.dll' -File -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($null -ne $nvrtc_file)
+        {
+            Copy-Item -LiteralPath $nvrtc_file.FullName -Destination (Join-Path $out_bin $nvrtc_file.Name) -Force
         }
     }
 

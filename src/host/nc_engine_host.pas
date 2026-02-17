@@ -52,12 +52,14 @@ type
     private
         m_sessions: TObjectDictionary<string, TncHostSession>;
         m_lock: TCriticalSection;
+        m_ai_refresh_thread: TThread;
         m_config_path: string;
         m_last_config_write: TDateTime;
         m_config: TncEngineConfig;
         function get_config_write_time: TDateTime;
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
+        procedure refresh_ai_candidates;
     public
         constructor create;
         destructor Destroy; override;
@@ -85,6 +87,15 @@ type
         constructor create(const host: TncEngineHost);
     end;
 
+    TncAiRefreshThread = class(TThread)
+    private
+        m_host: TncEngineHost;
+    protected
+        procedure Execute; override;
+    public
+        constructor create(const host: TncEngineHost);
+    end;
+
 implementation
 
 const
@@ -92,6 +103,7 @@ const
     c_pipe_out_buffer = 65536;
     c_default_offset = 20;
     c_text_ext_offset = 2;
+    c_ai_refresh_poll_ms = 120;
 
 var
     g_host_log_path: string = '';
@@ -363,6 +375,7 @@ begin
     inherited create;
     m_sessions := TObjectDictionary<string, TncHostSession>.Create([doOwnsValues]);
     m_lock := TCriticalSection.Create;
+    m_ai_refresh_thread := nil;
     m_config_path := get_default_config_path;
     m_last_config_write := 0;
     with TncConfigManager.create(m_config_path) do
@@ -376,10 +389,18 @@ begin
         m_config.input_mode := im_chinese;
     end;
     m_last_config_write := get_config_write_time;
+    m_ai_refresh_thread := TncAiRefreshThread.create(Self);
 end;
 
 destructor TncEngineHost.Destroy;
 begin
+    if m_ai_refresh_thread <> nil then
+    begin
+        m_ai_refresh_thread.Terminate;
+        WaitForSingleObject(m_ai_refresh_thread.Handle, 1500);
+        m_ai_refresh_thread.Free;
+        m_ai_refresh_thread := nil;
+    end;
     if m_lock <> nil then
     begin
         m_lock.Free;
@@ -391,6 +412,52 @@ begin
         m_sessions := nil;
     end;
     inherited Destroy;
+end;
+
+procedure TncEngineHost.refresh_ai_candidates;
+var
+    session: TncHostSession;
+    refresh_sessions: TList<TncHostSession>;
+    candidates: TncCandidateList;
+    page_index: Integer;
+    page_count: Integer;
+    selected_index: Integer;
+    preedit_text: string;
+    caret_point: TPoint;
+    has_caret: Boolean;
+begin
+    refresh_sessions := TList<TncHostSession>.Create;
+    try
+        m_lock.Acquire;
+        try
+            for session in m_sessions.Values do
+            begin
+                if not session.engine.refresh_ai_candidates_if_ready(candidates, page_index, page_count, selected_index,
+                    preedit_text) then
+                begin
+                    Continue;
+                end;
+
+                session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
+                refresh_sessions.Add(session);
+            end;
+        finally
+            m_lock.Release;
+        end;
+
+        for session in refresh_sessions do
+        begin
+            caret_point := session.last_caret;
+            has_caret := session.has_caret;
+            run_on_ui_thread(
+                procedure
+                begin
+                    session.apply_candidate_state(caret_point, has_caret);
+                end);
+        end;
+    finally
+        refresh_sessions.Free;
+    end;
 end;
 
 function TncEngineHost.get_config_write_time: TDateTime;
@@ -467,7 +534,12 @@ begin
 
     reload_config_if_needed;
     session := get_or_create_session(session_id);
-    handled := session.engine.should_handle_key(key_code, key_state);
+    m_lock.Acquire;
+    try
+        handled := session.engine.should_handle_key(key_code, key_state);
+    finally
+        m_lock.Release;
+    end;
     Result := True;
 end;
 
@@ -482,6 +554,8 @@ var
     selected_index: Integer;
     preedit_text: string;
     config: TncEngineConfig;
+    should_hide_candidates: Boolean;
+    has_result: Boolean;
 begin
     handled := False;
     commit_text := '';
@@ -497,61 +571,69 @@ begin
 
     reload_config_if_needed;
     session := get_or_create_session(session_id);
-    session.engine.reload_dictionary_if_needed;
-    handled := session.engine.process_key(key_code, key_state);
+    should_hide_candidates := False;
+    has_result := True;
+    m_lock.Acquire;
+    try
+        session.engine.reload_dictionary_if_needed;
+        handled := session.engine.process_key(key_code, key_state);
 
-    config := session.engine.config;
-    input_mode := config.input_mode;
-    full_width_mode := config.full_width_mode;
-    punctuation_full_width := config.punctuation_full_width;
+        config := session.engine.config;
+        input_mode := config.input_mode;
+        full_width_mode := config.full_width_mode;
+        punctuation_full_width := config.punctuation_full_width;
 
-    if not handled then
-    begin
-        Result := True;
-        Exit;
+        if not handled then
+        begin
+            has_result := True;
+        end;
+
+        if handled and session.engine.commit_text(commit_text) then
+        begin
+            host_log(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
+                [key_code, Ord(handled), sanitize_log_text(commit_text), session.engine.get_confirmed_length]));
+            display_text := '';
+            session.clear_candidates;
+            should_hide_candidates := True;
+        end;
+
+        if handled and (commit_text = '') then
+        begin
+            display_text := session.engine.get_display_text;
+            candidates := session.engine.get_candidates;
+            page_index := session.engine.get_page_index;
+            page_count := session.engine.get_page_count;
+            selected_index := session.engine.get_selected_index;
+            preedit_text := session.engine.get_composition_text;
+            host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d',
+                [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
+                sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates), page_index + 1,
+                page_count, selected_index + 1]));
+
+            if Length(candidates) = 0 then
+            begin
+                session.clear_candidates;
+                should_hide_candidates := True;
+            end
+            else
+            begin
+                session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
+            end;
+        end;
+    finally
+        m_lock.Release;
     end;
 
-    if session.engine.commit_text(commit_text) then
+    if should_hide_candidates then
     begin
-        host_log(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
-            [key_code, Ord(handled), sanitize_log_text(commit_text), session.engine.get_confirmed_length]));
-        display_text := '';
-        session.clear_candidates;
         run_on_ui_thread(
             procedure
             begin
                 session.hide_candidate_window;
             end);
-        Result := True;
-        Exit;
     end;
 
-    display_text := session.engine.get_display_text;
-    candidates := session.engine.get_candidates;
-    page_index := session.engine.get_page_index;
-    page_count := session.engine.get_page_count;
-    selected_index := session.engine.get_selected_index;
-    preedit_text := session.engine.get_composition_text;
-    host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d',
-        [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
-        sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates), page_index + 1,
-        page_count, selected_index + 1]));
-
-    if Length(candidates) = 0 then
-    begin
-        session.clear_candidates;
-        run_on_ui_thread(
-            procedure
-            begin
-                session.hide_candidate_window;
-            end);
-    end
-    else
-    begin
-        session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
-    end;
-
-    Result := True;
+    Result := has_result;
 end;
 
 function TncEngineHost.get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
@@ -571,7 +653,12 @@ begin
 
     reload_config_if_needed;
     session := get_or_create_session(session_id);
-    config := session.engine.config;
+    m_lock.Acquire;
+    try
+        config := session.engine.config;
+    finally
+        m_lock.Release;
+    end;
     input_mode := config.input_mode;
     full_width_mode := config.full_width_mode;
     punctuation_full_width := config.punctuation_full_width;
@@ -593,17 +680,26 @@ begin
 
     reload_config_if_needed;
     session := get_or_create_session(session_id);
-    next_config := session.engine.config;
-    input_mode_changed := next_config.input_mode <> input_mode;
-    next_config.input_mode := input_mode;
-    next_config.full_width_mode := full_width_mode;
-    next_config.punctuation_full_width := punctuation_full_width;
-    session.engine.update_config(next_config);
+    m_lock.Acquire;
+    try
+        next_config := session.engine.config;
+        input_mode_changed := next_config.input_mode <> input_mode;
+        next_config.input_mode := input_mode;
+        next_config.full_width_mode := full_width_mode;
+        next_config.punctuation_full_width := punctuation_full_width;
+        session.engine.update_config(next_config);
+
+        if input_mode_changed then
+        begin
+            session.engine.reset;
+            session.clear_candidates;
+        end;
+    finally
+        m_lock.Release;
+    end;
 
     if input_mode_changed then
     begin
-        session.engine.reset;
-        session.clear_candidates;
         run_on_ui_thread(
             procedure
             begin
@@ -619,14 +715,18 @@ var
     session: TncHostSession;
     should_apply: Boolean;
 begin
-    if session_id = '' then
-    begin
-        Exit;
+    m_lock.Acquire;
+    try
+        if not m_sessions.TryGetValue(session_id, session) then
+        begin
+            Exit;
+        end;
+        should_apply := session.has_candidates and session.needs_candidate_refresh(point, has_caret);
+        session.set_caret(point, has_caret);
+    finally
+        m_lock.Release;
     end;
 
-    session := get_or_create_session(session_id);
-    should_apply := session.has_candidates and session.needs_candidate_refresh(point, has_caret);
-    session.set_caret(point, has_caret);
     if should_apply then
     begin
         run_on_ui_thread(
@@ -641,28 +741,35 @@ procedure TncEngineHost.update_surrounding(const session_id: string; const left_
 var
     session: TncHostSession;
 begin
-    if session_id = '' then
-    begin
-        Exit;
+    m_lock.Acquire;
+    try
+        if not m_sessions.TryGetValue(session_id, session) then
+        begin
+            Exit;
+        end;
+        session.engine.set_external_left_context(left_context);
+    finally
+        m_lock.Release;
     end;
-
-    session := get_or_create_session(session_id);
-    session.engine.set_external_left_context(left_context);
 end;
 
 procedure TncEngineHost.reset_session(const session_id: string);
 var
     session: TncHostSession;
 begin
-    if session_id = '' then
-    begin
-        Exit;
+    m_lock.Acquire;
+    try
+        if not m_sessions.TryGetValue(session_id, session) then
+        begin
+            Exit;
+        end;
+        session.engine.reset;
+        session.set_caret(Point(0, 0), False);
+        session.clear_candidates;
+    finally
+        m_lock.Release;
     end;
 
-    session := get_or_create_session(session_id);
-    session.engine.reset;
-    session.set_caret(Point(0, 0), False);
-    session.clear_candidates;
     run_on_ui_thread(
         procedure
         begin
@@ -675,6 +782,30 @@ begin
     inherited create(False);
     FreeOnTerminate := False;
     m_host := host;
+end;
+
+constructor TncAiRefreshThread.create(const host: TncEngineHost);
+begin
+    inherited create(False);
+    FreeOnTerminate := False;
+    m_host := host;
+end;
+
+procedure TncAiRefreshThread.Execute;
+begin
+    while not Terminated do
+    begin
+        Sleep(c_ai_refresh_poll_ms);
+        if Terminated then
+        begin
+            Break;
+        end;
+
+        try
+            m_host.refresh_ai_candidates;
+        except
+        end;
+    end;
 end;
 
 function TncPipeServerThread.handle_request(const request_text: string): string;

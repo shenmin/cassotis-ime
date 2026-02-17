@@ -302,6 +302,7 @@ end;
 function TncSqliteDictionary.is_valid_user_text(const text: string): Boolean;
 var
     idx: Integer;
+    codepoint_count: Integer;
     codepoint: Integer;
     high_surrogate: Integer;
     low_surrogate: Integer;
@@ -334,6 +335,7 @@ begin
     end;
 
     idx := 1;
+    codepoint_count := 0;
     while idx <= Length(text) do
     begin
         codepoint := Ord(text[idx]);
@@ -363,10 +365,12 @@ begin
             Exit;
         end;
 
+        Inc(codepoint_count);
         Inc(idx);
     end;
 
-    Result := True;
+    // User dictionary should store phrase learning only, not single-character commits.
+    Result := codepoint_count >= 2;
 end;
 
 function TncSqliteDictionary.get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
@@ -574,6 +578,10 @@ var
         const source: TncCandidateSource);
     begin
         if text = '' then
+        begin
+            Exit;
+        end;
+        if (source = cs_user) and (not is_valid_user_text(text)) then
         begin
             Exit;
         end;

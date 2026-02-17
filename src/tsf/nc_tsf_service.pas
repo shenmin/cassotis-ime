@@ -62,7 +62,16 @@ type
         m_has_caret_point: Boolean;
         m_last_ipc_error: DWORD;
         m_pending_caret_update: Boolean;
+        m_session_dirty: Boolean;
+        m_last_sent_caret_point: TPoint;
+        m_last_sent_has_caret: Boolean;
+        m_last_sent_caret_valid: Boolean;
+        m_last_sent_caret_tick: DWORD;
         procedure clear_state;
+        procedure mark_session_dirty;
+        procedure reset_session_if_needed(const force: Boolean = False);
+        procedure invalidate_sent_caret;
+        procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const force: Boolean = False);
         procedure unadvise_thread_mgr_sink;
         procedure advise_thread_mgr_sink;
         procedure unadvise_compartment_sinks;
@@ -247,6 +256,79 @@ begin
     m_has_caret_point := False;
     m_last_ipc_error := 0;
     m_pending_caret_update := False;
+    m_session_dirty := False;
+    m_last_sent_caret_point := Point(0, 0);
+    m_last_sent_has_caret := False;
+    m_last_sent_caret_valid := False;
+    m_last_sent_caret_tick := 0;
+end;
+
+procedure TncTextService.mark_session_dirty;
+begin
+    if m_session_id <> '' then
+    begin
+        m_session_dirty := True;
+    end;
+end;
+
+procedure TncTextService.invalidate_sent_caret;
+begin
+    m_last_sent_caret_point := Point(0, 0);
+    m_last_sent_has_caret := False;
+    m_last_sent_caret_valid := False;
+    m_last_sent_caret_tick := 0;
+end;
+
+procedure TncTextService.reset_session_if_needed(const force: Boolean);
+begin
+    if (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    if (not force) and (not m_session_dirty) then
+    begin
+        Exit;
+    end;
+
+    if m_ipc_client.reset_session(m_session_id) then
+    begin
+        m_session_dirty := False;
+        m_last_ipc_error := 0;
+        invalidate_sent_caret;
+    end;
+end;
+
+procedure TncTextService.push_caret_to_host(const point: TPoint; const has_caret: Boolean; const force: Boolean = False);
+const
+    c_caret_resend_ms = 120;
+var
+    same_caret: Boolean;
+    now_tick: DWORD;
+begin
+    if (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    same_caret := m_last_sent_caret_valid and (m_last_sent_has_caret = has_caret) and
+        (m_last_sent_caret_point.X = point.X) and (m_last_sent_caret_point.Y = point.Y);
+    if same_caret and (not force) then
+    begin
+        now_tick := GetTickCount;
+        if DWORD(now_tick - m_last_sent_caret_tick) < c_caret_resend_ms then
+        begin
+            Exit;
+        end;
+    end;
+
+    if m_ipc_client.set_caret(m_session_id, point, has_caret) then
+    begin
+        m_last_sent_caret_point := point;
+        m_last_sent_has_caret := has_caret;
+        m_last_sent_caret_valid := True;
+        m_last_sent_caret_tick := GetTickCount;
+    end;
 end;
 
 procedure TncTextService.init_display_attribute_atom;
@@ -549,7 +631,9 @@ end;
 procedure TncTextService.cancel_composition;
 var
     context: ITfContext;
+    had_runtime_state: Boolean;
 begin
+    had_runtime_state := (m_composition <> nil) or m_pending_caret_update or m_has_caret_point;
     context := nil;
     if m_composition_context <> nil then
     begin
@@ -571,10 +655,12 @@ begin
     end;
     m_has_caret_point := False;
     m_pending_caret_update := False;
-    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    invalidate_sent_caret;
+    if had_runtime_state then
     begin
-        m_ipc_client.reset_session(m_session_id);
+        mark_session_dirty;
     end;
+    reset_session_if_needed(False);
 end;
 
 procedure TncTextService.ensure_active_context(const context: ITfContext);
@@ -648,7 +734,8 @@ begin
     end;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
-        m_ipc_client.reset_session(m_session_id);
+        mark_session_dirty;
+        reset_session_if_needed(True);
         if m_ipc_client.get_state(m_session_id, input_mode, full_width_mode, punctuation_full_width) then
         begin
             apply_engine_state_to_compartments(input_mode, full_width_mode, punctuation_full_width);
@@ -694,7 +781,8 @@ begin
 
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
-        m_ipc_client.reset_session(m_session_id);
+        mark_session_dirty;
+        reset_session_if_needed(True);
     end;
     if m_logger <> nil then
     begin
@@ -819,6 +907,7 @@ begin
     end;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
+        mark_session_dirty;
         if m_ipc_client.process_key(m_session_id, key_code, key_state, handled, commit_text, display_text,
             input_mode, full_width_mode, punctuation_full_width) then
         begin
@@ -836,7 +925,7 @@ begin
                     begin
                         if get_candidate_point(point) then
                         begin
-                            m_ipc_client.set_caret(m_session_id, point, m_has_caret_point);
+                            push_caret_to_host(point, m_has_caret_point, True);
                             m_pending_caret_update := False;
                             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
                             begin
@@ -899,10 +988,8 @@ begin
     m_composition_context := nil;
     m_has_caret_point := False;
     m_pending_caret_update := False;
-    if (m_ipc_client <> nil) and (m_session_id <> '') then
-    begin
-        m_ipc_client.reset_session(m_session_id);
-    end;
+    mark_session_dirty;
+    reset_session_if_needed(False);
 
     Result := S_OK;
 end;
@@ -920,7 +1007,7 @@ begin
     if m_pending_caret_update and m_has_caret_point and (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
         point := m_last_caret_point;
-        m_ipc_client.set_caret(m_session_id, point, True);
+        push_caret_to_host(point, True);
         m_pending_caret_update := False;
         if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
@@ -1096,7 +1183,7 @@ begin
     request_text_ext_update(pic);
     if get_candidate_point(point) then
     begin
-        m_ipc_client.set_caret(m_session_id, point, m_has_caret_point);
+        push_caret_to_host(point, m_has_caret_point);
     end;
 end;
 
@@ -1164,6 +1251,7 @@ begin
 
     if m_ipc_client.set_state(m_session_id, next_input_mode, next_full_width, next_punctuation_full_width) then
     begin
+        mark_session_dirty;
         m_last_input_mode := next_input_mode;
         m_last_full_width_mode := next_full_width;
         m_last_punctuation_full_width := next_punctuation_full_width;
@@ -1585,7 +1673,10 @@ begin
     left_text := '';
     if request_surrounding_text(context, left_text) then
     begin
-        m_ipc_client.set_surrounding(m_session_id, left_text);
+        if m_ipc_client.set_surrounding(m_session_id, left_text) then
+        begin
+            mark_session_dirty;
+        end;
     end;
 end;
 

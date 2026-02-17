@@ -148,9 +148,7 @@ $ok = $true
 if (-not $skip_host_checks)
 {
     $ok64 = start_and_check_host 'cassotis_ime_host.exe'
-    $ok32 = start_and_check_host 'cassotis_ime_host32.exe'
     if (-not $ok64) { $ok = $false }
-    if (-not $ok32) { $ok = $false }
 }
 
 if (-not $ok)

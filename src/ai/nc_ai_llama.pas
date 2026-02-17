@@ -7,6 +7,7 @@ uses
     System.SysUtils,
     System.Classes,
     System.SyncObjs,
+    System.Math,
     nc_types,
     nc_ai_intf,
     nc_llama_bridge,
@@ -107,6 +108,8 @@ begin
 end;
 
 constructor TncAiLlamaProvider.create(const config: TncEngineConfig);
+var
+    saved_mask: TFPUExceptionMask;
 begin
     inherited create;
     m_lock := TCriticalSection.Create;
@@ -125,11 +128,26 @@ begin
     log_info('AI llama provider create start');
 
     m_bridge := TncLlamaBridge.create;
-    m_ready := m_bridge.initialize(config, m_last_error);
-    if m_ready then
-    begin
-        m_ready := m_bridge.load_model(config.ai_llama_model_path, m_last_error);
+    saved_mask := GetExceptionMask;
+    SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
+    try
+        try
+            m_ready := m_bridge.initialize(config, m_last_error);
+            if m_ready then
+            begin
+                m_ready := m_bridge.load_model(config.ai_llama_model_path, m_last_error);
+            end;
+        except
+            on e: Exception do
+            begin
+                m_ready := False;
+                m_last_error := Format('AI initialize exception %s: %s', [e.ClassName, e.Message]);
+            end;
+        end;
+    finally
+        SetExceptionMask(saved_mask);
     end;
+
     if (not m_ready) and (m_last_error = '') then
     begin
         m_last_error := 'llama provider initialize failed';
@@ -329,6 +347,11 @@ procedure TncAiLlamaProvider.schedule_request(const request: TncAiRequest; const
 begin
     m_lock.Acquire;
     try
+        if m_has_pending and SameText(m_pending_signature, signature) then
+        begin
+            Exit;
+        end;
+
         m_pending_request := request;
         m_pending_signature := signature;
         Inc(m_pending_version);
@@ -453,6 +476,8 @@ var
     generation_tokens: Integer;
     candidates: TncCandidateList;
     success: Boolean;
+    saved_mask: TFPUExceptionMask;
+    raw_tail: string;
 begin
     if not m_ready then
     begin
@@ -477,23 +502,49 @@ begin
     error_text := '';
     SetLength(candidates, 0);
 
-    if m_bridge.generate_text(prompt, generation_tokens, effective_timeout_ms(request.timeout_ms), generated_text, error_text) then
-    begin
-        nc_ai_parse_generated_candidates(generated_text, max_suggestions, candidates);
-        success := Length(candidates) > 0;
-        if not success then
-        begin
-            error_text := 'llama output has no usable candidates';
+    saved_mask := GetExceptionMask;
+    SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
+    try
+        try
+            if m_bridge.generate_text(prompt, generation_tokens, effective_timeout_ms(request.timeout_ms), generated_text, error_text) then
+            begin
+                nc_ai_parse_generated_candidates(generated_text, request.context.composition_text, max_suggestions,
+                    candidates);
+                success := Length(candidates) > 0;
+                if not success then
+                begin
+                    error_text := 'llama output has no usable candidates';
+                end;
+            end;
+        except
+            on e: Exception do
+            begin
+                error_text := Format('AI generate exception %s: %s', [e.ClassName, e.Message]);
+            end;
         end;
+    finally
+        SetExceptionMask(saved_mask);
     end;
 
     if not success then
     begin
+        if generated_text <> '' then
+        begin
+            raw_tail := StringReplace(generated_text, #13, '', [rfReplaceAll]);
+            raw_tail := StringReplace(raw_tail, #10, '\n', [rfReplaceAll]);
+            raw_tail := nc_ai_tail_text(raw_tail, 300);
+            log_warn('AI raw output tail: ' + raw_tail);
+        end;
         log_warn('AI generation failed: ' + error_text);
     end
     else
     begin
-        log_debug(Format('AI generation success signature=%s count=%d', [signature, Length(candidates)]));
+        log_debug(Format('AI generation success signature=%s count=%d top=%s',
+            [signature, Length(candidates), nc_ai_tail_text(candidates[0].text, 64)]));
+        raw_tail := StringReplace(generated_text, #13, '', [rfReplaceAll]);
+        raw_tail := StringReplace(raw_tail, #10, '\n', [rfReplaceAll]);
+        raw_tail := nc_ai_tail_text(raw_tail, 180);
+        log_debug('AI raw output tail: ' + raw_tail);
     end;
 
     store_result(signature, candidates, success, version, error_text);

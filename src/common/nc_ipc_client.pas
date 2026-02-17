@@ -53,12 +53,12 @@ const
     c_get_module_handle_ex_unchanged_refcount = $00000002;
 {$IFDEF WIN32}
     c_tsf_module_name = 'cassotis_ime_svr32.dll';
-    c_host_exe_prefer = 'cassotis_ime_host32.exe';
+    c_host_exe_prefer = 'cassotis_ime_host.exe';
     c_host_exe_fallback = 'cassotis_ime_host.exe';
 {$ELSE}
     c_tsf_module_name = 'cassotis_ime_svr.dll';
     c_host_exe_prefer = 'cassotis_ime_host.exe';
-    c_host_exe_fallback = 'cassotis_ime_host32.exe';
+    c_host_exe_fallback = 'cassotis_ime_host.exe';
 {$ENDIF}
 
 function get_module_handle_ex(const flags: DWORD; const module_name: Pointer; var module_handle: HMODULE): BOOL; stdcall;
