@@ -61,12 +61,6 @@ Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中�
 .\rebuild_dict.ps1
 ```
 
-可选健康检查：
-
-```powershell
-.\smoke_tsf.ps1
-```
-
 完整构建说明见 `BUILD.md`。
 
 ## 词库流程

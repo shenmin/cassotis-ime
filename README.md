@@ -61,12 +61,6 @@ From `out/`:
 .\rebuild_dict.ps1
 ```
 
-Optional health check:
-
-```powershell
-.\smoke_tsf.ps1
-```
-
 For full build details, see `BUILD.md`.
 
 ## Dictionary Workflow
