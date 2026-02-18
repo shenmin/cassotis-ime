@@ -72,6 +72,27 @@ var
         Result := Copy(source, start_index + 1, Length(value)) = value;
     end;
 
+    function is_initial_final_compatible(const initial_value: string; const final_value: string): Boolean;
+    begin
+        // Restrict obviously invalid retroflex/alveolar combinations to avoid
+        // greedy wrong splits like "zhineng" -> "zhin + eng" (expected "zhi + neng").
+        if (initial_value = 'zh') or (initial_value = 'ch') or (initial_value = 'sh') or
+            (initial_value = 'r') or (initial_value = 'z') or (initial_value = 'c') or
+            (initial_value = 's') then
+        begin
+            if (final_value = 'in') or (final_value = 'ing') or (final_value = 'iu') or
+                (final_value = 'ie') or (final_value = 'ian') or (final_value = 'iang') or
+                (final_value = 'iao') or (final_value = 'iong') or
+                (final_value = 'ue') or (final_value = 've') or (final_value = 'van') or
+                (final_value = 'vn') then
+            begin
+                Exit(False);
+            end;
+        end;
+
+        Result := True;
+    end;
+
     procedure append_syllable(const text: string; const start_index: Integer; const len: Integer);
     var
         idx: Integer;
@@ -139,6 +160,10 @@ var
             for final_idx := Low(c_finals) to High(c_finals) do
             begin
                 final_value := c_finals[final_idx];
+                if not is_initial_final_compatible(initial_value, final_value) then
+                begin
+                    Continue;
+                end;
                 if not has_prefix(lower_text, start_index + Length(initial_value), final_value) then
                 begin
                     Continue;

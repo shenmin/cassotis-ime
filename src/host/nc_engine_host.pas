@@ -455,6 +455,10 @@ begin
                     session.apply_candidate_state(caret_point, has_caret);
                 end);
         end;
+        if refresh_sessions.Count > 0 then
+        begin
+            host_log(Format('[DEBUG] AI refresh applied sessions=%d', [refresh_sessions.Count]));
+        end;
     finally
         refresh_sessions.Free;
     end;
@@ -804,6 +808,10 @@ begin
         try
             m_host.refresh_ai_candidates;
         except
+            on e: Exception do
+            begin
+                host_log(Format('[WARN] AI refresh exception %s: %s', [e.ClassName, e.Message]));
+            end;
         end;
     end;
 end;
