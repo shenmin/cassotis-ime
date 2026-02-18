@@ -47,6 +47,9 @@ type
         m_cached_signature: string;
         m_cached_candidates: TncCandidateList;
         m_cached_success: Boolean;
+        m_last_failed_signature: string;
+        m_last_suppressed_signature: string;
+        m_last_suppressed_tick: UInt64;
         procedure init_logger;
         procedure free_logger;
         procedure log_message(const level: TncLogLevel; const msg: string; const force_debug_output: Boolean = False);
@@ -80,6 +83,7 @@ const
     c_worker_poll_ms = 20;
     c_default_ai_timeout_ms = 1200;
     c_worker_shutdown_timeout_ms = 3000;
+    c_suppressed_log_interval_ms = 3000;
 
 procedure copy_candidate_list(const source: TncCandidateList; out dest: TncCandidateList);
 var
@@ -123,6 +127,9 @@ begin
     m_cached_signature := '';
     SetLength(m_cached_candidates, 0);
     m_cached_success := False;
+    m_last_failed_signature := '';
+    m_last_suppressed_signature := '';
+    m_last_suppressed_tick := 0;
 
     init_logger;
     log_info('AI llama provider create start');
@@ -344,12 +351,47 @@ begin
 end;
 
 procedure TncAiLlamaProvider.schedule_request(const request: TncAiRequest; const signature: string);
+var
+    should_abort: Boolean;
+    readable_signature: string;
+    readable_pending_signature: string;
+    now_tick: UInt64;
 begin
+    should_abort := False;
+    readable_signature := StringReplace(signature, #1, '|', [rfReplaceAll]);
     m_lock.Acquire;
     try
+        now_tick := GetTickCount64;
+        if (m_last_failed_signature <> '') and SameText(m_last_failed_signature, signature) then
+        begin
+            if (not SameText(m_last_suppressed_signature, signature)) or
+                ((now_tick - m_last_suppressed_tick) >= UInt64(c_suppressed_log_interval_ms)) then
+            begin
+                log_debug('AI schedule suppressed recent-failure signature=' + readable_signature);
+                m_last_suppressed_signature := signature;
+                m_last_suppressed_tick := now_tick;
+            end;
+            Exit;
+        end;
+
         if m_has_pending and SameText(m_pending_signature, signature) then
         begin
             Exit;
+        end;
+
+        m_last_suppressed_signature := '';
+        m_last_suppressed_tick := 0;
+
+        if m_has_pending then
+        begin
+            // Replace the in-flight request with a newer one; abort current generation asap.
+            should_abort := True;
+            readable_pending_signature := StringReplace(m_pending_signature, #1, '|', [rfReplaceAll]);
+            log_debug('AI schedule replace old=' + readable_pending_signature + ' new=' + readable_signature);
+        end
+        else
+        begin
+            log_debug('AI schedule new signature=' + readable_signature);
         end;
 
         m_pending_request := request;
@@ -359,6 +401,11 @@ begin
         m_has_pending := True;
     finally
         m_lock.Release;
+    end;
+
+    if should_abort and (m_bridge <> nil) then
+    begin
+        m_bridge.request_abort;
     end;
 end;
 
@@ -443,6 +490,10 @@ begin
             m_cached_signature := signature;
             copy_candidate_list(candidates, m_cached_candidates);
             m_cached_success := True;
+            if SameText(m_last_failed_signature, signature) then
+            begin
+                m_last_failed_signature := '';
+            end;
         end
         else
         begin
@@ -456,6 +507,7 @@ begin
             begin
                 m_last_error := error_text;
             end;
+            m_last_failed_signature := signature;
         end;
 
         clear_pending_locked;
@@ -474,10 +526,23 @@ var
     prompt: string;
     max_suggestions: Integer;
     generation_tokens: Integer;
+    timeout_ms: Integer;
+    composition_len: Integer;
+    model_path_lower: string;
+    is_gpt_oss: Boolean;
+    retry_prompt: string;
+    retry_generated_text: string;
+    retry_error_text: string;
+    retry_tokens: Integer;
+    retry_timeout_ms: Integer;
     candidates: TncCandidateList;
     success: Boolean;
     saved_mask: TFPUExceptionMask;
     raw_tail: string;
+    request_pinyin: string;
+    use_left_context: Boolean;
+    request_signature_log: string;
+    needs_retry_due_length: Boolean;
 begin
     if not m_ready then
     begin
@@ -496,24 +561,123 @@ begin
 
     max_suggestions := nc_ai_clamp_int(request.max_suggestions, 1, 15);
     generation_tokens := nc_ai_get_generation_tokens(max_suggestions);
+    composition_len := Length(nc_ai_sanitize_single_line(request.context.composition_text));
+    model_path_lower := LowerCase(m_bridge.loaded_model_path);
+    is_gpt_oss := Pos('gpt-oss', model_path_lower) > 0;
+    if composition_len >= 10 then
+    begin
+        generation_tokens := Max(generation_tokens, 128);
+    end;
+    if composition_len >= 14 then
+    begin
+        generation_tokens := Max(generation_tokens, 160);
+    end;
+    if is_gpt_oss and (composition_len >= 10) then
+    begin
+        generation_tokens := Max(generation_tokens, 160);
+    end;
+    if is_gpt_oss and (composition_len >= 14) then
+    begin
+        generation_tokens := Max(generation_tokens, 192);
+    end;
+    generation_tokens := nc_ai_clamp_int(generation_tokens, 16, 192);
+    timeout_ms := effective_timeout_ms(request.timeout_ms);
+    if is_gpt_oss then
+    begin
+        timeout_ms := Max(timeout_ms, 1800);
+    end;
+    if composition_len >= 10 then
+    begin
+        timeout_ms := Max(timeout_ms, 2400);
+    end;
+    if composition_len >= 14 then
+    begin
+        timeout_ms := Max(timeout_ms, 3200);
+    end;
+    if is_gpt_oss and (composition_len >= 10) then
+    begin
+        timeout_ms := Max(timeout_ms, 3000);
+    end;
+    if is_gpt_oss and (composition_len >= 14) then
+    begin
+        timeout_ms := Max(timeout_ms, 3800);
+    end;
+    request_pinyin := nc_ai_sanitize_single_line(request.context.composition_text);
+    request_signature_log := StringReplace(signature, #1, '|', [rfReplaceAll]);
+    use_left_context := nc_ai_should_use_left_context(request_pinyin) and
+        (nc_ai_sanitize_single_line(request.context.left_context) <> '');
+    log_debug(Format('AI request signature=%s pinyin=%s len=%d left_ctx_used=%d',
+        [request_signature_log, request_pinyin, Length(request_pinyin), Ord(use_left_context)]));
+
     prompt := nc_ai_build_prompt(request);
     success := False;
     generated_text := '';
     error_text := '';
     SetLength(candidates, 0);
+    needs_retry_due_length := False;
 
     saved_mask := GetExceptionMask;
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
     try
         try
-            if m_bridge.generate_text(prompt, generation_tokens, effective_timeout_ms(request.timeout_ms), generated_text, error_text) then
+            if m_bridge.generate_text(prompt, generation_tokens, timeout_ms, generated_text, error_text) then
             begin
                 nc_ai_parse_generated_candidates(generated_text, request.context.composition_text, max_suggestions,
                     candidates);
                 success := Length(candidates) > 0;
+                if success and (not nc_ai_has_syllable_length_match(request.context.composition_text, candidates)) then
+                begin
+                    success := False;
+                    needs_retry_due_length := True;
+                    SetLength(candidates, 0);
+                end;
                 if not success then
                 begin
-                    error_text := 'llama output has no usable candidates';
+                    // Retry once when model output is likely invalid:
+                    // - non-Chinese text (for example pinyin-only lines)
+                    // - Chinese output that cannot match pinyin syllable length
+                    if (generated_text <> '') and ((not nc_ai_contains_cjk(generated_text)) or needs_retry_due_length) then
+                    begin
+                        if needs_retry_due_length then
+                        begin
+                            log_debug('AI retry triggered (syllable-length mismatch), signature=' + request_signature_log);
+                        end
+                        else
+                        begin
+                            log_debug('AI retry triggered (non-cjk output), signature=' + request_signature_log);
+                        end;
+                        retry_prompt := nc_ai_build_retry_prompt(request);
+                        retry_tokens := Max(generation_tokens, 160);
+                        retry_timeout_ms := Max(timeout_ms, 2600);
+                        retry_generated_text := '';
+                        retry_error_text := '';
+                        if m_bridge.generate_text(retry_prompt, retry_tokens, retry_timeout_ms, retry_generated_text,
+                            retry_error_text) then
+                        begin
+                            // Keep the last successful decode output for logging/diagnosis.
+                            generated_text := retry_generated_text;
+                            nc_ai_parse_generated_candidates(retry_generated_text, request.context.composition_text,
+                                max_suggestions, candidates);
+                            success := (Length(candidates) > 0) and
+                                nc_ai_has_syllable_length_match(request.context.composition_text, candidates);
+                            if success then
+                            begin
+                                // generated_text already updated above
+                            end
+                            else
+                            begin
+                                error_text := 'llama output has no usable candidates';
+                            end;
+                        end
+                        else
+                        begin
+                            error_text := retry_error_text;
+                        end;
+                    end
+                    else
+                    begin
+                        error_text := 'llama output has no usable candidates';
+                    end;
                 end;
             end;
         except
@@ -524,6 +688,12 @@ begin
         end;
     finally
         SetExceptionMask(saved_mask);
+    end;
+
+    if not is_current_version(version) then
+    begin
+        log_debug('AI generation discarded: stale request');
+        Exit;
     end;
 
     if not success then
@@ -540,7 +710,7 @@ begin
     else
     begin
         log_debug(Format('AI generation success signature=%s count=%d top=%s',
-            [signature, Length(candidates), nc_ai_tail_text(candidates[0].text, 64)]));
+            [request_signature_log, Length(candidates), nc_ai_tail_text(candidates[0].text, 64)]));
         raw_tail := StringReplace(generated_text, #13, '', [rfReplaceAll]);
         raw_tail := StringReplace(raw_tail, #10, '\n', [rfReplaceAll]);
         raw_tail := nc_ai_tail_text(raw_tail, 180);
@@ -563,6 +733,7 @@ end;
 function TncAiLlamaProvider.request_suggestions(const request: TncAiRequest; out response: TncAiResponse): Boolean;
 var
     signature: string;
+    should_abort: Boolean;
 begin
     response.success := False;
     SetLength(response.candidates, 0);
@@ -577,9 +748,17 @@ begin
     begin
         m_lock.Acquire;
         try
+            should_abort := m_has_pending;
             clear_pending_locked;
+            m_last_failed_signature := '';
+            m_last_suppressed_signature := '';
+            m_last_suppressed_tick := 0;
         finally
             m_lock.Release;
+        end;
+        if should_abort and (m_bridge <> nil) then
+        begin
+            m_bridge.request_abort;
         end;
         Exit;
     end;

@@ -372,6 +372,9 @@ begin
 end;
 
 procedure TncEngine.reset;
+var
+    ai_request: TncAiRequest;
+    ai_response: TncAiResponse;
 begin
     m_composition_text := '';
     m_pending_commit_text := '';
@@ -386,6 +389,17 @@ begin
     if m_confirmed_segments <> nil then
     begin
         m_confirmed_segments.Clear;
+    end;
+
+    if m_ai_provider <> nil then
+    begin
+        ai_request.context.composition_text := '';
+        ai_request.context.left_context := '';
+        ai_request.max_suggestions := 0;
+        ai_request.timeout_ms := 0;
+        SetLength(ai_response.candidates, 0);
+        ai_response.success := False;
+        m_ai_provider.request_suggestions(ai_request, ai_response);
     end;
 end;
 
@@ -781,6 +795,33 @@ begin
             end;
         end;
 
+        m_page_index := 0;
+        m_selected_index := 0;
+        Exit;
+    end;
+
+    if m_config.enable_ai and get_ai_candidates(ai_candidates) then
+    begin
+        clear_candidate_comments(ai_candidates);
+        sort_candidates(ai_candidates);
+        limit := get_total_candidate_limit;
+        if m_config.enable_segment_candidates then
+        begin
+            if get_candidate_limit * c_candidate_total_expand_factor > limit then
+            begin
+                limit := get_candidate_limit * c_candidate_total_expand_factor;
+            end;
+            if limit > c_candidate_total_limit_max then
+            begin
+                limit := c_candidate_total_limit_max;
+            end;
+        end;
+        if Length(ai_candidates) > limit then
+        begin
+            SetLength(ai_candidates, limit);
+        end;
+
+        m_candidates := ai_candidates;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -1439,7 +1480,7 @@ end;
 function TncEngine.build_segment_candidates(out out_candidates: TncCandidateList): Boolean;
 const
     c_segment_max_per_segment = 256;
-    c_segment_max_syllables = 6;
+    c_segment_max_syllables = 24;
     c_segment_word_max_syllables = 4;
     c_segment_partial_penalty = 120;
     c_segment_prefix_bonus = 80;

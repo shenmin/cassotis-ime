@@ -66,6 +66,25 @@ function get_processes_using_dll([string]$dll_name)
 Write-Host "Stopping ctfmon..."
 Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue
 
+$host_process_name = 'cassotis_ime_host'
+Write-Host ("Stopping host process: {0}" -f $host_process_name)
+$host_procs = Get-Process -Name $host_process_name -ErrorAction SilentlyContinue
+if ($host_procs -ne $null -and $host_procs.Count -gt 0)
+{
+    foreach ($host_proc in $host_procs)
+    {
+        try
+        {
+            Stop-Process -Id $host_proc.Id -Force -ErrorAction Stop
+            Write-Host ("Stopped {0} (PID {1})" -f $host_proc.ProcessName, $host_proc.Id)
+        }
+        catch
+        {
+            Write-Host ("Failed to stop {0} (PID {1})" -f $host_proc.ProcessName, $host_proc.Id)
+        }
+    }
+}
+
 $dll_names = @()
 $dll_name = [System.IO.Path]::GetFileName($dll_path)
 if ($dll_name -ne $null -and $dll_name -ne '')
