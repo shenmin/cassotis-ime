@@ -167,6 +167,7 @@ type
         function initialize(const config: TncEngineConfig; out error_text: string): Boolean;
         function load_model(const model_path: string; out error_text: string): Boolean;
         function generate_text(const prompt: string; const max_tokens: Integer; const timeout_ms: Integer;
+            const temperature: Double;
             out generated_text: string; out error_text: string): Boolean;
         procedure request_abort;
         function is_model_ready: Boolean;
@@ -976,7 +977,7 @@ begin
 end;
 
 function TncLlamaBridge.generate_text(const prompt: string; const max_tokens: Integer; const timeout_ms: Integer;
-    out generated_text: string; out error_text: string): Boolean;
+    const temperature: Double; out generated_text: string; out error_text: string): Boolean;
 var
     prompt_tokens: TArray<TllamaToken>;
     prompt_batch: TllamaBatch;
@@ -1038,7 +1039,18 @@ begin
         Exit;
     end;
 
-    sampler := m_sampler_init_greedy;
+    // Temperature <= 0 means deterministic decoding (equivalent to temp=0).
+    // Current bridge path uses greedy sampler for this mode.
+    if temperature <= 0 then
+    begin
+        sampler := m_sampler_init_greedy;
+    end
+    else
+    begin
+        // Non-zero temperature is not enabled in this bridge path yet.
+        // Fall back to deterministic decoding to keep IME behavior stable.
+        sampler := m_sampler_init_greedy;
+    end;
     if sampler = nil then
     begin
         error_text := 'llama_sampler_init_greedy failed';

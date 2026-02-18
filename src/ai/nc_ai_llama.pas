@@ -84,6 +84,7 @@ const
     c_default_ai_timeout_ms = 1200;
     c_worker_shutdown_timeout_ms = 3000;
     c_suppressed_log_interval_ms = 3000;
+    c_ai_temperature = 0.0;
 
 procedure copy_candidate_list(const source: TncCandidateList; out dest: TncCandidateList);
 var
@@ -353,17 +354,28 @@ end;
 procedure TncAiLlamaProvider.schedule_request(const request: TncAiRequest; const signature: string);
 var
     should_abort: Boolean;
+    should_exit: Boolean;
     readable_signature: string;
     readable_pending_signature: string;
     now_tick: UInt64;
 begin
     should_abort := False;
+    should_exit := False;
     readable_signature := StringReplace(signature, #1, '|', [rfReplaceAll]);
     m_lock.Acquire;
     try
         now_tick := GetTickCount64;
         if (m_last_failed_signature <> '') and SameText(m_last_failed_signature, signature) then
         begin
+            // Suppress immediate retries for a known-bad signature.
+            // Crucially, clear/abort any older pending request to avoid stale
+            // generations (for example: pending "wenjia" running after current
+            // input already became "wenjian").
+            if m_has_pending then
+            begin
+                should_abort := True;
+                clear_pending_locked;
+            end;
             if (not SameText(m_last_suppressed_signature, signature)) or
                 ((now_tick - m_last_suppressed_tick) >= UInt64(c_suppressed_log_interval_ms)) then
             begin
@@ -371,34 +383,38 @@ begin
                 m_last_suppressed_signature := signature;
                 m_last_suppressed_tick := now_tick;
             end;
-            Exit;
-        end;
-
-        if m_has_pending and SameText(m_pending_signature, signature) then
-        begin
-            Exit;
-        end;
-
-        m_last_suppressed_signature := '';
-        m_last_suppressed_tick := 0;
-
-        if m_has_pending then
-        begin
-            // Replace the in-flight request with a newer one; abort current generation asap.
-            should_abort := True;
-            readable_pending_signature := StringReplace(m_pending_signature, #1, '|', [rfReplaceAll]);
-            log_debug('AI schedule replace old=' + readable_pending_signature + ' new=' + readable_signature);
+            should_exit := True;
         end
         else
         begin
-            log_debug('AI schedule new signature=' + readable_signature);
-        end;
+            if m_has_pending and SameText(m_pending_signature, signature) then
+            begin
+                should_exit := True;
+            end
+            else
+            begin
+                m_last_suppressed_signature := '';
+                m_last_suppressed_tick := 0;
 
-        m_pending_request := request;
-        m_pending_signature := signature;
-        Inc(m_pending_version);
-        m_pending_tick := GetTickCount64;
-        m_has_pending := True;
+                if m_has_pending then
+                begin
+                    // Replace the in-flight request with a newer one; abort current generation asap.
+                    should_abort := True;
+                    readable_pending_signature := StringReplace(m_pending_signature, #1, '|', [rfReplaceAll]);
+                    log_debug('AI schedule replace old=' + readable_pending_signature + ' new=' + readable_signature);
+                end
+                else
+                begin
+                    log_debug('AI schedule new signature=' + readable_signature);
+                end;
+
+                m_pending_request := request;
+                m_pending_signature := signature;
+                Inc(m_pending_version);
+                m_pending_tick := GetTickCount64;
+                m_has_pending := True;
+            end;
+        end;
     finally
         m_lock.Release;
     end;
@@ -406,6 +422,10 @@ begin
     if should_abort and (m_bridge <> nil) then
     begin
         m_bridge.request_abort;
+    end;
+    if should_exit then
+    begin
+        Exit;
     end;
 end;
 
@@ -606,8 +626,8 @@ begin
     request_signature_log := StringReplace(signature, #1, '|', [rfReplaceAll]);
     use_left_context := nc_ai_should_use_left_context(request_pinyin) and
         (nc_ai_sanitize_single_line(request.context.left_context) <> '');
-    log_debug(Format('AI request signature=%s pinyin=%s len=%d left_ctx_used=%d',
-        [request_signature_log, request_pinyin, Length(request_pinyin), Ord(use_left_context)]));
+    log_debug(Format('AI request signature=%s pinyin=%s len=%d left_ctx_used=%d temp=%.1f',
+        [request_signature_log, request_pinyin, Length(request_pinyin), Ord(use_left_context), c_ai_temperature]));
 
     prompt := nc_ai_build_prompt(request);
     success := False;
@@ -620,7 +640,8 @@ begin
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
     try
         try
-            if m_bridge.generate_text(prompt, generation_tokens, timeout_ms, generated_text, error_text) then
+            if m_bridge.generate_text(prompt, generation_tokens, timeout_ms, c_ai_temperature, generated_text,
+                error_text) then
             begin
                 nc_ai_parse_generated_candidates(generated_text, request.context.composition_text, max_suggestions,
                     candidates);
@@ -651,8 +672,8 @@ begin
                         retry_timeout_ms := Max(timeout_ms, 2600);
                         retry_generated_text := '';
                         retry_error_text := '';
-                        if m_bridge.generate_text(retry_prompt, retry_tokens, retry_timeout_ms, retry_generated_text,
-                            retry_error_text) then
+                        if m_bridge.generate_text(retry_prompt, retry_tokens, retry_timeout_ms, c_ai_temperature,
+                            retry_generated_text, retry_error_text) then
                         begin
                             // Keep the last successful decode output for logging/diagnosis.
                             generated_text := retry_generated_text;
@@ -734,10 +755,13 @@ function TncAiLlamaProvider.request_suggestions(const request: TncAiRequest; out
 var
     signature: string;
     should_abort: Boolean;
+    readable_signature: string;
+    readable_pending_signature: string;
 begin
     response.success := False;
     SetLength(response.candidates, 0);
     Result := False;
+    should_abort := False;
 
     if not m_ready then
     begin
@@ -766,6 +790,27 @@ begin
     signature := build_request_signature(request);
     if try_get_cached_response(signature, response) then
     begin
+        // Cache hit can happen while an older request is still pending.
+        // Clear stale pending work to avoid late, mismatched generations
+        // (for example: pending "wenjia" after current input is "wenjian").
+        m_lock.Acquire;
+        try
+            if m_has_pending and (not SameText(m_pending_signature, signature)) then
+            begin
+                should_abort := True;
+                readable_signature := StringReplace(signature, #1, '|', [rfReplaceAll]);
+                readable_pending_signature := StringReplace(m_pending_signature, #1, '|', [rfReplaceAll]);
+                log_debug('AI cache hit clear stale pending old=' + readable_pending_signature + ' keep=' +
+                    readable_signature);
+                clear_pending_locked;
+            end;
+        finally
+            m_lock.Release;
+        end;
+        if should_abort and (m_bridge <> nil) then
+        begin
+            m_bridge.request_abort;
+        end;
         Result := True;
         Exit;
     end;
