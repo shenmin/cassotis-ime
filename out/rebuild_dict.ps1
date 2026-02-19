@@ -1,8 +1,10 @@
 param(
-    [switch]$NoRestartHost
+    [switch]$NoRestartHost,
+    [switch]$NoAutoDownloadUnihan
 )
 
 $ErrorActionPreference = 'Stop'
+$unihan_zip_url = 'https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip'
 
 function require_path {
     param(
@@ -167,6 +169,132 @@ function remove_file_with_retry {
     }
 }
 
+function ensure_directory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$path
+    )
+
+    if (-not (Test-Path -LiteralPath $path)) {
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+    }
+}
+
+function download_file {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$url,
+        [Parameter(Mandatory = $true)]
+        [string]$output_path
+    )
+
+    try {
+        $tls12 = [System.Net.SecurityProtocolType]::Tls12
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor $tls12
+    }
+    catch {
+    }
+
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $output_path -MaximumRedirection 5 -TimeoutSec 180
+        return
+    }
+    catch {
+        $curl = Get-Command -Name 'curl.exe' -ErrorAction SilentlyContinue
+        if ($null -eq $curl) {
+            throw
+        }
+
+        & $curl.Source '-L' '--fail' '--silent' '--show-error' $url '-o' $output_path
+        if ($LASTEXITCODE -ne 0) {
+            throw "curl download failed with exit code $LASTEXITCODE"
+        }
+    }
+}
+
+function resolve_unihan_entry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$extract_dir,
+        [Parameter(Mandatory = $true)]
+        [string]$name
+    )
+
+    $item = Get-ChildItem -LiteralPath $extract_dir -Recurse -File -Filter $name | Select-Object -First 1
+    if ($null -eq $item) {
+        return $null
+    }
+
+    return $item.FullName
+}
+
+function ensure_unihan_sources {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$unihan_dir,
+        [Parameter(Mandatory = $true)]
+        [string]$unihan_readings,
+        [Parameter(Mandatory = $true)]
+        [string]$unihan_variants,
+        [Parameter(Mandatory = $true)]
+        [string]$unihan_dictlike,
+        [Parameter(Mandatory = $true)]
+        [string]$tmp_root,
+        [switch]$no_auto_download
+    )
+
+    $missing_required = @()
+    if (-not (Test-Path -LiteralPath $unihan_readings)) {
+        $missing_required += 'Unihan_Readings.txt'
+    }
+    if (-not (Test-Path -LiteralPath $unihan_variants)) {
+        $missing_required += 'Unihan_Variants.txt'
+    }
+
+    if ($missing_required.Count -eq 0) {
+        return
+    }
+
+    if ($no_auto_download) {
+        throw ("Missing Unihan source file(s): {0}`nExpected under: {1}`nAuto download is disabled by -NoAutoDownloadUnihan." -f
+            ($missing_required -join ', '), $unihan_dir)
+    }
+
+    ensure_directory $unihan_dir
+    ensure_directory $tmp_root
+    $download_dir = Join-Path $tmp_root 'unihan_download'
+    $extract_dir = Join-Path $tmp_root 'unihan_extract'
+    ensure_directory $download_dir
+    if (Test-Path -LiteralPath $extract_dir) {
+        Remove-Item -LiteralPath $extract_dir -Recurse -Force
+    }
+    ensure_directory $extract_dir
+
+    $zip_path = Join-Path $download_dir 'Unihan.zip'
+    Write-Host ("Unihan source files missing, downloading from {0}" -f $unihan_zip_url)
+    download_file -url $unihan_zip_url -output_path $zip_path
+
+    Write-Host ("Extracting Unihan package: {0}" -f $zip_path)
+    Expand-Archive -LiteralPath $zip_path -DestinationPath $extract_dir -Force
+
+    $required_names = @('Unihan_Readings.txt', 'Unihan_Variants.txt')
+    $optional_names = @('Unihan_DictionaryLikeData.txt')
+    foreach ($name in $required_names + $optional_names) {
+        $src = resolve_unihan_entry -extract_dir $extract_dir -name $name
+        if ($null -eq $src) {
+            if ($required_names -contains $name) {
+                throw "Downloaded Unihan package does not contain required file: $name"
+            }
+            continue
+        }
+
+        $dest = Join-Path $unihan_dir $name
+        Copy-Item -LiteralPath $src -Destination $dest -Force
+    }
+
+    Write-Host ("Unihan sources prepared under: {0}" -f $unihan_dir)
+}
+
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script_dir
 
@@ -185,6 +313,19 @@ $unihan_dictlike = Join-Path $script_dir '..\data\lexicon\unihan\Unihan_Dictiona
 $unihan_output_all = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan_all.txt'
 $unihan_output_sc = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan.txt'
 $unihan_output_tc = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan_tc.txt'
+$tmp_build_root = Join-Path $script_dir '_tmp_build'
+
+ensure_directory $tmp_build_root
+ensure_directory (Split-Path -Parent $base_db_sc_path)
+ensure_directory (Split-Path -Parent $base_db_tc_path)
+ensure_directory (Split-Path -Parent $unihan_output_all)
+ensure_unihan_sources `
+    -unihan_dir (Split-Path -Parent $unihan_readings) `
+    -unihan_readings $unihan_readings `
+    -unihan_variants $unihan_variants `
+    -unihan_dictlike $unihan_dictlike `
+    -tmp_root $tmp_build_root `
+    -no_auto_download:$NoAutoDownloadUnihan
 
 require_path $dict_init 'cassotis_ime_dict_init.exe'
 require_path $unihan_import 'cassotis_ime_unihan_import.exe'

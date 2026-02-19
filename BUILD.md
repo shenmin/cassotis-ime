@@ -34,12 +34,13 @@ Build these projects:
 - `tools/cassotis_ime_variant_convert.dproj` (Win64)
 
 ## Dictionary Source Files
-`rebuild_dict.ps1` requires Unihan source files under `data/lexicon/unihan/`:
+`rebuild_dict.ps1` needs Unihan source files under `data/lexicon/unihan/`:
 - `Unihan_Readings.txt` (required)
 - `Unihan_Variants.txt` (required)
 - `Unihan_DictionaryLikeData.txt` (optional)
 
-If the required files are missing, download Unihan data from Unicode and place them in that directory first.
+By default, `rebuild_dict.ps1` auto-downloads `Unihan.zip` from Unicode when required files are missing.
+If you want offline-only behavior, pass `-NoAutoDownloadUnihan` and prepare these files manually.
 
 ## Register and Initialize
 Run from `out/` after build:

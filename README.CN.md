@@ -68,12 +68,15 @@ Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中�
 - 源数据位于 `data/lexicon/unihan/`
 - 生成数据库位于 `out/data/`（如 `dict_sc.db`、`dict_tc.db`）
 - 用户词库默认位于 `out/config/user_dict.db`
+- 若缺少必须的 Unihan 文件，`rebuild_dict.ps1` 默认会自动从 Unicode 下载
 
 词库重建入口：
 
 ```powershell
 .\rebuild_dict.ps1
 ```
+
+如果需要纯离线执行，可使用：`.\rebuild_dict.ps1 -NoAutoDownloadUnihan`。
 
 ## 配置
 默认配置文件：

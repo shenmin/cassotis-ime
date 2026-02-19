@@ -68,12 +68,15 @@ Current base dictionary pipeline is Unihan-based:
 - source files under `data/lexicon/unihan/`
 - generated DB files under `out/data/` (for example `dict_sc.db`, `dict_tc.db`)
 - user dictionary defaults to `out/config/user_dict.db`
+- if required Unihan files are missing, `rebuild_dict.ps1` auto-downloads from Unicode by default
 
 Main rebuild entry:
 
 ```powershell
 .\rebuild_dict.ps1
 ```
+
+Use `.\rebuild_dict.ps1 -NoAutoDownloadUnihan` if you require offline-only execution.
 
 ## Configuration
 Default config file:
