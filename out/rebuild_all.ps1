@@ -846,7 +846,6 @@ function copy_sqlite_binaries
 {
     $sqlite64_source = Join-Path $root_dir 'third_party\sqlite\win64\sqlite3.dll'
     $sqlite64_target = Join-Path $script_dir 'sqlite3_64.dll'
-    $sqlite32_target = Join-Path $script_dir 'sqlite3_32.dll'
 
     if (Test-Path -LiteralPath $sqlite64_source)
     {
@@ -855,11 +854,6 @@ function copy_sqlite_binaries
     else
     {
         Write-Host "Warning: sqlite Win64 binary not found: $sqlite64_source"
-    }
-
-    if (Test-Path -LiteralPath $sqlite32_target)
-    {
-        remove_item_with_retry $sqlite32_target $false $false | Out-Null
     }
 }
 

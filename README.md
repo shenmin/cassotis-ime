@@ -51,7 +51,7 @@ Without TSF DLL + host process, IME input will not work.
 Prerequisites:
 - Windows 10/11
 - Delphi 10.4
-- SQLite runtime DLL (`sqlite3_64.dll`; `sqlite3_32.dll` is optional for manual Win32 debugging)
+- SQLite runtime DLL (`sqlite3_64.dll`)
 
 From `out/`:
 

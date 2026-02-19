@@ -51,7 +51,7 @@ Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中�
 前置要求：
 - Windows 10/11
 - Delphi 10.4
-- SQLite 运行库（`sqlite3_64.dll`；`sqlite3_32.dll` 仅手动调试 Win32 组件时可选）
+- SQLite 运行库（`sqlite3_64.dll`）
 
 在 `out/` 目录执行：
 

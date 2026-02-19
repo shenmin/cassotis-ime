@@ -140,13 +140,8 @@ begin
     module_dir := get_module_directory;
     if module_dir <> '' then
     begin
-{$IFDEF WIN32}
-        add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite3_32.dll');
-        add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite\win32\sqlite3.dll');
-{$ELSE}
         add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite3_64.dll');
         add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite\win64\sqlite3.dll');
-{$ENDIF}
         add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite3.dll');
     end;
 
