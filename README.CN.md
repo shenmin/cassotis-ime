@@ -1,7 +1,7 @@
 # Cassotis IME（言泉输入法）
 
 <p align="center">
-  <img src="cassotis_ime_yanquan.png" alt="Cassotis IME logo" width="180">
+  <img src="cassotis_ime_yanquan.png" alt="Cassotis IME logo" width="280">
 </p>
 
 [English](README.md) | 简体中文
