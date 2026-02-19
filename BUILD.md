@@ -172,14 +172,52 @@ Configure IDE output directories to `out/`. The TSF server Win32 build output sh
 
 ## Optional: Local LLM Runtime (llama.cpp)
 
-To enable local GGUF model inference for AI-assisted candidate ranking:
+To enable local GGUF model inference for AI-assisted candidate ranking.
 
-1. Build the llama.cpp runtime DLLs:
-   ```powershell
-   .\build_llama_cpp.ps1
-   ```
-2. Place GGUF model files under `out/models/`
-3. Configure the `[ai]` section in `out/config/cassotis_ime.ini`
+### Additional prerequisites
+
+Both CPU and CUDA builds require **Visual Studio** (any recent version) with the C++ workload installed. The script locates it automatically via `vswhere.exe`.
+
+For the CUDA backend, **CUDA Toolkit 12.x** is also required. The script resolves it in the following order:
+1. `$env:CUDA_PATH` environment variable
+2. Default install path: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\<version>`
+3. The `-cuda_root` parameter
+
+### CPU build (Win64 + Win32)
+
+```powershell
+.\build_llama_cpp.ps1
+```
+
+Builds for both Win64 and Win32. Output: `out/llama/win64/` and `out/llama/win32/`.
+
+### CUDA build (Win64 only)
+
+```powershell
+.\build_llama_cpp.ps1 -backend cuda
+```
+
+CUDA is only supported on Win64. Output: `out/llama/win64-cuda/`. In addition to the llama DLLs, the script copies the required CUDA runtime DLLs (`cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, `nvrtc64_*.dll`) from the CUDA Toolkit into the output directory.
+
+To specify a non-default CUDA Toolkit path:
+
+```powershell
+.\build_llama_cpp.ps1 -backend cuda -cuda_root "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+```
+
+### Additional options
+
+| Parameter | Description |
+|-----------|-------------|
+| `-tag <tag>` | llama.cpp git tag to clone (default: `b7951`) |
+| `-arch win64\|win32\|all` | Target architecture (default: `all`; CUDA forces `win64`) |
+| `-force_clone` | Re-clone the llama.cpp source tree |
+| `-force_reconfigure` | Clean CMake build directory and reconfigure |
+
+### After building
+
+1. Place model files (`.gguf`) under `out/models/`
+2. Configure the `[ai]` section in `out/config/cassotis_ime.ini`
 
 ---
 
