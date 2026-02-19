@@ -2256,7 +2256,7 @@ begin
                     Result := True;
                 end;
             end;
-        VK_SPACE, VK_RETURN:
+        VK_SPACE:
             begin
                 if m_composition_text <> '' then
                 begin
@@ -2264,6 +2264,20 @@ begin
                     begin
                         Result := apply_candidate_selection(candidate);
                     end;
+                end
+                else if m_confirmed_text <> '' then
+                begin
+                    set_pending_commit('');
+                    Result := True;
+                end;
+            end;
+        VK_RETURN:
+            begin
+                if m_composition_text <> '' then
+                begin
+                    // Enter should commit raw input text instead of selecting candidate.
+                    set_pending_commit(m_composition_text);
+                    Result := True;
                 end
                 else if m_confirmed_text <> '' then
                 begin
