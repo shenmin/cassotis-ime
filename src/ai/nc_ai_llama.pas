@@ -48,6 +48,7 @@ type
         m_cached_candidates: TncCandidateList;
         m_cached_success: Boolean;
         m_last_failed_signature: string;
+        m_last_failed_tick: UInt64;
         m_last_suppressed_signature: string;
         m_last_suppressed_tick: UInt64;
         procedure init_logger;
@@ -84,6 +85,9 @@ const
     c_default_ai_timeout_ms = 1200;
     c_worker_shutdown_timeout_ms = 3000;
     c_suppressed_log_interval_ms = 3000;
+    c_failed_retry_cooldown_ms = 1500;
+    c_large_model_size_threshold = Int64(16) * 1024 * 1024 * 1024;
+    c_huge_model_size_threshold = Int64(24) * 1024 * 1024 * 1024;
     c_ai_temperature = 0.0;
 
 procedure copy_candidate_list(const source: TncCandidateList; out dest: TncCandidateList);
@@ -94,6 +98,31 @@ begin
     for i := 0 to High(source) do
     begin
         dest[i] := source[i];
+    end;
+end;
+
+function try_get_file_size_bytes(const path: string; out size_bytes: Int64): Boolean;
+var
+    stream: TFileStream;
+begin
+    size_bytes := 0;
+    Result := False;
+
+    if (path = '') or (not FileExists(path)) then
+    begin
+        Exit;
+    end;
+
+    try
+        stream := TFileStream.Create(path, fmOpenRead or fmShareDenyNone);
+        try
+            size_bytes := stream.Size;
+            Result := True;
+        finally
+            stream.Free;
+        end;
+    except
+        Result := False;
     end;
 end;
 
@@ -129,6 +158,7 @@ begin
     SetLength(m_cached_candidates, 0);
     m_cached_success := False;
     m_last_failed_signature := '';
+    m_last_failed_tick := 0;
     m_last_suppressed_signature := '';
     m_last_suppressed_tick := 0;
 
@@ -367,6 +397,15 @@ begin
         now_tick := GetTickCount64;
         if (m_last_failed_signature <> '') and SameText(m_last_failed_signature, signature) then
         begin
+            if (m_last_failed_tick <> 0) and ((now_tick - m_last_failed_tick) >= UInt64(c_failed_retry_cooldown_ms)) then
+            begin
+                m_last_failed_signature := '';
+                m_last_failed_tick := 0;
+            end;
+        end;
+
+        if (m_last_failed_signature <> '') and SameText(m_last_failed_signature, signature) then
+        begin
             // Suppress immediate retries for a known-bad signature.
             // Crucially, clear/abort any older pending request to avoid stale
             // generations (for example: pending "wenjia" running after current
@@ -513,6 +552,7 @@ begin
             if SameText(m_last_failed_signature, signature) then
             begin
                 m_last_failed_signature := '';
+                m_last_failed_tick := 0;
             end;
         end
         else
@@ -528,6 +568,7 @@ begin
                 m_last_error := error_text;
             end;
             m_last_failed_signature := signature;
+            m_last_failed_tick := GetTickCount64;
         end;
 
         clear_pending_locked;
@@ -548,6 +589,7 @@ var
     generation_tokens: Integer;
     timeout_ms: Integer;
     composition_len: Integer;
+    model_size_bytes: Int64;
     model_path_lower: string;
     is_gpt_oss: Boolean;
     retry_prompt: string;
@@ -582,6 +624,11 @@ begin
     max_suggestions := nc_ai_clamp_int(request.max_suggestions, 1, 15);
     generation_tokens := nc_ai_get_generation_tokens(max_suggestions);
     composition_len := Length(nc_ai_sanitize_single_line(request.context.composition_text));
+    model_size_bytes := 0;
+    if not try_get_file_size_bytes(m_bridge.loaded_model_path, model_size_bytes) then
+    begin
+        model_size_bytes := 0;
+    end;
     model_path_lower := LowerCase(m_bridge.loaded_model_path);
     is_gpt_oss := Pos('gpt-oss', model_path_lower) > 0;
     if composition_len >= 10 then
@@ -621,6 +668,14 @@ begin
     if is_gpt_oss and (composition_len >= 14) then
     begin
         timeout_ms := Max(timeout_ms, 3800);
+    end;
+    if model_size_bytes >= c_large_model_size_threshold then
+    begin
+        timeout_ms := Max(timeout_ms, 5200);
+    end;
+    if model_size_bytes >= c_huge_model_size_threshold then
+    begin
+        timeout_ms := Max(timeout_ms, 7000);
     end;
     request_pinyin := nc_ai_sanitize_single_line(request.context.composition_text);
     request_signature_log := StringReplace(signature, #1, '|', [rfReplaceAll]);
@@ -775,6 +830,7 @@ begin
             should_abort := m_has_pending;
             clear_pending_locked;
             m_last_failed_signature := '';
+            m_last_failed_tick := 0;
             m_last_suppressed_signature := '';
             m_last_suppressed_tick := 0;
         finally

@@ -315,6 +315,12 @@ $unihan_output_sc = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan.tx
 $unihan_output_tc = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan_tc.txt'
 $tmp_build_root = Join-Path $script_dir '_tmp_build'
 
+require_path $dict_init 'cassotis_ime_dict_init.exe'
+require_path $unihan_import 'cassotis_ime_unihan_import.exe'
+require_path $variant_convert 'cassotis_ime_variant_convert.exe'
+require_path $check_unihan_readings 'check_unihan_readings.ps1'
+require_path $schema_path 'schema.sql'
+
 ensure_directory $tmp_build_root
 ensure_directory (Split-Path -Parent $base_db_sc_path)
 ensure_directory (Split-Path -Parent $base_db_tc_path)
@@ -327,11 +333,6 @@ ensure_unihan_sources `
     -tmp_root $tmp_build_root `
     -no_auto_download:$NoAutoDownloadUnihan
 
-require_path $dict_init 'cassotis_ime_dict_init.exe'
-require_path $unihan_import 'cassotis_ime_unihan_import.exe'
-require_path $variant_convert 'cassotis_ime_variant_convert.exe'
-require_path $check_unihan_readings 'check_unihan_readings.ps1'
-require_path $schema_path 'schema.sql'
 require_path $unihan_readings 'Unihan_Readings.txt'
 require_path $unihan_variants 'Unihan_Variants.txt'
 
