@@ -48,6 +48,89 @@ function run_cmd([string]$workdir, [string]$command_line)
     }
 }
 
+function normalize_compare_path([string]$path_value)
+{
+    if ([string]::IsNullOrWhiteSpace($path_value))
+    {
+        return ''
+    }
+
+    try
+    {
+        $path_value = resolve_path $path_value
+    }
+    catch
+    {
+    }
+
+    return $path_value.Replace('\', '/').TrimEnd('/').ToLowerInvariant()
+}
+
+function read_cmake_cache_value([string]$cache_path, [string]$pattern)
+{
+    if (-not (Test-Path -LiteralPath $cache_path))
+    {
+        return ''
+    }
+
+    $match = Select-String -LiteralPath $cache_path -Pattern $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $match)
+    {
+        return ''
+    }
+
+    if ($match.Matches.Count -le 0)
+    {
+        return ''
+    }
+
+    return $match.Matches[0].Groups[1].Value.Trim()
+}
+
+function cmake_cache_is_stale([string]$cache_path, [string]$expected_src_dir, [string]$expected_build_dir)
+{
+    if (-not (Test-Path -LiteralPath $cache_path))
+    {
+        return $false
+    }
+
+    $cached_src_dir = read_cmake_cache_value $cache_path '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$'
+    $cached_build_dir = read_cmake_cache_value $cache_path '^# For build in directory: (.+)$'
+    if (($cached_src_dir -eq '') -or ($cached_build_dir -eq ''))
+    {
+        return $true
+    }
+
+    $expected_src_norm = normalize_compare_path $expected_src_dir
+    $expected_build_norm = normalize_compare_path $expected_build_dir
+    $cached_src_norm = normalize_compare_path $cached_src_dir
+    $cached_build_norm = normalize_compare_path $cached_build_dir
+
+    return ($cached_src_norm -ne $expected_src_norm) -or ($cached_build_norm -ne $expected_build_norm)
+}
+
+function ensure_usable_build_dir([string]$build_dir, [string]$src_dir, [bool]$reconfigure)
+{
+    if (-not (Test-Path -LiteralPath $build_dir))
+    {
+        return
+    }
+
+    if ($reconfigure)
+    {
+        Write-Host "Removing build directory (force reconfigure): $build_dir"
+        Remove-Item -LiteralPath $build_dir -Recurse -Force
+        return
+    }
+
+    $cache_path = Join-Path $build_dir 'CMakeCache.txt'
+    if (cmake_cache_is_stale $cache_path $src_dir $build_dir)
+    {
+        Write-Host "Removing stale CMake cache directory: $build_dir"
+        Remove-Item -LiteralPath $build_dir -Recurse -Force
+    }
+}
+
 function resolve_vs_paths
 {
     $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
@@ -207,10 +290,7 @@ function build_one_arch(
     }
 
     $build_dir = Join-Path $src_dir $build_dir_name
-    if ($reconfigure -and (Test-Path -LiteralPath $build_dir))
-    {
-        Remove-Item -LiteralPath $build_dir -Recurse -Force
-    }
+    ensure_usable_build_dir $build_dir $src_dir $reconfigure
 
     $cmake_defs = @(
         "-DCMAKE_BUILD_TYPE=$cfg"
