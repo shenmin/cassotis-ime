@@ -884,13 +884,9 @@ $build_list = @(
     @{ path = 'tools\cassotis_ime_host.dproj'; exe = 'cassotis_ime_host.exe' },
     @{ path = 'tools\cassotis_ime_profile_reg.dproj'; exe = 'cassotis_ime_profile_reg.exe' },
     @{ path = 'tools\cassotis_ime_tray_host.dproj'; exe = 'cassotis_ime_tray_host.exe' },
-    @{ path = 'tools\cassotis_ime_candidate_preview.dproj'; exe = 'cassotis_ime_candidate_preview.exe' },
     @{ path = 'tools\cassotis_ime_dict_init.dproj'; exe = 'cassotis_ime_dict_init.exe' },
-    @{ path = 'tools\cassotis_ime_dict_probe.dproj'; exe = 'cassotis_ime_dict_probe.exe' },
-    @{ path = 'tools\cassotis_ime_perf_bench.dproj'; exe = 'cassotis_ime_perf_bench.exe' },
     @{ path = 'tools\cassotis_ime_unihan_import.dproj'; exe = 'cassotis_ime_unihan_import.exe' },
     @{ path = 'tools\cassotis_ime_variant_convert.dproj'; exe = 'cassotis_ime_variant_convert.exe' },
-    @{ path = 'tools\cassotis_ime_thuocl_import.dproj'; exe = 'cassotis_ime_thuocl_import.exe' }
 )
 
 foreach ($item in $build_list)

@@ -277,6 +277,7 @@ function nc_ai_try_fix_gbk_utf8_mojibake(const value: string; out fixed_value: s
 var
     bytes: TBytes;
     converted: string;
+    gbk_encoding: TEncoding;
 begin
     fixed_value := value;
     Result := False;
@@ -291,8 +292,13 @@ begin
     end;
 
     try
-        bytes := TEncoding.GetEncoding(936).GetBytes(value);
-        converted := nc_ai_decode_utf8_lossy(bytes);
+        gbk_encoding := TEncoding.GetEncoding(936);
+        try
+            bytes := gbk_encoding.GetBytes(value);
+            converted := nc_ai_decode_utf8_lossy(bytes);
+        finally
+            gbk_encoding.Free;
+        end;
     except
         Exit;
     end;
