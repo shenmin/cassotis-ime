@@ -1,5 +1,9 @@
 # Cassotis IME
 
+<p align="center">
+  <img src="cassotis_ime_yanquan.png" alt="Cassotis IME logo" width="180">
+</p>
+
 English | [简体中文](README.CN.md)
 
 > **Status:** Early stage — not yet practical for daily use. Prebuilt binaries are not provided.

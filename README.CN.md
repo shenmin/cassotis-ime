@@ -1,5 +1,9 @@
 # Cassotis IME（言泉输入法）
 
+<p align="center">
+  <img src="cassotis_ime_yanquan.png" alt="Cassotis IME logo" width="180">
+</p>
+
 [English](README.md) | 简体中文
 
 > **状态说明：** 项目仍处于非常早期阶段，暂不具备实际可用性；当前不提供预编译二进制文件。
