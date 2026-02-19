@@ -100,7 +100,7 @@ TSF DLL 与 host 进程均须存在，输入法才能正常工作。
 
 配置文件：`out/config/cassotis_ime.ini`
 
-详细配置项说明：[CONFIGURE.md](CONFIGURE.md)
+详细配置项说明：[CONFIGURE.CN.md](CONFIGURE.CN.md)
 
 重点配置项：
 
