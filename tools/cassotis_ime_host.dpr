@@ -25,6 +25,7 @@ uses
 var
     host_app: TncEngineHostApp;
     log_path: string;
+    log_enabled: Boolean;
     host_mutex: THandle;
 
 procedure append_log(const text: string); forward;
@@ -179,16 +180,26 @@ var
     module_dir: string;
 begin
     Result := '';
+    log_enabled := False;
     config_path := get_default_config_path;
     if config_path <> '' then
     begin
         config_manager := TncConfigManager.create(config_path);
         try
             log_config := config_manager.load_log_config;
-            Result := log_config.log_path;
+            log_enabled := log_config.enabled;
+            if log_enabled then
+            begin
+                Result := Trim(log_config.log_path);
+            end;
         finally
             config_manager.Free;
         end;
+    end;
+
+    if not log_enabled then
+    begin
+        Exit;
     end;
 
     if Result <> '' then
@@ -211,7 +222,7 @@ procedure append_log(const text: string);
 var
     line: string;
 begin
-    if log_path = '' then
+    if (not log_enabled) or (log_path = '') then
     begin
         Exit;
     end;
@@ -271,6 +282,7 @@ end;
 
 begin
     host_mutex := 0;
+    log_enabled := False;
     log_path := resolve_log_path;
     if not acquire_host_mutex then
     begin

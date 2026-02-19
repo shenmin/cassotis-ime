@@ -100,6 +100,8 @@ If the required Unihan source files are missing, `rebuild_dict.ps1` downloads th
 
 Config file: `out/config/cassotis_ime.ini`
 
+Detailed option reference: [CONFIGURE.md](CONFIGURE.md)
+
 Key options:
 
 - Simplified/traditional variant (`db_path_sc` / `db_path_tc`)

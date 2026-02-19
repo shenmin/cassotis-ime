@@ -314,7 +314,7 @@ begin
         try
             if m_logger <> nil then
             begin
-                if m_log_enabled or force_debug_output then
+                if m_log_enabled then
                 begin
                     case level of
                         ll_debug:

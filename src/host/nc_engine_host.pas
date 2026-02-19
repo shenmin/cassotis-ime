@@ -107,6 +107,7 @@ const
 
 var
     g_host_log_path: string = '';
+    g_host_log_enabled: Boolean = False;
     g_host_log_inited: Boolean = False;
 
 function get_host_log_path: string;
@@ -125,6 +126,7 @@ begin
 
     g_host_log_inited := True;
     g_host_log_path := '';
+    g_host_log_enabled := False;
 
     config_path := get_default_config_path;
     if config_path <> '' then
@@ -132,10 +134,20 @@ begin
         config_manager := TncConfigManager.create(config_path);
         try
             log_config := config_manager.load_log_config;
-            g_host_log_path := log_config.log_path;
+            g_host_log_enabled := log_config.enabled;
+            if g_host_log_enabled then
+            begin
+                g_host_log_path := Trim(log_config.log_path);
+            end;
         finally
             config_manager.Free;
         end;
+    end;
+
+    if not g_host_log_enabled then
+    begin
+        Result := '';
+        Exit;
     end;
 
     if g_host_log_path = '' then
