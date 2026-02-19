@@ -5,16 +5,8 @@
 - Delphi 10.4
 - SQLite runtime DLL: `out/sqlite3_64.dll`
 
-## Public Scope
-The public repository keeps the core IME runtime and dictionary pipeline.
-The following internal tools are intentionally excluded:
-- `cassotis_ime_perf_bench`
-- `cassotis_ime_candidate_preview`
-- `cassotis_ime_dict_probe`
-- `cassotis_ime_thuocl_import`
-
 ## Build Outputs
-The normal script output under `out/` includes:
+The normal build flow produces these binaries under `out/`:
 - `cassotis_ime_svr.dll` (Win64 TSF DLL)
 - `cassotis_ime_svr32.dll` (Win32 TSF DLL)
 - `cassotis_ime_host.exe` (Win64 host process)
@@ -41,6 +33,14 @@ Build these projects:
 - `tools/cassotis_ime_unihan_import.dproj` (Win64)
 - `tools/cassotis_ime_variant_convert.dproj` (Win64)
 
+## Dictionary Source Files
+`rebuild_dict.ps1` requires Unihan source files under `data/lexicon/unihan/`:
+- `Unihan_Readings.txt` (required)
+- `Unihan_Variants.txt` (required)
+- `Unihan_DictionaryLikeData.txt` (optional)
+
+If the required files are missing, download Unihan data from Unicode and place them in that directory first.
+
 ## Register and Initialize
 Run from `out/` after build:
 
@@ -53,6 +53,7 @@ Run from `out/` after build:
 ```powershell
 .\rebuild_dict.ps1
 ```
+`rebuild_dict.ps1` runs `check_unihan_readings.ps1` automatically before dictionary import.
 
 3. Restart TSF (optional but recommended after updates):
 ```powershell
@@ -68,7 +69,7 @@ Run from `out/` after build:
 ## Local LLM Runtime (Optional)
 If you plan to test local GGUF inference:
 - Build runtime DLLs with `out/build_llama_cpp.ps1`
-- Put model file under `out/models/`
+- Put model files under `out/models/`
 - Configure `out/config/cassotis_ime.ini` `[ai]` section
 
 ## Troubleshooting
