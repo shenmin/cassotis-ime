@@ -2,104 +2,120 @@
 
 English | [简体中文](README.CN.md)
 
-> Project status: This project is still in a very early stage and is not yet practical for daily use. Prebuilt binaries are not provided at this time.
+> **Status:** Early stage — not yet practical for daily use. Prebuilt binaries are not provided.
 
 Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework).
 
 ## Name Origin
-The English name **Cassotis** comes from the sacred spring inside the Temple of Delphi. Before delivering oracles, the priestess Pythia was said to drink from this spring to enter a prophetic state. The spring was regarded as the true source of prophecy and inspiration, where oracles were born, which resonates with the path from Delphi to human language.
 
-The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a prophetic spring, while also carrying the meaning of **言如泉涌** ("words flowing like a spring"), reflecting our expectation of a fluent and intelligent input experience.
+The English name **Cassotis** comes from the sacred spring inside the Temple of Delphi. Before delivering oracles, the priestess Pythia was said to drink from this spring to enter a prophetic state — the spring was regarded as the true source of prophecy and inspiration, resonating with the path from Delphi to human language.
 
-The project focus is:
-- build a stable TSF-based IME foundation,
-- keep the architecture modular (TSF DLL + host process + tools),
-- and explore AI/LLM-assisted input in later stages.
+The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a prophetic spring, while also evoking **言如泉涌** ("words flowing like a spring") — reflecting the goal of a fluent and intelligent input experience.
+
+Project focus:
+
+- Build a stable TSF-based IME foundation
+- Keep the architecture modular (TSF DLL + host process + tools)
+- Explore AI/LLM-assisted input in later stages
 
 ## Current Status
+
 - TSF text service pipeline is available (registration, activation, composition lifecycle).
-- TSF binaries support Win64 and Win32 (`svr.dll` / `svr32.dll`), while host process is Win64 only.
+- TSF binaries support Win64 and Win32 (`svr.dll` / `svr32.dll`); host process is Win64 only.
 - Candidate window, paging, selection, and commit flow are implemented.
 - Dictionary split is supported: simplified base DB, traditional base DB, and user DB.
 - Surrounding-text/context synchronization and key state synchronization are implemented.
 
 ## Architecture
-- `src/tsf`: TSF COM in-proc server (text service integration).
-- `src/engine`: Pinyin parsing, candidate generation, ranking, and user learning.
-- `src/host`: external host process for engine/UI orchestration.
-- `src/ui`: candidate window and tray UI.
-- `src/common`: config, logging, IPC, sqlite wrapper, shared utilities.
-- `tools`: registration, dictionary build/import/diagnostics, helper executables.
+
+| Module | Path | Description |
+|--------|------|-------------|
+| TSF COM server | `src/tsf/` | In-proc text service; handles composition lifecycle (Win64 + Win32) |
+| Input engine | `src/engine/` | Pinyin parsing, candidate generation, ranking, user learning |
+| Host process | `src/host/` | Win64 process for engine/UI orchestration over Named Pipe IPC |
+| UI | `src/ui/` | Candidate window and tray integration |
+| Common | `src/common/` | Config, logging, IPC, SQLite wrapper, shared types |
+| Tools | `tools/` | Registration, dictionary build/import/diagnostics executables |
 
 ## Repository Layout
-- `src/` source code
-- `tools/` utility projects and helper executables
-- `data/` schema and lexicon sources
-- `out/` scripts for build/register/rebuild/test
-- `tests/` unit/perf test projects
-- `third_party/` vendored third-party binaries/sources (for example sqlite runtime package files)
+
+```
+src/          source code
+tools/        utility projects (registration, dictionary build, diagnostics)
+data/         database schema and lexicon source data
+out/          compiled binaries and build/management scripts
+third_party/  vendored dependencies (SQLite runtime)
+```
 
 ## Key Binaries
-- `cassotis_ime_svr.dll` (Win64 TSF in-proc COM server)
-- `cassotis_ime_svr32.dll` (Win32 TSF in-proc COM server)
-- `cassotis_ime_host.exe` (Win64 host process)
-- `cassotis_ime_profile_reg.exe` (TSF profile/category registration utility)
 
-Without TSF DLL + host process, IME input will not work.
+All binaries are produced under `out/`:
 
-## Build and Run (Quick Start)
-Prerequisites:
-- Windows 10/11
-- Delphi 10.4
-- SQLite runtime DLL (`sqlite3_64.dll`)
+| Binary | Description |
+|--------|-------------|
+| `cassotis_ime_svr.dll` | Win64 TSF in-proc COM server |
+| `cassotis_ime_svr32.dll` | Win32 TSF in-proc COM server |
+| `cassotis_ime_host.exe` | Win64 host process |
+| `cassotis_ime_profile_reg.exe` | TSF profile/category registration utility |
 
-From `out/`:
+Both the TSF DLL and the host process must be present for the IME to work.
+
+## Quick Start
+
+Prerequisites: Windows 10/11, Delphi 10.4, an administrator PowerShell session.
+
+Run the following from `out/` in order:
 
 ```powershell
+# 1. Build all binaries
 .\rebuild_all.ps1
-.\register_tsf.ps1 -dll_path .\cassotis_ime_svr.dll
+
+# 2. Register TSF with Windows (requires administrator)
+.\register_tsf.ps1
+
+# 3. Build dictionaries
 .\rebuild_dict.ps1
+
+# 4. Start TSF
+.\start_tsf.ps1
 ```
 
-For full build details, see `BUILD.md`.
+For the complete build guide — including incremental updates, manual IDE builds, script parameters, and troubleshooting — see [BUILD.md](BUILD.md).
 
-## Dictionary Workflow
-Current base dictionary pipeline is Unihan-based:
-- source files under `data/lexicon/unihan/`
-- generated DB files under `out/data/` (for example `dict_sc.db`, `dict_tc.db`)
-- user dictionary defaults to `out/config/user_dict.db`
-- if required Unihan files are missing, `rebuild_dict.ps1` auto-downloads from Unicode by default
+## Dictionary
 
-Main rebuild entry:
+The base dictionary is derived from Unicode Unihan data:
 
-```powershell
-.\rebuild_dict.ps1
-```
+- Source files: `data/lexicon/unihan/`
+- Generated databases: `out/data/dict_sc.db` (simplified), `out/data/dict_tc.db` (traditional)
+- User dictionary: `out/config/user_dict.db`
 
-Use `.\rebuild_dict.ps1 -NoAutoDownloadUnihan` if you require offline-only execution.
+If the required Unihan source files are missing, `rebuild_dict.ps1` downloads them automatically from Unicode. Pass `-NoAutoDownloadUnihan` for offline-only execution.
 
 ## Configuration
-Default config file:
-- `out/config/cassotis_ime.ini`
 
-Important options include:
-- simplified/traditional variant switching
-- base DB paths (`db_path_sc`, `db_path_tc`)
-- user DB path (`user_db_path`)
-- logging and engine behavior toggles
+Config file: `out/config/cassotis_ime.ini`
+
+Key options:
+
+- Simplified/traditional variant (`db_path_sc` / `db_path_tc`)
+- User dictionary path (`user_db_path`)
+- Logging and engine behavior toggles
 
 ## Documentation
-- Chinese full documentation: `README.CN.md`
-- Build details: `BUILD.md`
-- Third-party notices: `THIRD_PARTY.md`
+
+- Build guide: [BUILD.md](BUILD.md)
+- Third-party notices: [THIRD_PARTY.md](THIRD_PARTY.md)
 
 ## License
-This project is licensed under GPL-3.0. See `LICENSE` for the full license text.
 
-Keep third-party notices and attribution files consistent with `THIRD_PARTY.md`.
+This project is licensed under GPL-3.0. See [LICENSE](LICENSE) for the full license text.
+
+Keep third-party notices consistent with [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Roadmap
-- improve candidate ranking quality and practical phrase coverage
-- improve user-dictionary quality control and tooling
-- extend compatibility matrix across editors/browsers/IDEs
-- evaluate local LLM (GGUF) assisted suggestion workflow
+
+- Improve candidate ranking quality and practical phrase coverage
+- Improve user-dictionary quality control and tooling
+- Extend compatibility across editors, browsers, and IDEs
+- Evaluate local LLM (GGUF) assisted suggestion workflow

@@ -859,7 +859,7 @@ function copy_sqlite_binaries
 
 stop_engine_host
 Write-Host ("[{0}] Start rebuild_all.ps1" -f (Get-Date -Format 'HH:mm:ss'))
-stop_processes_using_dll @('cassotis_ime_svr.dll', 'cassotis_ime_svr32.dll', 'nc_tsf_server.dll')
+stop_processes_using_dll @('cassotis_ime_svr.dll', 'cassotis_ime_svr32.dll')
 
 $tsf_project = 'src\tsf\cassotis_ime_svr.dproj'
 $tsf_win32_stage = Join-Path $win32_stage_dir 'cassotis_ime_svr.dll'
