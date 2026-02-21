@@ -150,7 +150,7 @@ function remove_item_with_retry([string]$path, [bool]$recurse = $false, [bool]$s
         throw "Failed to remove path: $path. $($last_error.Exception.Message)"
     }
 
-    Write-Host "Warning: cannot remove $path, continue building. $($last_error.Exception.Message)"
+    Write-Host "Info: cannot remove $path, continue building. $($last_error.Exception.Message)"
     return $false
 }
 
@@ -189,7 +189,7 @@ function move_item_with_retry([string]$source_path, [string]$target_path, [bool]
     {
         remove_item_with_retry $target_alt $false $false | Out-Null
         Move-Item -Force -LiteralPath $source_path -Destination $target_alt -ErrorAction Stop
-        Write-Host "Warning: cannot replace '$target_path'. New output saved to '$target_alt'."
+        Write-Host "Info: cannot replace '$target_path'. New output saved to '$target_alt'."
         return $true
     }
     catch
@@ -202,7 +202,7 @@ function move_item_with_retry([string]$source_path, [string]$target_path, [bool]
         throw "Failed to move '$source_path' to '$target_path'. $($last_error.Exception.Message)"
     }
 
-    Write-Host "Warning: cannot move '$source_path' to '$target_path'. $($last_error.Exception.Message)"
+    Write-Host "Info: cannot move '$source_path' to '$target_path'. $($last_error.Exception.Message)"
     return $false
 }
 
@@ -272,7 +272,7 @@ if (-not (Test-Path -LiteralPath $rsvars_path))
 
 if (-not $is_admin)
 {
-    Write-Host "Warning: not running as Administrator. Killing DLL-holding processes may fail."
+    Write-Host "Info: not running as Administrator. Killing DLL-holding processes may fail."
 }
 
 function ensure_restart_manager_api
@@ -644,13 +644,13 @@ function get_processes_using_dll([string]$dll_name)
 
 function stop_engine_host
 {
-    $procs = Get-Process -Name cassotis_ime_host, cassotis_ime_host32 -ErrorAction SilentlyContinue
+    $procs = Get-Process -Name cassotis_ime_host, cassotis_ime_host32, cassotis_ime_tray_host, cassotis_ime_tray_host32 -ErrorAction SilentlyContinue
     if (-not $procs)
     {
         return
     }
 
-    Write-Host "Stopping cassotis_ime_host.exe..."
+    Write-Host "Stopping cassotis_ime_host/cassotis_ime_tray_host..."
     foreach ($proc in $procs)
     {
         try
@@ -676,7 +676,7 @@ function stop_engine_host
         }
     }
 
-    $procs = Get-Process -Name cassotis_ime_host, cassotis_ime_host32 -ErrorAction SilentlyContinue
+    $procs = Get-Process -Name cassotis_ime_host, cassotis_ime_host32, cassotis_ime_tray_host, cassotis_ime_tray_host32 -ErrorAction SilentlyContinue
     foreach ($proc in $procs)
     {
         try
@@ -687,6 +687,25 @@ function stop_engine_host
         {
         }
     }
+}
+
+function is_terminal_shell_process([string]$image_name)
+{
+    if (-not $image_name)
+    {
+        return $false
+    }
+
+    $name = $image_name.ToLowerInvariant()
+    $protected_names = @(
+        'powershell.exe',
+        'pwsh.exe',
+        'windowsterminal.exe',
+        'openconsole.exe',
+        'conhost.exe'
+    )
+
+    return ($protected_names -contains $name)
 }
 
 function stop_processes_using_dll([string[]]$dll_names)
@@ -713,8 +732,35 @@ function stop_processes_using_dll([string[]]$dll_names)
     Write-Host "Processes using TSF DLLs:"
     $process_list | Format-Table -AutoSize
 
-    $killed_explorer = $false
+    $manual_stop_list = @()
+    $auto_stop_list = @()
     foreach ($proc in $process_list)
+    {
+        if (is_terminal_shell_process $proc.name)
+        {
+            $manual_stop_list += $proc
+        }
+        else
+        {
+            $auto_stop_list += $proc
+        }
+    }
+
+    if ($manual_stop_list.Count -gt 0)
+    {
+        Write-Host "Terminal shell processes are locking TSF DLLs (manual stop required):"
+        $manual_stop_list | Format-Table -AutoSize
+        throw "Terminal shell process is locking TSF DLL(s). Stop terminal processes and rerun rebuild_all.ps1."
+    }
+
+    if ($auto_stop_list.Count -eq 0)
+    {
+        Write-Host "No auto-stoppable processes remain."
+        return
+    }
+
+    $killed_explorer = $false
+    foreach ($proc in $auto_stop_list)
     {
         $stopped = $false
         try
@@ -824,7 +870,7 @@ function invoke_build([string]$project_rel, [string]$platform, [string]$exe_outp
             {
                 if (-not (try_quarantine_locked_file $expected_output))
                 {
-                    Write-Host ("Warning: expected output is locked and cannot be quarantined: {0}" -f $expected_output)
+                    throw ("Expected output is locked and cannot be quarantined: {0}" -f $expected_output)
                 }
             }
         }
@@ -853,7 +899,7 @@ function copy_sqlite_binaries
     }
     else
     {
-        Write-Host "Warning: sqlite Win64 binary not found: $sqlite64_source"
+        Write-Host "Info: sqlite Win64 binary not found: $sqlite64_source"
     }
 }
 

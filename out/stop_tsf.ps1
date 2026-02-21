@@ -85,6 +85,25 @@ if ($host_procs -ne $null -and $host_procs.Count -gt 0)
     }
 }
 
+$tray_process_name = 'cassotis_ime_tray_host'
+Write-Host ("Stopping tray process: {0}" -f $tray_process_name)
+$tray_procs = Get-Process -Name $tray_process_name -ErrorAction SilentlyContinue
+if ($tray_procs -ne $null -and $tray_procs.Count -gt 0)
+{
+    foreach ($tray_proc in $tray_procs)
+    {
+        try
+        {
+            Stop-Process -Id $tray_proc.Id -Force -ErrorAction Stop
+            Write-Host ("Stopped {0} (PID {1})" -f $tray_proc.ProcessName, $tray_proc.Id)
+        }
+        catch
+        {
+            Write-Host ("Failed to stop {0} (PID {1})" -f $tray_proc.ProcessName, $tray_proc.Id)
+        }
+    }
+}
+
 $dll_names = @()
 $dll_name = [System.IO.Path]::GetFileName($dll_path)
 if ($dll_name -ne $null -and $dll_name -ne '')

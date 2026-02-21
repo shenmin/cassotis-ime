@@ -54,6 +54,7 @@
         <DCC_ImageBase>00400000</DCC_ImageBase>
         <SanitizedProjectName>cassotis_ime_tray_host</SanitizedProjectName>
         <DCC_Namespace>Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
+        <DCC_UnitSearchPath>../src/common;../src/ui;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <VerInfo_Locale>2052</VerInfo_Locale>
         <VerInfo_Keys>CompanyName=;FileDescription=;FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=;ProductVersion=1.0.0.0;Comments=;CFBundleName=</VerInfo_Keys>
         <DCC_DcpOutput>../dcu</DCC_DcpOutput>
@@ -103,6 +104,8 @@
         </DelphiCompile>
         <DCCReference Include="..\src\ui\cassotis_ime_tray_host.pas"/>
         <DCCReference Include="..\src\common\nc_config.pas"/>
+        <DCCReference Include="..\src\common\nc_ipc_client.pas"/>
+        <DCCReference Include="..\src\common\nc_ipc_common.pas"/>
         <DCCReference Include="..\src\common\nc_log.pas"/>
         <DCCReference Include="..\src\common\nc_sqlite.pas"/>
         <DCCReference Include="..\src\common\nc_types.pas"/>

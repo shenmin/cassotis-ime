@@ -19,7 +19,9 @@ begin
 end;
 
 initialization
-    ComServer.PerUserRegistration := True;
+    // Use machine-wide COM registration so elevated apps (e.g. admin Terminal)
+    // can load the TSF service reliably.
+    ComServer.PerUserRegistration := False;
     register_com_factory;
 
 end.

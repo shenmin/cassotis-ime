@@ -28,10 +28,6 @@ var
 function get_process_scope_suffix: string;
 var
     session_id: DWORD;
-    token_handle: THandle;
-    elevation: TOKEN_ELEVATION;
-    return_size: DWORD;
-    level_tag: string;
 begin
     if g_scope_ready then
     begin
@@ -44,24 +40,7 @@ begin
     begin
         session_id := 0;
     end;
-
-    level_tag := 'user';
-    token_handle := 0;
-    if OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, token_handle) then
-    begin
-        FillChar(elevation, SizeOf(elevation), 0);
-        return_size := 0;
-        if GetTokenInformation(token_handle, TokenElevation, @elevation, SizeOf(elevation), return_size) then
-        begin
-            if elevation.TokenIsElevated <> 0 then
-            begin
-                level_tag := 'admin';
-            end;
-        end;
-        CloseHandle(token_handle);
-    end;
-
-    g_scope_suffix := Format('_s%d_%s', [session_id, level_tag]);
+    g_scope_suffix := Format('_s%d', [session_id]);
     g_scope_ready := True;
     Result := g_scope_suffix;
 end;

@@ -19,6 +19,7 @@ type
         function ping_host: Boolean;
         function start_host: Boolean;
         function wait_for_host_ready(const timeout_ms: DWORD): Boolean;
+        function host_mutex_exists: Boolean;
         function is_host_running: Boolean;
         function get_module_directory: string;
     public
@@ -30,8 +31,10 @@ type
             out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
+        function get_active(const session_id: string; out active: Boolean): Boolean;
         function set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean): Boolean;
+        function set_active(const session_id: string; const active: Boolean): Boolean;
         function set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean): Boolean;
         function set_surrounding(const session_id: string; const left_context: string): Boolean;
         function reset_session(const session_id: string): Boolean;
@@ -44,11 +47,11 @@ uses
     nc_ipc_common;
 
 const
-    c_pipe_timeout_ms = 800;
+    c_pipe_timeout_ms = 220;
     c_start_retry_delay_ms = 1500;
-    c_start_wait_ms = 2400;
-    c_call_retry_max = 6;
-    c_call_retry_sleep_ms = 60;
+    c_start_wait_ms = 500;
+    c_call_retry_max = 3;
+    c_call_retry_sleep_ms = 30;
     c_get_module_handle_ex_from_address = $00000004;
     c_get_module_handle_ex_unchanged_refcount = $00000002;
 {$IFDEF WIN32}
@@ -208,6 +211,14 @@ begin
         Result := True;
         Exit;
     end;
+    if host_mutex_exists then
+    begin
+        // Another instance is already starting/running; do not spawn again.
+        m_last_start_tick := now_tick;
+        m_last_error := 0;
+        Result := True;
+        Exit;
+    end;
     if (m_last_start_tick <> 0) and (now_tick - m_last_start_tick < c_start_retry_delay_ms) then
     begin
         Exit;
@@ -249,6 +260,23 @@ begin
     Result := ping_host;
 end;
 
+function TncIpcClient.host_mutex_exists: Boolean;
+var
+    mutex_handle: THandle;
+    err: DWORD;
+begin
+    mutex_handle := OpenMutex(SYNCHRONIZE, False, PChar(get_nc_host_mutex));
+    if mutex_handle <> 0 then
+    begin
+        CloseHandle(mutex_handle);
+        Result := True;
+        Exit;
+    end;
+
+    err := GetLastError;
+    Result := err = ERROR_ACCESS_DENIED;
+end;
+
 function TncIpcClient.call_pipe(const request_text: string; out response_text: string): Boolean;
 var
     request_bytes: TBytes;
@@ -283,7 +311,7 @@ begin
         err := GetLastError;
         m_last_error := err;
 
-        if ((err = ERROR_FILE_NOT_FOUND) or (err = ERROR_ACCESS_DENIED)) and m_auto_start and (not started_host) then
+        if (err = ERROR_FILE_NOT_FOUND) and m_auto_start and (not started_host) then
         begin
             started_host := True;
             start_host;
@@ -437,6 +465,31 @@ begin
     Result := False;
 end;
 
+function TncIpcClient.get_active(const session_id: string; out active: Boolean): Boolean;
+var
+    request_text: string;
+    response_text: string;
+    fields: TArray<string>;
+begin
+    active := False;
+    request_text := 'GET_ACTIVE'#9 + session_id;
+    if not call_pipe(request_text, response_text) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    if (Length(fields) >= 2) and SameText(fields[0], 'OK') then
+    begin
+        active := flag_to_bool(fields[1]);
+        Result := True;
+        Exit;
+    end;
+
+    Result := False;
+end;
+
 function TncIpcClient.set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
     const punctuation_full_width: Boolean): Boolean;
 var
@@ -453,6 +506,30 @@ begin
 
     request_text := Format('SET_STATE'#9'%s'#9'%d'#9'%d'#9'%d',
         [session_id, Ord(input_mode), Ord(full_width_mode), Ord(punctuation_full_width)]);
+    if not call_pipe(request_text, response_text) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
+end;
+
+function TncIpcClient.set_active(const session_id: string; const active: Boolean): Boolean;
+var
+    request_text: string;
+    response_text: string;
+    fields: TArray<string>;
+begin
+    if session_id = '' then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Result := False;
+        Exit;
+    end;
+
+    request_text := Format('SET_ACTIVE'#9'%s'#9'%d', [session_id, Ord(active)]);
     if not call_pipe(request_text, response_text) then
     begin
         Result := False;

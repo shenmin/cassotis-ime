@@ -2,7 +2,6 @@ program cassotis_ime_host;
 
 uses
     Winapi.Windows,
-    Winapi.TlHelp32,
     System.SysUtils,
     System.Classes,
     System.IOUtils,
@@ -27,124 +26,94 @@ var
     log_path: string;
     log_enabled: Boolean;
     host_mutex: THandle;
+const
+    c_tray_host_mutex_name_format = 'Local\cassotis_ime_tray_host_v1_s%d';
 
 procedure append_log(const text: string); forward;
 
-function elapsed_since(const start_tick: DWORD; const elapsed_ms: DWORD): Boolean;
-begin
-    Result := DWORD(GetTickCount - start_tick) >= elapsed_ms;
-end;
-
-function has_other_host_process: Boolean;
+procedure enforce_window_toolwindow_style(window_handle: HWND);
 var
-    snapshot: THandle;
-    process_entry: TProcessEntry32;
-    exe_name: string;
+    ex_style: NativeInt;
 begin
-    Result := False;
-    snapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if snapshot = INVALID_HANDLE_VALUE then
+    if window_handle = 0 then
     begin
         Exit;
     end;
 
-    try
-        process_entry.dwSize := SizeOf(process_entry);
-        if Process32First(snapshot, process_entry) then
-        begin
-            repeat
-                if process_entry.th32ProcessID <> GetCurrentProcessId then
-                begin
-                    exe_name := string(process_entry.szExeFile);
-                    if SameText(exe_name, 'cassotis_ime_host.exe') then
-                    begin
-                        Result := True;
-                        Break;
-                    end;
-                end;
-            until not Process32Next(snapshot, process_entry);
-        end;
-    finally
-        CloseHandle(snapshot);
-    end;
+    ex_style := GetWindowLongPtr(window_handle, GWL_EXSTYLE);
+    ex_style := (ex_style or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
+    SetWindowLongPtr(window_handle, GWL_EXSTYLE, ex_style);
+    SetWindowPos(
+        window_handle,
+        0,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_NOZORDER or SWP_FRAMECHANGED
+    );
 end;
 
-function is_existing_host_responsive: Boolean;
-var
-    request_bytes: TBytes;
-    response_bytes: TBytes;
-    bytes_read: DWORD;
-    response_text: string;
-    call_ok: Boolean;
-    pipe_name: string;
+procedure enforce_application_toolwindow_style;
 begin
-    Result := False;
-    pipe_name := get_nc_pipe_name;
-    request_bytes := TEncoding.UTF8.GetBytes('PING');
-    SetLength(response_bytes, 32);
-    bytes_read := 0;
-
-    call_ok := CallNamedPipe(PChar(pipe_name), @request_bytes[0], Length(request_bytes),
-        @response_bytes[0], Length(response_bytes), bytes_read, 120);
-    if not call_ok then
-    begin
-        if GetLastError = ERROR_PIPE_BUSY then
-        begin
-            if WaitNamedPipe(PChar(pipe_name), 120) then
-            begin
-                call_ok := CallNamedPipe(PChar(pipe_name), @request_bytes[0], Length(request_bytes),
-                    @response_bytes[0], Length(response_bytes), bytes_read, 120);
-            end;
-        end;
-    end;
-
-    if not call_ok then
+    if Application = nil then
     begin
         Exit;
     end;
-
-    if bytes_read <= 0 then
-    begin
-        Exit;
-    end;
-
-    response_text := TEncoding.UTF8.GetString(response_bytes, 0, bytes_read);
-    Result := SameText(Trim(response_text), 'OK');
+    enforce_window_toolwindow_style(Application.Handle);
 end;
 
-function wait_existing_host_ready(const timeout_ms: DWORD): Boolean;
-var
-    start_tick: DWORD;
+const
+    c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)S:(ML;;NW;;;LW)';
+
+function ConvertStringSecurityDescriptorToSecurityDescriptorW(
+    StringSecurityDescriptor: LPCWSTR; StringSDRevision: DWORD;
+    var SecurityDescriptor: Pointer; SecurityDescriptorSize: PDWORD): BOOL; stdcall;
+    external advapi32 name 'ConvertStringSecurityDescriptorToSecurityDescriptorW';
+
+function build_ipc_security_attributes(out security_attributes: TSecurityAttributes;
+    out security_descriptor: Pointer): Boolean;
 begin
-    Result := False;
-    start_tick := GetTickCount;
-    repeat
-        if is_existing_host_responsive then
-        begin
-            Result := True;
-            Exit;
-        end;
-        Sleep(80);
-    until elapsed_since(start_tick, timeout_ms);
+    FillChar(security_attributes, SizeOf(security_attributes), 0);
+    security_descriptor := nil;
+    Result := ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        PChar(c_ipc_security_sddl), 1, security_descriptor, nil);
+    if Result then
+    begin
+        security_attributes.nLength := SizeOf(security_attributes);
+        security_attributes.lpSecurityDescriptor := security_descriptor;
+        security_attributes.bInheritHandle := False;
+    end;
 end;
 
 function acquire_host_mutex: Boolean;
 var
     mutex_handle: THandle;
     err: DWORD;
+    security_attributes: TSecurityAttributes;
+    security_descriptor: Pointer;
+    security_attributes_ptr: PSecurityAttributes;
 begin
     Result := False;
-    mutex_handle := CreateMutex(nil, True, PChar(get_nc_host_mutex));
+    security_descriptor := nil;
+    security_attributes_ptr := nil;
+    if build_ipc_security_attributes(security_attributes, security_descriptor) then
+    begin
+        security_attributes_ptr := @security_attributes;
+    end;
+
+    mutex_handle := CreateMutex(security_attributes_ptr, True, PChar(get_nc_host_mutex));
+    if security_descriptor <> nil then
+    begin
+        LocalFree(HLOCAL(security_descriptor));
+        security_descriptor := nil;
+    end;
     if mutex_handle = 0 then
     begin
         err := GetLastError;
         if err = ERROR_ACCESS_DENIED then
         begin
-            if wait_existing_host_ready(1500) then
-            begin
-                Exit;
-            end;
-            append_log('mutex access denied and host not responsive, abort start');
+            append_log('mutex access denied, host instance already exists');
             Exit;
         end;
         append_log(Format('CreateMutex failed err=%d', [err]));
@@ -154,22 +123,77 @@ begin
     err := GetLastError;
     if err = ERROR_ALREADY_EXISTS then
     begin
-        if has_other_host_process then
-        begin
-            if wait_existing_host_ready(1500) then
-            begin
-                CloseHandle(mutex_handle);
-                Exit;
-            end;
-            append_log('existing host process detected but not responsive, abort start');
-            CloseHandle(mutex_handle);
-            Exit;
-        end;
-        append_log('recover stale host mutex');
+        CloseHandle(mutex_handle);
+        append_log('mutex already exists, abort start');
+        Exit;
     end;
 
     host_mutex := mutex_handle;
     Result := True;
+end;
+
+function tray_host_mutex_exists: Boolean;
+var
+    session_id: DWORD;
+    mutex_name: string;
+    mutex_handle: THandle;
+    err: DWORD;
+begin
+    session_id := 0;
+    if not ProcessIdToSessionId(GetCurrentProcessId, session_id) then
+    begin
+        session_id := 0;
+    end;
+
+    mutex_name := Format(c_tray_host_mutex_name_format, [session_id]);
+    mutex_handle := OpenMutex(SYNCHRONIZE, False, PChar(mutex_name));
+    if mutex_handle <> 0 then
+    begin
+        CloseHandle(mutex_handle);
+        Result := True;
+        Exit;
+    end;
+
+    err := GetLastError;
+    Result := err = ERROR_ACCESS_DENIED;
+end;
+
+procedure ensure_tray_host_running;
+var
+    module_dir: string;
+    tray_host_path: string;
+    command_line: string;
+    start_info: TStartupInfo;
+    proc_info: TProcessInformation;
+begin
+    if tray_host_mutex_exists then
+    begin
+        Exit;
+    end;
+
+    module_dir := ExtractFileDir(ParamStr(0));
+    tray_host_path := IncludeTrailingPathDelimiter(module_dir) + 'cassotis_ime_tray_host.exe';
+    if not FileExists(tray_host_path) then
+    begin
+        append_log('tray host not found, skip start');
+        Exit;
+    end;
+
+    FillChar(start_info, SizeOf(start_info), 0);
+    start_info.cb := SizeOf(start_info);
+    FillChar(proc_info, SizeOf(proc_info), 0);
+    command_line := '"' + tray_host_path + '"';
+    if CreateProcess(PChar(tray_host_path), PChar(command_line), nil, nil, False, CREATE_NO_WINDOW, nil,
+        PChar(module_dir), start_info, proc_info) then
+    begin
+        CloseHandle(proc_info.hProcess);
+        CloseHandle(proc_info.hThread);
+        append_log('tray host start requested');
+    end
+    else
+    begin
+        append_log(Format('tray host start failed err=%d', [GetLastError]));
+    end;
 end;
 
 function resolve_log_path: string;
@@ -292,10 +316,18 @@ begin
     try
         try
             append_log('host start');
+            ensure_tray_host_running;
             try_enable_per_monitor_dpi;
             Application.Initialize;
+            Application.MainFormOnTaskbar := False;
             Application.ShowMainForm := False;
+            enforce_application_toolwindow_style;
             Application.CreateForm(TncEngineHostApp, host_app);
+            if host_app <> nil then
+            begin
+                enforce_window_toolwindow_style(host_app.Handle);
+            end;
+            enforce_application_toolwindow_style;
             append_log('host form created');
             Application.Run;
             append_log('host run ended');

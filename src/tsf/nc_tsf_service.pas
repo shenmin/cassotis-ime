@@ -6,6 +6,7 @@ uses
     Winapi.Windows,
     Winapi.ActiveX,
     Winapi.Msctf,
+    System.Classes,
     System.SysUtils,
     System.IOUtils,
     System.Types,
@@ -67,6 +68,12 @@ type
         m_last_sent_has_caret: Boolean;
         m_last_sent_caret_valid: Boolean;
         m_last_sent_caret_tick: DWORD;
+        m_last_reported_active: Boolean;
+        m_active_state_synced: Boolean;
+        m_shift_key_down: Boolean;
+        m_shift_toggle_pending: Boolean;
+        m_shift_toggle_canceled: Boolean;
+        m_last_shift_toggle_tick: DWORD;
         procedure clear_state;
         procedure mark_session_dirty;
         procedure reset_session_if_needed(const force: Boolean = False);
@@ -93,6 +100,10 @@ type
         procedure load_engine_config(out config: TncEngineConfig);
         procedure apply_log_config;
         procedure reload_config_if_needed;
+        procedure save_engine_state_to_config(const input_mode: TncInputMode; const full_width_mode: Boolean;
+            const punctuation_full_width: Boolean);
+        procedure update_active_state(const active: Boolean);
+        procedure toggle_input_mode_by_shift;
         function get_candidate_point(out point: TPoint): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
@@ -182,6 +193,13 @@ begin
     Result := Assigned(g_logical_to_physical) and (hwnd <> 0) and g_logical_to_physical(hwnd, point);
 end;
 
+function is_shift_key(const key_code: Word): Boolean;
+begin
+    // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
+    Result := (key_code = VK_SHIFT) or (key_code = VK_LSHIFT) or (key_code = VK_RSHIFT) or
+        (key_code = $10) or (key_code = $A0) or (key_code = $A1);
+end;
+
 const
     TF_ES_ASYNCDONTCARE = $0;
     TF_ES_SYNC = $1;
@@ -189,6 +207,7 @@ const
     TF_ES_READWRITE = $6;
     TF_ES_ASYNC = $8;
     c_edit_session_flags = TF_ES_READWRITE or TF_ES_ASYNCDONTCARE;
+    c_shift_toggle_dedupe_ms = 90;
 
 procedure TncTextService.Initialize;
 var
@@ -261,6 +280,12 @@ begin
     m_last_sent_has_caret := False;
     m_last_sent_caret_valid := False;
     m_last_sent_caret_tick := 0;
+    m_last_reported_active := False;
+    m_active_state_synced := False;
+    m_shift_key_down := False;
+    m_shift_toggle_pending := False;
+    m_shift_toggle_canceled := False;
+    m_last_shift_toggle_tick := 0;
 end;
 
 procedure TncTextService.mark_session_dirty;
@@ -691,9 +716,6 @@ var
     keystroke_mgr: ITfKeystrokeMgr;
     hr: HRESULT;
     engine_config: TncEngineConfig;
-    input_mode: TncInputMode;
-    full_width_mode: Boolean;
-    punctuation_full_width: Boolean;
     guid: TGUID;
 begin
     m_thread_mgr := thread_mgr;
@@ -734,23 +756,11 @@ begin
     end;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
+        update_active_state(True);
         mark_session_dirty;
-        reset_session_if_needed(True);
-        if m_ipc_client.get_state(m_session_id, input_mode, full_width_mode, punctuation_full_width) then
-        begin
-            apply_engine_state_to_compartments(input_mode, full_width_mode, punctuation_full_width);
-        end
-        else
-        begin
-            apply_engine_state_to_compartments(engine_config.input_mode, engine_config.full_width_mode,
-                engine_config.punctuation_full_width);
-        end;
-    end
-    else
-    begin
-        apply_engine_state_to_compartments(engine_config.input_mode, engine_config.full_width_mode,
-            engine_config.punctuation_full_width);
     end;
+    apply_engine_state_to_compartments(engine_config.input_mode, engine_config.full_width_mode,
+        engine_config.punctuation_full_width);
     if m_display_attribute_provider = nil then
     begin
         m_display_attribute_provider := TncDisplayAttributeProvider.create(
@@ -781,8 +791,8 @@ begin
 
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
+        update_active_state(False);
         mark_session_dirty;
-        reset_session_if_needed(True);
     end;
     if m_logger <> nil then
     begin
@@ -806,6 +816,9 @@ begin
         unadvise_context_sinks;
         m_doc_mgr := nil;
         m_context := nil;
+        m_shift_key_down := False;
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := False;
     end;
 
     Result := S_OK;
@@ -815,19 +828,56 @@ function TncTextService.OnTestKeyDown(const context: ITfContext; wParam: WPARAM;
 var
     handled: Boolean;
     key_state: TncKeyState;
+    key_code: Word;
 begin
     eaten := 0;
     reload_config_if_needed;
     key_state := build_key_state;
+    key_code := Word(wParam);
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
         m_logger.debug(Format('TestKeyDown session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
-            [m_session_id, Word(wParam), Ord(key_state.shift_down), Ord(key_state.ctrl_down),
+            [m_session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down),
             Ord(key_state.alt_down), Ord(key_state.caps_lock)]));
     end;
+
+    if is_shift_key(key_code) then
+    begin
+        // Prefer host-side Shift toggle so all app bitness paths share one state source.
+        if (not key_state.ctrl_down) and (not key_state.alt_down) then
+        begin
+            handled := False;
+            if (m_ipc_client <> nil) and (m_session_id <> '') and
+                m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
+            begin
+                m_shift_key_down := True;
+                m_last_shift_toggle_tick := GetTickCount;
+                eaten := 1;
+                Result := S_OK;
+                Exit;
+            end;
+
+            if not m_shift_key_down then
+            begin
+                m_shift_key_down := True;
+                toggle_input_mode_by_shift;
+            end;
+            eaten := 1;
+            Result := S_OK;
+            Exit;
+        end;
+
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := True;
+    end
+    else if m_shift_key_down then
+    begin
+        m_shift_toggle_canceled := True;
+    end;
+
     if (m_composition <> nil) and (not key_state.ctrl_down) and (not key_state.alt_down) then
     begin
-        case wParam of
+        case key_code of
             VK_ESCAPE,
             VK_ADD,
             VK_SUBTRACT,
@@ -845,7 +895,7 @@ begin
     handled := False;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
-        if m_ipc_client.test_key(m_session_id, Word(wParam), key_state, handled) then
+        if m_ipc_client.test_key(m_session_id, key_code, key_state, handled) then
         begin
             if handled then
             begin
@@ -889,6 +939,33 @@ begin
             [m_session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down), Ord(key_state.alt_down),
             Ord(key_state.caps_lock)]));
     end;
+
+    // Some TSF hosts do not deliver reliable KeyUp/TestKeyUp callbacks.
+    // Toggle on first Shift KeyDown so the behavior is consistent everywhere.
+    if is_shift_key(key_code) then
+    begin
+        if (not key_state.ctrl_down) and (not key_state.alt_down) and (not m_shift_key_down) then
+        begin
+            if DWORD(GetTickCount - m_last_shift_toggle_tick) > c_shift_toggle_dedupe_ms then
+            begin
+                m_shift_key_down := True;
+                toggle_input_mode_by_shift;
+            end
+            else
+            begin
+                m_shift_key_down := True;
+            end;
+        end;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if not key_state.shift_down then
+    begin
+        m_shift_key_down := False;
+    end;
+
     if (m_composition <> nil) and (not key_state.ctrl_down) and (not key_state.alt_down) then
     begin
         case key_code of
@@ -965,15 +1042,104 @@ begin
 end;
 
 function TncTextService.OnTestKeyUp(const context: ITfContext; wParam: WPARAM; lParam: LPARAM; out eaten: Integer): HResult;
+var
+    key_code: Word;
 begin
+    key_code := Word(wParam);
     eaten := 0;
+    if is_shift_key(key_code) then
+    begin
+        m_shift_key_down := False;
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := False;
+        m_last_shift_toggle_tick := 0;
+        eaten := 1;
+    end;
     Result := S_OK;
 end;
 
 function TncTextService.OnKeyUp(const context: ITfContext; wParam: WPARAM; lParam: LPARAM; out eaten: Integer): HResult;
+var
+    key_code: Word;
 begin
     eaten := 0;
+    key_code := Word(wParam);
+    if is_shift_key(key_code) then
+    begin
+        eaten := 1;
+        m_shift_key_down := False;
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := False;
+        m_last_shift_toggle_tick := 0;
+    end;
     Result := S_OK;
+end;
+
+procedure TncTextService.toggle_input_mode_by_shift;
+var
+    input_mode: TncInputMode;
+    full_width_mode: Boolean;
+    punctuation_full_width: Boolean;
+    next_input_mode: TncInputMode;
+    got_state_from_host: Boolean;
+    state_source: string;
+begin
+    got_state_from_host := False;
+    input_mode := m_last_input_mode;
+    full_width_mode := m_last_full_width_mode;
+    punctuation_full_width := m_last_punctuation_full_width;
+
+    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        m_logger.debug(Format('Shift toggle trigger session=%s', [m_session_id]));
+    end;
+
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        got_state_from_host := m_ipc_client.get_state(m_session_id, input_mode, full_width_mode, punctuation_full_width);
+    end;
+
+    if input_mode = im_chinese then
+    begin
+        next_input_mode := im_english;
+    end
+    else
+    begin
+        next_input_mode := im_chinese;
+    end;
+
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        if m_ipc_client.set_state(m_session_id, next_input_mode, full_width_mode, punctuation_full_width) then
+        begin
+            mark_session_dirty;
+        end;
+    end;
+
+    apply_engine_state_to_compartments(next_input_mode, full_width_mode, punctuation_full_width);
+    save_engine_state_to_config(next_input_mode, full_width_mode, punctuation_full_width);
+
+    if next_input_mode = im_english then
+    begin
+        cancel_composition;
+    end;
+
+    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        if got_state_from_host then
+        begin
+            state_source := 'host';
+        end
+        else
+        begin
+            state_source := 'local';
+        end;
+        m_logger.debug(Format('Shift toggled input mode -> %d source=%s',
+            [Ord(next_input_mode), state_source]));
+    end;
+
+    m_last_shift_toggle_tick := GetTickCount;
+
 end;
 
 function TncTextService.OnPreservedKey(const context: ITfContext; var rguid: TGUID; out eaten: Integer): HResult;
@@ -1053,6 +1219,10 @@ begin
             advise_context_sinks(m_context);
         end;
     end;
+    // Keep active state aligned to document focus changes.
+    // We do not use OnSetFocus callback for active toggles to avoid per-key
+    // focus jitter in some apps.
+    update_active_state(pdimFocus <> nil);
     Result := S_OK;
 end;
 
@@ -1256,6 +1426,7 @@ begin
         m_last_full_width_mode := next_full_width;
         m_last_punctuation_full_width := next_punctuation_full_width;
         m_compartment_state_inited := True;
+        save_engine_state_to_config(next_input_mode, next_full_width, next_punctuation_full_width);
 
         if next_input_mode = im_english then
         begin
@@ -1314,11 +1485,6 @@ begin
     config_manager := TncConfigManager.create(m_config_path);
     try
         config := config_manager.load_engine_config;
-        if not config.enable_ctrl_space_toggle then
-        begin
-            // Avoid being stuck in English when IME toggle is disabled.
-            config.input_mode := im_chinese;
-        end;
         m_log_config := config_manager.load_log_config;
     finally
         config_manager.Free;
@@ -1365,6 +1531,65 @@ begin
     end;
 
     load_engine_config(engine_config);
+end;
+
+procedure TncTextService.save_engine_state_to_config(const input_mode: TncInputMode; const full_width_mode: Boolean;
+    const punctuation_full_width: Boolean);
+var
+    config_manager: TncConfigManager;
+    engine_config: TncEngineConfig;
+    changed: Boolean;
+begin
+    if m_config_path = '' then
+    begin
+        Exit;
+    end;
+
+    config_manager := TncConfigManager.create(m_config_path);
+    try
+        engine_config := config_manager.load_engine_config;
+        changed := (engine_config.input_mode <> input_mode) or (engine_config.full_width_mode <> full_width_mode) or
+            (engine_config.punctuation_full_width <> punctuation_full_width);
+        if changed then
+        begin
+            engine_config.input_mode := input_mode;
+            engine_config.full_width_mode := full_width_mode;
+            engine_config.punctuation_full_width := punctuation_full_width;
+            config_manager.save_engine_config(engine_config);
+            m_last_config_write := get_config_write_time;
+        end;
+    finally
+        config_manager.Free;
+    end;
+end;
+
+procedure TncTextService.update_active_state(const active: Boolean);
+begin
+    if (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    if m_active_state_synced and (m_last_reported_active = active) then
+    begin
+        Exit;
+    end;
+
+    if m_ipc_client.set_active(m_session_id, active) then
+    begin
+        m_active_state_synced := True;
+        m_last_reported_active := active;
+        Exit;
+    end;
+
+    m_active_state_synced := False;
+    if m_logger <> nil then
+    begin
+        if m_ipc_client.last_error <> 0 then
+        begin
+            m_logger.debug(Format('SET_ACTIVE failed err=%d active=%d', [m_ipc_client.last_error, Ord(active)]));
+        end;
+    end;
 end;
 
 function TncTextService.get_candidate_point(out point: TPoint): Boolean;

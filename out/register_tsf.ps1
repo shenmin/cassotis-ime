@@ -175,6 +175,78 @@ function is_com_registered([string]$clsid, [string]$expected_path, [Microsoft.Wi
     return $false
 }
 
+function is_com_registered_in_hive([string]$clsid, [string]$expected_path, [Microsoft.Win32.RegistryView]$view, [Microsoft.Win32.RegistryHive]$hive)
+{
+    $expected = ([System.IO.Path]::GetFullPath($expected_path)).ToLowerInvariant()
+    $expected_file = ([System.IO.Path]::GetFileName($expected_path)).ToLowerInvariant()
+    $actual = get_inproc_server_path $clsid $view $hive
+    if ($null -eq $actual -or $actual -eq '')
+    {
+        return $false
+    }
+
+    $normalized = $actual.Trim('"')
+    try
+    {
+        $normalized = ([System.IO.Path]::GetFullPath($normalized)).ToLowerInvariant()
+    }
+    catch
+    {
+        $normalized = $normalized.ToLowerInvariant()
+    }
+
+    if ($normalized -eq $expected)
+    {
+        return $true
+    }
+
+    $actual_file = ([System.IO.Path]::GetFileName($normalized)).ToLowerInvariant()
+    return ($actual_file -eq $expected_file)
+}
+
+function remove_registry_subtree([Microsoft.Win32.RegistryHive]$hive, [Microsoft.Win32.RegistryView]$view, [string]$sub_key)
+{
+    $base = $null
+    try
+    {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $view)
+        try
+        {
+            $base.DeleteSubKeyTree($sub_key, $false)
+            return $true
+        }
+        catch
+        {
+            return $false
+        }
+    }
+    finally
+    {
+        if ($base -ne $null)
+        {
+            $base.Close()
+        }
+    }
+}
+
+function remove_per_user_com_registration([string]$clsid, [string]$progid)
+{
+    $removed_any = $false
+    $views = @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)
+    foreach ($view in $views)
+    {
+        if (remove_registry_subtree ([Microsoft.Win32.RegistryHive]::CurrentUser) $view ("Software\\Classes\\CLSID\\$clsid"))
+        {
+            $removed_any = $true
+        }
+        if ($progid -and (remove_registry_subtree ([Microsoft.Win32.RegistryHive]::CurrentUser) $view ("Software\\Classes\\$progid")))
+        {
+            $removed_any = $true
+        }
+    }
+    return $removed_any
+}
+
 function resolve_target_paths([string]$input_path, [bool]$register_single)
 {
     $resolved = (Get-Item -LiteralPath $input_path).FullName
@@ -279,6 +351,7 @@ $is_admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 if (-not $is_admin)
 {
     Write-Host "Warning: not running as Administrator. Registration may fail with access denied."
+    Write-Host "Note: admin/elevated apps may not use Cassotis IME until you run this script as Administrator."
 }
 
 $clsid_text_service = '{38D40A05-DCDB-49FB-81A4-C8745882DC21}'
@@ -351,6 +424,96 @@ if ($has_error -and $final_ok)
 if ($has_error)
 {
     exit 1
+}
+
+# Elevated apps (administrator Terminal/PowerShell) require machine-wide COM registration.
+$machine_ok = $true
+foreach ($target_path in $target_paths)
+{
+    $machine = get_pe_machine $target_path
+    if ($null -eq $machine)
+    {
+        $machine_ok = $false
+        continue
+    }
+
+    $registry_view = [Microsoft.Win32.RegistryView]::Registry64
+    if ($machine -eq 0x014c)
+    {
+        $registry_view = [Microsoft.Win32.RegistryView]::Registry32
+    }
+
+    if (-not (is_com_registered_in_hive $clsid_text_service $target_path $registry_view ([Microsoft.Win32.RegistryHive]::LocalMachine)))
+    {
+        $machine_ok = $false
+    }
+}
+
+if (-not $machine_ok)
+{
+    if ($is_admin)
+    {
+        Write-Host "Machine-wide COM registration missing; trying to migrate from per-user registration..."
+        $removed = remove_per_user_com_registration $clsid_text_service 'CassotisImeTextService'
+        if ($removed)
+        {
+            Write-Host "Removed per-user COM registration keys under HKCU."
+        }
+        else
+        {
+            Write-Host "No removable per-user COM keys found under HKCU."
+        }
+
+        $retry_error = $false
+        foreach ($target_path in $target_paths)
+        {
+            if (-not (register_one_dll $target_path $clsid_text_service))
+            {
+                $retry_error = $true
+            }
+        }
+        if ($retry_error)
+        {
+            exit 1
+        }
+
+        $machine_ok = $true
+        foreach ($target_path in $target_paths)
+        {
+            $machine = get_pe_machine $target_path
+            if ($null -eq $machine)
+            {
+                $machine_ok = $false
+                continue
+            }
+
+            $registry_view = [Microsoft.Win32.RegistryView]::Registry64
+            if ($machine -eq 0x014c)
+            {
+                $registry_view = [Microsoft.Win32.RegistryView]::Registry32
+            }
+
+            if (-not (is_com_registered_in_hive $clsid_text_service $target_path $registry_view ([Microsoft.Win32.RegistryHive]::LocalMachine)))
+            {
+                $machine_ok = $false
+            }
+        }
+
+        if (-not $machine_ok)
+        {
+            Write-Error "Machine-wide COM registration is still missing. Elevated apps may not load Cassotis IME."
+            exit 1
+        }
+        else
+        {
+            Write-Host "Machine-wide COM registration is now valid."
+        }
+    }
+    else
+    {
+        Write-Host "Warning: machine-wide COM registration missing. Elevated Terminal/PowerShell cannot use Cassotis IME."
+        Write-Host "Please run this script once in an Administrator PowerShell."
+    }
 }
 
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path

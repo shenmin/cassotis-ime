@@ -51,14 +51,21 @@ type
     TncEngineHost = class
     private
         m_sessions: TObjectDictionary<string, TncHostSession>;
+        m_active_sessions: TDictionary<string, Byte>;
+        m_recent_active_sessions: TDictionary<string, DWORD>;
+        m_shift_toggle_ticks: TDictionary<string, DWORD>;
         m_lock: TCriticalSection;
         m_ai_refresh_thread: TThread;
         m_config_path: string;
         m_last_config_write: TDateTime;
         m_config: TncEngineConfig;
         function get_config_write_time: TDateTime;
+        procedure persist_engine_config(const config: TncEngineConfig);
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
+        procedure touch_session_activity(const session_id: string);
+        procedure set_session_active(const session_id: string; const active: Boolean);
+        function has_active_session: Boolean;
         procedure refresh_ai_candidates;
     public
         constructor create;
@@ -72,6 +79,8 @@ type
             out punctuation_full_width: Boolean): Boolean;
         function set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean): Boolean;
+        function get_active(out active: Boolean): Boolean;
+        function set_active(const session_id: string; const active: Boolean): Boolean;
         procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean);
         procedure update_surrounding(const session_id: string; const left_context: string);
         procedure reset_session(const session_id: string);
@@ -80,11 +89,13 @@ type
     TncPipeServerThread = class(TThread)
     private
         m_host: TncEngineHost;
+        m_pipe_name: string;
         function handle_request(const request_text: string): string;
     protected
         procedure Execute; override;
     public
-        constructor create(const host: TncEngineHost);
+        constructor create(const host: TncEngineHost; const pipe_name: string);
+        property pipe_name: string read m_pipe_name;
     end;
 
     TncAiRefreshThread = class(TThread)
@@ -104,11 +115,37 @@ const
     c_default_offset = 20;
     c_text_ext_offset = 2;
     c_ai_refresh_poll_ms = 120;
+    c_recent_active_ttl_ms = 320;
+    c_shift_toggle_dedupe_ms = 90;
+    c_tray_host_mutex_name_format = 'Local\cassotis_ime_tray_host_v1_s%d';
+    c_tray_host_restart_min_interval_ms = 800;
+    c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)S:(ML;;NW;;;LW)';
 
 var
     g_host_log_path: string = '';
     g_host_log_enabled: Boolean = False;
     g_host_log_inited: Boolean = False;
+    g_last_tray_host_start_tick: DWORD = 0;
+
+function ConvertStringSecurityDescriptorToSecurityDescriptorW(
+    StringSecurityDescriptor: LPCWSTR; StringSDRevision: DWORD;
+    var SecurityDescriptor: Pointer; SecurityDescriptorSize: PDWORD): BOOL; stdcall;
+    external advapi32 name 'ConvertStringSecurityDescriptorToSecurityDescriptorW';
+
+function build_ipc_security_attributes(out security_attributes: TSecurityAttributes;
+    out security_descriptor: Pointer): Boolean;
+begin
+    FillChar(security_attributes, SizeOf(security_attributes), 0);
+    security_descriptor := nil;
+    Result := ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        PChar(c_ipc_security_sddl), 1, security_descriptor, nil);
+    if Result then
+    begin
+        security_attributes.nLength := SizeOf(security_attributes);
+        security_attributes.lpSecurityDescriptor := security_descriptor;
+        security_attributes.bInheritHandle := False;
+    end;
+end;
 
 function get_host_log_path: string;
 var
@@ -177,6 +214,13 @@ begin
     Result := text_value;
 end;
 
+function is_shift_key(const key_code: Word): Boolean;
+begin
+    // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
+    Result := (key_code = VK_SHIFT) or (key_code = VK_LSHIFT) or (key_code = VK_RSHIFT) or
+        (key_code = $10) or (key_code = $A0) or (key_code = $A1);
+end;
+
 procedure host_log(const text: string);
 var
     line: string;
@@ -197,6 +241,87 @@ begin
     else
     begin
         TFile.WriteAllText(log_path, line, TEncoding.UTF8);
+    end;
+end;
+
+function tray_host_mutex_exists: Boolean;
+var
+    session_id: DWORD;
+    mutex_name: string;
+    mutex_handle: THandle;
+    err: DWORD;
+begin
+    session_id := 0;
+    if not ProcessIdToSessionId(GetCurrentProcessId, session_id) then
+    begin
+        session_id := 0;
+    end;
+
+    mutex_name := Format(c_tray_host_mutex_name_format, [session_id]);
+    mutex_handle := OpenMutex(SYNCHRONIZE, False, PChar(mutex_name));
+    if mutex_handle <> 0 then
+    begin
+        CloseHandle(mutex_handle);
+        Result := True;
+        Exit;
+    end;
+
+    err := GetLastError;
+    Result := err = ERROR_ACCESS_DENIED;
+end;
+
+procedure ensure_tray_host_running;
+var
+    now_tick: DWORD;
+    path_buffer: array[0..MAX_PATH - 1] of Char;
+    path_len: DWORD;
+    module_dir: string;
+    tray_host_path: string;
+    command_line: string;
+    start_info: TStartupInfo;
+    proc_info: TProcessInformation;
+begin
+    if tray_host_mutex_exists then
+    begin
+        Exit;
+    end;
+
+    now_tick := GetTickCount;
+    if (g_last_tray_host_start_tick <> 0) and
+        (DWORD(now_tick - g_last_tray_host_start_tick) < c_tray_host_restart_min_interval_ms) then
+    begin
+        Exit;
+    end;
+    g_last_tray_host_start_tick := now_tick;
+
+    path_len := GetModuleFileName(HInstance, path_buffer, Length(path_buffer));
+    if path_len = 0 then
+    begin
+        Exit;
+    end;
+
+    module_dir := ExtractFileDir(path_buffer);
+    tray_host_path := IncludeTrailingPathDelimiter(module_dir) + 'cassotis_ime_tray_host.exe';
+    if not FileExists(tray_host_path) then
+    begin
+        host_log('tray host not found, skip auto-restart');
+        Exit;
+    end;
+
+    FillChar(start_info, SizeOf(start_info), 0);
+    start_info.cb := SizeOf(start_info);
+    FillChar(proc_info, SizeOf(proc_info), 0);
+    command_line := '"' + tray_host_path + '"';
+    if CreateProcess(PChar(tray_host_path), PChar(command_line), nil, nil, False, CREATE_NO_WINDOW, nil,
+        PChar(module_dir), start_info, proc_info) then
+    begin
+        CloseHandle(proc_info.hProcess);
+        CloseHandle(proc_info.hThread);
+        host_log('tray host auto-restart requested');
+    end
+    else
+    begin
+        host_log(Format('tray host auto-restart failed err=%d', [GetLastError]));
     end;
 end;
 
@@ -386,6 +511,9 @@ constructor TncEngineHost.create;
 begin
     inherited create;
     m_sessions := TObjectDictionary<string, TncHostSession>.Create([doOwnsValues]);
+    m_active_sessions := TDictionary<string, Byte>.Create;
+    m_recent_active_sessions := TDictionary<string, DWORD>.Create;
+    m_shift_toggle_ticks := TDictionary<string, DWORD>.Create;
     m_lock := TCriticalSection.Create;
     m_ai_refresh_thread := nil;
     m_config_path := get_default_config_path;
@@ -396,10 +524,8 @@ begin
     finally
         Free;
     end;
-    if not m_config.enable_ctrl_space_toggle then
-    begin
-        m_config.input_mode := im_chinese;
-    end;
+    // Always start a fresh TSF runtime in Chinese mode.
+    m_config.input_mode := im_chinese;
     m_last_config_write := get_config_write_time;
     m_ai_refresh_thread := TncAiRefreshThread.create(Self);
 end;
@@ -422,6 +548,21 @@ begin
     begin
         m_sessions.Free;
         m_sessions := nil;
+    end;
+    if m_active_sessions <> nil then
+    begin
+        m_active_sessions.Free;
+        m_active_sessions := nil;
+    end;
+    if m_recent_active_sessions <> nil then
+    begin
+        m_recent_active_sessions.Free;
+        m_recent_active_sessions := nil;
+    end;
+    if m_shift_toggle_ticks <> nil then
+    begin
+        m_shift_toggle_ticks.Free;
+        m_shift_toggle_ticks := nil;
     end;
     inherited Destroy;
 end;
@@ -485,6 +626,24 @@ begin
     end;
 end;
 
+procedure TncEngineHost.persist_engine_config(const config: TncEngineConfig);
+var
+    manager: TncConfigManager;
+begin
+    if m_config_path = '' then
+    begin
+        Exit;
+    end;
+
+    manager := TncConfigManager.create(m_config_path);
+    try
+        manager.save_engine_config(config);
+    finally
+        manager.Free;
+    end;
+    m_last_config_write := get_config_write_time;
+end;
+
 procedure TncEngineHost.reload_config_if_needed;
 var
     current_write: TDateTime;
@@ -503,11 +662,6 @@ begin
     finally
         manager.Free;
     end;
-    if not m_config.enable_ctrl_space_toggle then
-    begin
-        m_config.input_mode := im_chinese;
-    end;
-
     m_lock.Acquire;
     try
         for session in m_sessions.Values do
@@ -536,10 +690,93 @@ begin
     end;
 end;
 
+procedure TncEngineHost.set_session_active(const session_id: string; const active: Boolean);
+begin
+    if session_id = '' then
+    begin
+        Exit;
+    end;
+
+    m_lock.Acquire;
+    try
+        if active then
+        begin
+            if not m_active_sessions.ContainsKey(session_id) then
+            begin
+                m_active_sessions.Add(session_id, 1);
+            end;
+            m_recent_active_sessions.AddOrSetValue(session_id, GetTickCount);
+        end
+        else
+        begin
+            m_active_sessions.Remove(session_id);
+            m_recent_active_sessions.Remove(session_id);
+            m_shift_toggle_ticks.Remove(session_id);
+        end;
+    finally
+        m_lock.Release;
+    end;
+end;
+
+procedure TncEngineHost.touch_session_activity(const session_id: string);
+begin
+    if session_id = '' then
+    begin
+        Exit;
+    end;
+    if m_active_sessions.ContainsKey(session_id) then
+    begin
+        m_recent_active_sessions.AddOrSetValue(session_id, GetTickCount);
+    end;
+end;
+
+function TncEngineHost.has_active_session: Boolean;
+var
+    keys: TArray<string>;
+    key: string;
+    tick: DWORD;
+    now_tick: DWORD;
+begin
+    m_lock.Acquire;
+    try
+        if m_active_sessions.Count > 0 then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        now_tick := GetTickCount;
+        keys := m_recent_active_sessions.Keys.ToArray;
+        Result := False;
+        for key in keys do
+        begin
+            if not m_recent_active_sessions.TryGetValue(key, tick) then
+            begin
+                Continue;
+            end;
+            if DWORD(now_tick - tick) <= c_recent_active_ttl_ms then
+            begin
+                Result := True;
+                Exit;
+            end;
+            m_recent_active_sessions.Remove(key);
+        end;
+    finally
+        m_lock.Release;
+    end;
+end;
+
 function TncEngineHost.test_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
     out handled: Boolean): Boolean;
 var
     session: TncHostSession;
+    input_mode: TncInputMode;
+    next_input_mode: TncInputMode;
+    full_width_mode: Boolean;
+    punctuation_full_width: Boolean;
+    now_tick: DWORD;
+    last_tick: DWORD;
+    has_last_tick: Boolean;
 begin
     handled := False;
     if session_id = '' then
@@ -549,6 +786,59 @@ begin
     end;
 
     reload_config_if_needed;
+    m_lock.Acquire;
+    try
+        touch_session_activity(session_id);
+    finally
+        m_lock.Release;
+    end;
+
+    if is_shift_key(key_code) and (not key_state.ctrl_down) and (not key_state.alt_down) then
+    begin
+        now_tick := GetTickCount;
+        m_lock.Acquire;
+        try
+            has_last_tick := m_shift_toggle_ticks.TryGetValue(session_id, last_tick);
+        finally
+            m_lock.Release;
+        end;
+
+        if has_last_tick and (DWORD(now_tick - last_tick) <= c_shift_toggle_dedupe_ms) then
+        begin
+            handled := True;
+            Result := True;
+            Exit;
+        end;
+
+        if get_state(session_id, input_mode, full_width_mode, punctuation_full_width) then
+        begin
+            if input_mode = im_chinese then
+            begin
+                next_input_mode := im_english;
+            end
+            else
+            begin
+                next_input_mode := im_chinese;
+            end;
+
+            if set_state(session_id, next_input_mode, full_width_mode, punctuation_full_width) then
+            begin
+                m_lock.Acquire;
+                try
+                    m_shift_toggle_ticks.AddOrSetValue(session_id, now_tick);
+                finally
+                    m_lock.Release;
+                end;
+
+                host_log(Format('[DEBUG] Shift toggled input mode -> %d source=host(test_key) session=%s',
+                    [Ord(next_input_mode), session_id]));
+                handled := True;
+                Result := True;
+                Exit;
+            end;
+        end;
+    end;
+
     session := get_or_create_session(session_id);
     m_lock.Acquire;
     try
@@ -591,6 +881,7 @@ begin
     has_result := True;
     m_lock.Acquire;
     try
+        touch_session_activity(session_id);
         session.engine.reload_dictionary_if_needed;
         handled := session.engine.process_key(key_code, key_state);
 
@@ -654,9 +945,6 @@ end;
 
 function TncEngineHost.get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
     out punctuation_full_width: Boolean): Boolean;
-var
-    session: TncHostSession;
-    config: TncEngineConfig;
 begin
     input_mode := im_chinese;
     full_width_mode := False;
@@ -668,16 +956,14 @@ begin
     end;
 
     reload_config_if_needed;
-    session := get_or_create_session(session_id);
     m_lock.Acquire;
     try
-        config := session.engine.config;
+        input_mode := m_config.input_mode;
+        full_width_mode := m_config.full_width_mode;
+        punctuation_full_width := m_config.punctuation_full_width;
     finally
         m_lock.Release;
     end;
-    input_mode := config.input_mode;
-    full_width_mode := config.full_width_mode;
-    punctuation_full_width := config.punctuation_full_width;
     Result := True;
 end;
 
@@ -687,6 +973,8 @@ var
     session: TncHostSession;
     next_config: TncEngineConfig;
     input_mode_changed: Boolean;
+    global_state_changed: Boolean;
+    config_to_save: TncEngineConfig;
 begin
     Result := False;
     if session_id = '' then
@@ -710,8 +998,23 @@ begin
             session.engine.reset;
             session.clear_candidates;
         end;
+
+        global_state_changed := (m_config.input_mode <> input_mode) or (m_config.full_width_mode <> full_width_mode) or
+            (m_config.punctuation_full_width <> punctuation_full_width);
+        if global_state_changed then
+        begin
+            m_config.input_mode := input_mode;
+            m_config.full_width_mode := full_width_mode;
+            m_config.punctuation_full_width := punctuation_full_width;
+            config_to_save := m_config;
+        end;
     finally
         m_lock.Release;
+    end;
+
+    if global_state_changed then
+    begin
+        persist_engine_config(config_to_save);
     end;
 
     if input_mode_changed then
@@ -723,6 +1026,24 @@ begin
             end);
     end;
 
+    Result := True;
+end;
+
+function TncEngineHost.get_active(out active: Boolean): Boolean;
+begin
+    active := has_active_session;
+    Result := True;
+end;
+
+function TncEngineHost.set_active(const session_id: string; const active: Boolean): Boolean;
+begin
+    if session_id = '' then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    set_session_active(session_id, active);
     Result := True;
 end;
 
@@ -759,6 +1080,7 @@ var
 begin
     m_lock.Acquire;
     try
+        touch_session_activity(session_id);
         if not m_sessions.TryGetValue(session_id, session) then
         begin
             Exit;
@@ -793,11 +1115,19 @@ begin
         end);
 end;
 
-constructor TncPipeServerThread.create(const host: TncEngineHost);
+constructor TncPipeServerThread.create(const host: TncEngineHost; const pipe_name: string);
 begin
     inherited create(False);
     FreeOnTerminate := False;
     m_host := host;
+    if pipe_name <> '' then
+    begin
+        m_pipe_name := pipe_name;
+    end
+    else
+    begin
+        m_pipe_name := get_nc_pipe_name;
+    end;
 end;
 
 constructor TncAiRefreshThread.create(const host: TncEngineHost);
@@ -845,6 +1175,7 @@ var
     x: Integer;
     y: Integer;
     has_caret: Boolean;
+    active_flag: Boolean;
 begin
     Result := 'ERROR'#9'bad_request';
     try
@@ -869,7 +1200,10 @@ begin
         begin
             session_id := '';
         end;
-        host_log(Format('request cmd=%s session=%s', [cmd, session_id]));
+        if not SameText(cmd, 'GET_ACTIVE') then
+        begin
+            host_log(Format('request cmd=%s session=%s', [cmd, session_id]));
+        end;
 
         if SameText(cmd, 'RESET') then
         begin
@@ -932,6 +1266,43 @@ begin
             Exit;
         end;
 
+        if SameText(cmd, 'GET_ACTIVE') then
+        begin
+            if m_host.get_active(active_flag) then
+            begin
+                Result := 'OK'#9 + bool_to_flag(active_flag);
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
+        if SameText(cmd, 'SET_ACTIVE') then
+        begin
+            if Length(fields) < 3 then
+            begin
+                Result := 'ERROR'#9'bad_args';
+                Exit;
+            end;
+
+            active_flag := flag_to_bool(fields[2]);
+            if active_flag then
+            begin
+                ensure_tray_host_running;
+            end;
+            if m_host.set_active(session_id, active_flag) then
+            begin
+                Result := 'OK';
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
         if SameText(cmd, 'SET_STATE') then
         begin
             if Length(fields) < 5 then
@@ -967,6 +1338,7 @@ begin
                 Exit;
             end;
 
+            ensure_tray_host_running;
             key_code := StrToIntDef(fields[2], 0);
             key_state.shift_down := flag_to_bool(fields[3]);
             key_state.ctrl_down := flag_to_bool(fields[4]);
@@ -994,6 +1366,7 @@ begin
                 Exit;
             end;
 
+            ensure_tray_host_running;
             key_code := StrToIntDef(fields[2], 0);
             key_state.shift_down := flag_to_bool(fields[3]);
             key_state.ctrl_down := flag_to_bool(fields[4]);
@@ -1037,16 +1410,25 @@ var
     err: DWORD;
     last_error: DWORD;
     pipe_name: string;
+    security_attributes: TSecurityAttributes;
+    security_descriptor: Pointer;
+    security_attributes_ptr: PSecurityAttributes;
 begin
     last_error := 0;
-    pipe_name := get_nc_pipe_name;
-    host_log('pipe thread start');
+    pipe_name := m_pipe_name;
+    security_descriptor := nil;
+    security_attributes_ptr := nil;
+    if build_ipc_security_attributes(security_attributes, security_descriptor) then
+    begin
+        security_attributes_ptr := @security_attributes;
+    end;
+    host_log('pipe thread start name=' + pipe_name);
     try
         while not Terminated do
         begin
             pipe_handle := CreateNamedPipe(PChar(pipe_name), PIPE_ACCESS_DUPLEX,
                 PIPE_TYPE_MESSAGE or PIPE_READMODE_MESSAGE or PIPE_WAIT,
-                PIPE_UNLIMITED_INSTANCES, c_pipe_out_buffer, c_pipe_in_buffer, 0, nil);
+                PIPE_UNLIMITED_INSTANCES, c_pipe_out_buffer, c_pipe_in_buffer, 0, security_attributes_ptr);
             if pipe_handle = INVALID_HANDLE_VALUE then
             begin
                 err := GetLastError;
@@ -1101,7 +1483,12 @@ begin
             host_log(Format('pipe thread exception %s: %s', [e.ClassName, e.Message]));
         end;
     end;
-    host_log('pipe thread end');
+    if security_descriptor <> nil then
+    begin
+        LocalFree(HLOCAL(security_descriptor));
+        security_descriptor := nil;
+    end;
+    host_log('pipe thread end name=' + pipe_name);
 end;
 
 end.
