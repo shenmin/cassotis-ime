@@ -115,7 +115,7 @@ const
 procedure TncStatusForm.CreateParams(var Params: TCreateParams);
 begin
     inherited;
-    Params.ExStyle := (Params.ExStyle or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
+    Params.ExStyle := (Params.ExStyle or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE) and (not WS_EX_APPWINDOW);
     if Application <> nil then
     begin
         Params.WndParent := Application.Handle;
@@ -326,6 +326,7 @@ begin
     m_status_form.KeyPreview := False;
     m_status_form.PopupMode := pmNone;
     m_status_form.PopupParent := nil;
+    m_status_form.DoubleBuffered := True;
     m_status_form.OnClose := status_form_close;
 
     m_status_panel := TPanel.Create(m_status_form);
@@ -586,6 +587,10 @@ end;
 procedure TncTrayHost.enforce_status_form_toolwindow_style;
 var
     ex_style: NativeInt;
+    desired_ex_style: NativeInt;
+    parent_hwnd: HWND;
+    style_changed: Boolean;
+    parent_changed: Boolean;
 begin
     if m_status_form = nil then
     begin
@@ -593,46 +598,85 @@ begin
     end;
 
     m_status_form.HandleNeeded;
+    parent_hwnd := GetWindowLongPtr(m_status_form.Handle, GWLP_HWNDPARENT);
+    parent_changed := (Application <> nil) and (parent_hwnd <> Application.Handle);
     if Application <> nil then
     begin
-        SetWindowLongPtr(m_status_form.Handle, GWLP_HWNDPARENT, NativeInt(Application.Handle));
+        if parent_changed then
+        begin
+            SetWindowLongPtr(m_status_form.Handle, GWLP_HWNDPARENT, NativeInt(Application.Handle));
+        end;
     end;
     ex_style := GetWindowLongPtr(m_status_form.Handle, GWL_EXSTYLE);
-    ex_style := (ex_style or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
-    SetWindowLongPtr(m_status_form.Handle, GWL_EXSTYLE, ex_style);
-    SetWindowPos(
-        m_status_form.Handle,
-        HWND_TOPMOST,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_FRAMECHANGED
-    );
+    desired_ex_style := (ex_style or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE) and (not WS_EX_APPWINDOW);
+    style_changed := ex_style <> desired_ex_style;
+    if style_changed then
+    begin
+        SetWindowLongPtr(m_status_form.Handle, GWL_EXSTYLE, desired_ex_style);
+    end;
+
+    if style_changed or parent_changed then
+    begin
+        SetWindowPos(
+            m_status_form.Handle,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_FRAMECHANGED
+        );
+    end;
 end;
 
 procedure TncTrayHost.apply_status_widget_visibility;
 var
     should_show: Boolean;
+    status_visible: Boolean;
 begin
     if (m_status_form = nil) or (m_item_status_widget = nil) then
     begin
         Exit;
     end;
 
+    if m_status_dragging and ((GetAsyncKeyState(VK_LBUTTON) and $8000) = 0) then
+    begin
+        m_status_dragging := False;
+        if GetCapture = m_status_form.Handle then
+        begin
+            ReleaseCapture;
+        end;
+    end;
+
     should_show := m_item_status_widget.Checked and m_engine_active;
+    if m_status_dragging and m_item_status_widget.Checked then
+    begin
+        // Do not hide during drag on transient active-state flips.
+        should_show := True;
+    end;
+
+    status_visible := m_status_form.Visible or IsWindowVisible(m_status_form.Handle);
+
     if should_show then
     begin
-        if not m_status_form.Visible then
+        if not status_visible then
         begin
             enforce_status_form_toolwindow_style;
             m_status_form.Show;
         end;
-        enforce_status_form_toolwindow_style;
+        SetWindowPos(
+            m_status_form.Handle,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER
+        );
     end
     else
     begin
-        if m_status_form.Visible then
+        if status_visible then
         begin
             m_status_form.Hide;
         end;
@@ -809,6 +853,8 @@ end;
 
 procedure TncTrayHost.status_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
     Y: Integer);
+var
+    window_rect: TRect;
 begin
     if (Button <> mbLeft) or (m_status_form = nil) then
     begin
@@ -817,7 +863,15 @@ begin
 
     m_status_dragging := True;
     m_status_drag_cursor_origin := Mouse.CursorPos;
-    m_status_drag_form_origin := Point(m_status_form.Left, m_status_form.Top);
+    if GetWindowRect(m_status_form.Handle, window_rect) then
+    begin
+        m_status_drag_form_origin := Point(window_rect.Left, window_rect.Top);
+    end
+    else
+    begin
+        m_status_drag_form_origin := Point(m_status_form.Left, m_status_form.Top);
+    end;
+    SetCapture(m_status_form.Handle);
 end;
 
 procedure TncTrayHost.status_mouse_move(Sender: TObject; Shift: TShiftState; X: Integer; Y: Integer);
@@ -834,8 +888,15 @@ begin
     cursor_point := Mouse.CursorPos;
     delta_x := cursor_point.X - m_status_drag_cursor_origin.X;
     delta_y := cursor_point.Y - m_status_drag_cursor_origin.Y;
-    m_status_form.Left := m_status_drag_form_origin.X + delta_x;
-    m_status_form.Top := m_status_drag_form_origin.Y + delta_y;
+    SetWindowPos(
+        m_status_form.Handle,
+        HWND_TOPMOST,
+        m_status_drag_form_origin.X + delta_x,
+        m_status_drag_form_origin.Y + delta_y,
+        0,
+        0,
+        SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER
+    );
 end;
 
 procedure TncTrayHost.status_mouse_up(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
@@ -848,12 +909,22 @@ begin
     if m_status_dragging then
     begin
         m_status_dragging := False;
+        if GetCapture = m_status_form.Handle then
+        begin
+            ReleaseCapture;
+        end;
         save_status_widget_state;
     end;
 end;
 
 procedure TncTrayHost.status_form_close(Sender: TObject; var Action: TCloseAction);
 begin
+    m_status_dragging := False;
+    if (m_status_form <> nil) and (GetCapture = m_status_form.Handle) then
+    begin
+        ReleaseCapture;
+    end;
+
     Action := caNone;
     if m_status_form <> nil then
     begin
