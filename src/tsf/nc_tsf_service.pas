@@ -205,6 +205,13 @@ begin
         (key_code = $10) or (key_code = $A0) or (key_code = $A1);
 end;
 
+function is_ctrl_key(const key_code: Word): Boolean;
+begin
+    // Keep literal VK values as fallback for hosts that report generic/side-specific Ctrl differently.
+    Result := (key_code = VK_CONTROL) or (key_code = VK_LCONTROL) or (key_code = VK_RCONTROL) or
+        (key_code = $11) or (key_code = $A2) or (key_code = $A3);
+end;
+
 const
     TF_ES_ASYNCDONTCARE = $0;
     TF_ES_SYNC = $1;
@@ -850,6 +857,21 @@ begin
             Ord(key_state.alt_down), Ord(key_state.caps_lock)]));
     end;
 
+    // Guard against stale pending flags when KeyUp events are dropped by host/app.
+    if not key_state.shift_down then
+    begin
+        m_shift_space_toggle_pending := False;
+    end;
+    if not key_state.ctrl_down then
+    begin
+        m_ctrl_period_toggle_pending := False;
+        m_ctrl_shift_t_toggle_pending := False;
+    end
+    else if not key_state.shift_down then
+    begin
+        m_ctrl_shift_t_toggle_pending := False;
+    end;
+
     if is_shift_key(key_code) then
     begin
         if (not key_state.ctrl_down) and (not key_state.alt_down) then
@@ -970,6 +992,21 @@ begin
             Ord(key_state.caps_lock)]));
     end;
 
+    // Guard against stale pending flags when KeyUp events are dropped by host/app.
+    if not key_state.shift_down then
+    begin
+        m_shift_space_toggle_pending := False;
+    end;
+    if not key_state.ctrl_down then
+    begin
+        m_ctrl_period_toggle_pending := False;
+        m_ctrl_shift_t_toggle_pending := False;
+    end
+    else if not key_state.shift_down then
+    begin
+        m_ctrl_shift_t_toggle_pending := False;
+    end;
+
     if is_shift_key(key_code) then
     begin
         if (not key_state.ctrl_down) and (not key_state.alt_down) then
@@ -996,6 +1033,7 @@ begin
         m_shift_key_down := False;
         m_shift_toggle_pending := False;
         m_shift_toggle_canceled := False;
+        m_shift_space_toggle_pending := False;
     end;
 
     if key_state.shift_down and (key_code = VK_SPACE) and (not key_state.ctrl_down) and (not key_state.alt_down) then
@@ -1120,6 +1158,16 @@ begin
         Exit;
     end;
 
+    if is_ctrl_key(key_code) then
+    begin
+        if m_ctrl_period_toggle_pending or m_ctrl_shift_t_toggle_pending then
+        begin
+            eaten := 1;
+        end;
+        Result := S_OK;
+        Exit;
+    end;
+
     if (key_code = VK_SPACE) and m_shift_space_toggle_pending then
     begin
         eaten := 1;
@@ -1157,6 +1205,20 @@ begin
         m_shift_key_down := False;
         m_shift_toggle_pending := False;
         m_shift_toggle_canceled := False;
+        m_shift_space_toggle_pending := False;
+        m_ctrl_shift_t_toggle_pending := False;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if is_ctrl_key(key_code) then
+    begin
+        if m_ctrl_period_toggle_pending or m_ctrl_shift_t_toggle_pending then
+        begin
+            eaten := 1;
+        end;
+        m_ctrl_period_toggle_pending := False;
+        m_ctrl_shift_t_toggle_pending := False;
         Result := S_OK;
         Exit;
     end;

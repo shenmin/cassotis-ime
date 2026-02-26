@@ -111,13 +111,6 @@ begin
         begin
             Exit;
         end;
-
-        // Keep jianpin lookup on consonant-like abbreviations only to avoid
-        // polluting normal full-pinyin queries.
-        if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
-        begin
-            Exit;
-        end;
     end;
 
     Result := True;

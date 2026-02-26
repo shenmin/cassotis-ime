@@ -1,3 +1,8 @@
+[CmdletBinding()]
+param(
+    [switch]$SkipTsf
+)
+
 $ErrorActionPreference = 'Stop'
 
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -905,20 +910,28 @@ function copy_sqlite_binaries
 
 stop_engine_host
 Write-Host ("[{0}] Start rebuild_all.ps1" -f (Get-Date -Format 'HH:mm:ss'))
-stop_processes_using_dll @('cassotis_ime_svr.dll', 'cassotis_ime_svr32.dll')
 
-$tsf_project = 'src\tsf\cassotis_ime_svr.dproj'
-$tsf_win32_stage = Join-Path $win32_stage_dir 'cassotis_ime_svr.dll'
-$tsf_win64_stage = Join-Path $win64_stage_dir 'cassotis_ime_svr.dll'
-$tsf_win32 = Join-Path $script_dir 'cassotis_ime_svr32.dll'
-$tsf_win64 = Join-Path $script_dir 'cassotis_ime_svr.dll'
+if (-not $SkipTsf)
+{
+    stop_processes_using_dll @('cassotis_ime_svr.dll', 'cassotis_ime_svr32.dll')
 
-invoke_build $tsf_project 'Win32' $win32_stage_dir $tsf_win32_stage
-move_item_with_retry $tsf_win32_stage $tsf_win32 $true | Out-Null
-assert_expected_machine $tsf_win32 0x014c
-invoke_build $tsf_project 'Win64' $win64_stage_dir $tsf_win64_stage
-move_item_with_retry $tsf_win64_stage $tsf_win64 $true | Out-Null
-assert_expected_machine $tsf_win64 0x8664
+    $tsf_project = 'src\tsf\cassotis_ime_svr.dproj'
+    $tsf_win32_stage = Join-Path $win32_stage_dir 'cassotis_ime_svr.dll'
+    $tsf_win64_stage = Join-Path $win64_stage_dir 'cassotis_ime_svr.dll'
+    $tsf_win32 = Join-Path $script_dir 'cassotis_ime_svr32.dll'
+    $tsf_win64 = Join-Path $script_dir 'cassotis_ime_svr.dll'
+
+    invoke_build $tsf_project 'Win32' $win32_stage_dir $tsf_win32_stage
+    move_item_with_retry $tsf_win32_stage $tsf_win32 $true | Out-Null
+    assert_expected_machine $tsf_win32 0x014c
+    invoke_build $tsf_project 'Win64' $win64_stage_dir $tsf_win64_stage
+    move_item_with_retry $tsf_win64_stage $tsf_win64 $true | Out-Null
+    assert_expected_machine $tsf_win64 0x8664
+}
+else
+{
+    Write-Host "Skip TSF build: -SkipTsf specified."
+}
 
 $build_list = @(
     @{ path = 'tools\cassotis_ime_host.dproj'; exe = 'cassotis_ime_host.exe' },

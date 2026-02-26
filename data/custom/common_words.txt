@@ -1,5 +1,5 @@
 # Cassotis IME 自维护常用词表（纯中文词条，一行一个）
-# 说明：该列表不含拼音，由 cassotis_ime_thuocl_import.exe 结合 Unihan 生成拼音
+# 说明：该列表不含拼音，由词库构建流程结合 Unihan 生成拼音
 
 你好
 您好

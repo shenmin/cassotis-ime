@@ -791,6 +791,7 @@ begin
     end
     else
     begin
+        hide_status_hint;
         if status_visible then
         begin
             m_status_form.Hide;
