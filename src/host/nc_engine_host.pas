@@ -63,6 +63,7 @@ type
         procedure persist_engine_config(const config: TncEngineConfig);
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
+        procedure apply_global_engine_config_locked(const config: TncEngineConfig);
         procedure touch_session_activity(const session_id: string);
         procedure set_session_active(const session_id: string; const active: Boolean);
         function has_active_session: Boolean;
@@ -675,6 +676,16 @@ begin
     m_last_config_write := current_write;
 end;
 
+procedure TncEngineHost.apply_global_engine_config_locked(const config: TncEngineConfig);
+var
+    session: TncHostSession;
+begin
+    for session in m_sessions.Values do
+    begin
+        session.update_config(config);
+    end;
+end;
+
 function TncEngineHost.get_or_create_session(const session_id: string): TncHostSession;
 begin
     m_lock.Acquire;
@@ -862,6 +873,8 @@ var
     config: TncEngineConfig;
     should_hide_candidates: Boolean;
     has_result: Boolean;
+    global_state_changed: Boolean;
+    config_to_save: TncEngineConfig;
 begin
     handled := False;
     commit_text := '';
@@ -889,6 +902,17 @@ begin
         input_mode := config.input_mode;
         full_width_mode := config.full_width_mode;
         punctuation_full_width := config.punctuation_full_width;
+        global_state_changed := (m_config.input_mode <> config.input_mode) or
+            (m_config.full_width_mode <> config.full_width_mode) or
+            (m_config.punctuation_full_width <> config.punctuation_full_width);
+        if global_state_changed then
+        begin
+            m_config.input_mode := config.input_mode;
+            m_config.full_width_mode := config.full_width_mode;
+            m_config.punctuation_full_width := config.punctuation_full_width;
+            apply_global_engine_config_locked(m_config);
+            config_to_save := m_config;
+        end;
 
         if not handled then
         begin
@@ -938,6 +962,11 @@ begin
             begin
                 session.hide_candidate_window;
             end);
+    end;
+
+    if global_state_changed then
+    begin
+        persist_engine_config(config_to_save);
     end;
 
     Result := has_result;
@@ -1006,6 +1035,7 @@ begin
             m_config.input_mode := input_mode;
             m_config.full_width_mode := full_width_mode;
             m_config.punctuation_full_width := punctuation_full_width;
+            apply_global_engine_config_locked(m_config);
             config_to_save := m_config;
         end;
     finally

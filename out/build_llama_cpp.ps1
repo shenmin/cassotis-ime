@@ -1,11 +1,11 @@
 param(
-    [ValidateSet('all', 'win32', 'win64')]
+    [ValidateSet('all', 'win64')]
     [string]$arch = 'all',
-    [ValidateSet('cpu', 'cuda')]
-    [string]$backend = 'cpu',
+    [ValidateSet('all', 'cpu', 'cuda')]
+    [string]$backend = 'all',
     [ValidateSet('Release', 'Debug')]
     [string]$config = 'Release',
-    [string]$tag = 'b7951',
+    [string]$tag = 'b8145',
     [string]$cuda_root = '',
     [switch]$force_clone,
     [switch]$force_reconfigure
@@ -45,6 +45,26 @@ function run_cmd([string]$workdir, [string]$command_line)
     finally
     {
         Pop-Location
+    }
+}
+
+function remove_stale_git_locks([string]$repo_dir)
+{
+    $git_dir = Join-Path $repo_dir '.git'
+    if (-not (Test-Path -LiteralPath $git_dir))
+    {
+        return
+    }
+
+    $lock_names = @('index.lock', 'shallow.lock')
+    foreach ($name in $lock_names)
+    {
+        $lock_path = Join-Path $git_dir $name
+        if (Test-Path -LiteralPath $lock_path)
+        {
+            Write-Warning "Removing stale git lock: $lock_path"
+            Remove-Item -Force -LiteralPath $lock_path
+        }
     }
 }
 
@@ -181,7 +201,12 @@ function clone_or_update_llama([string]$repo_root, [string]$tag_name, [bool]$rec
     {
         ensure_directory (Join-Path $repo_root 'third_party')
         run_cmd $repo_root "git clone --branch $tag_name --depth 1 https://github.com/ggml-org/llama.cpp.git `"$src_dir`""
+        return $src_dir
     }
+
+    remove_stale_git_locks $src_dir
+    run_cmd $src_dir "git fetch --depth 1 origin refs/tags/$tag_name`:refs/tags/$tag_name"
+    run_cmd $src_dir "git checkout -f tags/$tag_name"
 
     return $src_dir
 }
@@ -264,29 +289,21 @@ function build_one_arch(
 {
     $nvcc_path = ''
     $cmake_cuda_root = ''
-    if ($target_arch -eq 'win64')
+    if ($target_arch -ne 'win64')
     {
-        $vs_arch = 'x64'
-        if ($backend_name -eq 'cuda')
-        {
-            $build_dir_name = 'build-win64-cuda'
-            $out_dir_name = 'win64-cuda'
-        }
-        else
-        {
-            $build_dir_name = 'build-win64'
-            $out_dir_name = 'win64'
-        }
+        throw "Unsupported arch: $target_arch. Only win64 is supported."
+    }
+
+    $vs_arch = 'x64'
+    if ($backend_name -eq 'cuda')
+    {
+        $build_dir_name = 'build-win64-cuda'
+        $out_dir_name = 'win64-cuda'
     }
     else
     {
-        if ($backend_name -eq 'cuda')
-        {
-            throw 'CUDA backend only supports Win64 on Windows.'
-        }
-        $vs_arch = 'x86'
-        $build_dir_name = 'build-win32'
-        $out_dir_name = 'win32'
+        $build_dir_name = 'build-win64'
+        $out_dir_name = 'win64'
     }
 
     $build_dir = Join-Path $src_dir $build_dir_name
@@ -426,48 +443,48 @@ $repo_root = resolve_path (Join-Path $script_dir '..')
 $vs_paths = resolve_vs_paths
 $src = clone_or_update_llama $repo_root $tag $force_clone.IsPresent
 
-$targets = @()
-if ($arch -eq 'all')
+$targets = @('win64')
+if (($arch -ne 'all') -and ($arch -ne 'win64'))
 {
-    if ($backend -eq 'cuda')
-    {
-        $targets = @('win64')
-    }
-    else
-    {
-        $targets = @('win64', 'win32')
-    }
+    throw "Unsupported arch: $arch. Use win64."
+}
+
+$backend_targets = @()
+if ($backend -eq 'all')
+{
+    $backend_targets = @('cpu', 'cuda')
 }
 else
 {
-    if (($backend -eq 'cuda') -and ($arch -eq 'win32'))
-    {
-        throw 'CUDA backend does not support Win32.'
-    }
-    $targets = @($arch)
+    $backend_targets = @($backend)
 }
 
 $resolved_cuda_root = ''
-if ($backend -eq 'cuda')
+if ($backend_targets -contains 'cuda')
 {
     $resolved_cuda_root = resolve_cuda_root $cuda_root
 }
 
-foreach ($target in $targets)
+$artifacts = @()
+foreach ($backend_name in $backend_targets)
 {
-    build_one_arch $repo_root $src $vs_paths.cmake $vs_paths.devcmd $target $backend $config $force_reconfigure.IsPresent $resolved_cuda_root
+    foreach ($target in $targets)
+    {
+        build_one_arch $repo_root $src $vs_paths.cmake $vs_paths.devcmd $target $backend_name $config $force_reconfigure.IsPresent $resolved_cuda_root
+        if ($backend_name -eq 'cuda')
+        {
+            $artifacts += "$repo_root\out\llama\$target-cuda"
+        }
+        else
+        {
+            $artifacts += "$repo_root\out\llama\$target"
+        }
+    }
 }
 
 Write-Host "llama.cpp build done."
 Write-Host "Artifacts:"
-foreach ($target in $targets)
+foreach ($artifact in $artifacts)
 {
-    if ($backend -eq 'cuda')
-    {
-        Write-Host "  $repo_root\\out\\llama\\$target-cuda"
-    }
-    else
-    {
-        Write-Host "  $repo_root\\out\\llama\\$target"
-    }
+    Write-Host "  $artifact"
 }

@@ -1,6 +1,7 @@
 param(
     [switch]$NoRestartHost,
-    [switch]$NoAutoDownloadUnihan
+    [switch]$NoAutoDownloadUnihan,
+    [switch]$NoExternalLexicon
 )
 
 $ErrorActionPreference = 'Stop'
@@ -297,23 +298,28 @@ function ensure_unihan_sources {
 
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script_dir
+$repo_root = Split-Path -Parent $script_dir
 
 $dict_init = Join-Path $script_dir 'cassotis_ime_dict_init.exe'
 $unihan_import = Join-Path $script_dir 'cassotis_ime_unihan_import.exe'
 $variant_convert = Join-Path $script_dir 'cassotis_ime_variant_convert.exe'
 $check_unihan_readings = Join-Path $script_dir 'check_unihan_readings.ps1'
 
-$schema_path = Join-Path $script_dir '..\data\schema.sql'
+$schema_path = Join-Path $repo_root 'data\schema.sql'
 $base_db_sc_path = Join-Path $script_dir 'data\dict_sc.db'
 $base_db_tc_path = Join-Path $script_dir 'data\dict_tc.db'
 
-$unihan_readings = Join-Path $script_dir '..\data\lexicon\unihan\Unihan_Readings.txt'
-$unihan_variants = Join-Path $script_dir '..\data\lexicon\unihan\Unihan_Variants.txt'
-$unihan_dictlike = Join-Path $script_dir '..\data\lexicon\unihan\Unihan_DictionaryLikeData.txt'
-$unihan_output_all = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan_all.txt'
-$unihan_output_sc = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan.txt'
-$unihan_output_tc = Join-Path $script_dir '..\data\lexicon\unihan\dict_unihan_tc.txt'
+$unihan_readings = Join-Path $repo_root 'data\lexicon\unihan\Unihan_Readings.txt'
+$unihan_variants = Join-Path $repo_root 'data\lexicon\unihan\Unihan_Variants.txt'
+$unihan_dictlike = Join-Path $repo_root 'data\lexicon\unihan\Unihan_DictionaryLikeData.txt'
+$unihan_output_all = Join-Path $repo_root 'data\lexicon\unihan\dict_unihan_all.txt'
+$unihan_output_sc = Join-Path $repo_root 'data\lexicon\unihan\dict_unihan.txt'
+$unihan_output_tc = Join-Path $repo_root 'data\lexicon\unihan\dict_unihan_tc.txt'
 $tmp_build_root = Join-Path $script_dir '_tmp_build'
+
+$external_lexicon_root = Join-Path $repo_root '..\cassotis_lexicon'
+$external_dict_sc = Join-Path $external_lexicon_root 'data\generated\dict_clean_sc.txt'
+$external_dict_tc = Join-Path $external_lexicon_root 'data\generated\dict_clean_tc.txt'
 
 require_path $dict_init 'cassotis_ime_dict_init.exe'
 require_path $unihan_import 'cassotis_ime_unihan_import.exe'
@@ -377,6 +383,25 @@ try {
 
     Write-Host 'Importing traditional dict...'
     invoke_tool 'cassotis_ime_dict_init (unihan tc)' $dict_init @($base_db_tc_path, $schema_path, $unihan_output_tc)
+
+    if (-not $NoExternalLexicon) {
+        if (Test-Path -LiteralPath $external_lexicon_root) {
+            require_path $external_dict_sc 'external dict_clean_sc.txt'
+            require_path $external_dict_tc 'external dict_clean_tc.txt'
+
+            Write-Host ("Importing external simplified dict from: " + $external_dict_sc)
+            invoke_tool 'cassotis_ime_dict_init (external sc)' $dict_init @($base_db_sc_path, $schema_path, $external_dict_sc)
+
+            Write-Host ("Importing external traditional dict from: " + $external_dict_tc)
+            invoke_tool 'cassotis_ime_dict_init (external tc)' $dict_init @($base_db_tc_path, $schema_path, $external_dict_tc)
+        }
+        else {
+            Write-Host ("External lexicon directory not found, skipping: " + $external_lexicon_root)
+        }
+    }
+    else {
+        Write-Host 'Skipping external lexicon import (-NoExternalLexicon).'
+    }
 
     Write-Host 'Rebuild completed.'
 }

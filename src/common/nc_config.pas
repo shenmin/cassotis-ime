@@ -223,6 +223,7 @@ var
     log_config: TncLogConfig;
     variant_text: string;
     legacy_dict_path: string;
+    needs_full_write: Boolean;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
@@ -305,6 +306,19 @@ begin
         begin
             Result.ai_request_timeout_ms := c_default_ai_request_timeout_ms;
         end;
+
+        needs_full_write := not ini.ValueExists('engine', 'input_mode') or
+            not ini.ValueExists('engine', 'max_candidates') or
+            not ini.ValueExists('engine', 'enable_ai') or
+            not ini.ValueExists('dictionary', 'variant') or
+            not ini.ValueExists('dictionary', 'db_path_sc') or
+            not ini.ValueExists('dictionary', 'db_path_tc') or
+            not ini.ValueExists('dictionary', 'user_db_path') or
+            not ini.ValueExists('ai', 'llama_backend') or
+            not ini.ValueExists('ai', 'llama_runtime_dir_cpu') or
+            not ini.ValueExists('ai', 'llama_runtime_dir_cuda') or
+            not ini.ValueExists('ai', 'llama_model_path') or
+            not ini.ValueExists('ai', 'request_timeout_ms');
     finally
         ini.Free;
     end;
@@ -316,7 +330,7 @@ begin
     Result.ai_llama_runtime_dir_cuda := resolve_runtime_path(Result.ai_llama_runtime_dir_cuda);
     Result.ai_llama_model_path := resolve_runtime_path(Result.ai_llama_model_path);
 
-    if config_version < c_config_version then
+    if (config_version < c_config_version) or needs_full_write then
     begin
         log_config := load_log_config;
         save_engine_config(Result);

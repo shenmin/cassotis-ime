@@ -146,6 +146,8 @@ type
         m_abort_requested: Integer;
         function resolve_path(const value: string): string;
         function resolve_runtime_dir(const value: string): string;
+        function get_runtime_build_info_value(const key: string): string;
+        function get_model_file_size_mb(const model_path: string): Int64;
         function require_runtime_export(const handle: HMODULE; const export_name: AnsiString; out out_ptr: Pointer;
             out error_text: string): Boolean;
         function bind_runtime_exports(const handle: HMODULE; out error_text: string): Boolean;
@@ -364,6 +366,73 @@ end;
 function TncLlamaBridge.resolve_runtime_dir(const value: string): string;
 begin
     Result := resolve_path(value);
+end;
+
+function TncLlamaBridge.get_runtime_build_info_value(const key: string): string;
+var
+    runtime_root: string;
+    build_info_path: string;
+    lines: TStringList;
+    i: Integer;
+    line_text: string;
+    prefix: string;
+begin
+    Result := '';
+    if m_runtime_dir = '' then
+    begin
+        Exit;
+    end;
+
+    runtime_root := m_runtime_dir;
+    if SameText(ExtractFileName(runtime_root), 'bin') then
+    begin
+        runtime_root := ExtractFileDir(runtime_root);
+    end;
+
+    build_info_path := IncludeTrailingPathDelimiter(runtime_root) + 'build_info.txt';
+    if not FileExists(build_info_path) then
+    begin
+        Exit;
+    end;
+
+    prefix := LowerCase(Trim(key)) + '=';
+    lines := TStringList.Create;
+    try
+        lines.LoadFromFile(build_info_path, TEncoding.UTF8);
+        for i := 0 to lines.Count - 1 do
+        begin
+            line_text := Trim(lines[i]);
+            if Pos(prefix, LowerCase(line_text)) = 1 then
+            begin
+                Result := Trim(Copy(line_text, Length(prefix) + 1, MaxInt));
+                Exit;
+            end;
+        end;
+    finally
+        lines.Free;
+    end;
+end;
+
+function TncLlamaBridge.get_model_file_size_mb(const model_path: string): Int64;
+var
+    stream: TFileStream;
+begin
+    Result := 0;
+    if (model_path = '') or (not FileExists(model_path)) then
+    begin
+        Exit;
+    end;
+
+    try
+        stream := TFileStream.Create(model_path, fmOpenRead or fmShareDenyNone);
+        try
+            Result := stream.Size div (1024 * 1024);
+        finally
+            stream.Free;
+        end;
+    except
+        Result := 0;
+    end;
 end;
 
 function TncLlamaBridge.require_runtime_export(const handle: HMODULE; const export_name: AnsiString;
@@ -720,6 +789,10 @@ var
     context_ptr: Pointer;
     vocab_ptr: Pointer;
     model_path_utf8: UTF8String;
+    runtime_commit: string;
+    model_size_mb: Int64;
+    hint_text: string;
+    lower_file_name: string;
 begin
     Result := False;
     error_text := '';
@@ -769,7 +842,21 @@ begin
     model_ptr := m_model_load_from_file(PAnsiChar(model_path_utf8), model_params);
     if model_ptr = nil then
     begin
-        error_text := Format('llama_model_load_from_file failed: %s', [resolved_path]);
+        runtime_commit := get_runtime_build_info_value('commit');
+        if runtime_commit = '' then
+        begin
+            runtime_commit := 'unknown';
+        end;
+        model_size_mb := get_model_file_size_mb(resolved_path);
+        hint_text := '';
+        lower_file_name := LowerCase(ExtractFileName(resolved_path));
+        if Pos('qwen3.5', lower_file_name) > 0 then
+        begin
+            hint_text := ' hint: Qwen3.5 GGUF may require newer llama.cpp; rebuild with out/build_llama_cpp.ps1 -tag b8145 (or newer).';
+        end;
+        error_text := Format(
+            'llama_model_load_from_file failed: %s (backend=%s runtime=%s commit=%s model_mb=%d).%s',
+            [resolved_path, llama_backend_to_text(m_resolved_backend), m_runtime_dir, runtime_commit, model_size_mb, hint_text]);
         bridge_debug(error_text);
         Exit;
     end;
