@@ -73,7 +73,9 @@ type
         m_shift_key_down: Boolean;
         m_shift_toggle_pending: Boolean;
         m_shift_toggle_canceled: Boolean;
-        m_last_shift_toggle_tick: DWORD;
+        m_shift_space_toggle_pending: Boolean;
+        m_ctrl_period_toggle_pending: Boolean;
+        m_ctrl_shift_t_toggle_pending: Boolean;
         procedure clear_state;
         procedure mark_session_dirty;
         procedure reset_session_if_needed(const force: Boolean = False);
@@ -104,6 +106,9 @@ type
             const punctuation_full_width: Boolean);
         procedure update_active_state(const active: Boolean);
         procedure toggle_input_mode_by_shift;
+        procedure toggle_full_width_mode_by_shift_space;
+        procedure toggle_punctuation_mode_by_ctrl_period;
+        procedure toggle_dictionary_variant_by_ctrl_shift_t;
         function get_candidate_point(out point: TPoint): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
@@ -207,7 +212,6 @@ const
     TF_ES_READWRITE = $6;
     TF_ES_ASYNC = $8;
     c_edit_session_flags = TF_ES_READWRITE or TF_ES_ASYNCDONTCARE;
-    c_shift_toggle_dedupe_ms = 90;
 
 procedure TncTextService.Initialize;
 var
@@ -285,7 +289,9 @@ begin
     m_shift_key_down := False;
     m_shift_toggle_pending := False;
     m_shift_toggle_canceled := False;
-    m_last_shift_toggle_tick := 0;
+    m_shift_space_toggle_pending := False;
+    m_ctrl_period_toggle_pending := False;
+    m_ctrl_shift_t_toggle_pending := False;
 end;
 
 procedure TncTextService.mark_session_dirty;
@@ -819,6 +825,9 @@ begin
         m_shift_key_down := False;
         m_shift_toggle_pending := False;
         m_shift_toggle_canceled := False;
+        m_shift_space_toggle_pending := False;
+        m_ctrl_period_toggle_pending := False;
+        m_ctrl_shift_t_toggle_pending := False;
     end;
 
     Result := S_OK;
@@ -843,25 +852,11 @@ begin
 
     if is_shift_key(key_code) then
     begin
-        // Prefer host-side Shift toggle so all app bitness paths share one state source.
         if (not key_state.ctrl_down) and (not key_state.alt_down) then
         begin
-            handled := False;
-            if (m_ipc_client <> nil) and (m_session_id <> '') and
-                m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
-            begin
-                m_shift_key_down := True;
-                m_last_shift_toggle_tick := GetTickCount;
-                eaten := 1;
-                Result := S_OK;
-                Exit;
-            end;
-
-            if not m_shift_key_down then
-            begin
-                m_shift_key_down := True;
-                toggle_input_mode_by_shift;
-            end;
+            m_shift_key_down := True;
+            m_shift_toggle_pending := True;
+            m_shift_toggle_canceled := False;
             eaten := 1;
             Result := S_OK;
             Exit;
@@ -872,7 +867,42 @@ begin
     end
     else if m_shift_key_down then
     begin
+        m_shift_toggle_pending := False;
         m_shift_toggle_canceled := True;
+    end;
+
+    if key_state.shift_down and (key_code = VK_SPACE) and (not key_state.ctrl_down) and (not key_state.alt_down) then
+    begin
+        handled := False;
+        if (m_ipc_client <> nil) and (m_session_id <> '') and
+            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
+        begin
+            m_shift_space_toggle_pending := True;
+            eaten := 1;
+            Result := S_OK;
+            Exit;
+        end;
+    end;
+
+    if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and (not key_state.alt_down) then
+    begin
+        handled := False;
+        if (m_ipc_client <> nil) and (m_session_id <> '') and
+            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
+        begin
+            m_ctrl_period_toggle_pending := True;
+            eaten := 1;
+            Result := S_OK;
+            Exit;
+        end;
+    end;
+
+    if key_state.ctrl_down and key_state.shift_down and (not key_state.alt_down) and (key_code = Ord('T')) then
+    begin
+        m_ctrl_shift_t_toggle_pending := True;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
     end;
 
     if (m_composition <> nil) and (not key_state.ctrl_down) and (not key_state.alt_down) then
@@ -940,30 +970,66 @@ begin
             Ord(key_state.caps_lock)]));
     end;
 
-    // Some TSF hosts do not deliver reliable KeyUp/TestKeyUp callbacks.
-    // Toggle on first Shift KeyDown so the behavior is consistent everywhere.
     if is_shift_key(key_code) then
     begin
-        if (not key_state.ctrl_down) and (not key_state.alt_down) and (not m_shift_key_down) then
+        if (not key_state.ctrl_down) and (not key_state.alt_down) then
         begin
-            if DWORD(GetTickCount - m_last_shift_toggle_tick) > c_shift_toggle_dedupe_ms then
-            begin
-                m_shift_key_down := True;
-                toggle_input_mode_by_shift;
-            end
-            else
-            begin
-                m_shift_key_down := True;
-            end;
+            m_shift_key_down := True;
+            m_shift_toggle_pending := True;
+            m_shift_toggle_canceled := False;
+            eaten := 1;
+            Result := S_OK;
+            Exit;
         end;
-        eaten := 1;
-        Result := S_OK;
-        Exit;
+
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := True;
+    end
+    else if m_shift_key_down then
+    begin
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := True;
     end;
 
     if not key_state.shift_down then
     begin
         m_shift_key_down := False;
+        m_shift_toggle_pending := False;
+        m_shift_toggle_canceled := False;
+    end;
+
+    if key_state.shift_down and (key_code = VK_SPACE) and (not key_state.ctrl_down) and (not key_state.alt_down) then
+    begin
+        handled := False;
+        if (m_ipc_client <> nil) and (m_session_id <> '') and
+            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
+        begin
+            m_shift_space_toggle_pending := True;
+            eaten := 1;
+            Result := S_OK;
+            Exit;
+        end;
+    end;
+
+    if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and (not key_state.alt_down) then
+    begin
+        handled := False;
+        if (m_ipc_client <> nil) and (m_session_id <> '') and
+            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
+        begin
+            m_ctrl_period_toggle_pending := True;
+            eaten := 1;
+            Result := S_OK;
+            Exit;
+        end;
+    end;
+
+    if key_state.ctrl_down and key_state.shift_down and (not key_state.alt_down) and (key_code = Ord('T')) then
+    begin
+        m_ctrl_shift_t_toggle_pending := True;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
     end;
 
     if (m_composition <> nil) and (not key_state.ctrl_down) and (not key_state.alt_down) then
@@ -1049,10 +1115,27 @@ begin
     eaten := 0;
     if is_shift_key(key_code) then
     begin
-        m_shift_key_down := False;
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := False;
-        m_last_shift_toggle_tick := 0;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if (key_code = VK_SPACE) and m_shift_space_toggle_pending then
+    begin
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if (key_code = VK_OEM_PERIOD) and m_ctrl_period_toggle_pending then
+    begin
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if (key_code = Ord('T')) and m_ctrl_shift_t_toggle_pending then
+    begin
         eaten := 1;
     end;
     Result := S_OK;
@@ -1067,10 +1150,42 @@ begin
     if is_shift_key(key_code) then
     begin
         eaten := 1;
+        if m_shift_toggle_pending and (not m_shift_toggle_canceled) then
+        begin
+            toggle_input_mode_by_shift;
+        end;
         m_shift_key_down := False;
         m_shift_toggle_pending := False;
         m_shift_toggle_canceled := False;
-        m_last_shift_toggle_tick := 0;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if (key_code = VK_SPACE) and m_shift_space_toggle_pending then
+    begin
+        m_shift_space_toggle_pending := False;
+        toggle_full_width_mode_by_shift_space;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if (key_code = VK_OEM_PERIOD) and m_ctrl_period_toggle_pending then
+    begin
+        m_ctrl_period_toggle_pending := False;
+        toggle_punctuation_mode_by_ctrl_period;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
+    if (key_code = Ord('T')) and m_ctrl_shift_t_toggle_pending then
+    begin
+        m_ctrl_shift_t_toggle_pending := False;
+        toggle_dictionary_variant_by_ctrl_shift_t;
+        eaten := 1;
+        Result := S_OK;
+        Exit;
     end;
     Result := S_OK;
 end;
@@ -1138,8 +1253,134 @@ begin
             [Ord(next_input_mode), state_source]));
     end;
 
-    m_last_shift_toggle_tick := GetTickCount;
+end;
 
+procedure TncTextService.toggle_full_width_mode_by_shift_space;
+var
+    input_mode: TncInputMode;
+    full_width_mode: Boolean;
+    punctuation_full_width: Boolean;
+    got_state_from_host: Boolean;
+    state_source: string;
+begin
+    got_state_from_host := False;
+    input_mode := m_last_input_mode;
+    full_width_mode := m_last_full_width_mode;
+    punctuation_full_width := m_last_punctuation_full_width;
+
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        got_state_from_host := m_ipc_client.get_state(m_session_id, input_mode, full_width_mode, punctuation_full_width);
+    end;
+
+    full_width_mode := not full_width_mode;
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        if m_ipc_client.set_state(m_session_id, input_mode, full_width_mode, punctuation_full_width) then
+        begin
+            mark_session_dirty;
+        end;
+    end;
+
+    apply_engine_state_to_compartments(input_mode, full_width_mode, punctuation_full_width);
+    save_engine_state_to_config(input_mode, full_width_mode, punctuation_full_width);
+
+    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        if got_state_from_host then
+        begin
+            state_source := 'host';
+        end
+        else
+        begin
+            state_source := 'local';
+        end;
+        m_logger.debug(Format('Shift+Space toggled full_width -> %d source=%s',
+            [Ord(full_width_mode), state_source]));
+    end;
+end;
+
+procedure TncTextService.toggle_punctuation_mode_by_ctrl_period;
+var
+    input_mode: TncInputMode;
+    full_width_mode: Boolean;
+    punctuation_full_width: Boolean;
+    got_state_from_host: Boolean;
+    state_source: string;
+begin
+    got_state_from_host := False;
+    input_mode := m_last_input_mode;
+    full_width_mode := m_last_full_width_mode;
+    punctuation_full_width := m_last_punctuation_full_width;
+
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        got_state_from_host := m_ipc_client.get_state(m_session_id, input_mode, full_width_mode, punctuation_full_width);
+    end;
+
+    punctuation_full_width := not punctuation_full_width;
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        if m_ipc_client.set_state(m_session_id, input_mode, full_width_mode, punctuation_full_width) then
+        begin
+            mark_session_dirty;
+        end;
+    end;
+
+    apply_engine_state_to_compartments(input_mode, full_width_mode, punctuation_full_width);
+    save_engine_state_to_config(input_mode, full_width_mode, punctuation_full_width);
+
+    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        if got_state_from_host then
+        begin
+            state_source := 'host';
+        end
+        else
+        begin
+            state_source := 'local';
+        end;
+        m_logger.debug(Format('Ctrl+. toggled punctuation_full_width -> %d source=%s',
+            [Ord(punctuation_full_width), state_source]));
+    end;
+end;
+
+procedure TncTextService.toggle_dictionary_variant_by_ctrl_shift_t;
+var
+    config_manager: TncConfigManager;
+    engine_config: TncEngineConfig;
+    variant_text: string;
+begin
+    if m_config_path = '' then
+    begin
+        Exit;
+    end;
+
+    config_manager := TncConfigManager.create(m_config_path);
+    try
+        engine_config := config_manager.load_engine_config;
+        if engine_config.dictionary_variant = dv_traditional then
+        begin
+            engine_config.dictionary_variant := dv_simplified;
+            variant_text := 'simplified';
+        end
+        else
+        begin
+            engine_config.dictionary_variant := dv_traditional;
+            variant_text := 'traditional';
+        end;
+        config_manager.save_engine_config(engine_config);
+    finally
+        config_manager.Free;
+    end;
+
+    m_last_config_write := get_config_write_time;
+    cancel_composition;
+
+    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        m_logger.debug(Format('Ctrl+Shift+T toggled dictionary variant -> %s', [variant_text]));
+    end;
 end;
 
 function TncTextService.OnPreservedKey(const context: ITfContext; var rguid: TGUID; out eaten: Integer): HResult;

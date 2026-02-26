@@ -59,12 +59,19 @@ type
         m_status_label_variant: TLabel;
         m_status_label_punct: TLabel;
         m_status_btn_settings: TButton;
+        m_status_hint_window: THintWindow;
         m_status_dragging: Boolean;
+        m_status_drag_moved: Boolean;
         m_status_drag_cursor_origin: TPoint;
         m_status_drag_form_origin: TPoint;
+        m_status_drag_source: TObject;
         m_engine_active: Boolean;
         m_active_sync_fail_count: Integer;
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
+        function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
+        procedure handle_status_label_click(const source: TObject);
+        procedure show_status_hint(const control: TControl);
+        procedure hide_status_hint;
         procedure enforce_application_toolwindow_style;
         procedure enforce_host_form_toolwindow_style;
         procedure configure_tray;
@@ -84,6 +91,8 @@ type
         procedure status_mouse_move(Sender: TObject; Shift: TShiftState; X: Integer; Y: Integer);
         procedure status_mouse_up(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
         procedure status_form_close(Sender: TObject; var Action: TCloseAction);
+        procedure status_label_mouse_enter(Sender: TObject);
+        procedure status_label_mouse_leave(Sender: TObject);
         procedure on_status_widget_click(Sender: TObject);
         procedure on_status_settings_click(Sender: TObject);
         procedure on_input_mode_click(Sender: TObject);
@@ -153,9 +162,12 @@ begin
     m_status_label_variant := nil;
     m_status_label_punct := nil;
     m_status_btn_settings := nil;
+    m_status_hint_window := nil;
     m_status_dragging := False;
+    m_status_drag_moved := False;
     m_status_drag_cursor_origin := Point(0, 0);
     m_status_drag_form_origin := Point(0, 0);
+    m_status_drag_source := nil;
     m_engine_active := False;
     m_active_sync_fail_count := 0;
     enforce_application_toolwindow_style;
@@ -181,6 +193,11 @@ begin
     m_icon_chinese_simplified.Free;
     m_icon_chinese_traditional.Free;
     m_icon_english.Free;
+    if m_status_hint_window <> nil then
+    begin
+        m_status_hint_window.Free;
+        m_status_hint_window := nil;
+    end;
     inherited Destroy;
 end;
 
@@ -230,6 +247,86 @@ begin
     finally
         mask.Free;
         bmp.Free;
+    end;
+end;
+
+function TncTrayHost.status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
+var
+    client_point: TPoint;
+begin
+    Result := False;
+    if control = nil then
+    begin
+        Exit;
+    end;
+
+    client_point := control.ScreenToClient(screen_point);
+    Result := PtInRect(Rect(0, 0, control.Width, control.Height), client_point);
+end;
+
+procedure TncTrayHost.handle_status_label_click(const source: TObject);
+var
+    cursor_point: TPoint;
+begin
+    cursor_point := Mouse.CursorPos;
+
+    if (source = m_status_label_mode) and status_point_in_control(m_status_label_mode, cursor_point) then
+    begin
+        on_input_mode_click(m_status_label_mode);
+        Exit;
+    end;
+
+    if (source = m_status_label_variant) and status_point_in_control(m_status_label_variant, cursor_point) then
+    begin
+        on_dictionary_variant_click(m_status_label_variant);
+        Exit;
+    end;
+
+    if (source = m_status_label_punct) and status_point_in_control(m_status_label_punct, cursor_point) then
+    begin
+        on_punct_click(m_status_label_punct);
+        Exit;
+    end;
+end;
+
+procedure TncTrayHost.show_status_hint(const control: TControl);
+var
+    hint_rect: TRect;
+    anchor_point: TPoint;
+    hint_text: string;
+begin
+    if control = nil then
+    begin
+        Exit;
+    end;
+
+    hint_text := Trim(control.Hint);
+    if hint_text = '' then
+    begin
+        Exit;
+    end;
+
+    if m_status_hint_window = nil then
+    begin
+        m_status_hint_window := THintWindow.Create(Self);
+        m_status_hint_window.Color := clInfoBk;
+    end;
+
+    hint_rect := m_status_hint_window.CalcHintRect(280, hint_text, nil);
+    anchor_point := control.ClientToScreen(Point(control.Width div 2, control.Height));
+    OffsetRect(
+        hint_rect,
+        anchor_point.X - ((hint_rect.Right - hint_rect.Left) div 2),
+        anchor_point.Y + 6
+    );
+    m_status_hint_window.ActivateHint(hint_rect, hint_text);
+end;
+
+procedure TncTrayHost.hide_status_hint;
+begin
+    if m_status_hint_window <> nil then
+    begin
+        m_status_hint_window.ReleaseHandle;
     end;
 end;
 
@@ -349,6 +446,10 @@ begin
     m_status_label_mode.Font.Color := clWhite;
     m_status_label_mode.Font.Style := [fsBold];
     m_status_label_mode.Transparent := True;
+    m_status_label_mode.ParentShowHint := False;
+    m_status_label_mode.ShowHint := True;
+    m_status_label_mode.Hint := '切换中/英（Shift）';
+    m_status_label_mode.Cursor := crHandPoint;
 
     m_status_label_variant := TLabel.Create(m_status_panel);
     m_status_label_variant.Parent := m_status_panel;
@@ -361,6 +462,10 @@ begin
     m_status_label_variant.Layout := tlCenter;
     m_status_label_variant.Font.Color := RGB(180, 220, 255);
     m_status_label_variant.Transparent := True;
+    m_status_label_variant.ParentShowHint := False;
+    m_status_label_variant.ShowHint := True;
+    m_status_label_variant.Hint := '切换简/繁（Ctrl+Shift+T）';
+    m_status_label_variant.Cursor := crHandPoint;
 
     m_status_label_punct := TLabel.Create(m_status_panel);
     m_status_label_punct.Parent := m_status_panel;
@@ -373,6 +478,10 @@ begin
     m_status_label_punct.Layout := tlCenter;
     m_status_label_punct.Font.Color := RGB(255, 220, 170);
     m_status_label_punct.Transparent := True;
+    m_status_label_punct.ParentShowHint := False;
+    m_status_label_punct.ShowHint := True;
+    m_status_label_punct.Hint := '切换标点（Ctrl+.）';
+    m_status_label_punct.Cursor := crHandPoint;
 
     m_status_btn_settings := TButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
@@ -395,14 +504,20 @@ begin
     m_status_label_mode.OnMouseDown := status_mouse_down;
     m_status_label_mode.OnMouseMove := status_mouse_move;
     m_status_label_mode.OnMouseUp := status_mouse_up;
+    m_status_label_mode.OnMouseEnter := status_label_mouse_enter;
+    m_status_label_mode.OnMouseLeave := status_label_mouse_leave;
 
     m_status_label_variant.OnMouseDown := status_mouse_down;
     m_status_label_variant.OnMouseMove := status_mouse_move;
     m_status_label_variant.OnMouseUp := status_mouse_up;
+    m_status_label_variant.OnMouseEnter := status_label_mouse_enter;
+    m_status_label_variant.OnMouseLeave := status_label_mouse_leave;
 
     m_status_label_punct.OnMouseDown := status_mouse_down;
     m_status_label_punct.OnMouseMove := status_mouse_move;
     m_status_label_punct.OnMouseUp := status_mouse_up;
+    m_status_label_punct.OnMouseEnter := status_label_mouse_enter;
+    m_status_label_punct.OnMouseLeave := status_label_mouse_leave;
 
     enforce_status_form_toolwindow_style;
 end;
@@ -861,7 +976,10 @@ begin
         Exit;
     end;
 
+    hide_status_hint;
     m_status_dragging := True;
+    m_status_drag_moved := False;
+    m_status_drag_source := Sender;
     m_status_drag_cursor_origin := Mouse.CursorPos;
     if GetWindowRect(m_status_form.Handle, window_rect) then
     begin
@@ -888,6 +1006,10 @@ begin
     cursor_point := Mouse.CursorPos;
     delta_x := cursor_point.X - m_status_drag_cursor_origin.X;
     delta_y := cursor_point.Y - m_status_drag_cursor_origin.Y;
+    if (Abs(delta_x) >= 2) or (Abs(delta_y) >= 2) then
+    begin
+        m_status_drag_moved := True;
+    end;
     SetWindowPos(
         m_status_form.Handle,
         HWND_TOPMOST,
@@ -914,12 +1036,21 @@ begin
             ReleaseCapture;
         end;
         save_status_widget_state;
+        if not m_status_drag_moved then
+        begin
+            handle_status_label_click(m_status_drag_source);
+        end;
     end;
+    m_status_drag_moved := False;
+    m_status_drag_source := nil;
 end;
 
 procedure TncTrayHost.status_form_close(Sender: TObject; var Action: TCloseAction);
 begin
+    hide_status_hint;
     m_status_dragging := False;
+    m_status_drag_moved := False;
+    m_status_drag_source := nil;
     if (m_status_form <> nil) and (GetCapture = m_status_form.Handle) then
     begin
         ReleaseCapture;
@@ -935,6 +1066,19 @@ begin
         m_item_status_widget.Checked := False;
     end;
     save_status_widget_state;
+end;
+
+procedure TncTrayHost.status_label_mouse_enter(Sender: TObject);
+begin
+    if Sender is TControl then
+    begin
+        show_status_hint(TControl(Sender));
+    end;
+end;
+
+procedure TncTrayHost.status_label_mouse_leave(Sender: TObject);
+begin
+    hide_status_hint;
 end;
 
 procedure TncTrayHost.on_status_widget_click(Sender: TObject);

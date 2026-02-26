@@ -56,7 +56,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''1'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''2'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -68,6 +68,17 @@ const
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin ON dict_base(pinyin);' + sLineBreak +
         sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_jianpin (' + sLineBreak +
+        '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
+        '    word_id INTEGER NOT NULL,' + sLineBreak +
+        '    jianpin TEXT NOT NULL,' + sLineBreak +
+        '    weight INTEGER DEFAULT 0,' + sLineBreak +
+        '    UNIQUE(word_id, jianpin),' + sLineBreak +
+        '    FOREIGN KEY(word_id) REFERENCES dict_base(id) ON DELETE CASCADE' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key ON dict_jianpin(jianpin);' + sLineBreak +
+        sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_user (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
         '    pinyin TEXT NOT NULL,' + sLineBreak +
@@ -78,6 +89,39 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_pinyin ON dict_user(pinyin);' + sLineBreak;
+
+function should_try_jianpin_lookup(const value: string): Boolean;
+const
+    c_jianpin_query_len_min = 2;
+    c_jianpin_query_len_max = 16;
+var
+    i: Integer;
+    ch: Char;
+begin
+    Result := False;
+    if (Length(value) < c_jianpin_query_len_min) or (Length(value) > c_jianpin_query_len_max) then
+    begin
+        Exit;
+    end;
+
+    for i := 1 to Length(value) do
+    begin
+        ch := value[i];
+        if (ch < 'a') or (ch > 'z') then
+        begin
+            Exit;
+        end;
+
+        // Keep jianpin lookup on consonant-like abbreviations only to avoid
+        // polluting normal full-pinyin queries.
+        if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
+        begin
+            Exit;
+        end;
+    end;
+
+    Result := True;
+end;
 
 constructor TncSqliteDictionary.create(const base_db_path: string; const user_db_path: string);
 begin
@@ -213,9 +257,29 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_jianpin (' +
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+        'word_id INTEGER NOT NULL,' +
+        'jianpin TEXT NOT NULL,' +
+        'weight INTEGER DEFAULT 0,' +
+        'UNIQUE(word_id, jianpin),' +
+        'FOREIGN KEY(word_id) REFERENCES dict_base(id) ON DELETE CASCADE' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key ON dict_jianpin(jianpin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 1);
+        set_schema_version(connection, 2);
         Result := True;
         Exit;
     end;
@@ -223,6 +287,11 @@ begin
     if schema_version < 1 then
     begin
         set_schema_version(connection, 1);
+    end;
+
+    if schema_version < 2 then
+    begin
+        set_schema_version(connection, 2);
     end;
 
     Result := True;
@@ -560,8 +629,14 @@ function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandid
 const
     base_sql = 'SELECT text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
+    base_jianpin_sql =
+        'SELECT b.text, b.comment, j.weight ' +
+        'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'WHERE j.jianpin = ?1 ' +
+        'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?2';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
+    c_jianpin_score_penalty = 30;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -573,6 +648,7 @@ var
     score_value: Integer;
     i: Integer;
     key: string;
+    query_key: string;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource);
@@ -606,6 +682,7 @@ begin
         Result := False;
         Exit;
     end;
+    query_key := LowerCase(pinyin);
 
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Boolean>.Create;
@@ -615,7 +692,7 @@ begin
             stmt := nil;
             try
                 if m_user_connection.prepare(user_sql, stmt) and
-                    m_user_connection.bind_text(stmt, 1, pinyin) and
+                    m_user_connection.bind_text(stmt, 1, query_key) and
                     m_user_connection.bind_int(stmt, 2, m_limit) then
                 begin
                     step_result := m_user_connection.step(stmt);
@@ -640,7 +717,7 @@ begin
             stmt := nil;
             try
                 if m_base_connection.prepare(base_sql, stmt) and
-                    m_base_connection.bind_text(stmt, 1, pinyin) and
+                    m_base_connection.bind_text(stmt, 1, query_key) and
                     m_base_connection.bind_int(stmt, 2, m_limit) then
                 begin
                     step_result := m_base_connection.step(stmt);
@@ -649,6 +726,32 @@ begin
                         text_value := m_base_connection.column_text(stmt, 0);
                         comment_value := m_base_connection.column_text(stmt, 1);
                         score_value := m_base_connection.column_int(stmt, 2);
+                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        step_result := m_base_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
+                end;
+            end;
+        end;
+
+        if (list.Count = 0) and m_base_ready and should_try_jianpin_lookup(query_key) then
+        begin
+            stmt := nil;
+            try
+                if m_base_connection.prepare(base_jianpin_sql, stmt) and
+                    m_base_connection.bind_text(stmt, 1, query_key) and
+                    m_base_connection.bind_int(stmt, 2, m_limit) then
+                begin
+                    step_result := m_base_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        text_value := m_base_connection.column_text(stmt, 0);
+                        comment_value := m_base_connection.column_text(stmt, 1);
+                        score_value := m_base_connection.column_int(stmt, 2) - c_jianpin_score_penalty;
                         append_candidate(text_value, comment_value, score_value, cs_rule);
                         step_result := m_base_connection.step(stmt);
                     end;
