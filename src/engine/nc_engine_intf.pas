@@ -1485,6 +1485,9 @@ const
     c_segment_partial_penalty = 120;
     c_segment_prefix_bonus = 80;
     c_segment_page_expand_factor = 16;
+    c_segment_full_state_limit = 128;
+    c_segment_full_completion_bonus = 160;
+    c_segment_full_transition_penalty = 6;
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
@@ -1577,6 +1580,196 @@ var
         list.Add(item);
         dedup.Add(dedup_key, list.Count - 1);
     end;
+
+    procedure append_full_path_candidates;
+    var
+        states: TArray<TList<TncCandidate>>;
+        state_dedup: TArray<TDictionary<string, Integer>>;
+        state_pos: Integer;
+        next_pos: Integer;
+        local_segment_len: Integer;
+        local_segment_text: string;
+        local_lookup_results: TncCandidateList;
+        state_index: Integer;
+        candidate_index: Integer;
+        final_index: Integer;
+        existing_state_index: Integer;
+        keep_count: Integer;
+        local_state: TncCandidate;
+        local_candidate: TncCandidate;
+        local_new_state: TncCandidate;
+        local_existing_state: TncCandidate;
+        sorted_states: TncCandidateList;
+        local_key: string;
+
+        function build_state_key(const text: string): string;
+        begin
+            Result := LowerCase(Trim(text));
+        end;
+
+        procedure append_state(const position: Integer; const value: TncCandidate);
+        begin
+            local_key := build_state_key(value.text);
+            if state_dedup[position].TryGetValue(local_key, existing_state_index) then
+            begin
+                if (existing_state_index >= 0) and (existing_state_index < states[position].Count) then
+                begin
+                    local_existing_state := states[position][existing_state_index];
+                    if value.score > local_existing_state.score then
+                    begin
+                        local_existing_state.score := value.score;
+                    end;
+                    local_existing_state.source := merge_source_rank(local_existing_state.source, value.source);
+                    states[position][existing_state_index] := local_existing_state;
+                end;
+                Exit;
+            end;
+
+            states[position].Add(value);
+            state_dedup[position].Add(local_key, states[position].Count - 1);
+        end;
+
+        procedure trim_state(const position: Integer);
+        var
+            idx: Integer;
+        begin
+            if states[position].Count <= c_segment_full_state_limit then
+            begin
+                Exit;
+            end;
+
+            SetLength(sorted_states, states[position].Count);
+            for idx := 0 to states[position].Count - 1 do
+            begin
+                sorted_states[idx] := states[position][idx];
+            end;
+
+            sort_candidates(sorted_states);
+            keep_count := c_segment_full_state_limit;
+
+            states[position].Clear;
+            state_dedup[position].Clear;
+            for idx := 0 to keep_count - 1 do
+            begin
+                states[position].Add(sorted_states[idx]);
+                state_dedup[position].Add(build_state_key(sorted_states[idx].text), idx);
+            end;
+        end;
+    begin
+        if Length(syllables) <= 1 then
+        begin
+            Exit;
+        end;
+
+        SetLength(states, Length(syllables) + 1);
+        SetLength(state_dedup, Length(syllables) + 1);
+        for state_pos := 0 to High(states) do
+        begin
+            states[state_pos] := TList<TncCandidate>.Create;
+            state_dedup[state_pos] := TDictionary<string, Integer>.Create;
+        end;
+
+        try
+            local_state.text := '';
+            local_state.comment := '';
+            local_state.score := 0;
+            local_state.source := cs_rule;
+            states[0].Add(local_state);
+            state_dedup[0].Add('', 0);
+
+            for state_pos := 0 to High(syllables) do
+            begin
+                if states[state_pos].Count = 0 then
+                begin
+                    Continue;
+                end;
+
+                for local_segment_len := 1 to max_word_len do
+                begin
+                    if state_pos + local_segment_len > Length(syllables) then
+                    begin
+                        Break;
+                    end;
+
+                    local_segment_text := build_syllable_text(state_pos, local_segment_len);
+                    if local_segment_text = '' then
+                    begin
+                        Continue;
+                    end;
+
+                    if not m_dictionary.lookup(local_segment_text, local_lookup_results) then
+                    begin
+                        Continue;
+                    end;
+
+                    if (per_limit > 0) and (Length(local_lookup_results) > per_limit) then
+                    begin
+                        SetLength(local_lookup_results, per_limit);
+                    end;
+
+                    next_pos := state_pos + local_segment_len;
+                    for state_index := 0 to states[state_pos].Count - 1 do
+                    begin
+                        local_state := states[state_pos][state_index];
+                        for candidate_index := 0 to High(local_lookup_results) do
+                        begin
+                            local_candidate := local_lookup_results[candidate_index];
+
+                            local_new_state.text := local_state.text + local_candidate.text;
+                            local_new_state.comment := '';
+                            local_new_state.score := local_state.score + local_candidate.score +
+                                (local_segment_len * c_segment_prefix_bonus);
+                            if (next_pos = Length(syllables)) then
+                            begin
+                                Inc(local_new_state.score, c_segment_full_completion_bonus);
+                            end
+                            else
+                            begin
+                                Dec(local_new_state.score, c_segment_full_transition_penalty);
+                            end;
+
+                            if is_first_overall_segment and (state_pos = 0) and (local_segment_len = 1) and
+                                (next_pos < Length(syllables)) and (Length(local_candidate.text) = 1) and
+                                (Pos(local_candidate.text, c_common_surname_chars) > 0) then
+                            begin
+                                Inc(local_new_state.score, c_segment_surname_bonus);
+                            end;
+
+                            local_new_state.source := merge_source_rank(local_state.source, local_candidate.source);
+                            append_state(next_pos, local_new_state);
+                        end;
+                    end;
+
+                    trim_state(next_pos);
+                end;
+            end;
+
+            if states[Length(syllables)].Count = 0 then
+            begin
+                Exit;
+            end;
+
+            for final_index := 0 to states[Length(syllables)].Count - 1 do
+            begin
+                local_state := states[Length(syllables)][final_index];
+                append_candidate(local_state.text, local_state.score, local_state.source, '');
+            end;
+        finally
+            for state_pos := 0 to High(states) do
+            begin
+                if states[state_pos] <> nil then
+                begin
+                    states[state_pos].Free;
+                    states[state_pos] := nil;
+                end;
+                if state_dedup[state_pos] <> nil then
+                begin
+                    state_dedup[state_pos].Free;
+                    state_dedup[state_pos] := nil;
+                end;
+            end;
+        end;
+    end;
 begin
     SetLength(out_candidates, 0);
     Result := False;
@@ -1628,6 +1821,10 @@ begin
         list := TList<TncCandidate>.Create;
         dedup := TDictionary<string, Integer>.Create;
         try
+            // First, build full-path phrase candidates (for example women+jintian -> full phrase).
+            append_full_path_candidates;
+
+            // Keep prefix segment candidates as fallback/partial-commit choices.
             for segment_len := 1 to max_word_len do
             begin
                 segment_text := build_syllable_text(0, segment_len);
