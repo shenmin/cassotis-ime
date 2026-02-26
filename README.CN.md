@@ -4,6 +4,10 @@
   <img src="cassotis_ime_yanquan.png" alt="Cassotis IME logo" width="280">
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License: GPL-3.0"></a>
+</p>
+
 [English](README.md) | 简体中文
 
 > **状态说明：** 项目仍处于非常早期阶段，暂不具备实际可用性；当前不提供预编译二进制文件。
