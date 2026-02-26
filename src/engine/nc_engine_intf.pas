@@ -82,7 +82,8 @@ type
         function merge_candidate_lists(const primary_candidates: TncCandidateList;
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
-        function build_segment_candidates(out out_candidates: TncCandidateList): Boolean;
+        function build_segment_candidates(out out_candidates: TncCandidateList;
+            const include_full_path: Boolean = True): Boolean;
         function build_pinyin_comment(const input_text: string): string;
         procedure update_segment_left_context;
         procedure push_confirmed_segment(const text: string; const pinyin: string);
@@ -718,7 +719,7 @@ begin
             has_raw_candidates := True;
             raw_from_dictionary := True;
         end
-        else if m_config.enable_segment_candidates and build_segment_candidates(segment_candidates) then
+        else if m_config.enable_segment_candidates and build_segment_candidates(segment_candidates, True) then
         begin
             has_raw_candidates := True;
             has_segment_candidates := True;
@@ -740,7 +741,7 @@ begin
             begin
                 if not has_segment_candidates then
                 begin
-                    has_segment_candidates := build_segment_candidates(segment_candidates);
+                    has_segment_candidates := build_segment_candidates(segment_candidates, False);
                 end;
 
                 if has_segment_candidates then
@@ -1477,7 +1478,8 @@ begin
     end;
 end;
 
-function TncEngine.build_segment_candidates(out out_candidates: TncCandidateList): Boolean;
+function TncEngine.build_segment_candidates(out out_candidates: TncCandidateList;
+    const include_full_path: Boolean): Boolean;
 const
     c_segment_max_per_segment = 256;
     c_segment_max_syllables = 24;
@@ -1508,6 +1510,11 @@ var
     dedup_key: string;
     existing_index: Integer;
     is_first_overall_segment: Boolean;
+
+    function is_multi_char_word(const text: string): Boolean;
+    begin
+        Result := Length(Trim(text)) > 1;
+    end;
 
     function build_syllable_text(const start_index: Integer; const syllable_count: Integer): string;
     var
@@ -1714,6 +1721,10 @@ var
                         for candidate_index := 0 to High(local_lookup_results) do
                         begin
                             local_candidate := local_lookup_results[candidate_index];
+                            if not is_multi_char_word(local_candidate.text) then
+                            begin
+                                Continue;
+                            end;
 
                             local_new_state.text := local_state.text + local_candidate.text;
                             local_new_state.comment := '';
@@ -1821,8 +1832,11 @@ begin
         list := TList<TncCandidate>.Create;
         dedup := TDictionary<string, Integer>.Create;
         try
-            // First, build full-path phrase candidates (for example women+jintian -> full phrase).
-            append_full_path_candidates;
+            if include_full_path then
+            begin
+                // First, build full-path phrase candidates (for example women+jintian -> full phrase).
+                append_full_path_candidates;
+            end;
 
             // Keep prefix segment candidates as fallback/partial-commit choices.
             for segment_len := 1 to max_word_len do
@@ -1884,6 +1898,30 @@ begin
             end;
 
             sort_candidates(out_candidates);
+            // Guarantee at least one partial-commit fallback candidate is visible after truncation.
+            if (total_limit > 0) and (Length(out_candidates) > total_limit) then
+            begin
+                existing_index := -1;
+                for i := 0 to High(out_candidates) do
+                begin
+                    if out_candidates[i].comment <> '' then
+                    begin
+                        existing_index := i;
+                        Break;
+                    end;
+                end;
+
+                if existing_index >= total_limit then
+                begin
+                    candidate := out_candidates[existing_index];
+                    for i := existing_index downto total_limit do
+                    begin
+                        out_candidates[i] := out_candidates[i - 1];
+                    end;
+                    out_candidates[total_limit - 1] := candidate;
+                end;
+            end;
+
             if Length(out_candidates) > total_limit then
             begin
                 SetLength(out_candidates, total_limit);
