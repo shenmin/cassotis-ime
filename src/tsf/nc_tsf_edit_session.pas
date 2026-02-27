@@ -109,16 +109,69 @@ var
     clipped: Integer;
     hr: HRESULT;
     screen_ok: Boolean;
+    use_full_range_ext: Boolean;
 
     function rect_in_screen(const candidate: Winapi.Windows.TRect;
         const screen_bounds: Winapi.Windows.TRect): Boolean;
     const
-        c_screen_margin = 200;
+        // Keep tolerance small so client-relative (0,0)-like coordinates
+        // can still be recognized and converted to screen coordinates.
+        c_screen_margin = 16;
     begin
         Result := (candidate.Left >= screen_bounds.Left - c_screen_margin) and
             (candidate.Left <= screen_bounds.Right + c_screen_margin) and
             (candidate.Top >= screen_bounds.Top - c_screen_margin) and
             (candidate.Top <= screen_bounds.Bottom + c_screen_margin);
+    end;
+
+    function try_adjust_with_view_hwnd(var candidate: Winapi.Windows.TRect): Boolean;
+    var
+        view_hwnd: Winapi.Windows.HWND;
+        client_rect: Winapi.Windows.TRect;
+        window_rect: Winapi.Windows.TRect;
+        origin: TPoint;
+        client_like: Boolean;
+    begin
+        Result := False;
+        view_hwnd := 0;
+        if (view = nil) or (view.GetWnd(view_hwnd) <> S_OK) or (view_hwnd = 0) then
+        begin
+            Exit;
+        end;
+
+        if not GetClientRect(view_hwnd, client_rect) then
+        begin
+            Exit;
+        end;
+
+        // If the point already looks like absolute screen coordinates around
+        // the window, do not apply client->screen conversion again.
+        if GetWindowRect(view_hwnd, window_rect) then
+        begin
+            if (candidate.Left >= window_rect.Left - 64) and (candidate.Left <= window_rect.Right + 64) and
+                (candidate.Top >= window_rect.Top - 64) and (candidate.Top <= window_rect.Bottom + 64) then
+            begin
+                Exit;
+            end;
+        end;
+
+        client_like := (candidate.Left >= client_rect.Left - 32) and
+            (candidate.Left <= client_rect.Right + 32) and
+            (candidate.Top >= client_rect.Top - 32) and
+            (candidate.Top <= client_rect.Bottom + 32);
+        if not client_like then
+        begin
+            Exit;
+        end;
+
+        origin := Point(0, 0);
+        if not ClientToScreen(view_hwnd, origin) then
+        begin
+            Exit;
+        end;
+
+        OffsetRect(candidate, origin.X, origin.Y);
+        Result := True;
     end;
 begin
     Result := False;
@@ -156,10 +209,34 @@ begin
         range := selection.range;
     end;
 
-    range_for_ext := range;
-    if (range <> nil) and (range.Clone(range_for_ext) = S_OK) and (range_for_ext <> nil) then
+    range_for_ext := nil;
+    FillChar(selection, SizeOf(selection), 0);
+    fetched := 0;
+    hr := m_context.GetSelection(ec, 0, 1, selection, fetched);
+    if (hr = S_OK) and (fetched > 0) and (selection.range <> nil) then
     begin
+        range_for_ext := selection.range;
         range_for_ext.Collapse(ec, TF_ANCHOR_END);
+    end;
+
+    if range_for_ext = nil then
+    begin
+        // Terminal hosts may return a fixed point for collapsed ranges. When a
+        // composition exists, prefer querying the full composition range and then
+        // anchor to rect.Right so the candidate window follows typed text.
+        use_full_range_ext := (m_composition_ref <> nil) and (m_composition_ref^ <> nil);
+        if use_full_range_ext then
+        begin
+            range_for_ext := range;
+        end
+        else
+        begin
+            range_for_ext := range;
+            if (range <> nil) and (range.Clone(range_for_ext) = S_OK) and (range_for_ext <> nil) then
+            begin
+                range_for_ext.Collapse(ec, TF_ANCHOR_END);
+            end;
+        end;
     end;
 
     hr := view.GetTextExt(ec, range_for_ext, rect, clipped);
@@ -178,8 +255,26 @@ begin
             begin
                 rect := rect_adjusted;
             end;
+            if not rect_in_screen(rect, screen_rect) then
+            begin
+                rect_adjusted := rect;
+                if try_adjust_with_view_hwnd(rect_adjusted) and rect_in_screen(rect_adjusted, screen_rect) then
+                begin
+                    rect := rect_adjusted;
+                end;
+            end;
+        end
+        else
+        begin
+            rect_adjusted := rect;
+            if try_adjust_with_view_hwnd(rect_adjusted) then
+            begin
+                rect := rect_adjusted;
+            end;
         end;
-        m_point_ref^ := Point(rect.Left, rect.Bottom);
+        // Prefer the trailing edge so fallback to non-collapsed ranges still
+        // anchors the candidate window at the current input caret.
+        m_point_ref^ := Point(rect.Right, rect.Bottom);
         m_point_valid_ref^ := True;
         Result := True;
     end;
@@ -488,12 +583,62 @@ var
     function rect_in_screen(const candidate: Winapi.Windows.TRect;
         const screen_bounds: Winapi.Windows.TRect): Boolean;
     const
-        c_screen_margin = 200;
+        // Keep tolerance small so client-relative (0,0)-like coordinates
+        // can still be recognized and converted to screen coordinates.
+        c_screen_margin = 16;
     begin
         Result := (candidate.Left >= screen_bounds.Left - c_screen_margin) and
             (candidate.Left <= screen_bounds.Right + c_screen_margin) and
             (candidate.Top >= screen_bounds.Top - c_screen_margin) and
             (candidate.Top <= screen_bounds.Bottom + c_screen_margin);
+    end;
+
+    function try_adjust_with_view_hwnd(var candidate: Winapi.Windows.TRect): Boolean;
+    var
+        view_hwnd: Winapi.Windows.HWND;
+        client_rect: Winapi.Windows.TRect;
+        window_rect: Winapi.Windows.TRect;
+        origin: TPoint;
+        client_like: Boolean;
+    begin
+        Result := False;
+        view_hwnd := 0;
+        if (view = nil) or (view.GetWnd(view_hwnd) <> S_OK) or (view_hwnd = 0) then
+        begin
+            Exit;
+        end;
+
+        if not GetClientRect(view_hwnd, client_rect) then
+        begin
+            Exit;
+        end;
+
+        if GetWindowRect(view_hwnd, window_rect) then
+        begin
+            if (candidate.Left >= window_rect.Left - 64) and (candidate.Left <= window_rect.Right + 64) and
+                (candidate.Top >= window_rect.Top - 64) and (candidate.Top <= window_rect.Bottom + 64) then
+            begin
+                Exit;
+            end;
+        end;
+
+        client_like := (candidate.Left >= client_rect.Left - 32) and
+            (candidate.Left <= client_rect.Right + 32) and
+            (candidate.Top >= client_rect.Top - 32) and
+            (candidate.Top <= client_rect.Bottom + 32);
+        if not client_like then
+        begin
+            Exit;
+        end;
+
+        origin := Point(0, 0);
+        if not ClientToScreen(view_hwnd, origin) then
+        begin
+            Exit;
+        end;
+
+        OffsetRect(candidate, origin.X, origin.Y);
+        Result := True;
     end;
 begin
     Result := False;
@@ -521,11 +666,9 @@ begin
         Exit;
     end;
 
+    // Prefer composition range directly; selection can drift to stale anchors
+    // in some terminal hosts right after Enter/newline.
     range_for_ext := range;
-    if (range <> nil) and (range.Clone(range_for_ext) = S_OK) and (range_for_ext <> nil) then
-    begin
-        range_for_ext.Collapse(ec, TF_ANCHOR_END);
-    end;
 
     hr := view.GetTextExt(ec, range_for_ext, rect, clipped);
     if (hr <> S_OK) and (range_for_ext <> range) then
@@ -543,8 +686,26 @@ begin
             begin
                 rect := rect_adjusted;
             end;
+            if not rect_in_screen(rect, screen_rect) then
+            begin
+                rect_adjusted := rect;
+                if try_adjust_with_view_hwnd(rect_adjusted) and rect_in_screen(rect_adjusted, screen_rect) then
+                begin
+                    rect := rect_adjusted;
+                end;
+            end;
+        end
+        else
+        begin
+            rect_adjusted := rect;
+            if try_adjust_with_view_hwnd(rect_adjusted) then
+            begin
+                rect := rect_adjusted;
+            end;
         end;
-        m_point_ref^ := Point(rect.Left, rect.Bottom);
+        // Prefer the trailing edge so fallback to non-collapsed ranges still
+        // anchors the candidate window at the current input caret.
+        m_point_ref^ := Point(rect.Right, rect.Bottom);
         m_point_valid_ref^ := True;
         Result := True;
     end;
