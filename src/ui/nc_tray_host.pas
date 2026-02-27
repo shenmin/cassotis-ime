@@ -580,6 +580,7 @@ var
     x_value: Integer;
     y_value: Integer;
     work_area: TRect;
+    virtual_rect: TRect;
 begin
     if m_status_form = nil then
     begin
@@ -603,25 +604,35 @@ begin
         end;
     end;
 
-    if x_value < work_area.Left then
+    virtual_rect := Rect(
+        GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    );
+    if (virtual_rect.Right <= virtual_rect.Left) or (virtual_rect.Bottom <= virtual_rect.Top) then
     begin
-        x_value := work_area.Left;
-    end;
-    if y_value < work_area.Top then
-    begin
-        y_value := work_area.Top;
-    end;
-    if x_value > work_area.Right - m_status_form.Width then
-    begin
-        x_value := work_area.Right - m_status_form.Width;
-    end;
-    if y_value > work_area.Bottom - m_status_form.Height then
-    begin
-        y_value := work_area.Bottom - m_status_form.Height;
+        virtual_rect := work_area;
     end;
 
-    m_status_form.Left := x_value;
-    m_status_form.Top := y_value;
+    if x_value < virtual_rect.Left then
+    begin
+        x_value := virtual_rect.Left;
+    end;
+    if y_value < virtual_rect.Top then
+    begin
+        y_value := virtual_rect.Top;
+    end;
+    if x_value > virtual_rect.Right - m_status_form.Width then
+    begin
+        x_value := virtual_rect.Right - m_status_form.Width;
+    end;
+    if y_value > virtual_rect.Bottom - m_status_form.Height then
+    begin
+        y_value := virtual_rect.Bottom - m_status_form.Height;
+    end;
+
+    m_status_form.SetBounds(x_value, y_value, m_status_form.Width, m_status_form.Height);
     m_item_status_widget.Checked := visible_value;
     apply_status_widget_visibility;
     update_status_widget;
@@ -630,6 +641,9 @@ end;
 procedure TncTrayHost.save_status_widget_state;
 var
     ini: TIniFile;
+    window_rect: TRect;
+    saved_x: Integer;
+    saved_y: Integer;
 begin
     if (m_status_form = nil) or (m_config_path = '') then
     begin
@@ -639,6 +653,17 @@ begin
     ForceDirectories(ExtractFileDir(m_config_path));
     ini := TIniFile.Create(m_config_path);
     try
+        if (m_status_form.HandleAllocated) and GetWindowRect(m_status_form.Handle, window_rect) then
+        begin
+            saved_x := window_rect.Left;
+            saved_y := window_rect.Top;
+        end
+        else
+        begin
+            saved_x := m_status_form.Left;
+            saved_y := m_status_form.Top;
+        end;
+
         if m_item_status_widget <> nil then
         begin
             ini.WriteBool(c_ui_section, c_status_widget_visible_key, m_item_status_widget.Checked);
@@ -647,8 +672,8 @@ begin
         begin
             ini.WriteBool(c_ui_section, c_status_widget_visible_key, m_status_form.Visible);
         end;
-        ini.WriteInteger(c_ui_section, c_status_widget_x_key, m_status_form.Left);
-        ini.WriteInteger(c_ui_section, c_status_widget_y_key, m_status_form.Top);
+        ini.WriteInteger(c_ui_section, c_status_widget_x_key, saved_x);
+        ini.WriteInteger(c_ui_section, c_status_widget_y_key, saved_y);
     finally
         ini.Free;
     end;
@@ -794,6 +819,7 @@ begin
         hide_status_hint;
         if status_visible then
         begin
+            save_status_widget_state;
             m_status_form.Hide;
         end;
     end;

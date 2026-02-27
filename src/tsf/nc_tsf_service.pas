@@ -2405,16 +2405,11 @@ begin
         end;
     end;
 
-    if tsf_point_valid and point_in_foreground(tsf_point) and (m_composition <> nil) and
-        (not terminal_like_target) then
+    if tsf_point_valid and point_in_virtual_screen(tsf_point) and point_in_foreground(tsf_point) and
+        (not terminal_like_target) and (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
-        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-        begin
-            m_logger.debug(Format('TSF caret point=(%d,%d) composition=1', [tsf_point.X, tsf_point.Y]));
-        end;
-        point := tsf_point;
-        Result := True;
-        Exit;
+        m_logger.debug(Format('TSF caret point=(%d,%d) composition=%d', [tsf_point.X, tsf_point.Y,
+            Ord(m_composition <> nil)]));
     end;
 
     if gui_point_valid then
@@ -2438,9 +2433,28 @@ begin
             end;
         end;
 
-        point := gui_point;
-        Result := True;
-        Exit;
+        if caret_point_valid then
+        begin
+            max_delta := 400;
+            delta_x := Abs(gui_point.X - caret_point.X);
+            delta_y := Abs(gui_point.Y - caret_point.Y);
+            if (delta_x > max_delta) or (delta_y > max_delta) then
+            begin
+                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                begin
+                    m_logger.debug(Format('GUI/CaretPos delta too large gui=(%d,%d) caret=(%d,%d)',
+                        [gui_point.X, gui_point.Y, caret_point.X, caret_point.Y]));
+                end;
+                gui_point_valid := False;
+            end;
+        end;
+
+        if gui_point_valid then
+        begin
+            point := gui_point;
+            Result := True;
+            Exit;
+        end;
     end;
 
     if caret_point_valid then

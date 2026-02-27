@@ -104,6 +104,14 @@ const
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);' + sLineBreak;
 
+type
+    TncMixedQueryTokenKind = (mqt_full, mqt_initial);
+    TncMixedQueryToken = record
+        kind: TncMixedQueryTokenKind;
+        text: string;
+    end;
+    TncMixedQueryTokenList = array of TncMixedQueryToken;
+
 function should_try_jianpin_lookup(const value: string): Boolean;
 const
     c_jianpin_query_len_min = 2;
@@ -129,6 +137,15 @@ begin
 
     Result := True;
 end;
+
+function is_initial_letter(const ch: Char): Boolean;
+begin
+    Result := CharInSet(ch, ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x',
+        'r', 'z', 'c', 's', 'y', 'w']);
+end;
+
+function extract_syllable_initial(const syllable: string): string; forward;
+function is_valid_candidate_syllable(const syllable: string): Boolean; forward;
 
 function get_unix_time_now: Int64;
 begin
@@ -189,17 +206,23 @@ begin
     Result := freq_bonus + recency_bonus;
 end;
 
-function parse_mixed_jianpin_query(const query_key: string; out full_prefix: string; out suffix_initials: string): Boolean;
+function parse_mixed_jianpin_query(const query_key: string; out full_prefix: string; out jianpin_key: string;
+    out tokens: TncMixedQueryTokenList): Boolean;
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
     idx: Integer;
-    has_vowel: Boolean;
-    ch: Char;
+    has_full: Boolean;
+    has_initial: Boolean;
+    reconstructed: string;
+    initial_value: string;
+    syllable_text: string;
+    prefix_closed: Boolean;
 begin
     Result := False;
     full_prefix := '';
-    suffix_initials := '';
+    jianpin_key := '';
+    SetLength(tokens, 0);
     if query_key = '' then
     begin
         Exit;
@@ -217,38 +240,82 @@ begin
         Exit;
     end;
 
-    full_prefix := syllables[0].text;
-    if Length(full_prefix) < 2 then
+    SetLength(tokens, Length(syllables));
+    reconstructed := '';
+    has_full := False;
+    has_initial := False;
+    prefix_closed := False;
+    for idx := 0 to High(syllables) do
     begin
+        syllable_text := syllables[idx].text;
+        reconstructed := reconstructed + syllable_text;
+
+        if is_valid_candidate_syllable(syllable_text) then
+        begin
+            tokens[idx].kind := mqt_full;
+            tokens[idx].text := syllable_text;
+            has_full := True;
+            if not prefix_closed then
+            begin
+                full_prefix := full_prefix + syllable_text;
+            end;
+            Continue;
+        end;
+
+        if (Length(syllable_text) = 1) and is_initial_letter(syllable_text[1]) then
+        begin
+            tokens[idx].kind := mqt_initial;
+            tokens[idx].text := syllable_text;
+            has_initial := True;
+            prefix_closed := True;
+            Continue;
+        end;
+
+        SetLength(tokens, 0);
+        full_prefix := '';
         Exit;
     end;
 
-    has_vowel := False;
-    for ch in full_prefix do
+    if not SameText(reconstructed, query_key) then
     begin
-        if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
-        begin
-            has_vowel := True;
-            Break;
-        end;
-    end;
-    if not has_vowel then
-    begin
+        SetLength(tokens, 0);
+        full_prefix := '';
         Exit;
     end;
 
-    for idx := 1 to High(syllables) do
+    // Mixed mode requires at least one full syllable and at least one initial.
+    if (not has_full) or (not has_initial) then
     begin
-        if (Length(syllables[idx].text) <> 1) or (not CharInSet(syllables[idx].text[1], ['a'..'z'])) then
-        begin
-            suffix_initials := '';
-            Exit;
-        end;
-        suffix_initials := suffix_initials + syllables[idx].text[1];
+        SetLength(tokens, 0);
+        full_prefix := '';
+        Exit;
     end;
 
-    if suffix_initials = '' then
+    jianpin_key := '';
+    for idx := 0 to High(tokens) do
     begin
+        if tokens[idx].kind = mqt_full then
+        begin
+            initial_value := extract_syllable_initial(tokens[idx].text);
+            if initial_value <> '' then
+            begin
+                jianpin_key := jianpin_key + initial_value[1];
+            end
+            else
+            begin
+                jianpin_key := jianpin_key + tokens[idx].text[1];
+            end;
+        end
+        else
+        begin
+            jianpin_key := jianpin_key + tokens[idx].text[1];
+        end;
+    end;
+
+    if jianpin_key = '' then
+    begin
+        SetLength(tokens, 0);
+        full_prefix := '';
         Exit;
     end;
 
@@ -370,43 +437,51 @@ begin
 end;
 
 function candidate_matches_mixed_jianpin(const parser: TncPinyinParser; const candidate_pinyin: string;
-    const full_prefix: string; const suffix_initials: string): Boolean;
+    const query_tokens: TncMixedQueryTokenList): Boolean;
 var
     syllables: TncPinyinParseResult;
     idx: Integer;
     initial_value: string;
 begin
     Result := False;
-    if (parser = nil) or (candidate_pinyin = '') or (full_prefix = '') or (suffix_initials = '') then
+    if (parser = nil) or (candidate_pinyin = '') or (Length(query_tokens) = 0) then
     begin
         Exit;
     end;
 
     syllables := parser.parse(candidate_pinyin);
-    if Length(syllables) <> (1 + Length(suffix_initials)) then
+    if Length(syllables) <> Length(query_tokens) then
     begin
         Exit;
     end;
 
-    if not is_valid_candidate_syllable(syllables[0].text) then
-    begin
-        Exit;
-    end;
-
-    if not SameText(syllables[0].text, full_prefix) then
-    begin
-        Exit;
-    end;
-
-    for idx := 1 to Length(suffix_initials) do
+    for idx := 0 to High(query_tokens) do
     begin
         if not is_valid_candidate_syllable(syllables[idx].text) then
         begin
             Exit;
         end;
 
+        if query_tokens[idx].kind = mqt_full then
+        begin
+            if not SameText(syllables[idx].text, query_tokens[idx].text) then
+            begin
+                Exit;
+            end;
+            Continue;
+        end;
+
+        if query_tokens[idx].text = '' then
+        begin
+            Exit;
+        end;
+
         initial_value := extract_syllable_initial(syllables[idx].text);
-        if not mixed_initial_matches(suffix_initials[idx], initial_value) then
+        if (initial_value = '') and (syllables[idx].text <> '') then
+        begin
+            initial_value := LowerCase(Copy(syllables[idx].text, 1, 1));
+        end;
+        if not mixed_initial_matches(query_tokens[idx].text[1], initial_value) then
         begin
             Exit;
         end;
@@ -1064,10 +1139,20 @@ const
         'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
         'WHERE j.jianpin = ?1 AND b.pinyin LIKE ?2 ' +
         'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?3';
+    base_mixed_pattern_sql =
+        'SELECT b.pinyin, b.text, b.comment, b.weight ' +
+        'FROM dict_base b WHERE b.pinyin LIKE ?1 ' +
+        'ORDER BY b.weight DESC, b.text ASC LIMIT ?2';
+    base_initial_single_char_sql =
+        'SELECT b.pinyin, b.text, b.comment, b.weight ' +
+        'FROM dict_base b WHERE b.pinyin LIKE ?1 AND length(b.text) = 1 ' +
+        'ORDER BY b.weight DESC, b.text ASC LIMIT ?2';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
     stats_sql = 'SELECT text, commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1';
     c_jianpin_score_penalty = 30;
+    c_nonfull_exact_penalty = 100;
+    c_initial_single_char_penalty = 120;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -1087,12 +1172,14 @@ var
     key: string;
     query_key: string;
     candidate_pinyin: string;
-    mixed_prefix: string;
-    mixed_initials: string;
+    mixed_full_prefix: string;
     mixed_jianpin_key: string;
+    mixed_tokens: TncMixedQueryTokenList;
     mixed_mode: Boolean;
     full_pinyin_query: Boolean;
     mixed_parser: TncPinyinParser;
+    mixed_like_pattern: string;
+    jianpin_score_penalty: Integer;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource);
@@ -1125,6 +1212,39 @@ var
         list.Add(item);
         seen.Add(key, True);
     end;
+
+    function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string;
+    var
+        pattern_idx: Integer;
+    begin
+        Result := '';
+        if Length(token_list) = 0 then
+        begin
+            Exit;
+        end;
+
+        for pattern_idx := 0 to High(token_list) do
+        begin
+            if token_list[pattern_idx].text = '' then
+            begin
+                Continue;
+            end;
+
+            if token_list[pattern_idx].kind = mqt_full then
+            begin
+                Result := Result + token_list[pattern_idx].text;
+            end
+            else
+            begin
+                Result := Result + token_list[pattern_idx].text + '%';
+            end;
+        end;
+
+        if Result <> '' then
+        begin
+            Result := Result + '%';
+        end;
+    end;
 begin
     SetLength(results, 0);
     if (pinyin = '') or not ensure_open then
@@ -1134,14 +1254,25 @@ begin
     end;
     query_key := LowerCase(pinyin);
     now_unix := get_unix_time_now;
-    mixed_mode := parse_mixed_jianpin_query(query_key, mixed_prefix, mixed_initials);
-    full_pinyin_query := is_full_pinyin_key(query_key);
+    mixed_full_prefix := '';
     mixed_jianpin_key := query_key;
-    if mixed_mode and (mixed_prefix <> '') and (mixed_initials <> '') then
+    SetLength(mixed_tokens, 0);
+    mixed_mode := parse_mixed_jianpin_query(query_key, mixed_full_prefix, mixed_jianpin_key, mixed_tokens);
+    if mixed_jianpin_key = '' then
     begin
-        // dict_jianpin stores initials-style keys (for example pashan -> ps),
-        // while query may be mixed form (for example pas = pa + s).
-        mixed_jianpin_key := Copy(mixed_prefix, 1, 1) + mixed_initials;
+        mixed_jianpin_key := query_key;
+    end;
+    full_pinyin_query := is_full_pinyin_key(query_key);
+    jianpin_score_penalty := c_jianpin_score_penalty;
+    if not full_pinyin_query then
+    begin
+        // For non-full inputs (especially jianpin), do not down-rank jianpin hits.
+        jianpin_score_penalty := 0;
+    end;
+    mixed_like_pattern := '';
+    if mixed_mode then
+    begin
+        mixed_like_pattern := build_mixed_like_pattern(mixed_tokens);
     end;
     if mixed_mode then
     begin
@@ -1229,7 +1360,7 @@ begin
                         end;
 
                         if mixed_mode and (not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin,
-                            mixed_prefix, mixed_initials)) then
+                            mixed_tokens)) then
                         begin
                             step_result := m_base_connection.step(stmt);
                             Continue;
@@ -1238,6 +1369,11 @@ begin
                         text_value := m_base_connection.column_text(stmt, 1);
                         comment_value := m_base_connection.column_text(stmt, 2);
                         score_value := m_base_connection.column_int(stmt, 3);
+                        if not full_pinyin_query then
+                        begin
+                            // Non-full exact pinyin rows are often noisy; let jianpin candidates lead.
+                            Dec(score_value, c_nonfull_exact_penalty);
+                        end;
                         append_candidate(text_value, comment_value, score_value, cs_rule);
                         step_result := m_base_connection.step(stmt);
                     end;
@@ -1250,15 +1386,16 @@ begin
             end;
         end;
 
-        if (list.Count = 0) and m_base_ready and should_try_jianpin_lookup(query_key) then
+        if m_base_ready and should_try_jianpin_lookup(query_key) and
+            ((list.Count = 0) or mixed_mode or (not full_pinyin_query)) then
         begin
-            if mixed_mode then
+            if mixed_mode and (mixed_full_prefix <> '') then
             begin
                 stmt := nil;
                 try
                     if m_base_connection.prepare(base_jianpin_prefixed_sql, stmt) and
                         m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
-                        m_base_connection.bind_text(stmt, 2, mixed_prefix + '%') and
+                        m_base_connection.bind_text(stmt, 2, mixed_full_prefix + '%') and
                         m_base_connection.bind_int(stmt, 3, m_limit) then
                     begin
                         step_result := m_base_connection.step(stmt);
@@ -1271,8 +1408,7 @@ begin
                                 Continue;
                             end;
 
-                            if not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin, mixed_prefix,
-                                mixed_initials) then
+                            if not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin, mixed_tokens) then
                             begin
                                 step_result := m_base_connection.step(stmt);
                                 Continue;
@@ -1280,7 +1416,7 @@ begin
 
                             text_value := m_base_connection.column_text(stmt, 1);
                             comment_value := m_base_connection.column_text(stmt, 2);
-                            score_value := m_base_connection.column_int(stmt, 3) - c_jianpin_score_penalty;
+                            score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
                             append_candidate(text_value, comment_value, score_value, cs_rule);
                             step_result := m_base_connection.step(stmt);
                         end;
@@ -1293,7 +1429,7 @@ begin
                 end;
             end;
 
-            if list.Count = 0 then
+            if (list.Count = 0) or (not full_pinyin_query) then
             begin
                 stmt := nil;
                 try
@@ -1312,7 +1448,7 @@ begin
                             end;
 
                             if mixed_mode and (not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin,
-                                mixed_prefix, mixed_initials)) then
+                                mixed_tokens)) then
                             begin
                                 step_result := m_base_connection.step(stmt);
                                 Continue;
@@ -1320,7 +1456,7 @@ begin
 
                             text_value := m_base_connection.column_text(stmt, 1);
                             comment_value := m_base_connection.column_text(stmt, 2);
-                            score_value := m_base_connection.column_int(stmt, 3) - c_jianpin_score_penalty;
+                            score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
                             append_candidate(text_value, comment_value, score_value, cs_rule);
                             step_result := m_base_connection.step(stmt);
                         end;
@@ -1330,6 +1466,82 @@ begin
                     begin
                         m_base_connection.finalize(stmt);
                     end;
+                end;
+            end;
+        end;
+
+        if mixed_mode and m_base_ready and (mixed_like_pattern <> '') and (list.Count < m_limit) then
+        begin
+            stmt := nil;
+            try
+                if m_base_connection.prepare(base_mixed_pattern_sql, stmt) and
+                    m_base_connection.bind_text(stmt, 1, mixed_like_pattern) and
+                    m_base_connection.bind_int(stmt, 2, m_limit) then
+                begin
+                    step_result := m_base_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                        if mixed_mode and SameText(candidate_pinyin, query_key) then
+                        begin
+                            step_result := m_base_connection.step(stmt);
+                            Continue;
+                        end;
+
+                        if not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin, mixed_tokens) then
+                        begin
+                            step_result := m_base_connection.step(stmt);
+                            Continue;
+                        end;
+
+                        text_value := m_base_connection.column_text(stmt, 1);
+                        comment_value := m_base_connection.column_text(stmt, 2);
+                        score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
+                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        if list.Count >= m_limit then
+                        begin
+                            Break;
+                        end;
+                        step_result := m_base_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
+                end;
+            end;
+        end;
+
+        // For mixed inputs like "hha", mainstream IMEs still show high-frequency
+        // single-character candidates under the leading initial.
+        if mixed_mode and m_base_ready and (Length(mixed_tokens) > 0) and
+            (mixed_tokens[0].kind = mqt_initial) and (list.Count < m_limit) then
+        begin
+            stmt := nil;
+            try
+                if m_base_connection.prepare(base_initial_single_char_sql, stmt) and
+                    m_base_connection.bind_text(stmt, 1, mixed_tokens[0].text + '%') and
+                    m_base_connection.bind_int(stmt, 2, Min(24, m_limit)) then
+                begin
+                    step_result := m_base_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        text_value := m_base_connection.column_text(stmt, 1);
+                        comment_value := m_base_connection.column_text(stmt, 2);
+                        score_value := m_base_connection.column_int(stmt, 3) - c_initial_single_char_penalty;
+                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        if list.Count >= m_limit then
+                        begin
+                            Break;
+                        end;
+                        step_result := m_base_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
                 end;
             end;
         end;
@@ -1364,6 +1576,9 @@ const
     base_mixed_jianpin_exists_sql =
         'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
         'WHERE j.jianpin = ?1 AND b.text = ?2 AND b.pinyin LIKE ?3 LIMIT 1';
+    base_mixed_jianpin_exists_no_prefix_sql =
+        'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'WHERE j.jianpin = ?1 AND b.text = ?2 LIMIT 1';
     update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_stats_sql = 'INSERT OR IGNORE INTO dict_user_stats(pinyin, text, commit_count, last_used) ' +
@@ -1378,10 +1593,10 @@ var
     pinyin_key: string;
     base_has_entry: Boolean;
     full_pinyin_input: Boolean;
-    mixed_prefix: string;
-    mixed_initials: string;
+    mixed_full_prefix: string;
     mixed_mode: Boolean;
     mixed_jianpin_key: string;
+    mixed_tokens: TncMixedQueryTokenList;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     if (pinyin_key = '') or (text = '') or (not is_valid_user_text(text)) or
@@ -1392,14 +1607,10 @@ begin
 
     base_has_entry := False;
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
-    mixed_prefix := '';
-    mixed_initials := '';
+    mixed_full_prefix := '';
     mixed_jianpin_key := '';
-    mixed_mode := parse_mixed_jianpin_query(pinyin_key, mixed_prefix, mixed_initials);
-    if mixed_mode and (mixed_prefix <> '') and (mixed_initials <> '') then
-    begin
-        mixed_jianpin_key := Copy(mixed_prefix, 1, 1) + mixed_initials;
-    end;
+    SetLength(mixed_tokens, 0);
+    mixed_mode := parse_mixed_jianpin_query(pinyin_key, mixed_full_prefix, mixed_jianpin_key, mixed_tokens);
 
     if m_base_ready then
     begin
@@ -1440,12 +1651,24 @@ begin
         begin
             stmt := nil;
             try
-                if m_base_connection.prepare(base_mixed_jianpin_exists_sql, stmt) and
-                    m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
-                    m_base_connection.bind_text(stmt, 2, text) and
-                    m_base_connection.bind_text(stmt, 3, mixed_prefix + '%') then
+                if (mixed_full_prefix <> '') then
                 begin
-                    base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
+                    if m_base_connection.prepare(base_mixed_jianpin_exists_sql, stmt) and
+                        m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
+                        m_base_connection.bind_text(stmt, 2, text) and
+                        m_base_connection.bind_text(stmt, 3, mixed_full_prefix + '%') then
+                    begin
+                        base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
+                    end;
+                end
+                else
+                begin
+                    if m_base_connection.prepare(base_mixed_jianpin_exists_no_prefix_sql, stmt) and
+                        m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
+                        m_base_connection.bind_text(stmt, 2, text) then
+                    begin
+                        base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
+                    end;
                 end;
             finally
                 if stmt <> nil then
