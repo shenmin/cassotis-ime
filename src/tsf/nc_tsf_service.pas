@@ -1920,6 +1920,11 @@ var
     context_rect: TRect;
     has_context_rect: Boolean;
     view: ITfContextView;
+    context_class_name: string;
+    foreground_class_name: string;
+    terminal_like_context: Boolean;
+    terminal_like_foreground: Boolean;
+    terminal_like_target: Boolean;
 
     function point_in_virtual_screen(const candidate: TPoint): Boolean;
     const
@@ -1948,6 +1953,41 @@ var
 
         Result := (candidate.X >= foreground_rect.Left - c_margin) and (candidate.X <= foreground_rect.Right + c_margin) and
             (candidate.Y >= foreground_rect.Top - c_margin) and (candidate.Y <= foreground_rect.Bottom + c_margin);
+    end;
+
+    function get_window_class_name(const window_handle: Winapi.Windows.HWND): string;
+    var
+        class_buffer: array[0..255] of Char;
+        class_len: Integer;
+    begin
+        Result := '';
+        if window_handle = 0 then
+        begin
+            Exit;
+        end;
+
+        class_len := GetClassName(window_handle, class_buffer, Length(class_buffer));
+        if class_len > 0 then
+        begin
+            SetString(Result, class_buffer, class_len);
+        end;
+    end;
+
+    function is_terminal_like_class(const class_name: string): Boolean;
+    var
+        class_lower: string;
+    begin
+        if class_name = '' then
+        begin
+            Result := False;
+            Exit;
+        end;
+
+        class_lower := LowerCase(class_name);
+        Result := (Pos('consolewindowclass', class_lower) > 0) or
+            (Pos('cascadia_hosting_window_class', class_lower) > 0) or
+            (Pos('terminal', class_lower) > 0) or
+            (Pos('pseudoconsole', class_lower) > 0);
     end;
 
     function try_get_gui_caret_point(const thread_id: DWORD; out candidate: TPoint): Boolean;
@@ -2025,10 +2065,25 @@ begin
         has_foreground_rect := GetWindowRect(foreground_hwnd, foreground_rect);
     end;
 
+    context_class_name := get_window_class_name(context_hwnd);
+    foreground_class_name := get_window_class_name(foreground_hwnd);
+    terminal_like_context := is_terminal_like_class(context_class_name);
+    terminal_like_foreground := is_terminal_like_class(foreground_class_name);
+    terminal_like_target := terminal_like_context or terminal_like_foreground;
+
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
         m_logger.debug(Format('Caret hwnd context=%d focus=%d foreground=%d thread=%d',
             [context_hwnd, hwnd, foreground_hwnd, gui_thread_id]));
+        if context_class_name <> '' then
+        begin
+            m_logger.debug(Format('Caret context class=%s terminal=%d', [context_class_name, Ord(terminal_like_context)]));
+        end;
+        if foreground_class_name <> '' then
+        begin
+            m_logger.debug(Format('Caret foreground class=%s terminal=%d',
+                [foreground_class_name, Ord(terminal_like_foreground)]));
+        end;
         if has_context_rect then
         begin
             m_logger.debug(Format('Caret context rect=(%d,%d,%d,%d)',
@@ -2041,12 +2096,12 @@ begin
         end;
     end;
 
-    if gui_thread_id <> 0 then
+    if (gui_thread_id <> 0) and (not terminal_like_target) then
     begin
         gui_point_valid := try_get_gui_caret_point(gui_thread_id, gui_point);
     end;
 
-    if not gui_point_valid then
+    if (not gui_point_valid) and (not terminal_like_target) then
     begin
         if try_get_gui_caret_point(0, gui_point) then
         begin
@@ -2056,7 +2111,7 @@ begin
     end;
 
     caret_point_valid := False;
-    if GetCaretPos(caret_point) then
+    if (not terminal_like_target) and GetCaretPos(caret_point) then
     begin
         if hwnd <> 0 then
         begin
@@ -2070,6 +2125,17 @@ begin
                 [caret_point.X, caret_point.Y, foreground_rect.Left, foreground_rect.Top, foreground_rect.Right,
                 foreground_rect.Bottom]));
         end;
+    end;
+
+    if tsf_point_valid and point_in_foreground(tsf_point) and (m_composition <> nil) then
+    begin
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+        begin
+            m_logger.debug(Format('TSF caret point=(%d,%d) composition=1', [tsf_point.X, tsf_point.Y]));
+        end;
+        point := tsf_point;
+        Result := True;
+        Exit;
     end;
 
     if gui_point_valid then
@@ -2134,6 +2200,19 @@ begin
             m_logger.debug(Format('TSF caret point=(%d,%d)', [tsf_point.X, tsf_point.Y]));
         end;
         point := tsf_point;
+        Result := True;
+        Exit;
+    end;
+
+    if m_last_sent_caret_valid and point_in_virtual_screen(m_last_sent_caret_point) and
+        point_in_foreground(m_last_sent_caret_point) then
+    begin
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+        begin
+            m_logger.debug(Format('Caret fallback last_sent=(%d,%d)', [m_last_sent_caret_point.X,
+                m_last_sent_caret_point.Y]));
+        end;
+        point := m_last_sent_caret_point;
         Result := True;
         Exit;
     end;

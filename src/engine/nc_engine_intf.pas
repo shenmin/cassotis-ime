@@ -691,6 +691,7 @@ var
     has_segment_candidates: Boolean;
     raw_from_dictionary: Boolean;
     lookup_text: string;
+    has_multi_syllable_input: Boolean;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -700,6 +701,48 @@ var
         begin
             candidates[idx].comment := '';
         end;
+    end;
+
+    procedure ensure_partial_fallback_visible(var candidates: TncCandidateList; const visible_limit: Integer);
+    var
+        idx: Integer;
+        partial_index: Integer;
+        partial_candidate: TncCandidate;
+    begin
+        if (visible_limit <= 0) or (Length(candidates) <= visible_limit) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to visible_limit - 1 do
+        begin
+            if candidates[idx].comment <> '' then
+            begin
+                Exit;
+            end;
+        end;
+
+        partial_index := -1;
+        for idx := visible_limit to High(candidates) do
+        begin
+            if candidates[idx].comment <> '' then
+            begin
+                partial_index := idx;
+                Break;
+            end;
+        end;
+
+        if partial_index < 0 then
+        begin
+            Exit;
+        end;
+
+        partial_candidate := candidates[partial_index];
+        for idx := partial_index downto visible_limit do
+        begin
+            candidates[idx] := candidates[idx - 1];
+        end;
+        candidates[visible_limit - 1] := partial_candidate;
     end;
 begin
     SetLength(m_candidates, 0);
@@ -712,6 +755,8 @@ begin
     has_segment_candidates := False;
     raw_from_dictionary := False;
     lookup_text := normalize_pinyin_text(m_composition_text);
+    fallback_comment := build_pinyin_comment(m_composition_text);
+    has_multi_syllable_input := fallback_comment <> '';
     if m_dictionary <> nil then
     begin
         if m_dictionary.lookup(lookup_text, raw_candidates) then
@@ -735,19 +780,17 @@ begin
         end;
 
         sort_candidates(raw_candidates);
-        if m_config.enable_segment_candidates and raw_from_dictionary then
+        if m_config.enable_segment_candidates and raw_from_dictionary and has_multi_syllable_input then
         begin
-            if Length(raw_candidates) < get_candidate_limit then
+            if not has_segment_candidates then
             begin
-                if not has_segment_candidates then
-                begin
-                    has_segment_candidates := build_segment_candidates(segment_candidates, False);
-                end;
+                has_segment_candidates := build_segment_candidates(segment_candidates, False);
+            end;
 
-                if has_segment_candidates then
-                begin
-                    raw_candidates := merge_candidate_lists(raw_candidates, segment_candidates, get_total_candidate_limit);
-                end;
+            if has_segment_candidates then
+            begin
+                raw_candidates := merge_candidate_lists(raw_candidates, segment_candidates, 0);
+                ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             end;
         end;
 
@@ -774,6 +817,7 @@ begin
                 fusion.Free;
             end;
             sort_candidates(m_candidates);
+            ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
             if Length(m_candidates) > limit then
             begin
                 SetLength(m_candidates, limit);
@@ -830,7 +874,6 @@ begin
 
     SetLength(m_candidates, 1);
     m_candidates[0].text := m_composition_text;
-    fallback_comment := build_pinyin_comment(m_composition_text);
     m_candidates[0].comment := fallback_comment;
     m_candidates[0].score := 0;
     m_candidates[0].source := cs_rule;
@@ -1511,9 +1554,25 @@ var
     existing_index: Integer;
     is_first_overall_segment: Boolean;
 
-    function is_multi_char_word(const text: string): Boolean;
+    function is_single_text_unit(const value: string): Boolean;
     begin
-        Result := Length(Trim(text)) > 1;
+        if Length(value) = 1 then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        Result := (Length(value) = 2) and
+            (Ord(value[1]) >= $D800) and (Ord(value[1]) <= $DBFF) and
+            (Ord(value[2]) >= $DC00) and (Ord(value[2]) <= $DFFF);
+    end;
+
+    function is_multi_char_word(const text: string): Boolean;
+    var
+        trimmed_text: string;
+    begin
+        trimmed_text := Trim(text);
+        Result := (trimmed_text <> '') and (not is_single_text_unit(trimmed_text));
     end;
 
     function build_syllable_text(const start_index: Integer; const syllable_count: Integer): string;

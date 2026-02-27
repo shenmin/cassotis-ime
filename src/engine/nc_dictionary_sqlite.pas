@@ -4,12 +4,15 @@ interface
 
 uses
     System.SysUtils,
+    System.Math,
+    System.DateUtils,
     System.Generics.Collections,
     System.Character,
     System.IOUtils,
     Winapi.Windows,
     nc_types,
     nc_dictionary_intf,
+    nc_pinyin_parser,
     nc_sqlite;
 
 type
@@ -33,6 +36,7 @@ type
         function is_valid_user_text(const text: string): Boolean;
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
         procedure migrate_user_entries;
+        procedure prune_user_entries_existing_in_base;
     public
         constructor create(const base_db_path: string; const user_db_path: string);
         destructor Destroy; override;
@@ -56,7 +60,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''2'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''3'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -88,7 +92,17 @@ const
         '    UNIQUE(pinyin, text)' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'CREATE INDEX IF NOT EXISTS idx_dict_user_pinyin ON dict_user(pinyin);' + sLineBreak;
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_pinyin ON dict_user(pinyin);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_user_stats (' + sLineBreak +
+        '    pinyin TEXT NOT NULL,' + sLineBreak +
+        '    text TEXT NOT NULL,' + sLineBreak +
+        '    commit_count INTEGER DEFAULT 0,' + sLineBreak +
+        '    last_used INTEGER DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(pinyin, text)' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);' + sLineBreak;
 
 function should_try_jianpin_lookup(const value: string): Boolean;
 const
@@ -108,6 +122,291 @@ begin
     begin
         ch := value[i];
         if (ch < 'a') or (ch > 'z') then
+        begin
+            Exit;
+        end;
+    end;
+
+    Result := True;
+end;
+
+function get_unix_time_now: Int64;
+begin
+    Result := DateTimeToUnix(Now, False);
+end;
+
+function calc_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
+    const now_unix: Int64): Integer;
+const
+    c_freq_bonus_factor = 80.0;
+    c_freq_bonus_max = 500;
+    c_recent_bonus_1d = 120;
+    c_recent_bonus_7d = 80;
+    c_recent_bonus_30d = 40;
+    c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_week = 7 * c_sec_per_day;
+    c_sec_per_30_days = 30 * c_sec_per_day;
+var
+    freq_bonus: Integer;
+    recency_bonus: Integer;
+    age_seconds: Int64;
+begin
+    if commit_count <= 0 then
+    begin
+        Result := 0;
+        Exit;
+    end;
+
+    freq_bonus := Round(Ln(1.0 + commit_count) * c_freq_bonus_factor);
+    if freq_bonus > c_freq_bonus_max then
+    begin
+        freq_bonus := c_freq_bonus_max;
+    end;
+
+    recency_bonus := 0;
+    if (last_used_unix > 0) and (now_unix > 0) then
+    begin
+        age_seconds := now_unix - last_used_unix;
+        if age_seconds < 0 then
+        begin
+            age_seconds := 0;
+        end;
+
+        if age_seconds <= c_sec_per_day then
+        begin
+            recency_bonus := c_recent_bonus_1d;
+        end
+        else if age_seconds <= c_sec_per_week then
+        begin
+            recency_bonus := c_recent_bonus_7d;
+        end
+        else if age_seconds <= c_sec_per_30_days then
+        begin
+            recency_bonus := c_recent_bonus_30d;
+        end;
+    end;
+
+    Result := freq_bonus + recency_bonus;
+end;
+
+function parse_mixed_jianpin_query(const query_key: string; out full_prefix: string; out suffix_initials: string): Boolean;
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    idx: Integer;
+    has_vowel: Boolean;
+    ch: Char;
+begin
+    Result := False;
+    full_prefix := '';
+    suffix_initials := '';
+    if query_key = '' then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.create;
+    try
+        syllables := parser.parse(query_key);
+    finally
+        parser.Free;
+    end;
+
+    if Length(syllables) < 2 then
+    begin
+        Exit;
+    end;
+
+    full_prefix := syllables[0].text;
+    if Length(full_prefix) < 2 then
+    begin
+        Exit;
+    end;
+
+    has_vowel := False;
+    for ch in full_prefix do
+    begin
+        if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
+        begin
+            has_vowel := True;
+            Break;
+        end;
+    end;
+    if not has_vowel then
+    begin
+        Exit;
+    end;
+
+    for idx := 1 to High(syllables) do
+    begin
+        if (Length(syllables[idx].text) <> 1) or (not CharInSet(syllables[idx].text[1], ['a'..'z'])) then
+        begin
+            suffix_initials := '';
+            Exit;
+        end;
+        suffix_initials := suffix_initials + syllables[idx].text[1];
+    end;
+
+    if suffix_initials = '' then
+    begin
+        Exit;
+    end;
+
+    Result := True;
+end;
+
+function extract_syllable_initial(const syllable: string): string;
+var
+    head2: string;
+    head1: Char;
+begin
+    Result := '';
+    if syllable = '' then
+    begin
+        Exit;
+    end;
+
+    if Length(syllable) >= 2 then
+    begin
+        head2 := Copy(syllable, 1, 2);
+        if (head2 = 'zh') or (head2 = 'ch') or (head2 = 'sh') then
+        begin
+            Result := head2;
+            Exit;
+        end;
+    end;
+
+    head1 := syllable[1];
+    if CharInSet(head1, ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x',
+        'r', 'z', 'c', 's', 'y', 'w']) then
+    begin
+        Result := head1;
+    end;
+end;
+
+function is_valid_candidate_syllable(const syllable: string): Boolean;
+var
+    ch: Char;
+begin
+    Result := False;
+    if syllable = '' then
+    begin
+        Exit;
+    end;
+
+    // Single-letter syllables are only valid for standalone finals.
+    if Length(syllable) = 1 then
+    begin
+        Result := CharInSet(syllable[1], ['a', 'e', 'o']);
+        Exit;
+    end;
+
+    for ch in syllable do
+    begin
+        if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
+        begin
+            Result := True;
+            Exit;
+        end;
+    end;
+end;
+
+function is_full_pinyin_key(const value: string): Boolean;
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    idx: Integer;
+    reconstructed: string;
+begin
+    Result := False;
+    if value = '' then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.create;
+    try
+        syllables := parser.parse(value);
+    finally
+        parser.Free;
+    end;
+
+    if Length(syllables) <= 0 then
+    begin
+        Exit;
+    end;
+
+    reconstructed := '';
+    for idx := 0 to High(syllables) do
+    begin
+        if not is_valid_candidate_syllable(syllables[idx].text) then
+        begin
+            Exit;
+        end;
+        reconstructed := reconstructed + syllables[idx].text;
+    end;
+
+    Result := SameText(reconstructed, value);
+end;
+
+function mixed_initial_matches(const query_initial: Char; const syllable_initial: string): Boolean;
+begin
+    if syllable_initial = '' then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    case query_initial of
+        'z':
+            Result := (syllable_initial = 'z') or (syllable_initial = 'zh');
+        'c':
+            Result := (syllable_initial = 'c') or (syllable_initial = 'ch');
+        's':
+            Result := (syllable_initial = 's') or (syllable_initial = 'sh');
+    else
+        Result := syllable_initial = query_initial;
+    end;
+end;
+
+function candidate_matches_mixed_jianpin(const parser: TncPinyinParser; const candidate_pinyin: string;
+    const full_prefix: string; const suffix_initials: string): Boolean;
+var
+    syllables: TncPinyinParseResult;
+    idx: Integer;
+    initial_value: string;
+begin
+    Result := False;
+    if (parser = nil) or (candidate_pinyin = '') or (full_prefix = '') or (suffix_initials = '') then
+    begin
+        Exit;
+    end;
+
+    syllables := parser.parse(candidate_pinyin);
+    if Length(syllables) <> (1 + Length(suffix_initials)) then
+    begin
+        Exit;
+    end;
+
+    if not is_valid_candidate_syllable(syllables[0].text) then
+    begin
+        Exit;
+    end;
+
+    if not SameText(syllables[0].text, full_prefix) then
+    begin
+        Exit;
+    end;
+
+    for idx := 1 to Length(suffix_initials) do
+    begin
+        if not is_valid_candidate_syllable(syllables[idx].text) then
+        begin
+            Exit;
+        end;
+
+        initial_value := extract_syllable_initial(syllables[idx].text);
+        if not mixed_initial_matches(suffix_initials[idx], initial_value) then
         begin
             Exit;
         end;
@@ -270,9 +569,28 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_user_stats (' +
+        'pinyin TEXT NOT NULL,' +
+        'text TEXT NOT NULL,' +
+        'commit_count INTEGER DEFAULT 0,' +
+        'last_used INTEGER DEFAULT 0,' +
+        'PRIMARY KEY(pinyin, text)' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 2);
+        set_schema_version(connection, 3);
         Result := True;
         Exit;
     end;
@@ -285,6 +603,11 @@ begin
     if schema_version < 2 then
     begin
         set_schema_version(connection, 2);
+    end;
+
+    if schema_version < 3 then
+    begin
+        set_schema_version(connection, 3);
     end;
 
     Result := True;
@@ -549,6 +872,114 @@ begin
     end;
 end;
 
+procedure TncSqliteDictionary.prune_user_entries_existing_in_base;
+const
+    select_user_sql = 'SELECT pinyin, text FROM dict_user';
+    base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    delete_user_sql = 'DELETE FROM dict_user WHERE pinyin = ?1 AND text = ?2';
+var
+    stmt_select: Psqlite3_stmt;
+    stmt_base: Psqlite3_stmt;
+    stmt_delete: Psqlite3_stmt;
+    step_result: Integer;
+    pinyin_value: string;
+    text_value: string;
+    keys_to_delete: TList<string>;
+    key_value: string;
+    sep_index: Integer;
+begin
+    if (not m_base_ready) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    keys_to_delete := TList<string>.Create;
+    stmt_select := nil;
+    stmt_base := nil;
+    try
+        if (not m_user_connection.prepare(select_user_sql, stmt_select)) or
+            (not m_base_connection.prepare(base_exists_sql, stmt_base)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(stmt_select);
+        while step_result = SQLITE_ROW do
+        begin
+            pinyin_value := m_user_connection.column_text(stmt_select, 0);
+            text_value := m_user_connection.column_text(stmt_select, 1);
+            if (pinyin_value <> '') and (text_value <> '') then
+            begin
+                if m_base_connection.reset(stmt_base) and
+                    m_base_connection.clear_bindings(stmt_base) and
+                    m_base_connection.bind_text(stmt_base, 1, pinyin_value) and
+                    m_base_connection.bind_text(stmt_base, 2, text_value) then
+                begin
+                    if m_base_connection.step(stmt_base) = SQLITE_ROW then
+                    begin
+                        keys_to_delete.Add(pinyin_value + #1 + text_value);
+                    end;
+                end;
+            end;
+
+            step_result := m_user_connection.step(stmt_select);
+        end;
+    finally
+        if stmt_base <> nil then
+        begin
+            m_base_connection.finalize(stmt_base);
+        end;
+        if stmt_select <> nil then
+        begin
+            m_user_connection.finalize(stmt_select);
+        end;
+    end;
+
+    if keys_to_delete.Count = 0 then
+    begin
+        keys_to_delete.Free;
+        Exit;
+    end;
+
+    stmt_delete := nil;
+    try
+        if not m_user_connection.prepare(delete_user_sql, stmt_delete) then
+        begin
+            Exit;
+        end;
+
+        for key_value in keys_to_delete do
+        begin
+            sep_index := Pos(#1, key_value);
+            if sep_index <= 0 then
+            begin
+                Continue;
+            end;
+
+            pinyin_value := Copy(key_value, 1, sep_index - 1);
+            text_value := Copy(key_value, sep_index + 1, MaxInt);
+            if (pinyin_value = '') or (text_value = '') then
+            begin
+                Continue;
+            end;
+
+            if m_user_connection.reset(stmt_delete) and
+                m_user_connection.clear_bindings(stmt_delete) and
+                m_user_connection.bind_text(stmt_delete, 1, pinyin_value) and
+                m_user_connection.bind_text(stmt_delete, 2, text_value) then
+            begin
+                m_user_connection.step(stmt_delete);
+            end;
+        end;
+    finally
+        keys_to_delete.Free;
+        if stmt_delete <> nil then
+        begin
+            m_user_connection.finalize(stmt_delete);
+        end;
+    end;
+end;
+
 function TncSqliteDictionary.open: Boolean;
 begin
     m_ready := False;
@@ -596,6 +1027,7 @@ begin
     if m_base_ready and m_user_ready then
     begin
         migrate_user_entries;
+        prune_user_entries_existing_in_base;
     end;
 
     m_ready := m_base_ready or m_user_ready;
@@ -620,28 +1052,47 @@ end;
 
 function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandidateList): Boolean;
 const
-    base_sql = 'SELECT text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
+    base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
     base_jianpin_sql =
-        'SELECT b.text, b.comment, j.weight ' +
+        'SELECT b.pinyin, b.text, b.comment, j.weight ' +
         'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
         'WHERE j.jianpin = ?1 ' +
         'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?2';
+    base_jianpin_prefixed_sql =
+        'SELECT b.pinyin, b.text, b.comment, j.weight ' +
+        'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'WHERE j.jianpin = ?1 AND b.pinyin LIKE ?2 ' +
+        'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?3';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
+    stats_sql = 'SELECT text, commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1';
     c_jianpin_score_penalty = 30;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
     seen: TDictionary<string, Boolean>;
+    learning_bonus_map: TDictionary<string, Integer>;
     step_result: Integer;
     item: TncCandidate;
     text_value: string;
     comment_value: string;
     score_value: Integer;
+    score_with_bonus: Integer;
+    commit_count: Integer;
+    last_used_value: Int64;
+    learning_bonus: Integer;
+    now_unix: Int64;
     i: Integer;
     key: string;
     query_key: string;
+    candidate_pinyin: string;
+    mixed_prefix: string;
+    mixed_initials: string;
+    mixed_jianpin_key: string;
+    mixed_mode: Boolean;
+    full_pinyin_query: Boolean;
+    mixed_parser: TncPinyinParser;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource);
@@ -661,9 +1112,15 @@ var
             Exit;
         end;
 
+        score_with_bonus := score;
+        if learning_bonus_map.TryGetValue(text, learning_bonus) then
+        begin
+            Inc(score_with_bonus, learning_bonus);
+        end;
+
         item.text := text;
         item.comment := comment;
-        item.score := score;
+        item.score := score_with_bonus;
         item.source := source;
         list.Add(item);
         seen.Add(key, True);
@@ -676,11 +1133,59 @@ begin
         Exit;
     end;
     query_key := LowerCase(pinyin);
+    now_unix := get_unix_time_now;
+    mixed_mode := parse_mixed_jianpin_query(query_key, mixed_prefix, mixed_initials);
+    full_pinyin_query := is_full_pinyin_key(query_key);
+    mixed_jianpin_key := query_key;
+    if mixed_mode and (mixed_prefix <> '') and (mixed_initials <> '') then
+    begin
+        // dict_jianpin stores initials-style keys (for example pashan -> ps),
+        // while query may be mixed form (for example pas = pa + s).
+        mixed_jianpin_key := Copy(mixed_prefix, 1, 1) + mixed_initials;
+    end;
+    if mixed_mode then
+    begin
+        mixed_parser := TncPinyinParser.create;
+    end
+    else
+    begin
+        mixed_parser := nil;
+    end;
 
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Boolean>.Create;
+    learning_bonus_map := TDictionary<string, Integer>.Create;
     try
         if m_user_ready then
+        begin
+            stmt := nil;
+            try
+                if m_user_connection.prepare(stats_sql, stmt) and
+                    m_user_connection.bind_text(stmt, 1, query_key) then
+                begin
+                    step_result := m_user_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        text_value := m_user_connection.column_text(stmt, 0);
+                        commit_count := m_user_connection.column_int(stmt, 1);
+                        last_used_value := m_user_connection.column_int(stmt, 2);
+                        learning_bonus := calc_learning_bonus(commit_count, last_used_value, now_unix);
+                        if (text_value <> '') and (learning_bonus > 0) then
+                        begin
+                            learning_bonus_map.AddOrSetValue(text_value, learning_bonus);
+                        end;
+                        step_result := m_user_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_user_connection.finalize(stmt);
+                end;
+            end;
+        end;
+
+        if m_user_ready and full_pinyin_query then
         begin
             stmt := nil;
             try
@@ -716,9 +1221,23 @@ begin
                     step_result := m_base_connection.step(stmt);
                     while step_result = SQLITE_ROW do
                     begin
-                        text_value := m_base_connection.column_text(stmt, 0);
-                        comment_value := m_base_connection.column_text(stmt, 1);
-                        score_value := m_base_connection.column_int(stmt, 2);
+                        candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                        if mixed_mode and SameText(candidate_pinyin, query_key) then
+                        begin
+                            step_result := m_base_connection.step(stmt);
+                            Continue;
+                        end;
+
+                        if mixed_mode and (not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin,
+                            mixed_prefix, mixed_initials)) then
+                        begin
+                            step_result := m_base_connection.step(stmt);
+                            Continue;
+                        end;
+
+                        text_value := m_base_connection.column_text(stmt, 1);
+                        comment_value := m_base_connection.column_text(stmt, 2);
+                        score_value := m_base_connection.column_int(stmt, 3);
                         append_candidate(text_value, comment_value, score_value, cs_rule);
                         step_result := m_base_connection.step(stmt);
                     end;
@@ -733,26 +1252,84 @@ begin
 
         if (list.Count = 0) and m_base_ready and should_try_jianpin_lookup(query_key) then
         begin
-            stmt := nil;
-            try
-                if m_base_connection.prepare(base_jianpin_sql, stmt) and
-                    m_base_connection.bind_text(stmt, 1, query_key) and
-                    m_base_connection.bind_int(stmt, 2, m_limit) then
-                begin
-                    step_result := m_base_connection.step(stmt);
-                    while step_result = SQLITE_ROW do
+            if mixed_mode then
+            begin
+                stmt := nil;
+                try
+                    if m_base_connection.prepare(base_jianpin_prefixed_sql, stmt) and
+                        m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
+                        m_base_connection.bind_text(stmt, 2, mixed_prefix + '%') and
+                        m_base_connection.bind_int(stmt, 3, m_limit) then
                     begin
-                        text_value := m_base_connection.column_text(stmt, 0);
-                        comment_value := m_base_connection.column_text(stmt, 1);
-                        score_value := m_base_connection.column_int(stmt, 2) - c_jianpin_score_penalty;
-                        append_candidate(text_value, comment_value, score_value, cs_rule);
                         step_result := m_base_connection.step(stmt);
+                        while step_result = SQLITE_ROW do
+                        begin
+                            candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                            if mixed_mode and SameText(candidate_pinyin, query_key) then
+                            begin
+                                step_result := m_base_connection.step(stmt);
+                                Continue;
+                            end;
+
+                            if not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin, mixed_prefix,
+                                mixed_initials) then
+                            begin
+                                step_result := m_base_connection.step(stmt);
+                                Continue;
+                            end;
+
+                            text_value := m_base_connection.column_text(stmt, 1);
+                            comment_value := m_base_connection.column_text(stmt, 2);
+                            score_value := m_base_connection.column_int(stmt, 3) - c_jianpin_score_penalty;
+                            append_candidate(text_value, comment_value, score_value, cs_rule);
+                            step_result := m_base_connection.step(stmt);
+                        end;
+                    end;
+                finally
+                    if stmt <> nil then
+                    begin
+                        m_base_connection.finalize(stmt);
                     end;
                 end;
-            finally
-                if stmt <> nil then
-                begin
-                    m_base_connection.finalize(stmt);
+            end;
+
+            if list.Count = 0 then
+            begin
+                stmt := nil;
+                try
+                    if m_base_connection.prepare(base_jianpin_sql, stmt) and
+                        m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
+                        m_base_connection.bind_int(stmt, 2, m_limit) then
+                    begin
+                        step_result := m_base_connection.step(stmt);
+                        while step_result = SQLITE_ROW do
+                        begin
+                            candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                            if mixed_mode and SameText(candidate_pinyin, query_key) then
+                            begin
+                                step_result := m_base_connection.step(stmt);
+                                Continue;
+                            end;
+
+                            if mixed_mode and (not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin,
+                                mixed_prefix, mixed_initials)) then
+                            begin
+                                step_result := m_base_connection.step(stmt);
+                                Continue;
+                            end;
+
+                            text_value := m_base_connection.column_text(stmt, 1);
+                            comment_value := m_base_connection.column_text(stmt, 2);
+                            score_value := m_base_connection.column_int(stmt, 3) - c_jianpin_score_penalty;
+                            append_candidate(text_value, comment_value, score_value, cs_rule);
+                            step_result := m_base_connection.step(stmt);
+                        end;
+                    end;
+                finally
+                    if stmt <> nil then
+                    begin
+                        m_base_connection.finalize(stmt);
+                    end;
                 end;
             end;
         end;
@@ -768,6 +1345,11 @@ begin
 
         Result := list.Count > 0;
     finally
+        if mixed_parser <> nil then
+        begin
+            mixed_parser.Free;
+        end;
+        learning_bonus_map.Free;
         list.Free;
         seen.Free;
     end;
@@ -775,15 +1357,156 @@ end;
 
 procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: string);
 const
+    base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    base_jianpin_exists_sql =
+        'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'WHERE j.jianpin = ?1 AND b.text = ?2 LIMIT 1';
+    base_mixed_jianpin_exists_sql =
+        'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'WHERE j.jianpin = ?1 AND b.text = ?2 AND b.pinyin LIKE ?3 LIMIT 1';
+    update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
+        'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
+    insert_stats_sql = 'INSERT OR IGNORE INTO dict_user_stats(pinyin, text, commit_count, last_used) ' +
+        'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
     update_sql = 'UPDATE dict_user SET weight = weight + 1, last_used = strftime(''%s'',''now'') ' +
         'WHERE pinyin = ?1 AND text = ?2';
     insert_sql = 'INSERT OR IGNORE INTO dict_user(pinyin, text, weight, last_used) ' +
         'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
+    delete_user_sql = 'DELETE FROM dict_user WHERE pinyin = ?1 AND text = ?2';
 var
     stmt: Psqlite3_stmt;
+    pinyin_key: string;
+    base_has_entry: Boolean;
+    full_pinyin_input: Boolean;
+    mixed_prefix: string;
+    mixed_initials: string;
+    mixed_mode: Boolean;
+    mixed_jianpin_key: string;
 begin
-    if (pinyin = '') or not is_valid_user_text(text) or not ensure_open or (not m_user_ready) then
+    pinyin_key := LowerCase(Trim(pinyin));
+    if (pinyin_key = '') or (text = '') or (not is_valid_user_text(text)) or
+        (not ensure_open) or (not m_user_ready) then
     begin
+        Exit;
+    end;
+
+    base_has_entry := False;
+    full_pinyin_input := is_full_pinyin_key(pinyin_key);
+    mixed_prefix := '';
+    mixed_initials := '';
+    mixed_jianpin_key := '';
+    mixed_mode := parse_mixed_jianpin_query(pinyin_key, mixed_prefix, mixed_initials);
+    if mixed_mode and (mixed_prefix <> '') and (mixed_initials <> '') then
+    begin
+        mixed_jianpin_key := Copy(mixed_prefix, 1, 1) + mixed_initials;
+    end;
+
+    if m_base_ready then
+    begin
+        stmt := nil;
+        try
+            if m_base_connection.prepare(base_exists_sql, stmt) and
+                m_base_connection.bind_text(stmt, 1, pinyin_key) and
+                m_base_connection.bind_text(stmt, 2, text) then
+            begin
+                base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_base_connection.finalize(stmt);
+            end;
+        end;
+
+        if not base_has_entry then
+        begin
+            stmt := nil;
+            try
+                if m_base_connection.prepare(base_jianpin_exists_sql, stmt) and
+                    m_base_connection.bind_text(stmt, 1, pinyin_key) and
+                    m_base_connection.bind_text(stmt, 2, text) then
+                begin
+                    base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
+                end;
+            end;
+        end;
+
+        if (not base_has_entry) and mixed_mode and (mixed_jianpin_key <> '') then
+        begin
+            stmt := nil;
+            try
+                if m_base_connection.prepare(base_mixed_jianpin_exists_sql, stmt) and
+                    m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
+                    m_base_connection.bind_text(stmt, 2, text) and
+                    m_base_connection.bind_text(stmt, 3, mixed_prefix + '%') then
+                begin
+                    base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
+                end;
+            end;
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(update_stats_sql, stmt) then
+        begin
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(insert_stats_sql, stmt) then
+        begin
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    if base_has_entry or (not full_pinyin_input) then
+    begin
+        // Keep stats learning, but do not keep dedicated user-word rows for
+        // base-covered commits or non-full-pinyin commits.
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_user_sql, stmt) then
+            begin
+                if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
+                begin
+                    m_user_connection.step(stmt);
+                end;
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
         Exit;
     end;
 
@@ -791,7 +1514,7 @@ begin
     try
         if m_user_connection.prepare(update_sql, stmt) then
         begin
-            if m_user_connection.bind_text(stmt, 1, pinyin) and m_user_connection.bind_text(stmt, 2, text) then
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
             begin
                 m_user_connection.step(stmt);
             end;
@@ -807,7 +1530,7 @@ begin
     try
         if m_user_connection.prepare(insert_sql, stmt) then
         begin
-            if m_user_connection.bind_text(stmt, 1, pinyin) and m_user_connection.bind_text(stmt, 2, text) then
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
             begin
                 m_user_connection.step(stmt);
             end;
