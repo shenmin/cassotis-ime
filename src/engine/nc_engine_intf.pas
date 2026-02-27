@@ -53,6 +53,8 @@ type
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
         m_has_pending_commit: Boolean;
+        m_single_quote_open: Boolean;
+        m_double_quote_open: Boolean;
         m_page_index: Integer;
         m_selected_index: Integer;
         m_confirmed_text: string;
@@ -320,6 +322,8 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_single_quote_open := False;
+    m_double_quote_open := False;
     m_page_index := 0;
     m_selected_index := 0;
     m_confirmed_text := '';
@@ -1125,6 +1129,60 @@ begin
                 Result := Char($FF1B);
             '/':
                 Result := Char($3001);
+            '\':
+                Result := Char($3001);
+            '(':
+                Result := Char($FF08);
+            ')':
+                Result := Char($FF09);
+            '[':
+                Result := Char($3010);
+            ']':
+                Result := Char($3011);
+            '{':
+                Result := Char($300E);
+            '}':
+                Result := Char($300F);
+            '<':
+                Result := Char($300A);
+            '>':
+                Result := Char($300B);
+            '''':
+                begin
+                    if m_single_quote_open then
+                    begin
+                        Result := Char($2019);
+                    end
+                    else
+                    begin
+                        Result := Char($2018);
+                    end;
+                    m_single_quote_open := not m_single_quote_open;
+                end;
+            '"':
+                begin
+                    if m_double_quote_open then
+                    begin
+                        Result := Char($201D);
+                    end
+                    else
+                    begin
+                        Result := Char($201C);
+                    end;
+                    m_double_quote_open := not m_double_quote_open;
+                end;
+            '`':
+                Result := Char($00B7);
+            '~':
+                Result := Char($FF5E);
+            '-':
+                Result := Char($FF0D);
+            '_':
+                Result := Char($2014) + Char($2014);
+            '=':
+                Result := Char($FF1D);
+            '+':
+                Result := Char($FF0B);
         else
             if m_config.full_width_mode then
             begin
