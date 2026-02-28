@@ -141,6 +141,7 @@ const
     c_candidate_total_limit_max = 256;
     c_user_score_bonus = 1000;
     c_ai_score_penalty = 20;
+    c_partial_candidate_score_penalty = 260;
     c_left_context_max_len = 20;
     c_context_history_limit = 200;
     c_context_score_bonus = 80;
@@ -1317,6 +1318,12 @@ function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
 begin
     Result := candidate.score;
     Inc(Result, get_context_bonus(candidate.text));
+    if candidate.comment <> '' then
+    begin
+        // Segment fallback candidates with remaining pinyin (e.g. "... ti")
+        // should stay available but rank below complete phrase candidates.
+        Dec(Result, c_partial_candidate_score_penalty);
+    end;
     case candidate.source of
         cs_user:
             Inc(Result, c_user_score_bonus);

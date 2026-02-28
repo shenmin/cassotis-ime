@@ -568,11 +568,30 @@ end;
 function TncCandidateWindow.format_candidate_line(const index: Integer; const candidate: TncCandidate): string;
 var
     suffix: string;
+    comment_text: string;
+    i: Integer;
+    is_pinyin_tail: Boolean;
 begin
     suffix := candidate.text;
-    if candidate.comment <> '' then
+    comment_text := Trim(candidate.comment);
+    is_pinyin_tail := comment_text <> '';
+    if is_pinyin_tail then
     begin
-        suffix := suffix + '  ' + candidate.comment;
+        for i := 1 to Length(comment_text) do
+        begin
+            if not CharInSet(comment_text[i], ['a' .. 'z', 'A' .. 'Z', '''']) then
+            begin
+                is_pinyin_tail := False;
+                Break;
+            end;
+        end;
+    end;
+
+    // Hide trailing unmatched pinyin in candidate UI (e.g. "你好  ma").
+    // The engine still keeps candidate.comment for partial-commit behavior.
+    if (comment_text <> '') and (not is_pinyin_tail) then
+    begin
+        suffix := suffix + '  ' + comment_text;
     end;
 
     Result := IntToStr(index + 1) + '. ' + suffix;
