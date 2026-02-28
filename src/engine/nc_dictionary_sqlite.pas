@@ -516,6 +516,50 @@ begin
     Result := True;
 end;
 
+function candidate_matches_jianpin_key(const parser: TncPinyinParser; const candidate_pinyin: string;
+    const query_jianpin_key: string): Boolean;
+var
+    syllables: TncPinyinParseResult;
+    idx: Integer;
+    initial_value: string;
+    candidate_key: string;
+begin
+    Result := False;
+    if (parser = nil) or (candidate_pinyin = '') or (query_jianpin_key = '') then
+    begin
+        Exit;
+    end;
+
+    syllables := parser.parse(candidate_pinyin);
+    if Length(syllables) <> Length(query_jianpin_key) then
+    begin
+        Exit;
+    end;
+
+    candidate_key := '';
+    for idx := 0 to High(syllables) do
+    begin
+        if not is_valid_candidate_syllable(syllables[idx].text) then
+        begin
+            Exit;
+        end;
+
+        initial_value := extract_syllable_initial(syllables[idx].text);
+        if (initial_value = '') and (syllables[idx].text <> '') then
+        begin
+            initial_value := LowerCase(Copy(syllables[idx].text, 1, 1));
+        end;
+        if initial_value = '' then
+        begin
+            Exit;
+        end;
+
+        candidate_key := candidate_key + initial_value[1];
+    end;
+
+    Result := SameText(candidate_key, query_jianpin_key);
+end;
+
 constructor TncSqliteDictionary.create(const base_db_path: string; const user_db_path: string);
 begin
     inherited create;
@@ -1304,6 +1348,8 @@ const
         'ORDER BY b.weight DESC, b.text ASC LIMIT ?2';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
+    user_nonfull_sql = 'SELECT pinyin, text, weight, last_used FROM dict_user WHERE pinyin LIKE ?1 ' +
+        'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
     stats_sql = 'SELECT text, commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1';
     c_jianpin_score_penalty = 30;
     c_nonfull_exact_penalty = 100;
@@ -1339,6 +1385,9 @@ var
     jianpin_score_penalty: Integer;
     single_letter_cap_score: Integer;
     single_letter_has_cap: Boolean;
+    user_nonfull_lookup: Boolean;
+    user_like_pattern: string;
+    user_probe_limit: Integer;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource);
@@ -1434,7 +1483,21 @@ begin
     begin
         mixed_like_pattern := build_mixed_like_pattern(mixed_tokens);
     end;
-    if mixed_mode then
+    user_nonfull_lookup := m_user_ready and (not full_pinyin_query) and should_try_jianpin_lookup(query_key);
+    user_like_pattern := '';
+    if user_nonfull_lookup then
+    begin
+        if mixed_mode and (mixed_full_prefix <> '') then
+        begin
+            user_like_pattern := mixed_full_prefix + '%';
+        end
+        else
+        begin
+            user_like_pattern := query_key[1] + '%';
+        end;
+    end;
+
+    if mixed_mode or user_nonfull_lookup then
     begin
         mixed_parser := TncPinyinParser.create;
     end
@@ -1490,6 +1553,51 @@ begin
                         text_value := m_user_connection.column_text(stmt, 0);
                         score_value := m_user_connection.column_int(stmt, 1);
                         append_candidate(text_value, '', score_value, cs_user);
+                        step_result := m_user_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_user_connection.finalize(stmt);
+                end;
+            end;
+        end;
+
+        if user_nonfull_lookup then
+        begin
+            user_probe_limit := Max(m_limit * 8, m_limit);
+            stmt := nil;
+            try
+                if m_user_connection.prepare(user_nonfull_sql, stmt) and
+                    m_user_connection.bind_text(stmt, 1, user_like_pattern) and
+                    m_user_connection.bind_int(stmt, 2, user_probe_limit) then
+                begin
+                    step_result := m_user_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        candidate_pinyin := m_user_connection.column_text(stmt, 0);
+                        if mixed_mode then
+                        begin
+                            if not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin, mixed_tokens) then
+                            begin
+                                step_result := m_user_connection.step(stmt);
+                                Continue;
+                            end;
+                        end
+                        else if not candidate_matches_jianpin_key(mixed_parser, candidate_pinyin, query_key) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+
+                        text_value := m_user_connection.column_text(stmt, 1);
+                        score_value := m_user_connection.column_int(stmt, 2);
+                        append_candidate(text_value, '', score_value, cs_user);
+                        if list.Count >= m_limit then
+                        begin
+                            Break;
+                        end;
                         step_result := m_user_connection.step(stmt);
                     end;
                 end;
