@@ -719,6 +719,7 @@ var
     raw_from_dictionary: Boolean;
     lookup_text: string;
     has_multi_syllable_input: Boolean;
+    multi_syllable_cap_limit: Integer;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -770,6 +771,546 @@ var
             candidates[idx] := candidates[idx - 1];
         end;
         candidates[visible_limit - 1] := partial_candidate;
+    end;
+
+    function is_single_text_unit(const value: string): Boolean;
+    begin
+        if Length(value) = 1 then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        Result := (Length(value) = 2) and
+            (Ord(value[1]) >= $D800) and (Ord(value[1]) <= $DBFF) and
+            (Ord(value[2]) >= $DC00) and (Ord(value[2]) <= $DFFF);
+    end;
+
+    function try_build_best_single_char_chain(out out_candidate: TncCandidate): Boolean;
+    const
+        c_chain_min_syllables = 3;
+        c_chain_bonus = 160;
+        c_chain_penalty_per_syllable = 28;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        syllable_text: string;
+        local_lookup: TncCandidateList;
+        idx: Integer;
+        candidate_idx: Integer;
+        best_idx: Integer;
+        best_rank: Integer;
+        rank_score: Integer;
+        chosen: TncCandidate;
+        chain_text: string;
+        total_score: Integer;
+        syllable_count: Integer;
+    begin
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+
+        if m_dictionary = nil then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(m_composition_text);
+        finally
+            parser.Free;
+        end;
+
+        syllable_count := Length(syllables);
+        if syllable_count < c_chain_min_syllables then
+        begin
+            Exit;
+        end;
+
+        chain_text := '';
+        total_score := 0;
+        for idx := 0 to syllable_count - 1 do
+        begin
+            syllable_text := syllables[idx].text;
+            if syllable_text = '' then
+            begin
+                Exit;
+            end;
+
+            if not m_dictionary.lookup(syllable_text, local_lookup) then
+            begin
+                Exit;
+            end;
+
+            best_idx := -1;
+            best_rank := Low(Integer);
+            for candidate_idx := 0 to High(local_lookup) do
+            begin
+                chosen := local_lookup[candidate_idx];
+                if not is_single_text_unit(Trim(chosen.text)) then
+                begin
+                    Continue;
+                end;
+
+                rank_score := chosen.score;
+                if chosen.source = cs_user then
+                begin
+                    Inc(rank_score, c_user_score_bonus);
+                end;
+                if rank_score > best_rank then
+                begin
+                    best_rank := rank_score;
+                    best_idx := candidate_idx;
+                end;
+            end;
+
+            if best_idx < 0 then
+            begin
+                Exit;
+            end;
+
+            chosen := local_lookup[best_idx];
+            chain_text := chain_text + chosen.text;
+            Inc(total_score, chosen.score);
+        end;
+
+        if chain_text = '' then
+        begin
+            Exit;
+        end;
+
+        out_candidate.text := chain_text;
+        out_candidate.comment := '';
+        out_candidate.source := cs_rule;
+        out_candidate.score := ((total_score div syllable_count) * 2) + c_chain_bonus -
+            (syllable_count * c_chain_penalty_per_syllable);
+        Result := True;
+    end;
+
+    procedure ensure_best_single_char_chain_visible(var candidates: TncCandidateList);
+    var
+        chain_candidate: TncCandidate;
+        idx: Integer;
+        chain_index: Integer;
+        target_index: Integer;
+        visible_limit: Integer;
+    begin
+        if not has_multi_syllable_input then
+        begin
+            Exit;
+        end;
+
+        if not try_build_best_single_char_chain(chain_candidate) then
+        begin
+            Exit;
+        end;
+
+        chain_index := -1;
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].comment = '') and (candidates[idx].text = chain_candidate.text) then
+            begin
+                chain_index := idx;
+                Break;
+            end;
+        end;
+
+        if chain_index < 0 then
+        begin
+            SetLength(candidates, Length(candidates) + 1);
+            candidates[High(candidates)] := chain_candidate;
+        end;
+
+        sort_candidates(candidates);
+
+        chain_index := -1;
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].comment = '') and (candidates[idx].text = chain_candidate.text) then
+            begin
+                chain_index := idx;
+                Break;
+            end;
+        end;
+
+        if chain_index < 0 then
+        begin
+            Exit;
+        end;
+
+        visible_limit := get_candidate_limit;
+        if visible_limit <= 0 then
+        begin
+            Exit;
+        end;
+
+        target_index := 2;
+        if target_index >= visible_limit then
+        begin
+            target_index := visible_limit - 1;
+        end;
+        if target_index >= Length(candidates) then
+        begin
+            target_index := Length(candidates) - 1;
+        end;
+        if target_index < 0 then
+        begin
+            Exit;
+        end;
+
+        if chain_index > target_index then
+        begin
+            chain_candidate := candidates[chain_index];
+            for idx := chain_index downto target_index + 1 do
+            begin
+                candidates[idx] := candidates[idx - 1];
+            end;
+            candidates[target_index] := chain_candidate;
+        end;
+    end;
+
+    procedure ensure_single_char_partial_visible(var candidates: TncCandidateList; const visible_limit: Integer;
+        const minimum_count: Integer);
+    var
+        idx: Integer;
+        current_visible: Integer;
+        need_count: Integer;
+        partial_index: Integer;
+        target_index: Integer;
+        moved_count: Integer;
+        partial_candidate: TncCandidate;
+        scan_limit: Integer;
+    begin
+        if (minimum_count <= 0) or (visible_limit <= 0) or (Length(candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        scan_limit := visible_limit;
+        if scan_limit > Length(candidates) then
+        begin
+            scan_limit := Length(candidates);
+        end;
+
+        current_visible := 0;
+        for idx := 0 to scan_limit - 1 do
+        begin
+            if (candidates[idx].comment <> '') and is_single_text_unit(Trim(candidates[idx].text)) then
+            begin
+                Inc(current_visible);
+            end;
+        end;
+
+        if current_visible >= minimum_count then
+        begin
+            Exit;
+        end;
+
+        if Length(candidates) <= visible_limit then
+        begin
+            Exit;
+        end;
+
+        need_count := minimum_count - current_visible;
+        moved_count := 0;
+        while moved_count < need_count do
+        begin
+            partial_index := -1;
+            for idx := visible_limit to High(candidates) do
+            begin
+                if (candidates[idx].comment <> '') and is_single_text_unit(Trim(candidates[idx].text)) then
+                begin
+                    partial_index := idx;
+                    Break;
+                end;
+            end;
+
+            if partial_index < 0 then
+            begin
+                Break;
+            end;
+
+            target_index := visible_limit - moved_count - 1;
+            if target_index < 0 then
+            begin
+                Break;
+            end;
+
+            partial_candidate := candidates[partial_index];
+            for idx := partial_index downto target_index + 1 do
+            begin
+                candidates[idx] := candidates[idx - 1];
+            end;
+            candidates[target_index] := partial_candidate;
+            Inc(moved_count);
+        end;
+    end;
+
+    procedure ensure_forced_single_char_partial(var candidates: TncCandidateList);
+    const
+        c_forced_partial_penalty_per_syllable = 120;
+        c_forced_partial_prefix_bonus = 80;
+        c_forced_partial_max_candidates = 16;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        first_syllable: string;
+        remaining_pinyin: string;
+        fallback_lookup: TncCandidateList;
+        forced_list: TncCandidateList;
+        forced_count: Integer;
+        idx: Integer;
+        source_item: TncCandidate;
+        forced_item: TncCandidate;
+        trailing_count: Integer;
+    begin
+        if m_dictionary = nil then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(m_composition_text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(syllables) <= 1 then
+        begin
+            Exit;
+        end;
+
+        first_syllable := syllables[0].text;
+        if first_syllable = '' then
+        begin
+            Exit;
+        end;
+
+        remaining_pinyin := '';
+        for idx := 1 to High(syllables) do
+        begin
+            remaining_pinyin := remaining_pinyin + syllables[idx].text;
+        end;
+        if remaining_pinyin = '' then
+        begin
+            Exit;
+        end;
+
+        if not m_dictionary.lookup(first_syllable, fallback_lookup) then
+        begin
+            Exit;
+        end;
+
+        SetLength(forced_list, 0);
+        forced_count := 0;
+        trailing_count := Length(syllables) - 1;
+        for idx := 0 to High(fallback_lookup) do
+        begin
+            source_item := fallback_lookup[idx];
+            if not is_single_text_unit(Trim(source_item.text)) then
+            begin
+                Continue;
+            end;
+
+            forced_item := source_item;
+            forced_item.comment := remaining_pinyin;
+            forced_item.score := source_item.score + c_forced_partial_prefix_bonus -
+                (trailing_count * c_forced_partial_penalty_per_syllable);
+
+            SetLength(forced_list, forced_count + 1);
+            forced_list[forced_count] := forced_item;
+            Inc(forced_count);
+            if forced_count >= c_forced_partial_max_candidates then
+            begin
+                Break;
+            end;
+        end;
+
+        if forced_count <= 0 then
+        begin
+            Exit;
+        end;
+
+        candidates := merge_candidate_lists(candidates, forced_list, 0);
+    end;
+
+    function try_build_primary_single_char_partial(out out_candidate: TncCandidate): Boolean;
+    const
+        c_forced_partial_penalty_per_syllable = 120;
+        c_forced_partial_prefix_bonus = 80;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        first_syllable: string;
+        remaining_pinyin: string;
+        fallback_lookup: TncCandidateList;
+        source_item: TncCandidate;
+        idx: Integer;
+        best_index: Integer;
+        best_rank: Integer;
+        rank_score: Integer;
+        trailing_count: Integer;
+    begin
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+
+        if m_dictionary = nil then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(m_composition_text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(syllables) <= 1 then
+        begin
+            Exit;
+        end;
+
+        first_syllable := syllables[0].text;
+        if first_syllable = '' then
+        begin
+            Exit;
+        end;
+
+        remaining_pinyin := '';
+        for idx := 1 to High(syllables) do
+        begin
+            remaining_pinyin := remaining_pinyin + syllables[idx].text;
+        end;
+        if remaining_pinyin = '' then
+        begin
+            Exit;
+        end;
+
+        if not m_dictionary.lookup(first_syllable, fallback_lookup) then
+        begin
+            Exit;
+        end;
+
+        best_index := -1;
+        best_rank := Low(Integer);
+        for idx := 0 to High(fallback_lookup) do
+        begin
+            source_item := fallback_lookup[idx];
+            if not is_single_text_unit(Trim(source_item.text)) then
+            begin
+                Continue;
+            end;
+
+            rank_score := source_item.score;
+            if source_item.source = cs_user then
+            begin
+                Inc(rank_score, c_user_score_bonus);
+            end;
+            if rank_score > best_rank then
+            begin
+                best_rank := rank_score;
+                best_index := idx;
+            end;
+        end;
+
+        if best_index < 0 then
+        begin
+            Exit;
+        end;
+
+        trailing_count := Length(syllables) - 1;
+        out_candidate := fallback_lookup[best_index];
+        out_candidate.comment := remaining_pinyin;
+        out_candidate.score := fallback_lookup[best_index].score + c_forced_partial_prefix_bonus -
+            (trailing_count * c_forced_partial_penalty_per_syllable);
+        Result := True;
+    end;
+
+    procedure ensure_hard_single_char_partial_visible(var candidates: TncCandidateList);
+    var
+        visible_limit: Integer;
+        i: Integer;
+        partial_index: Integer;
+        target_index: Integer;
+        partial_candidate: TncCandidate;
+        best_score: Integer;
+        best_index: Integer;
+    begin
+        if not has_multi_syllable_input then
+        begin
+            Exit;
+        end;
+
+        visible_limit := get_candidate_limit;
+        if (visible_limit <= 0) or (Length(candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        best_index := -1;
+        best_score := Low(Integer);
+        for i := 0 to High(candidates) do
+        begin
+            if (candidates[i].comment <> '') and is_single_text_unit(Trim(candidates[i].text)) then
+            begin
+                if (best_index < 0) or (candidates[i].score > best_score) then
+                begin
+                    best_index := i;
+                    best_score := candidates[i].score;
+                end;
+            end;
+        end;
+
+        partial_index := best_index;
+        if partial_index < 0 then
+        begin
+            if not try_build_primary_single_char_partial(partial_candidate) then
+            begin
+                Exit;
+            end;
+
+            SetLength(candidates, Length(candidates) + 1);
+            candidates[High(candidates)] := partial_candidate;
+            partial_index := High(candidates);
+        end;
+
+        if partial_index < 0 then
+        begin
+            Exit;
+        end;
+
+        // Always keep a practical single-char continuation in top-3 for long/noisy queries.
+        target_index := 2;
+        if target_index >= visible_limit then
+        begin
+            target_index := visible_limit - 1;
+        end;
+        if target_index >= Length(candidates) then
+        begin
+            target_index := Length(candidates) - 1;
+        end;
+        if target_index < 0 then
+        begin
+            Exit;
+        end;
+
+        if partial_index > target_index then
+        begin
+            partial_candidate := candidates[partial_index];
+            for i := partial_index downto target_index + 1 do
+            begin
+                candidates[i] := candidates[i - 1];
+            end;
+            candidates[target_index] := partial_candidate;
+        end;
     end;
 
     procedure apply_user_penalties(const pinyin_key: string; var candidates: TncCandidateList);
@@ -832,7 +1373,7 @@ begin
         end;
 
         sort_candidates(raw_candidates);
-        if m_config.enable_segment_candidates and raw_from_dictionary and has_multi_syllable_input then
+        if m_config.enable_segment_candidates and raw_from_dictionary then
         begin
             if not has_segment_candidates then
             begin
@@ -843,7 +1384,18 @@ begin
             begin
                 raw_candidates := merge_candidate_lists(raw_candidates, segment_candidates, 0);
                 ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
+                ensure_single_char_partial_visible(raw_candidates, get_candidate_limit, 1);
             end;
+        end;
+
+        // Even when segment candidates are disabled or fail to build, multi-syllable input
+        // must keep a single-char partial fallback (e.g. "hai" + "budaxing").
+        if has_multi_syllable_input then
+        begin
+            ensure_forced_single_char_partial(raw_candidates);
+            sort_candidates(raw_candidates);
+            ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
+            ensure_single_char_partial_visible(raw_candidates, get_candidate_limit, 1);
         end;
 
         limit := get_total_candidate_limit;
@@ -858,6 +1410,14 @@ begin
                 limit := c_candidate_total_limit_max;
             end;
         end;
+        if raw_from_dictionary and has_multi_syllable_input then
+        begin
+            multi_syllable_cap_limit := get_candidate_limit * 3;
+            if (multi_syllable_cap_limit > 0) and (limit > multi_syllable_cap_limit) then
+            begin
+                limit := multi_syllable_cap_limit;
+            end;
+        end;
 
         if m_config.enable_ai and get_ai_candidates(ai_candidates) then
         begin
@@ -870,6 +1430,7 @@ begin
             end;
             sort_candidates(m_candidates);
             ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
+            ensure_single_char_partial_visible(m_candidates, get_candidate_limit, 1);
             if Length(m_candidates) > limit then
             begin
                 SetLength(m_candidates, limit);
@@ -895,6 +1456,9 @@ begin
         apply_user_penalties(lookup_text, m_candidates);
         sort_candidates(m_candidates);
         ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
+        ensure_single_char_partial_visible(m_candidates, get_candidate_limit, 1);
+        ensure_hard_single_char_partial_visible(m_candidates);
+        ensure_best_single_char_chain_visible(m_candidates);
         ensure_non_ai_first(m_candidates);
         m_page_index := 0;
         m_selected_index := 0;
@@ -1706,8 +2270,9 @@ const
     c_segment_full_state_limit = 128;
     c_segment_full_completion_bonus = 160;
     c_segment_full_transition_penalty = 6;
-    c_segment_full_leading_single_top_n = 1;
     c_segment_full_leading_single_penalty = 24;
+    c_segment_full_single_top_n = 1;
+    c_segment_full_non_leading_single_penalty = 72;
     c_segment_text_unit_mismatch_penalty = 100;
     c_segment_text_unit_overflow_penalty = 60;
 var
@@ -1888,7 +2453,8 @@ var
         sorted_states: TncCandidateList;
         local_key: string;
         allow_leading_single_char: Boolean;
-        has_preferred_leading_phrase: Boolean;
+        allow_single_char_path: Boolean;
+        preferred_phrase_flags: TArray<Boolean>;
         text_unit_mismatch: Integer;
         candidate_has_non_ascii: Boolean;
         local_candidate_text: string;
@@ -1909,6 +2475,10 @@ var
                     if value.score > local_existing_state.score then
                     begin
                         local_existing_state.score := value.score;
+                    end;
+                    if value.comment = '1' then
+                    begin
+                        local_existing_state.comment := '1';
                     end;
                     local_existing_state.source := merge_source_rank(local_existing_state.source, value.source);
                     states[position][existing_state_index] := local_existing_state;
@@ -1947,7 +2517,7 @@ var
             end;
         end;
 
-        function detect_preferred_leading_phrase: Boolean;
+        function detect_preferred_phrase_at_position(const start_pos: Integer): Boolean;
         var
             probe_segment_len: Integer;
             probe_segment_text: string;
@@ -1956,14 +2526,19 @@ var
             probe_text: string;
         begin
             Result := False;
-            if Length(syllables) <= 1 then
+            if (Length(syllables) <= 1) or (start_pos < 0) or (start_pos >= Length(syllables)) then
             begin
                 Exit;
             end;
 
             for probe_segment_len := 2 to max_word_len do
             begin
-                probe_segment_text := build_syllable_text(0, probe_segment_len);
+                if start_pos + probe_segment_len > Length(syllables) then
+                begin
+                    Break;
+                end;
+
+                probe_segment_text := build_syllable_text(start_pos, probe_segment_len);
                 if probe_segment_text = '' then
                 begin
                     Continue;
@@ -2011,12 +2586,16 @@ var
 
         try
             local_state.text := '';
-            local_state.comment := '';
+            local_state.comment := '0';
             local_state.score := 0;
             local_state.source := cs_rule;
             states[0].Add(local_state);
             state_dedup[0].Add('', 0);
-            has_preferred_leading_phrase := detect_preferred_leading_phrase;
+            SetLength(preferred_phrase_flags, Length(syllables));
+            for state_pos := 0 to High(syllables) do
+            begin
+                preferred_phrase_flags[state_pos] := detect_preferred_phrase_at_position(state_pos);
+            end;
 
             for state_pos := 0 to High(syllables) do
             begin
@@ -2070,15 +2649,23 @@ var
                                 Continue;
                             end;
                             allow_leading_single_char := False;
+                            allow_single_char_path := False;
                             if not is_multi_char_word(local_candidate.text) then
                             begin
                                 // Allow only the top leading single-char candidate so cases like
                                 // "wo + faxian" can become "我发现", while still blocking noisy
                                 // single-char full-path combinations in general.
-                                if (state_pos = 0) and (local_segment_len = 1) and
-                                    (candidate_index < c_segment_full_leading_single_top_n) then
+                                if candidate_has_non_ascii and (local_segment_len = 1) and
+                                    (candidate_index < c_segment_full_single_top_n) then
                                 begin
-                                    allow_leading_single_char := True;
+                                    allow_single_char_path := True;
+                                    allow_leading_single_char := state_pos = 0;
+                                    if (not allow_leading_single_char) and (Length(local_candidate.text) = 2) and
+                                        (Ord(local_candidate.text[1]) >= $D800) and (Ord(local_candidate.text[1]) <= $DBFF) and
+                                        (Ord(local_candidate.text[2]) >= $DC00) and (Ord(local_candidate.text[2]) <= $DFFF) then
+                                    begin
+                                        Continue;
+                                    end;
                                 end
                                 else
                                 begin
@@ -2087,16 +2674,29 @@ var
                             end;
 
                             local_new_state.text := local_state.text + local_candidate.text;
-                            local_new_state.comment := '';
+                            local_new_state.comment := local_state.comment;
+                            if local_segment_len > 1 then
+                            begin
+                                local_new_state.comment := '1';
+                            end;
                             local_new_state.score := local_state.score + local_candidate.score +
                                 (local_segment_len * c_segment_prefix_bonus);
-                            if allow_leading_single_char then
+                            if allow_single_char_path then
                             begin
-                                if has_preferred_leading_phrase and (next_pos < Length(syllables)) then
+                                if (next_pos < Length(syllables)) and (state_pos >= 0) and
+                                    (state_pos < Length(preferred_phrase_flags)) and
+                                    preferred_phrase_flags[state_pos] then
                                 begin
                                     Continue;
                                 end;
-                                Dec(local_new_state.score, c_segment_full_leading_single_penalty);
+                                if allow_leading_single_char then
+                                begin
+                                    Dec(local_new_state.score, c_segment_full_leading_single_penalty);
+                                end
+                                else
+                                begin
+                                    Dec(local_new_state.score, c_segment_full_non_leading_single_penalty);
+                                end;
                             end;
                             if (next_pos = Length(syllables)) then
                             begin
@@ -2142,6 +2742,10 @@ var
             for final_index := 0 to states[Length(syllables)].Count - 1 do
             begin
                 local_state := states[Length(syllables)][final_index];
+                if local_state.comment <> '1' then
+                begin
+                    Continue;
+                end;
                 append_candidate(local_state.text, local_state.score, local_state.source, '');
             end;
         finally
@@ -2231,7 +2835,9 @@ begin
                     Continue;
                 end;
 
-                if (per_limit > 0) and (Length(lookup_results) > per_limit) then
+                // Keep one-syllable segment lookups untrimmed here: we filter to single-char
+                // candidates below, and early truncation can starve useful fallbacks.
+                if (segment_len > 1) and (per_limit > 0) and (Length(lookup_results) > per_limit) then
                 begin
                     SetLength(lookup_results, per_limit);
                 end;

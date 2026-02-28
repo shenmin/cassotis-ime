@@ -444,6 +444,37 @@ begin
     Result := SameText(reconstructed, value);
 end;
 
+function is_single_syllable_full_pinyin_key(const value: string): Boolean;
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+begin
+    Result := False;
+    if value = '' then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.create;
+    try
+        syllables := parser.parse(value);
+    finally
+        parser.Free;
+    end;
+
+    if Length(syllables) <> 1 then
+    begin
+        Exit;
+    end;
+
+    if not is_valid_candidate_syllable(syllables[0].text) then
+    begin
+        Exit;
+    end;
+
+    Result := SameText(syllables[0].text, value);
+end;
+
 function mixed_initial_matches(const query_initial: Char; const syllable_initial: string): Boolean;
 begin
     if syllable_initial = '' then
@@ -1340,6 +1371,9 @@ function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandid
 const
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
+    base_single_char_exact_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 AND length(text) = 1 ' +
+        'ORDER BY weight DESC, text ASC LIMIT ?2';
     base_jianpin_sql =
         'SELECT b.pinyin, b.text, b.comment, j.weight ' +
         'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
@@ -1397,6 +1431,8 @@ var
     jianpin_score_penalty: Integer;
     single_letter_cap_score: Integer;
     single_letter_has_cap: Boolean;
+    single_syllable_full_query: Boolean;
+    single_char_probe_limit: Integer;
     user_nonfull_lookup: Boolean;
     user_like_pattern: string;
     user_probe_limit: Integer;
@@ -1483,6 +1519,11 @@ begin
         mixed_jianpin_key := query_key;
     end;
     full_pinyin_query := is_full_pinyin_key(query_key);
+    single_syllable_full_query := False;
+    if full_pinyin_query then
+    begin
+        single_syllable_full_query := is_single_syllable_full_pinyin_key(query_key);
+    end;
     single_letter_query := (Length(query_key) = 1) and CharInSet(query_key[1], ['a' .. 'z']);
     jianpin_score_penalty := c_jianpin_score_penalty;
     if not full_pinyin_query then
@@ -1662,6 +1703,42 @@ begin
                 if stmt <> nil then
                 begin
                     m_base_connection.finalize(stmt);
+                end;
+            end;
+
+            // Single-syllable full pinyin queries (e.g. "hai") are used by segment fallback;
+            // probe extra exact single-char rows so common characters are not dropped by strict LIMIT.
+            if single_syllable_full_query then
+            begin
+                // Keep a wide probe window for one-syllable inputs so common single-char
+                // fallbacks (for segment composition) are not starved by phrase-heavy rows.
+                single_char_probe_limit := Max(m_limit * 24, 256);
+                if single_char_probe_limit > 512 then
+                begin
+                    single_char_probe_limit := 512;
+                end;
+
+                stmt := nil;
+                try
+                    if m_base_connection.prepare(base_single_char_exact_sql, stmt) and
+                        m_base_connection.bind_text(stmt, 1, query_key) and
+                        m_base_connection.bind_int(stmt, 2, single_char_probe_limit) then
+                    begin
+                        step_result := m_base_connection.step(stmt);
+                        while step_result = SQLITE_ROW do
+                        begin
+                            text_value := m_base_connection.column_text(stmt, 1);
+                            comment_value := m_base_connection.column_text(stmt, 2);
+                            score_value := m_base_connection.column_int(stmt, 3);
+                            append_candidate(text_value, comment_value, score_value, cs_rule);
+                            step_result := m_base_connection.step(stmt);
+                        end;
+                    end;
+                finally
+                    if stmt <> nil then
+                    begin
+                        m_base_connection.finalize(stmt);
+                    end;
                 end;
             end;
         end;
