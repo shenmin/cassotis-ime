@@ -50,6 +50,8 @@ type
         m_segment_left_context: string;
         m_context_pairs: TDictionary<string, Integer>;
         m_context_order: TQueue<string>;
+        m_context_db_bonus_cache_key: string;
+        m_context_db_bonus_cache: TDictionary<string, Integer>;
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
         m_has_pending_commit: Boolean;
@@ -337,6 +339,8 @@ begin
     m_confirmed_segments := TList<TncConfirmedSegment>.Create;
     m_context_pairs := TDictionary<string, Integer>.Create;
     m_context_order := TQueue<string>.Create;
+    m_context_db_bonus_cache_key := '';
+    m_context_db_bonus_cache := TDictionary<string, Integer>.Create;
     SetLength(m_candidates, 0);
     set_dictionary_provider(create_dictionary_from_config);
     set_ai_provider(create_ai_provider_from_config);
@@ -361,6 +365,13 @@ begin
         m_context_order.Free;
         m_context_order := nil;
     end;
+
+    if m_context_db_bonus_cache <> nil then
+    begin
+        m_context_db_bonus_cache.Free;
+        m_context_db_bonus_cache := nil;
+    end;
+    m_context_db_bonus_cache_key := '';
 
     if m_confirmed_segments <> nil then
     begin
@@ -391,10 +402,15 @@ begin
     m_confirmed_text := '';
     m_external_left_context := '';
     m_segment_left_context := '';
+    m_context_db_bonus_cache_key := '';
     SetLength(m_candidates, 0);
     if m_confirmed_segments <> nil then
     begin
         m_confirmed_segments.Clear;
+    end;
+    if m_context_db_bonus_cache <> nil then
+    begin
+        m_context_db_bonus_cache.Clear;
     end;
 
     if m_ai_provider <> nil then
@@ -450,6 +466,11 @@ begin
     end;
 
     m_dictionary := dictionary;
+    m_context_db_bonus_cache_key := '';
+    if m_context_db_bonus_cache <> nil then
+    begin
+        m_context_db_bonus_cache.Clear;
+    end;
     update_dictionary_state;
 end;
 
@@ -984,8 +1005,12 @@ var
     key: string;
     context_value: string;
     count: Integer;
+    local_bonus: Integer;
+    persistent_bonus: Integer;
 begin
     Result := 0;
+    local_bonus := 0;
+    persistent_bonus := 0;
     context_value := m_left_context;
     if m_segment_left_context <> '' then
     begin
@@ -1001,19 +1026,41 @@ begin
         Exit;
     end;
 
-    if m_context_pairs = nil then
+    if m_context_pairs <> nil then
     begin
-        Exit;
+        key := context_value + #1 + candidate_text;
+        if m_context_pairs.TryGetValue(key, count) then
+        begin
+            local_bonus := count * c_context_score_bonus;
+            if local_bonus > c_context_score_bonus_max then
+            begin
+                local_bonus := c_context_score_bonus_max;
+            end;
+        end;
     end;
 
-    key := context_value + #1 + candidate_text;
-    if m_context_pairs.TryGetValue(key, count) then
+    if (m_dictionary <> nil) and (m_context_db_bonus_cache <> nil) then
     begin
-        Result := count * c_context_score_bonus;
-        if Result > c_context_score_bonus_max then
+        if m_context_db_bonus_cache_key <> context_value then
         begin
-            Result := c_context_score_bonus_max;
+            m_context_db_bonus_cache.Clear;
+            m_context_db_bonus_cache_key := context_value;
         end;
+
+        if not m_context_db_bonus_cache.TryGetValue(candidate_text, persistent_bonus) then
+        begin
+            persistent_bonus := m_dictionary.get_context_bonus(context_value, candidate_text);
+            m_context_db_bonus_cache.AddOrSetValue(candidate_text, persistent_bonus);
+        end;
+    end;
+
+    if local_bonus >= persistent_bonus then
+    begin
+        Result := local_bonus;
+    end
+    else
+    begin
+        Result := persistent_bonus;
     end;
 end;
 
@@ -2476,6 +2523,16 @@ begin
     if (left_text = '') or (committed_text = '') then
     begin
         Exit;
+    end;
+
+    if m_dictionary <> nil then
+    begin
+        m_dictionary.record_context_pair(left_text, committed_text);
+    end;
+
+    if (m_context_db_bonus_cache <> nil) and (m_context_db_bonus_cache_key = left_text) then
+    begin
+        m_context_db_bonus_cache.Remove(committed_text);
     end;
 
     if m_context_pairs = nil then

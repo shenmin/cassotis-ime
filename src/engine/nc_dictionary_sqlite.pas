@@ -24,6 +24,7 @@ type
         m_base_ready: Boolean;
         m_user_ready: Boolean;
         m_limit: Integer;
+        m_bigram_prune_countdown: Integer;
         m_base_connection: TncSqliteConnection;
         m_user_connection: TncSqliteConnection;
         function ensure_open: Boolean;
@@ -37,6 +38,7 @@ type
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
         procedure migrate_user_entries;
         procedure prune_user_entries_existing_in_base;
+        procedure prune_bigram_rows_if_needed(const force: Boolean);
     public
         constructor create(const base_db_path: string; const user_db_path: string);
         destructor Destroy; override;
@@ -44,6 +46,8 @@ type
         procedure close;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
         procedure record_commit(const pinyin: string; const text: string); override;
+        procedure record_context_pair(const left_text: string; const committed_text: string); override;
+        function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         property db_path: string read m_base_db_path;
@@ -62,7 +66,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''4'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''5'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -114,7 +118,17 @@ const
         '    PRIMARY KEY(pinyin, text)' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'CREATE INDEX IF NOT EXISTS idx_dict_user_penalty_pinyin ON dict_user_penalty(pinyin);' + sLineBreak;
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_penalty_pinyin ON dict_user_penalty(pinyin);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_user_bigram (' + sLineBreak +
+        '    left_text TEXT NOT NULL,' + sLineBreak +
+        '    text TEXT NOT NULL,' + sLineBreak +
+        '    commit_count INTEGER DEFAULT 0,' + sLineBreak +
+        '    last_used INTEGER DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(left_text, text)' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_bigram_left_text ON dict_user_bigram(left_text);' + sLineBreak;
 
 type
     TncMixedQueryTokenKind = (mqt_full, mqt_initial);
@@ -511,6 +525,7 @@ begin
     m_base_ready := False;
     m_user_ready := False;
     m_limit := 256;
+    m_bigram_prune_countdown := 64;
     m_base_connection := nil;
     m_user_connection := nil;
 end;
@@ -694,9 +709,28 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_user_bigram (' +
+        'left_text TEXT NOT NULL,' +
+        'text TEXT NOT NULL,' +
+        'commit_count INTEGER DEFAULT 0,' +
+        'last_used INTEGER DEFAULT 0,' +
+        'PRIMARY KEY(left_text, text)' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_user_bigram_left_text ON dict_user_bigram(left_text);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 4);
+        set_schema_version(connection, 5);
         Result := True;
         Exit;
     end;
@@ -719,6 +753,11 @@ begin
     if schema_version < 4 then
     begin
         set_schema_version(connection, 4);
+    end;
+
+    if schema_version < 5 then
+    begin
+        set_schema_version(connection, 5);
     end;
 
     Result := True;
@@ -1091,6 +1130,82 @@ begin
     end;
 end;
 
+procedure TncSqliteDictionary.prune_bigram_rows_if_needed(const force: Boolean);
+const
+    count_sql = 'SELECT COUNT(1) FROM dict_user_bigram';
+    delete_sql =
+        'DELETE FROM dict_user_bigram WHERE rowid IN (' +
+        'SELECT rowid FROM dict_user_bigram ' +
+        'ORDER BY last_used ASC, commit_count ASC, left_text ASC, text ASC LIMIT ?1)';
+    c_bigram_prune_interval = 64;
+    c_bigram_max_rows = 50000;
+    c_bigram_target_rows = 45000;
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    row_count: Integer;
+    delete_count: Integer;
+begin
+    if (m_user_connection = nil) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    if not force then
+    begin
+        Dec(m_bigram_prune_countdown);
+        if m_bigram_prune_countdown > 0 then
+        begin
+            Exit;
+        end;
+    end;
+    m_bigram_prune_countdown := c_bigram_prune_interval;
+
+    row_count := 0;
+    stmt := nil;
+    try
+        if m_user_connection.prepare(count_sql, stmt) then
+        begin
+            step_result := m_user_connection.step(stmt);
+            if step_result = SQLITE_ROW then
+            begin
+                row_count := m_user_connection.column_int(stmt, 0);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    if row_count <= c_bigram_max_rows then
+    begin
+        Exit;
+    end;
+
+    delete_count := row_count - c_bigram_target_rows;
+    if delete_count <= 0 then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_sql, stmt) and
+            m_user_connection.bind_int(stmt, 1, delete_count) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+end;
+
 function TncSqliteDictionary.open: Boolean;
 begin
     m_ready := False;
@@ -1132,6 +1247,10 @@ begin
         if m_user_ready then
         begin
             m_user_ready := ensure_schema(m_user_connection);
+            if m_user_ready then
+            begin
+                prune_bigram_rows_if_needed(True);
+            end;
         end;
     end;
 
@@ -1875,6 +1994,110 @@ begin
     end;
 end;
 
+procedure TncSqliteDictionary.record_context_pair(const left_text: string; const committed_text: string);
+const
+    update_sql = 'UPDATE dict_user_bigram SET commit_count = commit_count + 1, ' +
+        'last_used = strftime(''%s'',''now'') WHERE left_text = ?1 AND text = ?2';
+    insert_sql = 'INSERT OR IGNORE INTO dict_user_bigram(left_text, text, commit_count, last_used) ' +
+        'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
+var
+    stmt: Psqlite3_stmt;
+    left_key: string;
+    text_key: string;
+begin
+    left_key := Trim(left_text);
+    text_key := Trim(committed_text);
+    if (left_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(update_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, left_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(insert_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, left_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    prune_bigram_rows_if_needed(False);
+end;
+
+function TncSqliteDictionary.get_context_bonus(const left_text: string; const candidate_text: string): Integer;
+const
+    query_sql = 'SELECT commit_count FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
+    c_bigram_score_step = 80;
+    c_bigram_score_max = 400;
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    left_key: string;
+    text_key: string;
+    commit_count: Integer;
+begin
+    Result := 0;
+    left_key := Trim(left_text);
+    text_key := Trim(candidate_text);
+    if (left_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_user_connection.prepare(query_sql, stmt) then
+        begin
+            Exit;
+        end;
+        if (not m_user_connection.bind_text(stmt, 1, left_key)) or
+            (not m_user_connection.bind_text(stmt, 2, text_key)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(stmt);
+        if step_result <> SQLITE_ROW then
+        begin
+            Exit;
+        end;
+
+        commit_count := m_user_connection.column_int(stmt, 0);
+        if commit_count <= 0 then
+        begin
+            Exit;
+        end;
+
+        Result := Min(c_bigram_score_max, commit_count * c_bigram_score_step);
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
 function TncSqliteDictionary.get_candidate_penalty(const pinyin: string; const text: string): Integer;
 const
     query_penalty_sql = 'SELECT penalty FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
@@ -1923,6 +2146,8 @@ const
     delete_stats_sql = 'DELETE FROM dict_user_stats WHERE pinyin = ?1 AND text = ?2';
     delete_user_by_text_sql = 'DELETE FROM dict_user WHERE text = ?1';
     delete_stats_by_text_sql = 'DELETE FROM dict_user_stats WHERE text = ?1';
+    delete_bigram_by_text_sql = 'DELETE FROM dict_user_bigram WHERE text = ?1';
+    delete_bigram_by_left_sql = 'DELETE FROM dict_user_bigram WHERE left_text = ?1';
     update_penalty_sql = 'UPDATE dict_user_penalty SET penalty = MIN(penalty + ?3, ?4), ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_penalty_sql = 'INSERT OR IGNORE INTO dict_user_penalty(pinyin, text, penalty, last_used) ' +
@@ -1993,6 +2218,34 @@ begin
     stmt := nil;
     try
         if m_user_connection.prepare(delete_stats_by_text_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_bigram_by_text_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_bigram_by_left_sql, stmt) and
             m_user_connection.bind_text(stmt, 1, text_key) then
         begin
             m_user_connection.step(stmt);
