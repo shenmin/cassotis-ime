@@ -2430,6 +2430,12 @@ begin
                     m_logger.debug(Format('Caret delta too large tsf=(%d,%d) gui=(%d,%d)',
                         [tsf_point.X, tsf_point.Y, gui_point.X, gui_point.Y]));
                 end;
+                // In active composition, TSF text-ext is usually the most reliable anchor.
+                // Reject obviously divergent GUI caret points (e.g. Chromium top-window fallbacks).
+                if m_composition <> nil then
+                begin
+                    gui_point_valid := False;
+                end;
             end;
         end;
 
@@ -2475,15 +2481,26 @@ begin
                     m_logger.debug(Format('Caret delta too large tsf=(%d,%d) caret=(%d,%d)',
                         [tsf_point.X, tsf_point.Y, caret_point.X, caret_point.Y]));
                 end;
-                point := caret_point;
-                Result := True;
-                Exit;
+                // During active composition, prefer TSF anchor when CaretPos diverges too much.
+                if m_composition <> nil then
+                begin
+                    caret_point_valid := False;
+                end
+                else
+                begin
+                    point := caret_point;
+                    Result := True;
+                    Exit;
+                end;
             end;
         end;
 
-        point := caret_point;
-        Result := True;
-        Exit;
+        if caret_point_valid then
+        begin
+            point := caret_point;
+            Result := True;
+            Exit;
+        end;
     end;
 
     if tsf_point_valid and point_in_foreground(tsf_point) then

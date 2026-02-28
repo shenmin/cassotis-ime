@@ -1834,6 +1834,7 @@ var
         sorted_states: TncCandidateList;
         local_key: string;
         allow_leading_single_char: Boolean;
+        has_preferred_leading_phrase: Boolean;
         text_unit_mismatch: Integer;
         candidate_has_non_ascii: Boolean;
         local_candidate_text: string;
@@ -1891,6 +1892,55 @@ var
                 state_dedup[position].Add(build_state_key(sorted_states[idx].text), idx);
             end;
         end;
+
+        function detect_preferred_leading_phrase: Boolean;
+        var
+            probe_segment_len: Integer;
+            probe_segment_text: string;
+            probe_lookup_results: TncCandidateList;
+            probe_idx: Integer;
+            probe_text: string;
+        begin
+            Result := False;
+            if Length(syllables) <= 1 then
+            begin
+                Exit;
+            end;
+
+            for probe_segment_len := 2 to max_word_len do
+            begin
+                probe_segment_text := build_syllable_text(0, probe_segment_len);
+                if probe_segment_text = '' then
+                begin
+                    Continue;
+                end;
+
+                if not m_dictionary.lookup(probe_segment_text, probe_lookup_results) then
+                begin
+                    Continue;
+                end;
+
+                if (per_limit > 0) and (Length(probe_lookup_results) > per_limit) then
+                begin
+                    SetLength(probe_lookup_results, per_limit);
+                end;
+
+                for probe_idx := 0 to High(probe_lookup_results) do
+                begin
+                    probe_text := Trim(probe_lookup_results[probe_idx].text);
+                    if (probe_text = '') or (not contains_non_ascii(probe_text)) then
+                    begin
+                        Continue;
+                    end;
+
+                    if get_text_unit_count(probe_text) > 1 then
+                    begin
+                        Result := True;
+                        Exit;
+                    end;
+                end;
+            end;
+        end;
     begin
         if Length(syllables) <= 1 then
         begin
@@ -1912,6 +1962,7 @@ var
             local_state.source := cs_rule;
             states[0].Add(local_state);
             state_dedup[0].Add('', 0);
+            has_preferred_leading_phrase := detect_preferred_leading_phrase;
 
             for state_pos := 0 to High(syllables) do
             begin
@@ -1987,6 +2038,10 @@ var
                                 (local_segment_len * c_segment_prefix_bonus);
                             if allow_leading_single_char then
                             begin
+                                if has_preferred_leading_phrase and (next_pos < Length(syllables)) then
+                                begin
+                                    Continue;
+                                end;
                                 Dec(local_new_state.score, c_segment_full_leading_single_penalty);
                             end;
                             if (next_pos = Length(syllables)) then
