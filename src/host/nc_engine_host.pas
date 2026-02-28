@@ -18,8 +18,12 @@ uses
     nc_ipc_common;
 
 type
+    TncEngineHost = class;
+
     TncHostSession = class
     private
+        m_owner: TncEngineHost;
+        m_session_id: string;
         m_engine: TncEngine;
         m_candidate_window: TncCandidateWindow;
         m_last_caret: TPoint;
@@ -31,8 +35,9 @@ type
         m_preedit_text: string;
         m_candidate_dirty: Boolean;
         procedure ensure_candidate_window;
+        procedure handle_remove_user_candidate(const candidate_index: Integer);
     public
-        constructor create(const config: TncEngineConfig);
+        constructor create(const owner: TncEngineHost; const session_id: string; const config: TncEngineConfig);
         destructor Destroy; override;
         procedure update_config(const config: TncEngineConfig);
         procedure set_caret(const point: TPoint; const has_caret: Boolean);
@@ -67,6 +72,7 @@ type
         procedure touch_session_activity(const session_id: string);
         procedure set_session_active(const session_id: string; const active: Boolean);
         function has_active_session: Boolean;
+        procedure remove_user_candidate(const session_id: string; const candidate_index: Integer);
         procedure refresh_ai_candidates;
     public
         constructor create;
@@ -326,9 +332,11 @@ begin
     end;
 end;
 
-constructor TncHostSession.create(const config: TncEngineConfig);
+constructor TncHostSession.create(const owner: TncEngineHost; const session_id: string; const config: TncEngineConfig);
 begin
     inherited create;
+    m_owner := owner;
+    m_session_id := session_id;
     m_engine := TncEngine.create(config);
     m_candidate_window := nil;
     m_last_caret := Point(0, 0);
@@ -361,6 +369,15 @@ begin
     if m_candidate_window = nil then
     begin
         m_candidate_window := TncCandidateWindow.create;
+        m_candidate_window.on_remove_user_candidate := handle_remove_user_candidate;
+    end;
+end;
+
+procedure TncHostSession.handle_remove_user_candidate(const candidate_index: Integer);
+begin
+    if m_owner <> nil then
+    begin
+        m_owner.remove_user_candidate(m_session_id, candidate_index);
     end;
 end;
 
@@ -692,7 +709,7 @@ begin
     try
         if not m_sessions.TryGetValue(session_id, Result) then
         begin
-            Result := TncHostSession.create(m_config);
+            Result := TncHostSession.create(Self, session_id, m_config);
             m_sessions.Add(session_id, Result);
             host_log('Dictionary ' + Result.engine.get_dictionary_debug_info);
         end;
@@ -1119,6 +1136,110 @@ begin
     finally
         m_lock.Release;
     end;
+end;
+
+procedure TncEngineHost.remove_user_candidate(const session_id: string; const candidate_index: Integer);
+var
+    session: TncHostSession;
+    candidate_text: string;
+    pinyin_key: string;
+    candidates: TncCandidateList;
+    page_index: Integer;
+    page_count: Integer;
+    selected_index: Integer;
+    preedit_text: string;
+    should_refresh: Boolean;
+    should_hide: Boolean;
+    caret_point: TPoint;
+    has_caret: Boolean;
+begin
+    if session_id = '' then
+    begin
+        Exit;
+    end;
+
+    host_log(Format('[DEBUG] remove user candidate session=%s index=%d', [session_id, candidate_index]));
+
+    should_refresh := False;
+    should_hide := False;
+    caret_point := Point(0, 0);
+    has_caret := False;
+    session := nil;
+
+    m_lock.Acquire;
+    try
+        if not m_sessions.TryGetValue(session_id, session) then
+        begin
+            Exit;
+        end;
+
+        if (candidate_index < 0) or (candidate_index >= Length(session.m_candidates)) then
+        begin
+            host_log(Format('[DEBUG] remove user candidate skipped: index out of range count=%d',
+                [Length(session.m_candidates)]));
+            Exit;
+        end;
+
+        if session.m_candidates[candidate_index].source <> cs_user then
+        begin
+            host_log('[DEBUG] remove user candidate skipped: source is not cs_user');
+            Exit;
+        end;
+
+        candidate_text := session.m_candidates[candidate_index].text;
+        pinyin_key := session.m_preedit_text;
+        if pinyin_key = '' then
+        begin
+            pinyin_key := session.engine.get_composition_text;
+        end;
+
+        if not session.engine.remove_user_candidate(pinyin_key, candidate_text) then
+        begin
+            host_log('[WARN] remove user candidate failed in engine');
+            Exit;
+        end;
+
+        host_log(Format('[INFO] removed user candidate text=%s pinyin=%s', [candidate_text, pinyin_key]));
+
+        candidates := session.engine.get_candidates;
+        page_index := session.engine.get_page_index;
+        page_count := session.engine.get_page_count;
+        selected_index := session.engine.get_selected_index;
+        preedit_text := session.engine.get_composition_text;
+        if Length(candidates) = 0 then
+        begin
+            session.clear_candidates;
+            should_hide := True;
+        end
+        else
+        begin
+            session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
+            should_refresh := True;
+        end;
+
+        caret_point := session.last_caret;
+        has_caret := session.has_caret;
+    finally
+        m_lock.Release;
+    end;
+
+    if (session = nil) or (not should_refresh and not should_hide) then
+    begin
+        Exit;
+    end;
+
+    run_on_ui_thread(
+        procedure
+        begin
+            if should_hide then
+            begin
+                session.hide_candidate_window;
+            end
+            else
+            begin
+                session.apply_candidate_state(caret_point, has_caret);
+            end;
+        end);
 end;
 
 procedure TncEngineHost.reset_session(const session_id: string);

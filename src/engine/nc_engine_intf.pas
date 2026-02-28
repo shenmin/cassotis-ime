@@ -125,6 +125,7 @@ type
             out page_count: Integer; out selected_index: Integer; out preedit_text: string): Boolean;
         function should_handle_key(const key_code: Word; const key_state: TncKeyState): Boolean;
         function commit_text(out out_text: string): Boolean;
+        function remove_user_candidate(const pinyin: string; const text: string): Boolean;
         property config: TncEngineConfig read m_config write update_config;
     end;
 
@@ -748,6 +749,31 @@ var
         end;
         candidates[visible_limit - 1] := partial_candidate;
     end;
+
+    procedure apply_user_penalties(const pinyin_key: string; var candidates: TncCandidateList);
+    var
+        idx: Integer;
+        penalty: Integer;
+    begin
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(candidates) do
+        begin
+            if candidates[idx].text = '' then
+            begin
+                Continue;
+            end;
+
+            penalty := m_dictionary.get_candidate_penalty(pinyin_key, candidates[idx].text);
+            if penalty > 0 then
+            begin
+                Dec(candidates[idx].score, penalty);
+            end;
+        end;
+    end;
 begin
     SetLength(m_candidates, 0);
     if m_composition_text = '' then
@@ -844,6 +870,10 @@ begin
             end;
         end;
 
+        apply_user_penalties(lookup_text, m_candidates);
+        sort_candidates(m_candidates);
+        ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
+        ensure_non_ai_first(m_candidates);
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -871,6 +901,8 @@ begin
         end;
 
         m_candidates := ai_candidates;
+        apply_user_penalties(lookup_text, m_candidates);
+        sort_candidates(m_candidates);
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -989,6 +1021,33 @@ function TncEngine.get_punctuation_char(const key_code: Word; const key_state: T
 begin
     Result := True;
     case key_code of
+        Ord('6'):
+            if key_state.shift_down then
+            begin
+                out_char := '^';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('9'):
+            if key_state.shift_down then
+            begin
+                out_char := '(';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('0'):
+            if key_state.shift_down then
+            begin
+                out_char := ')';
+            end
+            else
+            begin
+                Result := False;
+            end;
         VK_OEM_COMMA:
             if key_state.shift_down then
             begin
@@ -1175,6 +1234,8 @@ begin
                 Result := Char($00B7);
             '~':
                 Result := Char($FF5E);
+            '^':
+                Result := Char($2026) + Char($2026);
             '-':
                 Result := Char($FF0D);
             '_':
@@ -1591,6 +1652,10 @@ const
     c_segment_full_state_limit = 128;
     c_segment_full_completion_bonus = 160;
     c_segment_full_transition_penalty = 6;
+    c_segment_full_leading_single_top_n = 1;
+    c_segment_full_leading_single_penalty = 24;
+    c_segment_text_unit_mismatch_penalty = 100;
+    c_segment_text_unit_overflow_penalty = 60;
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
@@ -1611,6 +1676,7 @@ var
     dedup_key: string;
     existing_index: Integer;
     is_first_overall_segment: Boolean;
+    candidate_text_units: Integer;
 
     function is_single_text_unit(const value: string): Boolean;
     begin
@@ -1631,6 +1697,48 @@ var
     begin
         trimmed_text := Trim(text);
         Result := (trimmed_text <> '') and (not is_single_text_unit(trimmed_text));
+    end;
+
+    function contains_non_ascii(const text: string): Boolean;
+    var
+        ch: Char;
+    begin
+        Result := False;
+        for ch in text do
+        begin
+            if Ord(ch) > $7F then
+            begin
+                Result := True;
+                Exit;
+            end;
+        end;
+    end;
+
+    function get_text_unit_count(const text: string): Integer;
+    var
+        idx: Integer;
+        codepoint: Integer;
+    begin
+        Result := 0;
+        if text = '' then
+        begin
+            Exit;
+        end;
+
+        idx := 1;
+        while idx <= Length(text) do
+        begin
+            codepoint := Ord(text[idx]);
+            if (codepoint >= $D800) and (codepoint <= $DBFF) and (idx < Length(text)) then
+            begin
+                if (Ord(text[idx + 1]) >= $DC00) and (Ord(text[idx + 1]) <= $DFFF) then
+                begin
+                    Inc(idx);
+                end;
+            end;
+            Inc(Result);
+            Inc(idx);
+        end;
     end;
 
     function build_syllable_text(const start_index: Integer; const syllable_count: Integer): string;
@@ -1725,6 +1833,10 @@ var
         local_existing_state: TncCandidate;
         sorted_states: TncCandidateList;
         local_key: string;
+        allow_leading_single_char: Boolean;
+        text_unit_mismatch: Integer;
+        candidate_has_non_ascii: Boolean;
+        local_candidate_text: string;
 
         function build_state_key(const text: string): string;
         begin
@@ -1838,15 +1950,45 @@ var
                         for candidate_index := 0 to High(local_lookup_results) do
                         begin
                             local_candidate := local_lookup_results[candidate_index];
-                            if not is_multi_char_word(local_candidate.text) then
+                            local_candidate_text := Trim(local_candidate.text);
+                            candidate_has_non_ascii := contains_non_ascii(local_candidate_text);
+                            candidate_text_units := get_text_unit_count(local_candidate_text);
+                            if candidate_text_units <= 0 then
                             begin
                                 Continue;
+                            end;
+                            // For one-syllable segment expansion, multi-char words are typically noisy bridges
+                            // (e.g. "xian" -> "西安") and hurt full-path quality.
+                            if candidate_has_non_ascii and (local_segment_len = 1) and
+                                (candidate_text_units > 1) then
+                            begin
+                                Continue;
+                            end;
+                            allow_leading_single_char := False;
+                            if not is_multi_char_word(local_candidate.text) then
+                            begin
+                                // Allow only the top leading single-char candidate so cases like
+                                // "wo + faxian" can become "我发现", while still blocking noisy
+                                // single-char full-path combinations in general.
+                                if (state_pos = 0) and (local_segment_len = 1) and
+                                    (candidate_index < c_segment_full_leading_single_top_n) then
+                                begin
+                                    allow_leading_single_char := True;
+                                end
+                                else
+                                begin
+                                    Continue;
+                                end;
                             end;
 
                             local_new_state.text := local_state.text + local_candidate.text;
                             local_new_state.comment := '';
                             local_new_state.score := local_state.score + local_candidate.score +
                                 (local_segment_len * c_segment_prefix_bonus);
+                            if allow_leading_single_char then
+                            begin
+                                Dec(local_new_state.score, c_segment_full_leading_single_penalty);
+                            end;
                             if (next_pos = Length(syllables)) then
                             begin
                                 Inc(local_new_state.score, c_segment_full_completion_bonus);
@@ -1854,6 +1996,17 @@ var
                             else
                             begin
                                 Dec(local_new_state.score, c_segment_full_transition_penalty);
+                            end;
+
+                            if candidate_has_non_ascii and (candidate_text_units <> local_segment_len) then
+                            begin
+                                text_unit_mismatch := Abs(candidate_text_units - local_segment_len);
+                                Dec(local_new_state.score, text_unit_mismatch * c_segment_text_unit_mismatch_penalty);
+                                if candidate_text_units > local_segment_len then
+                                begin
+                                    Dec(local_new_state.score,
+                                        (candidate_text_units - local_segment_len) * c_segment_text_unit_overflow_penalty);
+                                end;
                             end;
 
                             if is_first_overall_segment and (state_pos = 0) and (local_segment_len = 1) and
@@ -1987,10 +2140,29 @@ begin
                 for i := 0 to High(lookup_results) do
                 begin
                     candidate := lookup_results[i];
+                    candidate_text_units := get_text_unit_count(Trim(candidate.text));
+                    if candidate_text_units <= 0 then
+                    begin
+                        Continue;
+                    end;
+                    if (segment_len = 1) and (candidate_text_units > 1) then
+                    begin
+                        Continue;
+                    end;
                     score_value := candidate.score + (segment_len * c_segment_prefix_bonus);
                     if remaining_syllables > 0 then
                     begin
                         Dec(score_value, c_segment_partial_penalty * remaining_syllables);
+                    end;
+
+                    if candidate_text_units <> segment_len then
+                    begin
+                        Dec(score_value, Abs(candidate_text_units - segment_len) * c_segment_text_unit_mismatch_penalty);
+                        if candidate_text_units > segment_len then
+                        begin
+                            Dec(score_value,
+                                (candidate_text_units - segment_len) * c_segment_text_unit_overflow_penalty);
+                        end;
                     end;
 
                     if is_first_overall_segment and (segment_len = 1) and (remaining_syllables > 0) and
@@ -3232,6 +3404,27 @@ begin
         m_confirmed_segments.Clear;
     end;
     reset;
+    Result := True;
+end;
+
+function TncEngine.remove_user_candidate(const pinyin: string; const text: string): Boolean;
+var
+    pinyin_key: string;
+begin
+    Result := False;
+    pinyin_key := normalize_pinyin_text(pinyin);
+    if (m_dictionary = nil) or (Trim(text) = '') then
+    begin
+        Exit;
+    end;
+
+    m_dictionary.remove_user_entry(pinyin_key, text);
+
+    if m_composition_text <> '' then
+    begin
+        build_candidates;
+    end;
+
     Result := True;
 end;
 

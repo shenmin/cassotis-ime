@@ -44,6 +44,8 @@ type
         procedure close;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
         procedure record_commit(const pinyin: string; const text: string); override;
+        procedure remove_user_entry(const pinyin: string; const text: string); override;
+        function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         property db_path: string read m_base_db_path;
         property user_db_path: string read m_user_db_path;
         property base_ready: Boolean read m_base_ready;
@@ -60,7 +62,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''3'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''4'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -102,7 +104,17 @@ const
         '    PRIMARY KEY(pinyin, text)' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);' + sLineBreak;
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_user_penalty (' + sLineBreak +
+        '    pinyin TEXT NOT NULL,' + sLineBreak +
+        '    text TEXT NOT NULL,' + sLineBreak +
+        '    penalty INTEGER DEFAULT 0,' + sLineBreak +
+        '    last_used INTEGER DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(pinyin, text)' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_penalty_pinyin ON dict_user_penalty(pinyin);' + sLineBreak;
 
 type
     TncMixedQueryTokenKind = (mqt_full, mqt_initial);
@@ -663,9 +675,28 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_user_penalty (' +
+        'pinyin TEXT NOT NULL,' +
+        'text TEXT NOT NULL,' +
+        'penalty INTEGER DEFAULT 0,' +
+        'last_used INTEGER DEFAULT 0,' +
+        'PRIMARY KEY(pinyin, text)' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_user_penalty_pinyin ON dict_user_penalty(pinyin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 3);
+        set_schema_version(connection, 4);
         Result := True;
         Exit;
     end;
@@ -683,6 +714,11 @@ begin
     if schema_version < 3 then
     begin
         set_schema_version(connection, 3);
+    end;
+
+    if schema_version < 4 then
+    begin
+        set_schema_version(connection, 4);
     end;
 
     Result := True;
@@ -1153,6 +1189,7 @@ const
     c_jianpin_score_penalty = 30;
     c_nonfull_exact_penalty = 100;
     c_initial_single_char_penalty = 120;
+    c_single_letter_full_query_extra_penalty = 120;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -1177,9 +1214,12 @@ var
     mixed_tokens: TncMixedQueryTokenList;
     mixed_mode: Boolean;
     full_pinyin_query: Boolean;
+    single_letter_query: Boolean;
     mixed_parser: TncPinyinParser;
     mixed_like_pattern: string;
     jianpin_score_penalty: Integer;
+    single_letter_cap_score: Integer;
+    single_letter_has_cap: Boolean;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource);
@@ -1263,6 +1303,7 @@ begin
         mixed_jianpin_key := query_key;
     end;
     full_pinyin_query := is_full_pinyin_key(query_key);
+    single_letter_query := (Length(query_key) = 1) and CharInSet(query_key[1], ['a' .. 'z']);
     jianpin_score_penalty := c_jianpin_score_penalty;
     if not full_pinyin_query then
     begin
@@ -1498,6 +1539,74 @@ begin
                         comment_value := m_base_connection.column_text(stmt, 2);
                         score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
                         append_candidate(text_value, comment_value, score_value, cs_rule);
+                        if list.Count >= m_limit then
+                        begin
+                            Break;
+                        end;
+                        step_result := m_base_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
+                end;
+            end;
+        end;
+
+        // Single-letter queries should still surface useful single-character candidates.
+        // For full one-syllable queries (e.g. "e"), keep exact pinyin candidates ahead.
+        if m_base_ready and single_letter_query and (list.Count < m_limit) then
+        begin
+            single_letter_cap_score := 0;
+            single_letter_has_cap := False;
+            if full_pinyin_query and (list.Count > 0) then
+            begin
+                single_letter_cap_score := list[0].score - 1;
+                for i := 1 to list.Count - 1 do
+                begin
+                    if list[i].score - 1 < single_letter_cap_score then
+                    begin
+                        single_letter_cap_score := list[i].score - 1;
+                    end;
+                end;
+                single_letter_has_cap := True;
+            end;
+
+            stmt := nil;
+            try
+                if m_base_connection.prepare(base_initial_single_char_sql, stmt) and
+                    m_base_connection.bind_text(stmt, 1, query_key + '%') and
+                    m_base_connection.bind_int(stmt, 2, Min(24, m_limit)) then
+                begin
+                    step_result := m_base_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                        if full_pinyin_query and SameText(candidate_pinyin, query_key) then
+                        begin
+                            step_result := m_base_connection.step(stmt);
+                            Continue;
+                        end;
+
+                        text_value := m_base_connection.column_text(stmt, 1);
+                        comment_value := m_base_connection.column_text(stmt, 2);
+                        score_value := m_base_connection.column_int(stmt, 3) - c_initial_single_char_penalty;
+                        if full_pinyin_query then
+                        begin
+                            Dec(score_value, c_single_letter_full_query_extra_penalty);
+                            if single_letter_has_cap and (score_value > single_letter_cap_score) then
+                            begin
+                                score_value := single_letter_cap_score;
+                            end;
+                        end;
+
+                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        if full_pinyin_query and single_letter_has_cap then
+                        begin
+                            single_letter_cap_score := (single_letter_cap_score - 1);
+                        end;
+
                         if list.Count >= m_limit then
                         begin
                             Break;
@@ -1762,6 +1871,173 @@ begin
         if stmt <> nil then
         begin
             m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
+function TncSqliteDictionary.get_candidate_penalty(const pinyin: string; const text: string): Integer;
+const
+    query_penalty_sql = 'SELECT penalty FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    pinyin_key: string;
+    text_key: string;
+begin
+    Result := 0;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_user_connection.prepare(query_penalty_sql, stmt) then
+        begin
+            Exit;
+        end;
+        if (not m_user_connection.bind_text(stmt, 1, pinyin_key)) or
+            (not m_user_connection.bind_text(stmt, 2, text_key)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(stmt);
+        if step_result = SQLITE_ROW then
+        begin
+            Result := m_user_connection.column_int(stmt, 0);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
+procedure TncSqliteDictionary.remove_user_entry(const pinyin: string; const text: string);
+const
+    delete_user_sql = 'DELETE FROM dict_user WHERE pinyin = ?1 AND text = ?2';
+    delete_stats_sql = 'DELETE FROM dict_user_stats WHERE pinyin = ?1 AND text = ?2';
+    delete_user_by_text_sql = 'DELETE FROM dict_user WHERE text = ?1';
+    delete_stats_by_text_sql = 'DELETE FROM dict_user_stats WHERE text = ?1';
+    update_penalty_sql = 'UPDATE dict_user_penalty SET penalty = MIN(penalty + ?3, ?4), ' +
+        'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
+    insert_penalty_sql = 'INSERT OR IGNORE INTO dict_user_penalty(pinyin, text, penalty, last_used) ' +
+        'VALUES (?1, ?2, ?3, strftime(''%s'',''now''))';
+    c_remove_penalty_step = 80;
+    c_remove_penalty_max = 360;
+var
+    stmt: Psqlite3_stmt;
+    pinyin_key: string;
+    text_key: string;
+begin
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (text_key = '') or (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    // Prefer exact pinyin+text removal when key is available, but do not require it.
+    if pinyin_key <> '' then
+    begin
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_user_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_stats_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+    end;
+
+    // Always clear all rows by phrase text, including legacy rows keyed by other pinyin.
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_user_by_text_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_stats_by_text_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    // Record negative feedback only for valid phrase keys.
+    if (pinyin_key <> '') and is_valid_user_text(text_key) then
+    begin
+        stmt := nil;
+        try
+            if m_user_connection.prepare(update_penalty_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text_key) and
+                m_user_connection.bind_int(stmt, 3, c_remove_penalty_step) and
+                m_user_connection.bind_int(stmt, 4, c_remove_penalty_max) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+
+        stmt := nil;
+        try
+            if m_user_connection.prepare(insert_penalty_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text_key) and
+                m_user_connection.bind_int(stmt, 3, c_remove_penalty_step) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
         end;
     end;
 end;
