@@ -34,6 +34,8 @@ type
         function ensure_schema(const connection: TncSqliteConnection): Boolean;
         function get_schema_version(const connection: TncSqliteConnection; out version: Integer): Boolean;
         procedure set_schema_version(const connection: TncSqliteConnection; const version: Integer);
+        function get_valid_cjk_codepoint_count(const text: string): Integer;
+        function is_valid_learning_text(const text: string): Boolean;
         function is_valid_user_text(const text: string): Boolean;
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
         procedure migrate_user_entries;
@@ -878,7 +880,7 @@ begin
     end;
 end;
 
-function TncSqliteDictionary.is_valid_user_text(const text: string): Boolean;
+function TncSqliteDictionary.get_valid_cjk_codepoint_count(const text: string): Integer;
 var
     idx: Integer;
     codepoint_count: Integer;
@@ -901,15 +903,14 @@ var
             ((value >= $30000) and (value <= $3134F));
     end;
 begin
+    Result := -1;
     if text = '' then
     begin
-        Result := False;
         Exit;
     end;
 
     if Pos('`', text) > 0 then
     begin
-        Result := False;
         Exit;
     end;
 
@@ -922,7 +923,6 @@ begin
         begin
             if idx >= Length(text) then
             begin
-                Result := False;
                 Exit;
             end;
 
@@ -930,7 +930,6 @@ begin
             low_surrogate := Ord(text[idx + 1]);
             if (low_surrogate < $DC00) or (low_surrogate > $DFFF) then
             begin
-                Result := False;
                 Exit;
             end;
 
@@ -940,7 +939,6 @@ begin
 
         if not is_cjk_codepoint(codepoint) then
         begin
-            Result := False;
             Exit;
         end;
 
@@ -948,6 +946,20 @@ begin
         Inc(idx);
     end;
 
+    Result := codepoint_count;
+end;
+
+function TncSqliteDictionary.is_valid_learning_text(const text: string): Boolean;
+begin
+    // Learning stats should include both single-character and phrase commits.
+    Result := get_valid_cjk_codepoint_count(text) >= 1;
+end;
+
+function TncSqliteDictionary.is_valid_user_text(const text: string): Boolean;
+var
+    codepoint_count: Integer;
+begin
+    codepoint_count := get_valid_cjk_codepoint_count(text);
     // User dictionary should store phrase learning only, not single-character commits.
     Result := codepoint_count >= 2;
 end;
@@ -1935,7 +1947,7 @@ var
     mixed_tokens: TncMixedQueryTokenList;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
-    if (pinyin_key = '') or (text = '') or (not is_valid_user_text(text)) or
+    if (pinyin_key = '') or (text = '') or (not is_valid_learning_text(text)) or
         (not ensure_open) or (not m_user_ready) then
     begin
         Exit;
@@ -2045,6 +2057,27 @@ begin
         begin
             m_user_connection.finalize(stmt);
         end;
+    end;
+
+    if not is_valid_user_text(text) then
+    begin
+        // Keep learning stats for single-char commits, but never keep them as user words.
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_user_sql, stmt) then
+            begin
+                if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
+                begin
+                    m_user_connection.step(stmt);
+                end;
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+        Exit;
     end;
 
     if base_has_entry or (not full_pinyin_input) then
