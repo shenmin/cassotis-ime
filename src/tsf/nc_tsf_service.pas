@@ -1932,6 +1932,8 @@ var
     terminal_like_foreground: Boolean;
     terminal_like_target: Boolean;
     terminal_has_composition: Boolean;
+    gui_caret_delta_x: Integer;
+    gui_caret_delta_y: Integer;
 
     function point_in_virtual_screen(const candidate: TPoint): Boolean;
     const
@@ -1943,21 +1945,24 @@ var
 
     function point_in_foreground(const candidate: TPoint): Boolean;
     const
-        c_margin = 200;
+        c_margin_terminal = 200;
+        c_margin_normal = 96;
     begin
         if terminal_like_target and has_foreground_rect then
         begin
-            Result := (candidate.X >= foreground_rect.Left - c_margin) and
-                (candidate.X <= foreground_rect.Right + c_margin) and
-                (candidate.Y >= foreground_rect.Top - c_margin) and
-                (candidate.Y <= foreground_rect.Bottom + c_margin);
+            Result := (candidate.X >= foreground_rect.Left - c_margin_terminal) and
+                (candidate.X <= foreground_rect.Right + c_margin_terminal) and
+                (candidate.Y >= foreground_rect.Top - c_margin_terminal) and
+                (candidate.Y <= foreground_rect.Bottom + c_margin_terminal);
             Exit;
         end;
 
         if has_context_rect then
         begin
-            Result := (candidate.X >= context_rect.Left - c_margin) and (candidate.X <= context_rect.Right + c_margin) and
-                (candidate.Y >= context_rect.Top - c_margin) and (candidate.Y <= context_rect.Bottom + c_margin);
+            Result := (candidate.X >= context_rect.Left - c_margin_normal) and
+                (candidate.X <= context_rect.Right + c_margin_normal) and
+                (candidate.Y >= context_rect.Top - c_margin_normal) and
+                (candidate.Y <= context_rect.Bottom + c_margin_normal);
             Exit;
         end;
 
@@ -1967,14 +1972,56 @@ var
             Exit;
         end;
 
-        Result := (candidate.X >= foreground_rect.Left - c_margin) and (candidate.X <= foreground_rect.Right + c_margin) and
-            (candidate.Y >= foreground_rect.Top - c_margin) and (candidate.Y <= foreground_rect.Bottom + c_margin);
+        Result := (candidate.X >= foreground_rect.Left - c_margin_normal) and
+            (candidate.X <= foreground_rect.Right + c_margin_normal) and
+            (candidate.Y >= foreground_rect.Top - c_margin_normal) and
+            (candidate.Y <= foreground_rect.Bottom + c_margin_normal);
     end;
 
     function point_in_rect(const candidate: TPoint; const bounds: TRect; const margin: Integer): Boolean;
     begin
         Result := (candidate.X >= bounds.Left - margin) and (candidate.X <= bounds.Right + margin) and
             (candidate.Y >= bounds.Top - margin) and (candidate.Y <= bounds.Bottom + margin);
+    end;
+
+    function points_are_close(const left_point: TPoint; const right_point: TPoint; const max_delta: Integer): Boolean;
+    begin
+        Result := (Abs(left_point.X - right_point.X) <= max_delta) and
+            (Abs(left_point.Y - right_point.Y) <= max_delta);
+    end;
+
+    function tsf_anchor_looks_like_window_origin(const candidate: TPoint): Boolean;
+    const
+        c_left_range = 220;
+        c_top_range = 180;
+    var
+        base_rect: TRect;
+        has_base_rect: Boolean;
+    begin
+        has_base_rect := False;
+        if has_context_rect then
+        begin
+            base_rect := context_rect;
+            has_base_rect := True;
+        end
+        else if has_foreground_rect then
+        begin
+            base_rect := foreground_rect;
+            has_base_rect := True;
+        end;
+
+        if not has_base_rect then
+        begin
+            Result := False;
+            Exit;
+        end;
+
+        // Some mixed-DPI apps can report TSF TextExt near the top-left of window
+        // while real caret is much deeper in client area.
+        Result := (candidate.X >= base_rect.Left - 48) and
+            (candidate.X <= base_rect.Left + c_left_range) and
+            (candidate.Y >= base_rect.Top - 48) and
+            (candidate.Y <= base_rect.Top + c_top_range);
     end;
 
     function try_adjust_terminal_client_point(var candidate: TPoint): Boolean;
@@ -2421,6 +2468,13 @@ begin
         if tsf_point_valid then
         begin
             max_delta := 400;
+            if (not terminal_like_target) and (m_composition <> nil) then
+            begin
+                // During active composition in normal desktop apps, TSF text-ext
+                // should be close to GUI/CaretPos. Tighten tolerance to avoid
+                // mixed-DPI converted GUI points overriding TSF anchors.
+                max_delta := 140;
+            end;
             delta_x := Abs(tsf_point.X - gui_point.X);
             delta_y := Abs(tsf_point.Y - gui_point.Y);
             if (delta_x > max_delta) or (delta_y > max_delta) then
@@ -2435,6 +2489,33 @@ begin
                 if m_composition <> nil then
                 begin
                     gui_point_valid := False;
+                    if caret_point_valid then
+                    begin
+                        gui_caret_delta_x := Abs(gui_point.X - caret_point.X);
+                        gui_caret_delta_y := Abs(gui_point.Y - caret_point.Y);
+                        if points_are_close(gui_point, caret_point, 96) then
+                        begin
+                            // GUI caret and CaretPos agree; TSF point is likely stale in mixed-DPI apps.
+                            gui_point_valid := True;
+                            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                            begin
+                                m_logger.debug(Format('Prefer GUI point over TSF: gui/caret agree gui=(%d,%d) caret=(%d,%d) d=(%d,%d)',
+                                    [gui_point.X, gui_point.Y, caret_point.X, caret_point.Y, gui_caret_delta_x,
+                                    gui_caret_delta_y]));
+                            end;
+                        end;
+                    end;
+
+                    if (not gui_point_valid) and tsf_anchor_looks_like_window_origin(tsf_point) then
+                    begin
+                        // TSF anchor near window origin is often a bad TextExt in Afx/legacy controls.
+                        gui_point_valid := True;
+                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                        begin
+                            m_logger.debug(Format('Prefer GUI point over TSF: TSF anchor near window origin tsf=(%d,%d) gui=(%d,%d)',
+                                [tsf_point.X, tsf_point.Y, gui_point.X, gui_point.Y]));
+                        end;
+                    end;
                 end;
             end;
         end;
@@ -2472,6 +2553,12 @@ begin
         if tsf_point_valid then
         begin
             max_delta := 400;
+            if (not terminal_like_target) and (m_composition <> nil) then
+            begin
+                // Same policy as GUI caret: keep tighter bound while composing
+                // to avoid mixed-DPI CaretPos offsets winning over TSF.
+                max_delta := 140;
+            end;
             delta_x := Abs(tsf_point.X - caret_point.X);
             delta_y := Abs(tsf_point.Y - caret_point.Y);
             if (delta_x > max_delta) or (delta_y > max_delta) then
@@ -2485,6 +2572,25 @@ begin
                 if m_composition <> nil then
                 begin
                     caret_point_valid := False;
+                    if gui_point_valid and points_are_close(gui_point, caret_point, 96) then
+                    begin
+                        // CaretPos and GUI are consistent; keep CaretPos as fallback.
+                        caret_point_valid := True;
+                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                        begin
+                            m_logger.debug(Format('Prefer CaretPos over TSF: gui/caret agree gui=(%d,%d) caret=(%d,%d)',
+                                [gui_point.X, gui_point.Y, caret_point.X, caret_point.Y]));
+                        end;
+                    end
+                    else if tsf_anchor_looks_like_window_origin(tsf_point) then
+                    begin
+                        caret_point_valid := True;
+                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                        begin
+                            m_logger.debug(Format('Prefer CaretPos over TSF: TSF anchor near window origin tsf=(%d,%d) caret=(%d,%d)',
+                                [tsf_point.X, tsf_point.Y, caret_point.X, caret_point.Y]));
+                        end;
+                    end;
                 end
                 else
                 begin
