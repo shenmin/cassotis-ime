@@ -17,6 +17,8 @@ const
     c_source_mandarin = 2;
     c_source_pinlu = 3;
     c_hanyu_extra_weight_cap = 160;
+    c_single_char_weight_base = 80;
+    c_single_char_weight_cap = 620;
 
 function make_reading_key(const codepoint: Integer; const pinyin: string): string;
 begin
@@ -510,13 +512,13 @@ end;
 function get_weight(const freq: Integer): Integer;
 begin
     case freq of
-        1: Result := 500;
-        2: Result := 400;
-        3: Result := 300;
-        4: Result := 200;
-        5: Result := 120;
+        1: Result := 130;
+        2: Result := 100;
+        3: Result := 74;
+        4: Result := 52;
+        5: Result := 34;
     else
-        Result := 80;
+        Result := 0;
     end;
 end;
 
@@ -524,63 +526,63 @@ function get_weight_from_pinlu(const freq: Integer): Integer;
 begin
     if freq >= 20000 then
     begin
-        Result := 600;
+        Result := 360;
     end
     else if freq >= 10000 then
     begin
-        Result := 520;
+        Result := 320;
     end
     else if freq >= 5000 then
     begin
-        Result := 460;
+        Result := 280;
     end
     else if freq >= 2000 then
     begin
-        Result := 400;
+        Result := 240;
     end
     else if freq >= 1000 then
     begin
-        Result := 320;
+        Result := 200;
     end
     else if freq >= 500 then
     begin
-        Result := 260;
+        Result := 165;
     end
     else if freq >= 200 then
     begin
-        Result := 220;
+        Result := 135;
     end
     else if freq >= 100 then
     begin
-        Result := 180;
+        Result := 110;
     end
     else if freq >= 50 then
     begin
-        Result := 150;
+        Result := 85;
     end
     else if freq >= 20 then
     begin
-        Result := 120;
+        Result := 60;
     end
     else if freq >= 10 then
     begin
-        Result := 100;
+        Result := 45;
     end
     else
     begin
-        Result := 80;
+        Result := 25;
     end;
 end;
 
 function get_weight_from_grade(const grade: Integer): Integer;
 begin
     case grade of
-        1: Result := 360;
-        2: Result := 330;
-        3: Result := 300;
-        4: Result := 270;
-        5: Result := 240;
-        6: Result := 210;
+        1: Result := 52;
+        2: Result := 42;
+        3: Result := 34;
+        4: Result := 26;
+        5: Result := 18;
+        6: Result := 12;
     else
         Result := 0;
     end;
@@ -602,7 +604,7 @@ begin
         capped_coverage := 7;
     end;
 
-    Result := 120 + (capped_coverage * 20);
+    Result := 5 + (capped_coverage * 4);
 end;
 
 function write_output(const output_path: string; const map: TncPinyinMap;
@@ -623,9 +625,10 @@ var
     grade_level: Integer;
     core_coverage: Integer;
     weight: Integer;
-    candidate_weight: Integer;
     output_weight: Integer;
     reading_source: Integer;
+    grade_bonus: Integer;
+    core_bonus: Integer;
 begin
     Result := False;
     if map = nil then
@@ -655,42 +658,48 @@ begin
             pinlu_freq := 0;
             grade_level := 0;
             core_coverage := 0;
-            weight := get_weight(0);
+            weight := c_single_char_weight_base;
 
             if (pinlu_map <> nil) and pinlu_map.TryGetValue(codepoint, pinlu_freq) then
             begin
-                candidate_weight := get_weight_from_pinlu(pinlu_freq);
-                if candidate_weight > weight then
-                begin
-                    weight := candidate_weight;
-                end;
+                Inc(weight, get_weight_from_pinlu(pinlu_freq));
             end;
 
             if (freq_map <> nil) and freq_map.TryGetValue(codepoint, freq) then
             begin
-                candidate_weight := get_weight(freq);
-                if candidate_weight > weight then
-                begin
-                    weight := candidate_weight;
-                end;
+                Inc(weight, get_weight(freq));
             end;
 
             if (grade_map <> nil) and grade_map.TryGetValue(codepoint, grade_level) then
             begin
-                candidate_weight := get_weight_from_grade(grade_level);
-                if candidate_weight > weight then
+                grade_bonus := get_weight_from_grade(grade_level);
+                // If usage frequency exists, keep grade as a weak prior only.
+                if pinlu_freq > 0 then
                 begin
-                    weight := candidate_weight;
+                    grade_bonus := grade_bonus div 3;
                 end;
+                Inc(weight, grade_bonus);
             end;
 
             if (core_map <> nil) and core_map.TryGetValue(codepoint, core_coverage) then
             begin
-                candidate_weight := get_weight_from_core(core_coverage);
-                if candidate_weight > weight then
+                core_bonus := get_weight_from_core(core_coverage);
+                // Core-coverage marks importance across standards, not real usage.
+                // Keep it weaker when pinlu frequency is present.
+                if pinlu_freq > 0 then
                 begin
-                    weight := candidate_weight;
+                    core_bonus := core_bonus div 2;
                 end;
+                Inc(weight, core_bonus);
+            end;
+
+            if weight > c_single_char_weight_cap then
+            begin
+                weight := c_single_char_weight_cap;
+            end
+            else if weight < c_single_char_weight_base then
+            begin
+                weight := c_single_char_weight_base;
             end;
 
             for pinyin in list do

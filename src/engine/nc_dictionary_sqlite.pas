@@ -27,6 +27,8 @@ type
         m_bigram_prune_countdown: Integer;
         m_base_connection: TncSqliteConnection;
         m_user_connection: TncSqliteConnection;
+        m_contains_popularity_cache: TDictionary<string, Integer>;
+        m_prefix_popularity_cache: TDictionary<string, Integer>;
         function ensure_open: Boolean;
         function get_module_dir: string;
         function find_schema_path: string;
@@ -37,6 +39,8 @@ type
         function get_valid_cjk_codepoint_count(const text: string): Integer;
         function is_valid_learning_text(const text: string): Boolean;
         function is_valid_user_text(const text: string): Boolean;
+        function get_contains_popularity_score(const token: string): Integer;
+        function get_prefix_popularity_score(const prefix: string): Integer;
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
         procedure migrate_user_entries;
         procedure prune_user_entries_existing_in_base;
@@ -178,6 +182,71 @@ function is_valid_candidate_syllable(const syllable: string): Boolean; forward;
 function get_unix_time_now: Int64;
 begin
     Result := DateTimeToUnix(Now, False);
+end;
+
+function get_text_unit_count_local(const text: string): Integer;
+var
+    idx: Integer;
+    codepoint: Integer;
+begin
+    Result := 0;
+    if text = '' then
+    begin
+        Exit;
+    end;
+
+    idx := 1;
+    while idx <= Length(text) do
+    begin
+        codepoint := Ord(text[idx]);
+        if (codepoint >= $D800) and (codepoint <= $DBFF) and (idx < Length(text)) then
+        begin
+            if (Ord(text[idx + 1]) >= $DC00) and (Ord(text[idx + 1]) <= $DFFF) then
+            begin
+                Inc(idx);
+            end;
+        end;
+        Inc(Result);
+        Inc(idx);
+    end;
+end;
+
+function copy_first_text_units(const text: string; const max_units: Integer): string;
+var
+    idx: Integer;
+    unit_count: Integer;
+    codepoint: Integer;
+begin
+    Result := '';
+    if (text = '') or (max_units <= 0) then
+    begin
+        Exit;
+    end;
+
+    idx := 1;
+    unit_count := 0;
+    while idx <= Length(text) do
+    begin
+        if unit_count >= max_units then
+        begin
+            Break;
+        end;
+
+        codepoint := Ord(text[idx]);
+        if (codepoint >= $D800) and (codepoint <= $DBFF) and (idx < Length(text)) and
+            (Ord(text[idx + 1]) >= $DC00) and (Ord(text[idx + 1]) <= $DFFF) then
+        begin
+            Result := Result + text[idx] + text[idx + 1];
+            Inc(idx, 2);
+        end
+        else
+        begin
+            Result := Result + text[idx];
+            Inc(idx);
+        end;
+
+        Inc(unit_count);
+    end;
 end;
 
 function calc_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
@@ -782,6 +851,8 @@ begin
     m_bigram_prune_countdown := 64;
     m_base_connection := nil;
     m_user_connection := nil;
+    m_contains_popularity_cache := TDictionary<string, Integer>.Create;
+    m_prefix_popularity_cache := TDictionary<string, Integer>.Create;
 end;
 
 destructor TncSqliteDictionary.Destroy;
@@ -796,6 +867,16 @@ begin
     begin
         m_user_connection.Free;
         m_user_connection := nil;
+    end;
+    if m_contains_popularity_cache <> nil then
+    begin
+        m_contains_popularity_cache.Free;
+        m_contains_popularity_cache := nil;
+    end;
+    if m_prefix_popularity_cache <> nil then
+    begin
+        m_prefix_popularity_cache.Free;
+        m_prefix_popularity_cache := nil;
     end;
 
     inherited Destroy;
@@ -1172,6 +1253,108 @@ begin
     Result := codepoint_count >= 2;
 end;
 
+function TncSqliteDictionary.get_contains_popularity_score(const token: string): Integer;
+const
+    query_sql = 'SELECT COALESCE(SUM(weight), 0) FROM dict_base WHERE instr(text, ?1) > 0';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+begin
+    Result := 0;
+    if (token = '') or (not ensure_open) or (not m_base_ready) then
+    begin
+        Exit;
+    end;
+
+    if (m_contains_popularity_cache <> nil) and m_contains_popularity_cache.TryGetValue(token, Result) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_base_connection.prepare(query_sql, stmt) then
+        begin
+            Exit;
+        end;
+        if not m_base_connection.bind_text(stmt, 1, token) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(stmt);
+        if step_result = SQLITE_ROW then
+        begin
+            Result := m_base_connection.column_int(stmt, 0);
+            if Result < 0 then
+            begin
+                Result := 0;
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+
+    if m_contains_popularity_cache <> nil then
+    begin
+        m_contains_popularity_cache.AddOrSetValue(token, Result);
+    end;
+end;
+
+function TncSqliteDictionary.get_prefix_popularity_score(const prefix: string): Integer;
+const
+    query_sql = 'SELECT COALESCE(SUM(weight), 0) FROM dict_base WHERE text LIKE ?1 || ''%''';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+begin
+    Result := 0;
+    if (prefix = '') or (not ensure_open) or (not m_base_ready) then
+    begin
+        Exit;
+    end;
+
+    if (m_prefix_popularity_cache <> nil) and m_prefix_popularity_cache.TryGetValue(prefix, Result) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_base_connection.prepare(query_sql, stmt) then
+        begin
+            Exit;
+        end;
+        if not m_base_connection.bind_text(stmt, 1, prefix) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(stmt);
+        if step_result = SQLITE_ROW then
+        begin
+            Result := m_base_connection.column_int(stmt, 0);
+            if Result < 0 then
+            begin
+                Result := 0;
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+
+    if m_prefix_popularity_cache <> nil then
+    begin
+        m_prefix_popularity_cache.AddOrSetValue(prefix, Result);
+    end;
+end;
+
 function TncSqliteDictionary.get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
 const
     sql_text = 'SELECT COUNT(1) FROM dict_user';
@@ -1542,6 +1725,14 @@ begin
     m_ready := False;
     m_base_ready := False;
     m_user_ready := False;
+    if m_contains_popularity_cache <> nil then
+    begin
+        m_contains_popularity_cache.Clear;
+    end;
+    if m_prefix_popularity_cache <> nil then
+    begin
+        m_prefix_popularity_cache.Clear;
+    end;
 end;
 
 function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandidateList): Boolean;
@@ -1789,6 +1980,149 @@ var
         item.source := source;
         list.Add(item);
         seen.Add(key, True);
+    end;
+
+    procedure apply_homophone_commonness_bonus;
+    const
+        c_single_char_factor = 190.0;
+        c_single_char_min_base_score = 260;
+        c_single_prefix_metric_weight = 0.05;
+        c_phrase_factor = 1400.0;
+        c_phrase_bonus_cap = 2200;
+    var
+        metrics: TArray<Double>;
+        unit_counts: TArray<Integer>;
+        candidate_item: TncCandidate;
+        has_single: Boolean;
+        has_phrase: Boolean;
+        min_single: Double;
+        min_phrase: Double;
+        metric: Double;
+        delta: Double;
+        bonus: Integer;
+        text_value_local: string;
+        idx: Integer;
+        prefix_two_units: string;
+    begin
+        if (not full_pinyin_query) or (list.Count <= 1) then
+        begin
+            Exit;
+        end;
+
+        SetLength(metrics, list.Count);
+        SetLength(unit_counts, list.Count);
+        for idx := 0 to list.Count - 1 do
+        begin
+            metrics[idx] := -1.0;
+            unit_counts[idx] := 0;
+        end;
+
+        has_single := False;
+        has_phrase := False;
+        min_single := 0.0;
+        min_phrase := 0.0;
+
+        for idx := 0 to list.Count - 1 do
+        begin
+            if list[idx].source <> cs_rule then
+            begin
+                Continue;
+            end;
+            if list[idx].comment <> '' then
+            begin
+                Continue;
+            end;
+
+            text_value_local := Trim(list[idx].text);
+            if text_value_local = '' then
+            begin
+                Continue;
+            end;
+
+            unit_counts[idx] := get_text_unit_count_local(text_value_local);
+            if unit_counts[idx] <= 0 then
+            begin
+                Continue;
+            end;
+
+            if unit_counts[idx] = 1 then
+            begin
+                if list[idx].score < c_single_char_min_base_score then
+                begin
+                    Continue;
+                end;
+
+                metric := Ln(1.0 + get_contains_popularity_score(text_value_local)) +
+                    (Ln(1.0 + get_prefix_popularity_score(text_value_local)) *
+                    c_single_prefix_metric_weight);
+                metrics[idx] := metric;
+                if not has_single or (metric < min_single) then
+                begin
+                    min_single := metric;
+                    has_single := True;
+                end;
+            end
+            else
+            begin
+                prefix_two_units := copy_first_text_units(text_value_local, 2);
+                if prefix_two_units = '' then
+                begin
+                    Continue;
+                end;
+
+                metric := Ln(1.0 + get_prefix_popularity_score(prefix_two_units));
+                metrics[idx] := metric;
+
+                if not has_phrase or (metric < min_phrase) then
+                begin
+                    min_phrase := metric;
+                    has_phrase := True;
+                end;
+            end;
+        end;
+
+        for idx := 0 to list.Count - 1 do
+        begin
+            if metrics[idx] < 0 then
+            begin
+                Continue;
+            end;
+
+            if unit_counts[idx] = 1 then
+            begin
+                if not has_single then
+                begin
+                    Continue;
+                end;
+                delta := metrics[idx] - min_single;
+                if delta <= 0 then
+                begin
+                    Continue;
+                end;
+                bonus := Round(delta * c_single_char_factor);
+            end
+            else
+            begin
+                if not has_phrase then
+                begin
+                    Continue;
+                end;
+                delta := metrics[idx] - min_phrase;
+                if delta <= 0 then
+                begin
+                    Continue;
+                end;
+                bonus := Round(delta * c_phrase_factor);
+                if bonus > c_phrase_bonus_cap then
+                begin
+                    bonus := c_phrase_bonus_cap;
+                end;
+            end;
+
+            candidate_item := list[idx];
+            candidate_item.score := candidate_item.score + bonus;
+            list[idx] := candidate_item;
+        end;
     end;
 
     function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string;
@@ -2495,6 +2829,8 @@ begin
                 end;
             end;
         end;
+
+        apply_homophone_commonness_bonus;
 
         if list.Count > 0 then
         begin
