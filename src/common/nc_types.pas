@@ -43,6 +43,7 @@ type
         full_width_mode: Boolean;
         punctuation_full_width: Boolean;
         enable_segment_candidates: Boolean;
+        segment_head_only_multi_syllable: Boolean;
         dictionary_variant: TncDictionaryVariant;
         dictionary_path_simplified: string;
         dictionary_path_traditional: string;

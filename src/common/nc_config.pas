@@ -234,6 +234,7 @@ begin
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
+    Result.segment_head_only_multi_syllable := True;
     Result.dictionary_variant := dv_simplified;
     Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
     Result.dictionary_path_traditional := get_default_dictionary_path_traditional;
@@ -277,6 +278,8 @@ begin
         Result.full_width_mode := ini.ReadBool('engine', 'full_width_mode', False);
         Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
         Result.enable_segment_candidates := ini.ReadBool('engine', 'enable_segment_candidates', True);
+        Result.segment_head_only_multi_syllable := ini.ReadBool('engine',
+            'segment_head_only_multi_syllable', True);
         variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
         Result.dictionary_path_simplified := ini.ReadString('dictionary', 'db_path_sc', '');
@@ -310,6 +313,7 @@ begin
         needs_full_write := not ini.ValueExists('engine', 'input_mode') or
             not ini.ValueExists('engine', 'max_candidates') or
             not ini.ValueExists('engine', 'enable_ai') or
+            not ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
             not ini.ValueExists('dictionary', 'variant') or
             not ini.ValueExists('dictionary', 'db_path_sc') or
             not ini.ValueExists('dictionary', 'db_path_tc') or
@@ -375,6 +379,7 @@ begin
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteBool('engine', 'enable_segment_candidates', config.enable_segment_candidates);
+        ini.WriteBool('engine', 'segment_head_only_multi_syllable', config.segment_head_only_multi_syllable);
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
         ini.WriteString('dictionary', 'db_path_sc', config.dictionary_path_simplified);
         ini.WriteString('dictionary', 'db_path_tc', config.dictionary_path_traditional);

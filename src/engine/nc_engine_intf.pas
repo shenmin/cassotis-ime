@@ -709,6 +709,7 @@ procedure TncEngine.build_candidates;
 var
     raw_candidates: TncCandidateList;
     segment_candidates: TncCandidateList;
+    full_lookup_candidates: TncCandidateList;
     ai_candidates: TncCandidateList;
     fusion: TncCandidateFusion;
     limit: Integer;
@@ -719,6 +720,7 @@ var
     raw_from_dictionary: Boolean;
     lookup_text: string;
     has_multi_syllable_input: Boolean;
+    head_only_multi_syllable: Boolean;
     multi_syllable_cap_limit: Integer;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
@@ -784,6 +786,130 @@ var
         Result := (Length(value) = 2) and
             (Ord(value[1]) >= $D800) and (Ord(value[1]) <= $DBFF) and
             (Ord(value[2]) >= $DC00) and (Ord(value[2]) <= $DFFF);
+    end;
+
+    function get_text_unit_count(const text: string): Integer;
+    var
+        idx: Integer;
+        codepoint: Integer;
+    begin
+        Result := 0;
+        if text = '' then
+        begin
+            Exit;
+        end;
+
+        idx := 1;
+        while idx <= Length(text) do
+        begin
+            codepoint := Ord(text[idx]);
+            if (codepoint >= $D800) and (codepoint <= $DBFF) and (idx < Length(text)) then
+            begin
+                if (Ord(text[idx + 1]) >= $DC00) and (Ord(text[idx + 1]) <= $DFFF) then
+                begin
+                    Inc(idx);
+                end;
+            end;
+            Inc(Result);
+            Inc(idx);
+        end;
+    end;
+
+    function get_input_syllable_count: Integer;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+    begin
+        Result := 0;
+        if m_composition_text = '' then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(m_composition_text);
+            Result := Length(syllables);
+        finally
+            parser.Free;
+        end;
+    end;
+
+    procedure merge_head_only_full_lookup_candidates(var candidates: TncCandidateList;
+        const pinyin_key: string);
+    const
+        c_head_only_full_non_user_limit = 4;
+        c_head_only_full_non_user_penalty = 220;
+    var
+        candidate_text: string;
+        filtered: TncCandidateList;
+        text_units: Integer;
+        non_user_count: Integer;
+        input_syllables: Integer;
+        idx: Integer;
+    begin
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit;
+        end;
+
+        if not m_dictionary.lookup(pinyin_key, full_lookup_candidates) then
+        begin
+            Exit;
+        end;
+
+        if Length(full_lookup_candidates) = 0 then
+        begin
+            Exit;
+        end;
+
+        clear_candidate_comments(full_lookup_candidates);
+        input_syllables := get_input_syllable_count;
+        SetLength(filtered, 0);
+        non_user_count := 0;
+        for idx := 0 to High(full_lookup_candidates) do
+        begin
+            candidate_text := Trim(full_lookup_candidates[idx].text);
+            if candidate_text = '' then
+            begin
+                Continue;
+            end;
+
+            text_units := get_text_unit_count(candidate_text);
+            if text_units < 2 then
+            begin
+                Continue;
+            end;
+
+            if full_lookup_candidates[idx].source = cs_user then
+            begin
+                SetLength(filtered, Length(filtered) + 1);
+                filtered[High(filtered)] := full_lookup_candidates[idx];
+                Continue;
+            end;
+
+            // Keep only phrase-shaped full matches near input syllable length.
+            if (input_syllables > 0) and ((text_units < input_syllables - 1) or (text_units > input_syllables + 1)) then
+            begin
+                Continue;
+            end;
+
+            if non_user_count >= c_head_only_full_non_user_limit then
+            begin
+                Continue;
+            end;
+            Inc(non_user_count);
+            Dec(full_lookup_candidates[idx].score, c_head_only_full_non_user_penalty);
+            SetLength(filtered, Length(filtered) + 1);
+            filtered[High(filtered)] := full_lookup_candidates[idx];
+        end;
+
+        if Length(filtered) = 0 then
+        begin
+            Exit;
+        end;
+
+        candidates := merge_candidate_lists(candidates, filtered, 0);
     end;
 
     function try_build_best_single_char_chain(out out_candidate: TncCandidate): Boolean;
@@ -1337,6 +1463,258 @@ var
             end;
         end;
     end;
+
+    procedure prioritize_complete_phrase_matches(var candidates: TncCandidateList);
+    const
+        c_complete_phrase_bonus = 220;
+        c_complete_phrase_unit_bonus = 36;
+        c_partial_with_complete_penalty = 620;
+    var
+        idx: Integer;
+        input_syllables: Integer;
+        text_units: Integer;
+        effective_units: Integer;
+        has_complete_phrase: Boolean;
+    begin
+        if (not has_multi_syllable_input) or (Length(candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        input_syllables := get_input_syllable_count;
+        if input_syllables < 2 then
+        begin
+            Exit;
+        end;
+
+        has_complete_phrase := False;
+        for idx := 0 to High(candidates) do
+        begin
+            if candidates[idx].comment <> '' then
+            begin
+                Continue;
+            end;
+
+            text_units := get_text_unit_count(Trim(candidates[idx].text));
+            if text_units >= 2 then
+            begin
+                has_complete_phrase := True;
+                Break;
+            end;
+        end;
+
+        if not has_complete_phrase then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(candidates) do
+        begin
+            text_units := get_text_unit_count(Trim(candidates[idx].text));
+            if text_units <= 0 then
+            begin
+                Continue;
+            end;
+
+            if (candidates[idx].comment = '') and (text_units >= 2) then
+            begin
+                effective_units := text_units;
+                if effective_units > input_syllables then
+                begin
+                    effective_units := input_syllables;
+                end;
+                Inc(candidates[idx].score,
+                    c_complete_phrase_bonus + (effective_units * c_complete_phrase_unit_bonus));
+            end
+            else if candidates[idx].comment <> '' then
+            begin
+                Dec(candidates[idx].score, c_partial_with_complete_penalty);
+            end;
+        end;
+    end;
+
+    procedure apply_syllable_single_char_alignment_bonus(var candidates: TncCandidateList);
+    const
+        c_rank_window = 12;
+        c_rank_step = 20;
+        c_missing_rank_penalty = 140;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        unit_rank_maps: TArray<TDictionary<string, Integer>>;
+        lookup_results: TncCandidateList;
+        candidate_units: TArray<string>;
+        candidate_text: string;
+        unit_text: string;
+        syllable_idx: Integer;
+        idx: Integer;
+        rank_idx: Integer;
+        found_rank: Integer;
+        adjustment: Integer;
+        rank_data_count: Integer;
+        applied_count: Integer;
+
+        function is_valid_full_syllable(const syllable: string): Boolean;
+        var
+            ch: Char;
+        begin
+            Result := False;
+            if syllable = '' then
+            begin
+                Exit;
+            end;
+
+            if Length(syllable) = 1 then
+            begin
+                Result := CharInSet(syllable[1], ['a', 'e', 'o']);
+                Exit;
+            end;
+
+            for ch in syllable do
+            begin
+                if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
+                begin
+                    Result := True;
+                    Exit;
+                end;
+            end;
+        end;
+    begin
+        if (not has_multi_syllable_input) or (m_dictionary = nil) or (Length(candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(m_composition_text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(syllables) < 2 then
+        begin
+            Exit;
+        end;
+
+        // Only apply this calibration to complete full-syllable queries.
+        for idx := 0 to High(syllables) do
+        begin
+            if not is_valid_full_syllable(syllables[idx].text) then
+            begin
+                Exit;
+            end;
+        end;
+
+        SetLength(unit_rank_maps, Length(syllables));
+        try
+            rank_data_count := 0;
+            for syllable_idx := 0 to High(syllables) do
+            begin
+                unit_rank_maps[syllable_idx] := TDictionary<string, Integer>.Create;
+
+                if not m_dictionary.lookup(syllables[syllable_idx].text, lookup_results) then
+                begin
+                    unit_rank_maps[syllable_idx].Free;
+                    unit_rank_maps[syllable_idx] := nil;
+                    Continue;
+                end;
+
+                rank_idx := 0;
+                for idx := 0 to High(lookup_results) do
+                begin
+                    unit_text := Trim(lookup_results[idx].text);
+                    if not is_single_text_unit(unit_text) then
+                    begin
+                        Continue;
+                    end;
+
+                    if not unit_rank_maps[syllable_idx].ContainsKey(unit_text) then
+                    begin
+                        unit_rank_maps[syllable_idx].Add(unit_text, rank_idx);
+                        Inc(rank_idx);
+                        if rank_idx >= c_rank_window then
+                        begin
+                            Break;
+                        end;
+                    end;
+                end;
+
+                if unit_rank_maps[syllable_idx].Count = 0 then
+                begin
+                    unit_rank_maps[syllable_idx].Free;
+                    unit_rank_maps[syllable_idx] := nil;
+                    Continue;
+                end;
+
+                Inc(rank_data_count);
+            end;
+
+            if rank_data_count <= 0 then
+            begin
+                Exit;
+            end;
+
+            for idx := 0 to High(candidates) do
+            begin
+                if candidates[idx].comment <> '' then
+                begin
+                    Continue;
+                end;
+                if candidates[idx].source = cs_user then
+                begin
+                    Continue;
+                end;
+
+                candidate_text := Trim(candidates[idx].text);
+                if candidate_text = '' then
+                begin
+                    Continue;
+                end;
+
+                candidate_units := split_text_units(candidate_text);
+                if Length(candidate_units) <> Length(syllables) then
+                begin
+                    Continue;
+                end;
+
+                adjustment := 0;
+                applied_count := 0;
+                for syllable_idx := 0 to High(syllables) do
+                begin
+                    if unit_rank_maps[syllable_idx] = nil then
+                    begin
+                        Continue;
+                    end;
+
+                    Inc(applied_count);
+                    if unit_rank_maps[syllable_idx].TryGetValue(candidate_units[syllable_idx], found_rank) then
+                    begin
+                        Inc(adjustment, (c_rank_window - found_rank) * c_rank_step);
+                    end
+                    else
+                    begin
+                        Dec(adjustment, c_missing_rank_penalty);
+                    end;
+                end;
+
+                if applied_count <= 0 then
+                begin
+                    Continue;
+                end;
+
+                Inc(candidates[idx].score, adjustment);
+            end;
+        finally
+            for syllable_idx := 0 to High(unit_rank_maps) do
+            begin
+                if unit_rank_maps[syllable_idx] <> nil then
+                begin
+                    unit_rank_maps[syllable_idx].Free;
+                end;
+            end;
+        end;
+    end;
 begin
     SetLength(m_candidates, 0);
     if m_composition_text = '' then
@@ -1350,9 +1728,18 @@ begin
     lookup_text := normalize_pinyin_text(m_composition_text);
     fallback_comment := build_pinyin_comment(m_composition_text);
     has_multi_syllable_input := fallback_comment <> '';
+    head_only_multi_syllable := m_config.enable_segment_candidates and
+        m_config.segment_head_only_multi_syllable and has_multi_syllable_input;
     if m_dictionary <> nil then
     begin
-        if m_dictionary.lookup(lookup_text, raw_candidates) then
+        if head_only_multi_syllable and build_segment_candidates(segment_candidates, False) then
+        begin
+            has_raw_candidates := True;
+            has_segment_candidates := True;
+            raw_candidates := segment_candidates;
+            merge_head_only_full_lookup_candidates(raw_candidates, lookup_text);
+        end
+        else if m_dictionary.lookup(lookup_text, raw_candidates) then
         begin
             has_raw_candidates := True;
             raw_from_dictionary := True;
@@ -1377,7 +1764,9 @@ begin
         begin
             if not has_segment_candidates then
             begin
-                has_segment_candidates := build_segment_candidates(segment_candidates, False);
+                // For dictionary-hit multi-syllable input, still build full-path segment candidates
+                // so head-first constraints can suppress noisy direct lexicon matches.
+                has_segment_candidates := build_segment_candidates(segment_candidates, True);
             end;
 
             if has_segment_candidates then
@@ -1454,11 +1843,16 @@ begin
         end;
 
         apply_user_penalties(lookup_text, m_candidates);
+        prioritize_complete_phrase_matches(m_candidates);
+        apply_syllable_single_char_alignment_bonus(m_candidates);
         sort_candidates(m_candidates);
         ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
         ensure_single_char_partial_visible(m_candidates, get_candidate_limit, 1);
         ensure_hard_single_char_partial_visible(m_candidates);
-        ensure_best_single_char_chain_visible(m_candidates);
+        if not head_only_multi_syllable then
+        begin
+            ensure_best_single_char_chain_visible(m_candidates);
+        end;
         ensure_non_ai_first(m_candidates);
         m_page_index := 0;
         m_selected_index := 0;
@@ -2270,9 +2664,12 @@ const
     c_segment_full_state_limit = 128;
     c_segment_full_completion_bonus = 160;
     c_segment_full_transition_penalty = 6;
-    c_segment_full_leading_single_penalty = 24;
+    c_segment_full_leading_single_bonus = 36;
     c_segment_full_single_top_n = 1;
     c_segment_full_non_leading_single_penalty = 72;
+    c_segment_full_preferred_single_penalty = 24;
+    c_segment_full_leading_multi_penalty = 42;
+    c_segment_full_head_top_n = 4;
     c_segment_text_unit_mismatch_penalty = 100;
     c_segment_text_unit_overflow_penalty = 60;
 var
@@ -2331,6 +2728,25 @@ var
                 Exit;
             end;
         end;
+    end;
+
+    function is_single_initial_token(const token_text: string): Boolean;
+    var
+        ch: Char;
+    begin
+        Result := False;
+        if Length(token_text) <> 1 then
+        begin
+            Exit;
+        end;
+
+        ch := token_text[1];
+        if (ch >= 'A') and (ch <= 'Z') then
+        begin
+            ch := Chr(Ord(ch) + 32);
+        end;
+        Result := CharInSet(ch, ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x',
+            'r', 'z', 'c', 's', 'y', 'w']);
     end;
 
     function get_text_unit_count(const text: string): Integer;
@@ -2455,6 +2871,7 @@ var
         allow_leading_single_char: Boolean;
         allow_single_char_path: Boolean;
         preferred_phrase_flags: TArray<Boolean>;
+        preferred_phrase_max_len: TArray<Integer>;
         text_unit_mismatch: Integer;
         candidate_has_non_ascii: Boolean;
         local_candidate_text: string;
@@ -2564,6 +2981,10 @@ var
 
                     if get_text_unit_count(probe_text) > 1 then
                     begin
+                        if probe_segment_len > preferred_phrase_max_len[start_pos] then
+                        begin
+                            preferred_phrase_max_len[start_pos] := probe_segment_len;
+                        end;
                         Result := True;
                         Exit;
                     end;
@@ -2592,6 +3013,7 @@ var
             states[0].Add(local_state);
             state_dedup[0].Add('', 0);
             SetLength(preferred_phrase_flags, Length(syllables));
+            SetLength(preferred_phrase_max_len, Length(syllables));
             for state_pos := 0 to High(syllables) do
             begin
                 preferred_phrase_flags[state_pos] := detect_preferred_phrase_at_position(state_pos);
@@ -2633,6 +3055,16 @@ var
                         local_state := states[state_pos][state_index];
                         for candidate_index := 0 to High(local_lookup_results) do
                         begin
+                            // Keep full-path expansion anchored by high-confidence head chunks.
+                            // Low-ranked leading chunks (for example rare/unnatural head words)
+                            // should not keep expanding into long noisy phrases.
+                            if (state_pos = 0) and (local_segment_len > 1) and
+                                (next_pos < Length(syllables)) and
+                                (candidate_index >= c_segment_full_head_top_n) then
+                            begin
+                                Continue;
+                            end;
+
                             local_candidate := local_lookup_results[candidate_index];
                             local_candidate_text := Trim(local_candidate.text);
                             candidate_has_non_ascii := contains_non_ascii(local_candidate_text);
@@ -2681,17 +3113,39 @@ var
                             end;
                             local_new_state.score := local_state.score + local_candidate.score +
                                 (local_segment_len * c_segment_prefix_bonus);
+                            if (state_pos = 0) and (local_segment_len > 1) and
+                                (next_pos < Length(syllables)) then
+                            begin
+                                Dec(local_new_state.score, c_segment_full_leading_multi_penalty);
+                            end;
                             if allow_single_char_path then
                             begin
+                                if allow_leading_single_char and (next_pos < Length(syllables)) and
+                                    (state_pos >= 0) and (state_pos < Length(preferred_phrase_max_len)) and
+                                    (preferred_phrase_max_len[state_pos] >= 3) then
+                                begin
+                                    Continue;
+                                end;
                                 if (next_pos < Length(syllables)) and (state_pos >= 0) and
                                     (state_pos < Length(preferred_phrase_flags)) and
                                     preferred_phrase_flags[state_pos] then
                                 begin
-                                    Continue;
+                                    if not allow_leading_single_char then
+                                    begin
+                                        Continue;
+                                    end;
+                                    Dec(local_new_state.score, c_segment_full_preferred_single_penalty);
                                 end;
                                 if allow_leading_single_char then
                                 begin
-                                    Dec(local_new_state.score, c_segment_full_leading_single_penalty);
+                                    if Length(syllables) >= 3 then
+                                    begin
+                                        Inc(local_new_state.score, c_segment_full_leading_single_bonus);
+                                    end
+                                    else
+                                    begin
+                                        Dec(local_new_state.score, c_segment_full_preferred_single_penalty);
+                                    end;
                                 end
                                 else
                                 begin
@@ -2824,6 +3278,14 @@ begin
             // Keep prefix segment candidates as fallback/partial-commit choices.
             for segment_len := 1 to max_word_len do
             begin
+                // In head-only mode, keep chunk conversion behavior for long input:
+                // only expose prefix chunks and leave remaining pinyin for next commit.
+                if (not include_full_path) and (Length(syllables) >= 3) and
+                    (segment_len >= Length(syllables)) then
+                begin
+                    Break;
+                end;
+
                 segment_text := build_syllable_text(0, segment_len);
                 if segment_text = '' then
                 begin
@@ -2857,6 +3319,15 @@ begin
                     candidate := lookup_results[i];
                     candidate_text_units := get_text_unit_count(Trim(candidate.text));
                     if candidate_text_units <= 0 then
+                    begin
+                        Continue;
+                    end;
+                    // Avoid over-complete long phrase suggestions on incomplete trailing initials,
+                    // e.g. "jibuzh" => "记不住" + dangling "h".
+                    if (segment_len >= 3) and (remaining_syllables = 1) and
+                        (High(syllables) >= 0) and
+                        is_single_initial_token(syllables[High(syllables)].text) and
+                        (candidate_text_units > 1) and (candidate_text_units >= segment_len) then
                     begin
                         Continue;
                     end;
