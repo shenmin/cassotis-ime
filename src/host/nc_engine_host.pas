@@ -120,7 +120,9 @@ const
     c_pipe_in_buffer = 65536;
     c_pipe_out_buffer = 65536;
     c_default_offset = 20;
-    c_text_ext_offset = 2;
+    // Keep a larger visual gap for caret-anchored placement so candidate
+    // windows consistently appear below the composing text row.
+    c_text_ext_offset = 8;
     c_ai_refresh_poll_ms = 120;
     c_recent_active_ttl_ms = 320;
     c_shift_toggle_dedupe_ms = 90;

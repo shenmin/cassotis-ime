@@ -59,11 +59,13 @@ begin
     FillChar(m_attr, SizeOf(m_attr), 0);
     m_attr.crText.type_ := TF_CT_NONE;
     m_attr.crBk.type_ := TF_CT_NONE;
-    m_attr.crLine.type_ := TF_CT_SYSCOLOR;
-    m_attr.crLine.nIndex := COLOR_WINDOWTEXT;
-    m_attr.lsStyle := TF_LS_DOT;
+    m_attr.crLine.type_ := TF_CT_NONE;
+    m_attr.crLine.nIndex := 0;
+    m_attr.lsStyle := TF_LS_NONE;
     m_attr.fBoldLine := 0;
-    m_attr.bAttr := TF_ATTR_TARGET_NOTCONVERTED;
+    // Use neutral input attribute to avoid app-specific reverse-video rendering
+    // seen in some controls (e.g. certain WeChat edit boxes).
+    m_attr.bAttr := TF_ATTR_INPUT;
 end;
 
 function TncDisplayAttributeInfo.GetGUID(out pguid: TGUID): HResult;

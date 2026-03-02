@@ -722,13 +722,10 @@ begin
         Exit;
     end;
 
-    prop := nil;
-    guid := c_guid_prop_attribute;
-    if (m_attr_input_atom <> TF_INVALID_GUIDATOM) and (m_context.GetProperty(guid, prop) = S_OK) then
-    begin
-        value := Integer(m_attr_input_atom);
-        prop.SetValue(ec, range, value);
-    end;
+    // Do not force a custom display-attribute property here.
+    // Some app controls (notably certain WeChat editors) may render composition
+    // text with reverse-video when GUID_PROP_ATTRIBUTE is present, even if the
+    // attribute itself is neutral. We keep only COMPOSING state.
 
     prop := nil;
     guid := c_guid_prop_composing;
