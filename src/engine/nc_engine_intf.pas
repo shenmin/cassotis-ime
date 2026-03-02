@@ -55,6 +55,9 @@ type
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
         m_has_pending_commit: Boolean;
+        m_last_lookup_key: string;
+        m_last_lookup_normalized_from: string;
+        m_last_lookup_syllable_count: Integer;
         m_single_quote_open: Boolean;
         m_double_quote_open: Boolean;
         m_page_index: Integer;
@@ -79,6 +82,9 @@ type
         function compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
         procedure sort_candidates(var candidates: TncCandidateList);
         function normalize_pinyin_text(const input_text: string): string;
+        function is_valid_pinyin_syllable(const syllable: string): Boolean;
+        function is_full_pinyin_key(const value: string): Boolean;
+        function normalize_adjacent_swap_typo(const value: string): string;
         function split_text_units(const input_text: string): TArray<string>;
         function ai_candidate_matches_pinyin(const candidate_text: string; const pinyin_text: string): Boolean;
         procedure filter_ai_candidates_by_pinyin(var candidates: TncCandidateList; const pinyin_text: string);
@@ -122,6 +128,7 @@ type
         function get_composition_text: string;
         function get_display_text: string;
         function get_confirmed_length: Integer;
+        function get_lookup_debug_info: string;
         function get_dictionary_debug_info: string;
         function refresh_ai_candidates_if_ready(out out_candidates: TncCandidateList; out page_index: Integer;
             out page_count: Integer; out selected_index: Integer; out preedit_text: string): Boolean;
@@ -326,6 +333,9 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_last_lookup_key := '';
+    m_last_lookup_normalized_from := '';
+    m_last_lookup_syllable_count := 0;
     m_single_quote_open := False;
     m_double_quote_open := False;
     m_page_index := 0;
@@ -398,6 +408,9 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_last_lookup_key := '';
+    m_last_lookup_normalized_from := '';
+    m_last_lookup_syllable_count := 0;
     m_page_index := 0;
     m_selected_index := 0;
     m_confirmed_text := '';
@@ -720,8 +733,11 @@ var
     raw_from_dictionary: Boolean;
     lookup_text: string;
     has_multi_syllable_input: Boolean;
+    has_internal_dangling_initial: Boolean;
     head_only_multi_syllable: Boolean;
+    input_syllable_count: Integer;
     multi_syllable_cap_limit: Integer;
+    normalized_lookup_text: string;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -730,6 +746,62 @@ var
         for idx := 0 to High(candidates) do
         begin
             candidates[idx].comment := '';
+        end;
+    end;
+
+    function is_single_initial_token_local(const token_text: string): Boolean;
+    var
+        ch: Char;
+    begin
+        Result := False;
+        if Length(token_text) <> 1 then
+        begin
+            Exit;
+        end;
+
+        ch := token_text[1];
+        if (ch >= 'A') and (ch <= 'Z') then
+        begin
+            ch := Chr(Ord(ch) + 32);
+        end;
+        Result := CharInSet(ch, ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x',
+            'r', 'z', 'c', 's', 'y', 'w']);
+    end;
+
+    function detect_internal_dangling_initial(const text: string): Boolean;
+    var
+        parser: TncPinyinParser;
+        parts: TncPinyinParseResult;
+        idx: Integer;
+    begin
+        Result := False;
+        if text = '' then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            parts := parser.parse(text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(parts) <= 1 then
+        begin
+            Exit;
+        end;
+
+        // Pattern like "cha + g + n" usually means malformed/typo input.
+        // In this case segment fusion is often noisy and should not override
+        // direct lookup/typo recovery results.
+        for idx := 0 to High(parts) - 1 do
+        begin
+            if is_single_initial_token_local(parts[idx].text) then
+            begin
+                Result := True;
+                Exit;
+            end;
         end;
     end;
 
@@ -815,24 +887,29 @@ var
         end;
     end;
 
-    function get_input_syllable_count: Integer;
+    function get_input_syllable_count_for_text(const pinyin_text: string): Integer;
     var
         parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
     begin
         Result := 0;
-        if m_composition_text = '' then
+        if pinyin_text = '' then
         begin
             Exit;
         end;
 
         parser := TncPinyinParser.create;
         try
-            syllables := parser.parse(m_composition_text);
+            syllables := parser.parse(pinyin_text);
             Result := Length(syllables);
         finally
             parser.Free;
         end;
+    end;
+
+    function get_input_syllable_count: Integer;
+    begin
+        Result := get_input_syllable_count_for_text(m_composition_text);
     end;
 
     procedure merge_head_only_full_lookup_candidates(var candidates: TncCandidateList;
@@ -864,7 +941,7 @@ var
         end;
 
         clear_candidate_comments(full_lookup_candidates);
-        input_syllables := get_input_syllable_count;
+        input_syllables := get_input_syllable_count_for_text(pinyin_key);
         SetLength(filtered, 0);
         non_user_count := 0;
         for idx := 0 to High(full_lookup_candidates) do
@@ -1535,9 +1612,12 @@ var
 
     procedure apply_syllable_single_char_alignment_bonus(var candidates: TncCandidateList);
     const
-        c_rank_window = 12;
-        c_rank_step = 20;
-        c_missing_rank_penalty = 140;
+        c_rank_window = 10;
+        c_rank_step = 8;
+        c_missing_rank_penalty = 40;
+        c_alignment_average_divisor = 2;
+        c_alignment_adjust_cap = 80;
+        c_alignment_score_gap_limit = 140;
     var
         parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
@@ -1553,6 +1633,8 @@ var
         adjustment: Integer;
         rank_data_count: Integer;
         applied_count: Integer;
+        top_complete_score: Integer;
+        has_top_complete: Boolean;
 
         function is_valid_full_syllable(const syllable: string): Boolean;
         var
@@ -1594,6 +1676,12 @@ var
 
         if Length(syllables) < 2 then
         begin
+            Exit;
+        end;
+        if Length(syllables) > 2 then
+        begin
+            // Keep long phrases governed by phrase weight; use this only for
+            // short same-pinyin disambiguation where common single-char choice matters.
             Exit;
         end;
 
@@ -1655,6 +1743,22 @@ var
                 Exit;
             end;
 
+            has_top_complete := False;
+            top_complete_score := 0;
+            for idx := 0 to High(candidates) do
+            begin
+                if candidates[idx].comment <> '' then
+                begin
+                    Continue;
+                end;
+
+                if (not has_top_complete) or (candidates[idx].score > top_complete_score) then
+                begin
+                    top_complete_score := candidates[idx].score;
+                    has_top_complete := True;
+                end;
+            end;
+
             for idx := 0 to High(candidates) do
             begin
                 if candidates[idx].comment <> '' then
@@ -1663,6 +1767,13 @@ var
                 end;
                 if candidates[idx].source = cs_user then
                 begin
+                    Continue;
+                end;
+                if has_top_complete and
+                    (candidates[idx].score < (top_complete_score - c_alignment_score_gap_limit)) then
+                begin
+                    // Keep lexical phrase weight as the primary signal; alignment only
+                    // acts as a mild tie-breaker among near-head same-pinyin candidates.
                     Continue;
                 end;
 
@@ -1703,6 +1814,17 @@ var
                     Continue;
                 end;
 
+                adjustment := adjustment div applied_count;
+                adjustment := adjustment div c_alignment_average_divisor;
+                if adjustment > c_alignment_adjust_cap then
+                begin
+                    adjustment := c_alignment_adjust_cap;
+                end
+                else if adjustment < -c_alignment_adjust_cap then
+                begin
+                    adjustment := -c_alignment_adjust_cap;
+                end;
+
                 Inc(candidates[idx].score, adjustment);
             end;
         finally
@@ -1717,6 +1839,9 @@ var
     end;
 begin
     SetLength(m_candidates, 0);
+    m_last_lookup_key := '';
+    m_last_lookup_normalized_from := '';
+    m_last_lookup_syllable_count := 0;
     if m_composition_text = '' then
     begin
         Exit;
@@ -1726,10 +1851,31 @@ begin
     has_segment_candidates := False;
     raw_from_dictionary := False;
     lookup_text := normalize_pinyin_text(m_composition_text);
-    fallback_comment := build_pinyin_comment(m_composition_text);
+    if not is_full_pinyin_key(lookup_text) then
+    begin
+        normalized_lookup_text := normalize_adjacent_swap_typo(lookup_text);
+        if (normalized_lookup_text <> '') and (not SameText(normalized_lookup_text, lookup_text)) then
+        begin
+            m_last_lookup_normalized_from := lookup_text;
+            lookup_text := normalized_lookup_text;
+        end;
+    end;
+    m_last_lookup_key := lookup_text;
+    fallback_comment := build_pinyin_comment(lookup_text);
     has_multi_syllable_input := fallback_comment <> '';
+    has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
+    if m_last_lookup_normalized_from <> '' then
+    begin
+        // If lookup key is typo-normalized (e.g. chagn->chang), segmenting by raw input
+        // is usually noisy; force dangling-initial guard to suppress that path.
+        has_internal_dangling_initial := True;
+    end;
+    input_syllable_count := get_input_syllable_count_for_text(lookup_text);
+    m_last_lookup_syllable_count := input_syllable_count;
     head_only_multi_syllable := m_config.enable_segment_candidates and
-        m_config.segment_head_only_multi_syllable and has_multi_syllable_input;
+        has_multi_syllable_input and
+        (m_config.segment_head_only_multi_syllable or (input_syllable_count >= 4)) and
+        (not has_internal_dangling_initial);
     if m_dictionary <> nil then
     begin
         if head_only_multi_syllable and build_segment_candidates(segment_candidates, False) then
@@ -1760,7 +1906,7 @@ begin
         end;
 
         sort_candidates(raw_candidates);
-        if m_config.enable_segment_candidates and raw_from_dictionary then
+        if m_config.enable_segment_candidates and raw_from_dictionary and (not has_internal_dangling_initial) then
         begin
             if not has_segment_candidates then
             begin
@@ -2273,9 +2419,30 @@ begin
 end;
 
 function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
+var
+    context_bonus: Integer;
+    text_units: Integer;
 begin
     Result := candidate.score;
-    Inc(Result, get_context_bonus(candidate.text));
+    context_bonus := get_context_bonus(candidate.text);
+    if m_last_lookup_normalized_from <> '' then
+    begin
+        // When we auto-correct a likely adjacent-swap typo (e.g. chagn->chang),
+        // reduce context influence so lexical score dominates.
+        context_bonus := context_bonus div 4;
+    end;
+    Inc(Result, context_bonus);
+
+    // For one-syllable full-pinyin lookups, keep single-char candidates ahead.
+    if (m_last_lookup_syllable_count = 1) and (candidate.comment = '') then
+    begin
+        text_units := Length(split_text_units(candidate.text));
+        if text_units > 1 then
+        begin
+            Dec(Result, (text_units - 1) * 180);
+        end;
+    end;
+
     if candidate.comment <> '' then
     begin
         // Segment fallback candidates with remaining pinyin (e.g. "... ti")
@@ -2375,6 +2542,103 @@ begin
     end;
 
     Result := Result.Replace(#0, '');
+end;
+
+function TncEngine.is_valid_pinyin_syllable(const syllable: string): Boolean;
+var
+    ch: Char;
+begin
+    Result := False;
+    if syllable = '' then
+    begin
+        Exit;
+    end;
+
+    // Single-letter syllables are only valid for standalone finals.
+    if Length(syllable) = 1 then
+    begin
+        Result := CharInSet(syllable[1], ['a', 'e', 'o']);
+        Exit;
+    end;
+
+    for ch in syllable do
+    begin
+        if CharInSet(ch, ['a', 'e', 'i', 'o', 'u', 'v']) then
+        begin
+            Result := True;
+            Exit;
+        end;
+    end;
+end;
+
+function TncEngine.is_full_pinyin_key(const value: string): Boolean;
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    idx: Integer;
+    reconstructed: string;
+begin
+    Result := False;
+    if value = '' then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.create;
+    try
+        syllables := parser.parse(value);
+    finally
+        parser.Free;
+    end;
+
+    if Length(syllables) <= 0 then
+    begin
+        Exit;
+    end;
+
+    reconstructed := '';
+    for idx := 0 to High(syllables) do
+    begin
+        if not is_valid_pinyin_syllable(syllables[idx].text) then
+        begin
+            Exit;
+        end;
+        reconstructed := reconstructed + syllables[idx].text;
+    end;
+
+    Result := SameText(reconstructed, value);
+end;
+
+function TncEngine.normalize_adjacent_swap_typo(const value: string): string;
+var
+    swap_idx: Integer;
+    swap_value: string;
+    swap_char: Char;
+begin
+    Result := '';
+    if (value = '') or (Length(value) < 4) then
+    begin
+        Exit;
+    end;
+
+    // Prefer right-most swaps first: tail typos like "...gn" -> "...ng" are common.
+    for swap_idx := Length(value) - 1 downto 1 do
+    begin
+        if value[swap_idx] = value[swap_idx + 1] then
+        begin
+            Continue;
+        end;
+
+        swap_value := value;
+        swap_char := swap_value[swap_idx];
+        swap_value[swap_idx] := swap_value[swap_idx + 1];
+        swap_value[swap_idx + 1] := swap_char;
+        if is_full_pinyin_key(swap_value) then
+        begin
+            Result := swap_value;
+            Exit;
+        end;
+    end;
 end;
 
 function TncEngine.split_text_units(const input_text: string): TArray<string>;
@@ -2658,8 +2922,10 @@ const
     c_segment_max_per_segment = 256;
     c_segment_max_syllables = 24;
     c_segment_word_max_syllables = 4;
-    c_segment_partial_penalty = 120;
+    c_segment_partial_penalty = 180;
+    c_segment_partial_quadratic_penalty = 160;
     c_segment_prefix_bonus = 80;
+    c_segment_long_prefix_bonus = 220;
     c_segment_page_expand_factor = 16;
     c_segment_full_state_limit = 128;
     c_segment_full_completion_bonus = 160;
@@ -2670,6 +2936,7 @@ const
     c_segment_full_preferred_single_penalty = 24;
     c_segment_full_leading_multi_penalty = 42;
     c_segment_full_head_top_n = 4;
+    c_segment_full_path_non_user_limit = 4;
     c_segment_text_unit_mismatch_penalty = 100;
     c_segment_text_unit_overflow_penalty = 60;
 var
@@ -2862,6 +3129,7 @@ var
         final_index: Integer;
         existing_state_index: Integer;
         keep_count: Integer;
+        full_non_user_added: Integer;
         local_state: TncCandidate;
         local_candidate: TncCandidate;
         local_new_state: TncCandidate;
@@ -3193,14 +3461,30 @@ var
                 Exit;
             end;
 
+            SetLength(sorted_states, states[Length(syllables)].Count);
             for final_index := 0 to states[Length(syllables)].Count - 1 do
             begin
-                local_state := states[Length(syllables)][final_index];
+                sorted_states[final_index] := states[Length(syllables)][final_index];
+            end;
+            sort_candidates(sorted_states);
+
+            full_non_user_added := 0;
+            for final_index := 0 to High(sorted_states) do
+            begin
+                local_state := sorted_states[final_index];
                 if local_state.comment <> '1' then
                 begin
                     Continue;
                 end;
+                if (local_state.source <> cs_user) and (full_non_user_added >= c_segment_full_path_non_user_limit) then
+                begin
+                    Continue;
+                end;
                 append_candidate(local_state.text, local_state.score, local_state.source, '');
+                if local_state.source <> cs_user then
+                begin
+                    Inc(full_non_user_added);
+                end;
             end;
         finally
             for state_pos := 0 to High(states) do
@@ -3336,9 +3620,15 @@ begin
                         Continue;
                     end;
                     score_value := candidate.score + (segment_len * c_segment_prefix_bonus);
+                    if (remaining_syllables > 0) and (segment_len > 1) then
+                    begin
+                        Inc(score_value, (segment_len - 1) * c_segment_long_prefix_bonus);
+                    end;
                     if remaining_syllables > 0 then
                     begin
                         Dec(score_value, c_segment_partial_penalty * remaining_syllables);
+                        Dec(score_value, c_segment_partial_quadratic_penalty *
+                            remaining_syllables * remaining_syllables);
                     end;
 
                     if candidate_text_units <> segment_len then
@@ -3941,16 +4231,19 @@ begin
     case key_code of
         VK_BACK:
             begin
-                if m_composition_text <> '' then
+                // When there is confirmed segmented prefix, Backspace should first
+                // rollback that prefix to pinyin so users can reselect without
+                // deleting the entire remaining tail.
+                if (m_confirmed_segments <> nil) and (m_confirmed_segments.Count > 0) then
+                begin
+                    Result := rollback_last_segment;
+                end;
+                if (not Result) and (m_composition_text <> '') then
                 begin
                     clear_pending_commit;
                     Delete(m_composition_text, Length(m_composition_text), 1);
                     build_candidates;
                     Result := True;
-                end;
-                if (not Result) and (m_confirmed_segments <> nil) and (m_confirmed_segments.Count > 0) then
-                begin
-                    Result := rollback_last_segment;
                 end;
             end;
         VK_OEM_7:
@@ -4335,6 +4628,24 @@ end;
 function TncEngine.get_confirmed_length: Integer;
 begin
     Result := Length(m_confirmed_text);
+end;
+
+function TncEngine.get_lookup_debug_info: string;
+begin
+    if m_last_lookup_key = '' then
+    begin
+        Result := '';
+        Exit;
+    end;
+
+    if m_last_lookup_normalized_from <> '' then
+    begin
+        Result := Format('query_norm=[%s->%s]', [m_last_lookup_normalized_from, m_last_lookup_key]);
+    end
+    else
+    begin
+        Result := Format('query=[%s]', [m_last_lookup_key]);
+    end;
 end;
 
 function TncEngine.get_selected_index: Integer;

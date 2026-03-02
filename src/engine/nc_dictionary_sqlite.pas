@@ -1548,6 +1548,9 @@ function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandid
 const
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
+    base_typo_prefix_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin LIKE ?1 ' +
+        'ORDER BY weight DESC, text ASC LIMIT ?2';
     base_single_char_exact_sql =
         'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 AND length(text) = 1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
@@ -1578,6 +1581,12 @@ const
     c_nonfull_exact_penalty = 100;
     c_initial_single_char_penalty = 120;
     c_single_letter_full_query_extra_penalty = 120;
+    c_typo_transpose_penalty = 80;
+    c_typo_min_query_len = 4;
+    c_typo_probe_limit = 24;
+    c_typo_max_added = 16;
+    c_typo_prefix_probe_limit = 8;
+    c_typo_prefix_extra_penalty = 120;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -1618,6 +1627,137 @@ var
     user_like_pattern: string;
     user_probe_limit: Integer;
     query_key_idx: Integer;
+    exact_base_hit: Boolean;
+    typo_fallback_used: Boolean;
+    force_noisy_reset_before_typo: Boolean;
+    normalized_query_key: string;
+
+    function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string; forward;
+    function is_compact_ascii_query(const value: string): Boolean; forward;
+
+    function mixed_query_has_internal_dangling_initial(const token_list: TncMixedQueryTokenList): Boolean;
+    var
+        token_idx: Integer;
+    begin
+        Result := False;
+        if Length(token_list) <= 1 then
+        begin
+            Exit;
+        end;
+
+        // Pattern like "cha + g + n" often means a malformed compact input.
+        // Prefer typo recovery over mixed/jianpin expansion in this case.
+        for token_idx := 0 to High(token_list) - 1 do
+        begin
+            if token_list[token_idx].kind = mqt_initial then
+            begin
+                Result := True;
+                Exit;
+            end;
+        end;
+    end;
+
+    function normalize_adjacent_swap_to_full_pinyin(const value: string): string;
+    var
+        swap_idx: Integer;
+        swap_value: string;
+        swap_char: Char;
+    begin
+        Result := '';
+        if (Length(value) < c_typo_min_query_len) or (not is_compact_ascii_query(value)) then
+        begin
+            Exit;
+        end;
+
+        // Prefer right-most swaps first: tail errors like "...gn" -> "...ng" are common.
+        for swap_idx := Length(value) - 1 downto 1 do
+        begin
+            if value[swap_idx] = value[swap_idx + 1] then
+            begin
+                Continue;
+            end;
+
+            swap_value := value;
+            swap_char := swap_value[swap_idx];
+            swap_value[swap_idx] := swap_value[swap_idx + 1];
+            swap_value[swap_idx + 1] := swap_char;
+            if is_full_pinyin_key(swap_value) then
+            begin
+                Result := swap_value;
+                Exit;
+            end;
+        end;
+    end;
+
+    procedure rebuild_query_mode_state;
+    begin
+        mixed_full_prefix := '';
+        mixed_jianpin_key := query_key;
+        SetLength(mixed_tokens, 0);
+        mixed_mode := parse_mixed_jianpin_query(query_key, mixed_full_prefix, mixed_jianpin_key, mixed_tokens);
+        if mixed_jianpin_key = '' then
+        begin
+            mixed_jianpin_key := query_key;
+        end;
+
+        effective_jianpin_key := mixed_jianpin_key;
+        full_pinyin_query := is_full_pinyin_key(query_key);
+        full_query_jianpin_key := '';
+        allow_full_query_jianpin_fallback := False;
+        if full_pinyin_query then
+        begin
+            full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
+            if (full_query_jianpin_key <> '') and
+                (not SameText(full_query_jianpin_key, query_key)) then
+            begin
+                effective_jianpin_key := full_query_jianpin_key;
+                allow_full_query_jianpin_fallback := True;
+            end;
+        end;
+
+        jianpin_query_keys := build_jianpin_query_variants(effective_jianpin_key);
+        if Length(jianpin_query_keys) = 0 then
+        begin
+            SetLength(jianpin_query_keys, 1);
+            jianpin_query_keys[0] := effective_jianpin_key;
+        end;
+
+        single_syllable_full_query := False;
+        if full_pinyin_query then
+        begin
+            single_syllable_full_query := is_single_syllable_full_pinyin_key(query_key);
+        end;
+
+        jianpin_score_penalty := c_jianpin_score_penalty;
+        if not full_pinyin_query then
+        begin
+            // For non-full inputs (especially jianpin), do not down-rank jianpin hits.
+            jianpin_score_penalty := 0;
+        end;
+
+        mixed_like_pattern := '';
+        if mixed_mode then
+        begin
+            mixed_like_pattern := build_mixed_like_pattern(mixed_tokens);
+        end;
+
+        force_noisy_reset_before_typo := mixed_mode and
+            mixed_query_has_internal_dangling_initial(mixed_tokens);
+
+        user_nonfull_lookup := m_user_ready and (not full_pinyin_query) and should_try_jianpin_lookup(query_key);
+        user_like_pattern := '';
+        if user_nonfull_lookup then
+        begin
+            if mixed_mode and (mixed_full_prefix <> '') then
+            begin
+                user_like_pattern := mixed_full_prefix + '%';
+            end
+            else
+            begin
+                user_like_pattern := query_key[1] + '%';
+            end;
+        end;
+    end;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource);
@@ -1683,6 +1823,197 @@ var
             Result := Result + '%';
         end;
     end;
+
+    function is_compact_ascii_query(const value: string): Boolean;
+    var
+        value_idx: Integer;
+    begin
+        Result := value <> '';
+        if not Result then
+        begin
+            Exit;
+        end;
+
+        for value_idx := 1 to Length(value) do
+        begin
+            if not CharInSet(value[value_idx], ['a' .. 'z']) then
+            begin
+                Result := False;
+                Exit;
+            end;
+        end;
+    end;
+
+    function append_adjacent_transposition_typo_candidates: Boolean;
+    var
+        swap_idx: Integer;
+        swap_key: string;
+        typo_stmt: Psqlite3_stmt;
+        prefix_stmt: Psqlite3_stmt;
+        swap_seen: TDictionary<string, Boolean>;
+        before_count: Integer;
+        before_swap_added: Integer;
+        typo_added: Integer;
+        swap_char: Char;
+        existing_idx: Integer;
+        has_user_existing: Boolean;
+    begin
+        Result := False;
+        if not m_base_ready then
+        begin
+            Exit;
+        end;
+        // Keep strict exact-match priority only for full-pinyin queries.
+        // Non-full inputs may still be user typos (e.g. "chagn" -> "chang").
+        if exact_base_hit and full_pinyin_query then
+        begin
+            Exit;
+        end;
+        if Length(query_key) < c_typo_min_query_len then
+        begin
+            Exit;
+        end;
+        if not is_compact_ascii_query(query_key) then
+        begin
+            Exit;
+        end;
+
+        // Mixed/non-full probing may already have filled list with noisy rule candidates.
+        // If no user hit is present, clear them so transposition recovery can surface.
+        if (not full_pinyin_query) and (list.Count > 0) then
+        begin
+            if force_noisy_reset_before_typo then
+            begin
+                list.Clear;
+                seen.Clear;
+            end
+            else
+            begin
+                has_user_existing := False;
+                for existing_idx := 0 to list.Count - 1 do
+                begin
+                    if list[existing_idx].source = cs_user then
+                    begin
+                        has_user_existing := True;
+                        Break;
+                    end;
+                end;
+
+                if not has_user_existing then
+                begin
+                    list.Clear;
+                    seen.Clear;
+                end;
+            end;
+        end;
+
+        swap_seen := TDictionary<string, Boolean>.Create;
+        try
+            typo_added := 0;
+            for swap_idx := 1 to Length(query_key) - 1 do
+            begin
+                if query_key[swap_idx] = query_key[swap_idx + 1] then
+                begin
+                    Continue;
+                end;
+
+                swap_key := query_key;
+                swap_char := swap_key[swap_idx];
+                swap_key[swap_idx] := swap_key[swap_idx + 1];
+                swap_key[swap_idx + 1] := swap_char;
+
+                if swap_seen.ContainsKey(swap_key) then
+                begin
+                    Continue;
+                end;
+                swap_seen.Add(swap_key, True);
+
+                if not is_full_pinyin_key(swap_key) then
+                begin
+                    Continue;
+                end;
+
+                before_swap_added := typo_added;
+                typo_stmt := nil;
+                try
+                    if m_base_connection.prepare(base_sql, typo_stmt) and
+                        m_base_connection.bind_text(typo_stmt, 1, swap_key) and
+                        m_base_connection.bind_int(typo_stmt, 2, c_typo_probe_limit) then
+                    begin
+                        step_result := m_base_connection.step(typo_stmt);
+                        while step_result = SQLITE_ROW do
+                        begin
+                            text_value := m_base_connection.column_text(typo_stmt, 1);
+                            comment_value := m_base_connection.column_text(typo_stmt, 2);
+                            score_value := m_base_connection.column_int(typo_stmt, 3) - c_typo_transpose_penalty;
+                            before_count := list.Count;
+                            append_candidate(text_value, comment_value, score_value, cs_rule);
+                            if list.Count > before_count then
+                            begin
+                                Inc(typo_added);
+                                if typo_added >= c_typo_max_added then
+                                begin
+                                    Break;
+                                end;
+                            end;
+                            step_result := m_base_connection.step(typo_stmt);
+                        end;
+                    end;
+                finally
+                    if typo_stmt <> nil then
+                    begin
+                        m_base_connection.finalize(typo_stmt);
+                    end;
+                end;
+
+                // If exact swapped-key rows are absent, probe a small prefix window
+                // (e.g. "chang%") so typo correction still surfaces meaningful heads.
+                if typo_added = before_swap_added then
+                begin
+                    prefix_stmt := nil;
+                    try
+                        if m_base_connection.prepare(base_typo_prefix_sql, prefix_stmt) and
+                            m_base_connection.bind_text(prefix_stmt, 1, swap_key + '%') and
+                            m_base_connection.bind_int(prefix_stmt, 2, c_typo_prefix_probe_limit) then
+                        begin
+                            step_result := m_base_connection.step(prefix_stmt);
+                            while step_result = SQLITE_ROW do
+                            begin
+                                text_value := m_base_connection.column_text(prefix_stmt, 1);
+                                comment_value := m_base_connection.column_text(prefix_stmt, 2);
+                                score_value := m_base_connection.column_int(prefix_stmt, 3) -
+                                    c_typo_transpose_penalty - c_typo_prefix_extra_penalty;
+                                before_count := list.Count;
+                                append_candidate(text_value, comment_value, score_value, cs_rule);
+                                if list.Count > before_count then
+                                begin
+                                    Inc(typo_added);
+                                    if typo_added >= c_typo_max_added then
+                                    begin
+                                        Break;
+                                    end;
+                                end;
+                                step_result := m_base_connection.step(prefix_stmt);
+                            end;
+                        end;
+                    finally
+                        if prefix_stmt <> nil then
+                        begin
+                            m_base_connection.finalize(prefix_stmt);
+                        end;
+                    end;
+                end;
+
+                if typo_added >= c_typo_max_added then
+                begin
+                    Break;
+                end;
+            end;
+            Result := typo_added > 0;
+        finally
+            swap_seen.Free;
+        end;
+    end;
 begin
     SetLength(results, 0);
     if (pinyin = '') or not ensure_open then
@@ -1692,64 +2023,23 @@ begin
     end;
     query_key := LowerCase(pinyin);
     now_unix := get_unix_time_now;
-    mixed_full_prefix := '';
-    mixed_jianpin_key := query_key;
-    SetLength(mixed_tokens, 0);
-    mixed_mode := parse_mixed_jianpin_query(query_key, mixed_full_prefix, mixed_jianpin_key, mixed_tokens);
-    if mixed_jianpin_key = '' then
-    begin
-        mixed_jianpin_key := query_key;
-    end;
-    effective_jianpin_key := mixed_jianpin_key;
-    full_pinyin_query := is_full_pinyin_key(query_key);
-    full_query_jianpin_key := '';
-    allow_full_query_jianpin_fallback := False;
-    if full_pinyin_query then
-    begin
-        full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
-        if (full_query_jianpin_key <> '') and
-            (not SameText(full_query_jianpin_key, query_key)) then
-        begin
-            effective_jianpin_key := full_query_jianpin_key;
-            allow_full_query_jianpin_fallback := True;
-        end;
-    end;
-    jianpin_query_keys := build_jianpin_query_variants(effective_jianpin_key);
-    if Length(jianpin_query_keys) = 0 then
-    begin
-        SetLength(jianpin_query_keys, 1);
-        jianpin_query_keys[0] := effective_jianpin_key;
-    end;
-    single_syllable_full_query := False;
-    if full_pinyin_query then
-    begin
-        single_syllable_full_query := is_single_syllable_full_pinyin_key(query_key);
-    end;
-    single_letter_query := (Length(query_key) = 1) and CharInSet(query_key[1], ['a' .. 'z']);
-    jianpin_score_penalty := c_jianpin_score_penalty;
+    rebuild_query_mode_state;
+
+    // For compact malformed inputs like "chagn", prefer a deterministic
+    // adjacent-swap normalization to full pinyin (e.g. "chang") before lookup.
+    // Apply this to all non-full queries (not only mixed dangling-initial cases)
+    // so common adjacent transposition typos are corrected earlier and stably.
     if not full_pinyin_query then
     begin
-        // For non-full inputs (especially jianpin), do not down-rank jianpin hits.
-        jianpin_score_penalty := 0;
-    end;
-    mixed_like_pattern := '';
-    if mixed_mode then
-    begin
-        mixed_like_pattern := build_mixed_like_pattern(mixed_tokens);
-    end;
-    user_nonfull_lookup := m_user_ready and (not full_pinyin_query) and should_try_jianpin_lookup(query_key);
-    user_like_pattern := '';
-    if user_nonfull_lookup then
-    begin
-        if mixed_mode and (mixed_full_prefix <> '') then
+        normalized_query_key := normalize_adjacent_swap_to_full_pinyin(query_key);
+        if (normalized_query_key <> '') and (not SameText(normalized_query_key, query_key)) then
         begin
-            user_like_pattern := mixed_full_prefix + '%';
-        end
-        else
-        begin
-            user_like_pattern := query_key[1] + '%';
+            query_key := normalized_query_key;
+            rebuild_query_mode_state;
         end;
     end;
+
+    single_letter_query := (Length(query_key) = 1) and CharInSet(query_key[1], ['a' .. 'z']);
 
     if mixed_mode or user_nonfull_lookup then
     begin
@@ -1763,6 +2053,8 @@ begin
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Boolean>.Create;
     learning_bonus_map := TDictionary<string, Integer>.Create;
+    exact_base_hit := False;
+    typo_fallback_used := False;
     try
         if m_user_ready then
         begin
@@ -1898,6 +2190,7 @@ begin
                             Dec(score_value, c_nonfull_exact_penalty);
                         end;
                         append_candidate(text_value, comment_value, score_value, cs_rule);
+                        exact_base_hit := True;
                         step_result := m_base_connection.step(stmt);
                     end;
                 end;
@@ -1947,9 +2240,10 @@ begin
 
         if m_base_ready and should_try_jianpin_lookup(effective_jianpin_key) and
             ((list.Count = 0) or mixed_mode or (not full_pinyin_query) or
-            allow_full_query_jianpin_fallback) then
+            (allow_full_query_jianpin_fallback and (not exact_base_hit))) then
         begin
-            if mixed_mode and (mixed_full_prefix <> '') then
+            typo_fallback_used := append_adjacent_transposition_typo_candidates;
+            if (not typo_fallback_used) and mixed_mode and (mixed_full_prefix <> '') then
             begin
                 for query_key_idx := 0 to High(jianpin_query_keys) do
                 begin
@@ -2002,7 +2296,8 @@ begin
                 end;
             end;
 
-            if (list.Count = 0) or (not full_pinyin_query) or allow_full_query_jianpin_fallback then
+            if (not typo_fallback_used) and ((list.Count = 0) or (not full_pinyin_query) or
+                allow_full_query_jianpin_fallback) then
             begin
                 for query_key_idx := 0 to High(jianpin_query_keys) do
                 begin
@@ -2056,7 +2351,8 @@ begin
             end;
         end;
 
-        if mixed_mode and m_base_ready and (mixed_like_pattern <> '') and (list.Count < m_limit) then
+        if (not typo_fallback_used) and mixed_mode and m_base_ready and (mixed_like_pattern <> '') and
+            (list.Count < m_limit) then
         begin
             stmt := nil;
             try

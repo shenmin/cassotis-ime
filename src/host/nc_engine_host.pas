@@ -892,6 +892,7 @@ var
     has_result: Boolean;
     global_state_changed: Boolean;
     config_to_save: TncEngineConfig;
+    lookup_debug_info: string;
 begin
     handled := False;
     commit_text := '';
@@ -953,10 +954,11 @@ begin
             page_count := session.engine.get_page_count;
             selected_index := session.engine.get_selected_index;
             preedit_text := session.engine.get_composition_text;
-            host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d',
+            lookup_debug_info := session.engine.get_lookup_debug_info;
+            host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
                 [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
                 sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates), page_index + 1,
-                page_count, selected_index + 1]));
+                page_count, selected_index + 1, sanitize_log_text(lookup_debug_info)]));
 
             if Length(candidates) = 0 then
             begin
@@ -1351,7 +1353,8 @@ begin
         begin
             session_id := '';
         end;
-        if not SameText(cmd, 'GET_ACTIVE') then
+        if not (SameText(cmd, 'GET_ACTIVE') or SameText(cmd, 'GET_STATE') or SameText(cmd, 'PING') or
+            SameText(cmd, 'SET_SURROUNDING') or SameText(cmd, 'SET_CARET')) then
         begin
             host_log(Format('request cmd=%s session=%s', [cmd, session_id]));
         end;
@@ -1489,7 +1492,6 @@ begin
                 Exit;
             end;
 
-            ensure_tray_host_running;
             key_code := StrToIntDef(fields[2], 0);
             key_state.shift_down := flag_to_bool(fields[3]);
             key_state.ctrl_down := flag_to_bool(fields[4]);
@@ -1517,7 +1519,6 @@ begin
                 Exit;
             end;
 
-            ensure_tray_host_running;
             key_code := StrToIntDef(fields[2], 0);
             key_state.shift_down := flag_to_bool(fields[3]);
             key_state.ctrl_down := flag_to_bool(fields[4]);
