@@ -2574,6 +2574,22 @@ var
     left_score: Integer;
     right_score: Integer;
 begin
+    // Learned user candidates should take priority over rule candidates when
+    // both are complete commit candidates for the same query.
+    if (left.comment = '') and (right.comment = '') then
+    begin
+        if (left.source = cs_user) and (right.source <> cs_user) then
+        begin
+            Result := -1;
+            Exit;
+        end;
+        if (right.source = cs_user) and (left.source <> cs_user) then
+        begin
+            Result := 1;
+            Exit;
+        end;
+    end;
+
     left_score := get_rank_score(left);
     right_score := get_rank_score(right);
     Result := right_score - left_score;

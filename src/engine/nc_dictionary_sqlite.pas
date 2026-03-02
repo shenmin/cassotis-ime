@@ -1778,6 +1778,10 @@ const
     c_typo_max_added = 16;
     c_typo_prefix_probe_limit = 8;
     c_typo_prefix_extra_penalty = 120;
+    // Runtime homophone bonus currently relies on expensive full-table scans
+    // (text contains/prefix aggregate), which can add noticeable input latency
+    // on common keys like "shi"/"de". Keep this disabled by default.
+    c_enable_runtime_homophone_bonus = False;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -2830,7 +2834,10 @@ begin
             end;
         end;
 
-        apply_homophone_commonness_bonus;
+        if c_enable_runtime_homophone_bonus then
+        begin
+            apply_homophone_commonness_bonus;
+        end;
 
         if list.Count > 0 then
         begin
