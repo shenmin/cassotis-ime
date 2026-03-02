@@ -224,6 +224,8 @@ var
     variant_text: string;
     legacy_dict_path: string;
     needs_full_write: Boolean;
+    legacy_user_path: string;
+    default_user_path: string;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
@@ -330,6 +332,16 @@ begin
     Result.dictionary_path_simplified := resolve_runtime_path(Result.dictionary_path_simplified);
     Result.dictionary_path_traditional := resolve_runtime_path(Result.dictionary_path_traditional);
     Result.user_dictionary_path := resolve_runtime_path(Result.user_dictionary_path);
+    legacy_user_path := resolve_runtime_path('config\\user_dict.db');
+    default_user_path := get_default_user_dictionary_path;
+    if SameText(Result.user_dictionary_path, legacy_user_path) then
+    begin
+        Result.user_dictionary_path := default_user_path;
+        if not SameText(default_user_path, legacy_user_path) then
+        begin
+            needs_full_write := True;
+        end;
+    end;
     Result.ai_llama_runtime_dir_cpu := resolve_runtime_path(Result.ai_llama_runtime_dir_cpu);
     Result.ai_llama_runtime_dir_cuda := resolve_runtime_path(Result.ai_llama_runtime_dir_cuda);
     Result.ai_llama_model_path := resolve_runtime_path(Result.ai_llama_model_path);
@@ -452,6 +464,7 @@ end;
 function get_default_config_path: string;
 var
     module_dir: string;
+    legacy_config_path: string;
 begin
     module_dir := get_module_directory;
     if module_dir = '' then
@@ -460,7 +473,22 @@ begin
         Exit;
     end;
 
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'config\\cassotis_ime.ini';
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'cassotis_ime.ini';
+    legacy_config_path := IncludeTrailingPathDelimiter(module_dir) + 'config\\cassotis_ime.ini';
+    if (not FileExists(Result)) and FileExists(legacy_config_path) then
+    begin
+        try
+            TFile.Move(legacy_config_path, Result);
+        except
+            try
+                TFile.Copy(legacy_config_path, Result, False);
+            except
+                // If migration fails (for example permission issue), continue to
+                // use legacy path for backward compatibility.
+                Result := legacy_config_path;
+            end;
+        end;
+    end;
 end;
 
 function get_default_dictionary_path_simplified: string;
@@ -500,7 +528,8 @@ end;
 function get_default_user_dictionary_path: string;
 var
     module_dir: string;
-    config_dir: string;
+    data_dir: string;
+    legacy_user_db_path: string;
 begin
     module_dir := get_module_directory;
     if module_dir = '' then
@@ -509,9 +538,24 @@ begin
         Exit;
     end;
 
-    config_dir := IncludeTrailingPathDelimiter(module_dir) + 'config';
-    ForceDirectories(config_dir);
-    Result := IncludeTrailingPathDelimiter(config_dir) + 'user_dict.db';
+    data_dir := IncludeTrailingPathDelimiter(module_dir) + 'data';
+    ForceDirectories(data_dir);
+    Result := IncludeTrailingPathDelimiter(data_dir) + 'user_dict.db';
+    legacy_user_db_path := IncludeTrailingPathDelimiter(module_dir) + 'config\\user_dict.db';
+    if (not FileExists(Result)) and FileExists(legacy_user_db_path) then
+    begin
+        try
+            TFile.Move(legacy_user_db_path, Result);
+        except
+            try
+                TFile.Copy(legacy_user_db_path, Result, False);
+            except
+                // If migration fails, keep using legacy location so runtime does
+                // not lose user dictionary unexpectedly.
+                Result := legacy_user_db_path;
+            end;
+        end;
+    end;
 end;
 
 end.

@@ -1541,6 +1541,117 @@ var
         end;
     end;
 
+    procedure merge_confirmed_prefix_user_extensions(var candidates: TncCandidateList);
+    const
+        c_confirmed_user_extension_bonus = 480;
+    var
+        normalized_current: string;
+        confirmed_pinyin: string;
+        full_query: string;
+        full_candidates: TncCandidateList;
+        confirmed_prefix_text: string;
+        idx: Integer;
+        seg_idx: Integer;
+        existing_idx: Integer;
+        candidate: TncCandidate;
+        extension_text: string;
+    begin
+        if (m_dictionary = nil) or (m_composition_text = '') then
+        begin
+            Exit;
+        end;
+        if (m_confirmed_text = '') or (m_confirmed_segments = nil) or (m_confirmed_segments.Count = 0) then
+        begin
+            Exit;
+        end;
+
+        normalized_current := normalize_pinyin_text(m_composition_text);
+        if normalized_current = '' then
+        begin
+            Exit;
+        end;
+
+        confirmed_pinyin := '';
+        for seg_idx := 0 to m_confirmed_segments.Count - 1 do
+        begin
+            if m_confirmed_segments[seg_idx].pinyin <> '' then
+            begin
+                confirmed_pinyin := confirmed_pinyin + normalize_pinyin_text(m_confirmed_segments[seg_idx].pinyin);
+            end;
+        end;
+        if confirmed_pinyin = '' then
+        begin
+            Exit;
+        end;
+
+        full_query := confirmed_pinyin + normalized_current;
+        if not m_dictionary.lookup(full_query, full_candidates) then
+        begin
+            Exit;
+        end;
+        if Length(full_candidates) = 0 then
+        begin
+            Exit;
+        end;
+
+        confirmed_prefix_text := m_confirmed_text;
+        for idx := 0 to High(full_candidates) do
+        begin
+            candidate := full_candidates[idx];
+            if candidate.source <> cs_user then
+            begin
+                Continue;
+            end;
+
+            if (candidate.text = '') or (Length(candidate.text) <= Length(confirmed_prefix_text)) then
+            begin
+                Continue;
+            end;
+            if Copy(candidate.text, 1, Length(confirmed_prefix_text)) <> confirmed_prefix_text then
+            begin
+                Continue;
+            end;
+
+            extension_text := Copy(candidate.text, Length(confirmed_prefix_text) + 1, Length(candidate.text));
+            extension_text := Trim(extension_text);
+            if extension_text = '' then
+            begin
+                Continue;
+            end;
+
+            existing_idx := -1;
+            for seg_idx := 0 to High(candidates) do
+            begin
+                if SameText(candidates[seg_idx].text, extension_text) then
+                begin
+                    existing_idx := seg_idx;
+                    Break;
+                end;
+            end;
+
+            if existing_idx >= 0 then
+            begin
+                if candidates[existing_idx].comment <> '' then
+                begin
+                    candidates[existing_idx].comment := '';
+                end;
+                if candidates[existing_idx].score < candidate.score + c_confirmed_user_extension_bonus then
+                begin
+                    candidates[existing_idx].score := candidate.score + c_confirmed_user_extension_bonus;
+                end;
+                candidates[existing_idx].source := cs_user;
+            end
+            else
+            begin
+                candidate.text := extension_text;
+                candidate.comment := '';
+                Inc(candidate.score, c_confirmed_user_extension_bonus);
+                SetLength(candidates, Length(candidates) + 1);
+                candidates[High(candidates)] := candidate;
+            end;
+        end;
+    end;
+
     procedure prioritize_complete_phrase_matches(var candidates: TncCandidateList);
     const
         c_complete_phrase_bonus = 220;
@@ -1988,6 +2099,7 @@ begin
             end;
         end;
 
+        merge_confirmed_prefix_user_extensions(m_candidates);
         apply_user_penalties(lookup_text, m_candidates);
         prioritize_complete_phrase_matches(m_candidates);
         apply_syllable_single_char_alignment_bonus(m_candidates);
