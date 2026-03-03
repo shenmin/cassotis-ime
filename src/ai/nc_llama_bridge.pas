@@ -16,6 +16,14 @@ type
         PllamaToken = ^TllamaToken;
         PllamaInt32 = ^Int32;
         PllamaInt8 = ^Int8;
+        TllamaChatMessage = record
+            role: PAnsiChar;
+            content: PAnsiChar;
+        end;
+        PllamaChatMessage = ^TllamaChatMessage;
+        TllamaSamplerChainParams = record
+            no_perf: ByteBool;
+        end;
         Tllama_abort_callback = function(abort_data: Pointer): ByteBool; cdecl;
 
         TllamaBatch = record
@@ -95,6 +103,7 @@ type
         Tllama_get_memory = function(ctx: Pointer): Pointer; cdecl;
         Tllama_memory_clear = procedure(mem: Pointer; data: ByteBool); cdecl;
         Tllama_model_get_vocab = function(model: Pointer): Pointer; cdecl;
+        Tllama_model_chat_template = function(model: Pointer; name: PAnsiChar): PAnsiChar; cdecl;
         Tllama_vocab_n_tokens = function(vocab: Pointer): Int32; cdecl;
         Tllama_vocab_is_eog = function(vocab: Pointer; token: TllamaToken): ByteBool; cdecl;
         Tllama_tokenize = function(vocab: Pointer; text: PAnsiChar; text_len: Int32; tokens: PllamaToken;
@@ -107,9 +116,18 @@ type
         Tllama_set_abort_callback = procedure(ctx: Pointer; abort_callback: Tllama_abort_callback;
             abort_callback_data: Pointer); cdecl;
         Tllama_sampler_init_greedy = function: Pointer; cdecl;
+        Tllama_sampler_chain_default_params = function: TllamaSamplerChainParams; cdecl;
+        Tllama_sampler_chain_init = function(params: TllamaSamplerChainParams): Pointer; cdecl;
+        Tllama_sampler_chain_add = procedure(chain: Pointer; smpl: Pointer); cdecl;
+        Tllama_sampler_init_top_k = function(k: Int32): Pointer; cdecl;
+        Tllama_sampler_init_top_p = function(p: Single; min_keep: NativeUInt): Pointer; cdecl;
+        Tllama_sampler_init_temp = function(temp: Single): Pointer; cdecl;
+        Tllama_sampler_init_dist = function(seed: UInt32): Pointer; cdecl;
         Tllama_sampler_sample = function(smpl: Pointer; ctx: Pointer; idx: Int32): TllamaToken; cdecl;
         Tllama_sampler_accept = procedure(smpl: Pointer; token: TllamaToken); cdecl;
         Tllama_sampler_free = procedure(smpl: Pointer); cdecl;
+        Tllama_chat_apply_template = function(tmpl: PAnsiChar; chat: PllamaChatMessage; n_msg: NativeUInt;
+            add_ass: ByteBool; buf: PAnsiChar; length: Int32): Int32; cdecl;
     private
         m_dll_handle: HMODULE;
         m_backend_init: Tllama_backend_init;
@@ -124,6 +142,7 @@ type
         m_get_memory: Tllama_get_memory;
         m_memory_clear: Tllama_memory_clear;
         m_model_get_vocab: Tllama_model_get_vocab;
+        m_model_chat_template: Tllama_model_chat_template;
         m_vocab_n_tokens: Tllama_vocab_n_tokens;
         m_vocab_is_eog: Tllama_vocab_is_eog;
         m_tokenize: Tllama_tokenize;
@@ -133,9 +152,17 @@ type
         m_set_n_threads: Tllama_set_n_threads;
         m_set_abort_callback: Tllama_set_abort_callback;
         m_sampler_init_greedy: Tllama_sampler_init_greedy;
+        m_sampler_chain_default_params: Tllama_sampler_chain_default_params;
+        m_sampler_chain_init: Tllama_sampler_chain_init;
+        m_sampler_chain_add: Tllama_sampler_chain_add;
+        m_sampler_init_top_k: Tllama_sampler_init_top_k;
+        m_sampler_init_top_p: Tllama_sampler_init_top_p;
+        m_sampler_init_temp: Tllama_sampler_init_temp;
+        m_sampler_init_dist: Tllama_sampler_init_dist;
         m_sampler_sample: Tllama_sampler_sample;
         m_sampler_accept: Tllama_sampler_accept;
         m_sampler_free: Tllama_sampler_free;
+        m_chat_apply_template: Tllama_chat_apply_template;
         m_resolved_backend: TncLlamaBackend;
         m_runtime_dir: string;
         m_model_path: string;
@@ -171,6 +198,8 @@ type
         function generate_text(const prompt: string; const max_tokens: Integer; const timeout_ms: Integer;
             const temperature: Double;
             out generated_text: string; out error_text: string): Boolean;
+        function build_chat_prompt(const system_prompt: string; const user_prompt: string;
+            out formatted_prompt: string; out error_text: string): Boolean;
         procedure request_abort;
         function is_model_ready: Boolean;
         property resolved_backend: TncLlamaBackend read m_resolved_backend;
@@ -288,6 +317,7 @@ begin
     m_get_memory := nil;
     m_memory_clear := nil;
     m_model_get_vocab := nil;
+    m_model_chat_template := nil;
     m_vocab_n_tokens := nil;
     m_vocab_is_eog := nil;
     m_tokenize := nil;
@@ -297,9 +327,17 @@ begin
     m_set_n_threads := nil;
     m_set_abort_callback := nil;
     m_sampler_init_greedy := nil;
+    m_sampler_chain_default_params := nil;
+    m_sampler_chain_init := nil;
+    m_sampler_chain_add := nil;
+    m_sampler_init_top_k := nil;
+    m_sampler_init_top_p := nil;
+    m_sampler_init_temp := nil;
+    m_sampler_init_dist := nil;
     m_sampler_sample := nil;
     m_sampler_accept := nil;
     m_sampler_free := nil;
+    m_chat_apply_template := nil;
 end;
 
 procedure TncLlamaBridge.reset_abort_flag;
@@ -524,6 +562,7 @@ begin
         Exit;
     end;
     m_model_get_vocab := Tllama_model_get_vocab(proc_ptr);
+    m_model_chat_template := Tllama_model_chat_template(GetProcAddress(handle, 'llama_model_chat_template'));
 
     if not require_runtime_export(handle, 'llama_vocab_n_tokens', proc_ptr, error_text) then
     begin
@@ -581,6 +620,14 @@ begin
         Exit;
     end;
     m_sampler_init_greedy := Tllama_sampler_init_greedy(proc_ptr);
+    m_sampler_chain_default_params := Tllama_sampler_chain_default_params(
+        GetProcAddress(handle, 'llama_sampler_chain_default_params'));
+    m_sampler_chain_init := Tllama_sampler_chain_init(GetProcAddress(handle, 'llama_sampler_chain_init'));
+    m_sampler_chain_add := Tllama_sampler_chain_add(GetProcAddress(handle, 'llama_sampler_chain_add'));
+    m_sampler_init_top_k := Tllama_sampler_init_top_k(GetProcAddress(handle, 'llama_sampler_init_top_k'));
+    m_sampler_init_top_p := Tllama_sampler_init_top_p(GetProcAddress(handle, 'llama_sampler_init_top_p'));
+    m_sampler_init_temp := Tllama_sampler_init_temp(GetProcAddress(handle, 'llama_sampler_init_temp'));
+    m_sampler_init_dist := Tllama_sampler_init_dist(GetProcAddress(handle, 'llama_sampler_init_dist'));
 
     if not require_runtime_export(handle, 'llama_sampler_sample', proc_ptr, error_text) then
     begin
@@ -602,6 +649,7 @@ begin
         Exit;
     end;
     m_sampler_free := Tllama_sampler_free(proc_ptr);
+    m_chat_apply_template := Tllama_chat_apply_template(GetProcAddress(handle, 'llama_chat_apply_template'));
 
     Result := True;
 end;
@@ -955,7 +1003,7 @@ begin
 
     SetLength(tokens, token_capacity);
     token_count := m_tokenize(m_vocab_handle, PAnsiChar(prompt_utf8), Length(prompt_utf8), @tokens[0], token_capacity,
-        True, False);
+        True, True);
     if token_count < 0 then
     begin
         if token_count = Low(Int32) then
@@ -973,7 +1021,7 @@ begin
 
         SetLength(tokens, token_capacity);
         token_count := m_tokenize(m_vocab_handle, PAnsiChar(prompt_utf8), Length(prompt_utf8), @tokens[0], token_capacity,
-            True, False);
+            True, True);
     end;
 
     if token_count <= 0 then
@@ -1063,6 +1111,108 @@ begin
     Result := True;
 end;
 
+function TncLlamaBridge.build_chat_prompt(const system_prompt: string; const user_prompt: string;
+    out formatted_prompt: string; out error_text: string): Boolean;
+var
+    system_utf8: UTF8String;
+    user_utf8: UTF8String;
+    role_system: AnsiString;
+    role_user: AnsiString;
+    messages: array[0..1] of TllamaChatMessage;
+    template_ptr: PAnsiChar;
+    buffer: TBytes;
+    buffer_len: Integer;
+    written_len: Int32;
+begin
+    Result := False;
+    formatted_prompt := '';
+    error_text := '';
+
+    if not is_model_ready then
+    begin
+        error_text := 'llama model is not loaded';
+        Exit;
+    end;
+    if not Assigned(m_chat_apply_template) then
+    begin
+        error_text := 'llama_chat_apply_template unavailable in runtime';
+        Exit;
+    end;
+    if not Assigned(m_model_chat_template) then
+    begin
+        error_text := 'llama_model_chat_template unavailable in runtime';
+        Exit;
+    end;
+
+    user_utf8 := UTF8String(user_prompt);
+    if user_utf8 = '' then
+    begin
+        error_text := 'user prompt is empty';
+        Exit;
+    end;
+
+    system_utf8 := UTF8String(system_prompt);
+    if system_utf8 = '' then
+    begin
+        system_utf8 := UTF8String('You are a helpful assistant.');
+    end;
+
+    role_system := AnsiString('system');
+    role_user := AnsiString('user');
+    messages[0].role := PAnsiChar(role_system);
+    messages[0].content := PAnsiChar(system_utf8);
+    messages[1].role := PAnsiChar(role_user);
+    messages[1].content := PAnsiChar(user_utf8);
+
+    template_ptr := m_model_chat_template(m_model_handle, nil);
+    if template_ptr = nil then
+    begin
+        error_text := 'model chat template is empty';
+        Exit;
+    end;
+
+    buffer_len := (Length(user_utf8) * 8) + (Length(system_utf8) * 4) + 1024;
+    if buffer_len < 2048 then
+    begin
+        buffer_len := 2048;
+    end;
+
+    SetLength(buffer, buffer_len);
+    written_len := m_chat_apply_template(template_ptr, @messages[0], 2, True, PAnsiChar(@buffer[0]), buffer_len);
+    if written_len < 0 then
+    begin
+        error_text := Format('llama_chat_apply_template failed: %d', [written_len]);
+        Exit;
+    end;
+
+    if written_len >= buffer_len then
+    begin
+        buffer_len := written_len + 8;
+        SetLength(buffer, buffer_len);
+        written_len := m_chat_apply_template(template_ptr, @messages[0], 2, True, PAnsiChar(@buffer[0]), buffer_len);
+        if written_len < 0 then
+        begin
+            error_text := Format('llama_chat_apply_template failed: %d', [written_len]);
+            Exit;
+        end;
+    end;
+
+    if written_len <= 0 then
+    begin
+        error_text := 'llama_chat_apply_template returned empty output';
+        Exit;
+    end;
+
+    formatted_prompt := utf8_bytes_to_string_lossy(buffer, written_len);
+    if formatted_prompt = '' then
+    begin
+        error_text := 'llama_chat_apply_template produced invalid utf8 output';
+        Exit;
+    end;
+
+    Result := True;
+end;
+
 function TncLlamaBridge.generate_text(const prompt: string; const max_tokens: Integer; const timeout_ms: Integer;
     const temperature: Double; out generated_text: string; out error_text: string): Boolean;
 var
@@ -1079,8 +1229,12 @@ var
     next_token: TllamaToken;
     next_batch: TllamaBatch;
     start_tick: UInt64;
+    total_start_tick: UInt64;
     timed_out: Boolean;
     mem_handle: Pointer;
+    chain_params: TllamaSamplerChainParams;
+    stage_sampler: Pointer;
+    seed_value: UInt32;
 begin
     Result := False;
     generated_text := '';
@@ -1102,10 +1256,17 @@ begin
         Exit;
     end;
 
+    total_start_tick := GetTickCount64;
     if not tokenize_prompt(prompt, prompt_tokens, error_text) then
     begin
         bridge_debug(error_text);
         Exit;
+    end;
+    if (timeout_ms > 0) and ((GetTickCount64 - total_start_tick) >= UInt64(timeout_ms)) then
+    begin
+        error_text := 'generation timeout (tokenize)';
+        bridge_debug(error_text);
+        Exit(False);
     end;
 
     if Assigned(m_get_memory) and Assigned(m_memory_clear) then
@@ -1125,18 +1286,61 @@ begin
         bridge_debug(error_text);
         Exit;
     end;
+    if (timeout_ms > 0) and ((GetTickCount64 - total_start_tick) >= UInt64(timeout_ms)) then
+    begin
+        error_text := 'generation timeout (prefill)';
+        bridge_debug(error_text);
+        Exit(False);
+    end;
 
     // Temperature <= 0 means deterministic decoding (equivalent to temp=0).
-    // Current bridge path uses greedy sampler for this mode.
     if temperature <= 0 then
     begin
         sampler := m_sampler_init_greedy;
     end
     else
     begin
-        // Non-zero temperature is not enabled in this bridge path yet.
-        // Fall back to deterministic decoding to keep IME behavior stable.
-        sampler := m_sampler_init_greedy;
+        sampler := nil;
+        if Assigned(m_sampler_chain_default_params) and Assigned(m_sampler_chain_init) and
+            Assigned(m_sampler_chain_add) and Assigned(m_sampler_init_top_k) and
+            Assigned(m_sampler_init_top_p) and Assigned(m_sampler_init_temp) and Assigned(m_sampler_init_dist) then
+        begin
+            chain_params := m_sampler_chain_default_params;
+            sampler := m_sampler_chain_init(chain_params);
+            if sampler <> nil then
+            begin
+                stage_sampler := m_sampler_init_top_k(40);
+                if stage_sampler <> nil then
+                begin
+                    m_sampler_chain_add(sampler, stage_sampler);
+                end;
+
+                stage_sampler := m_sampler_init_top_p(0.95, 1);
+                if stage_sampler <> nil then
+                begin
+                    m_sampler_chain_add(sampler, stage_sampler);
+                end;
+
+                stage_sampler := m_sampler_init_temp(temperature);
+                if stage_sampler <> nil then
+                begin
+                    m_sampler_chain_add(sampler, stage_sampler);
+                end;
+
+                seed_value := UInt32(GetTickCount and $7FFFFFFF) xor UInt32(GetCurrentThreadId);
+                stage_sampler := m_sampler_init_dist(seed_value);
+                if stage_sampler <> nil then
+                begin
+                    m_sampler_chain_add(sampler, stage_sampler);
+                end;
+            end;
+        end;
+
+        if sampler = nil then
+        begin
+            // Runtime may not provide chain/topk/topp APIs; keep serviceable fallback.
+            sampler := m_sampler_init_greedy;
+        end;
     end;
     if sampler = nil then
     begin
@@ -1145,7 +1349,7 @@ begin
         Exit;
     end;
 
-    start_tick := GetTickCount64;
+    start_tick := total_start_tick;
     timed_out := False;
 
     try

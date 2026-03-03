@@ -5,6 +5,7 @@ interface
 uses
     System.SysUtils,
     System.Classes,
+    System.StrUtils,
     Winapi.Windows,
     nc_types,
     nc_ai_intf,
@@ -21,11 +22,13 @@ function nc_ai_has_syllable_length_match(const composition_text: string;
     const candidates: TncCandidateList): Boolean;
 function nc_ai_build_prompt(const request: TncAiRequest): string;
 function nc_ai_build_retry_prompt(const request: TncAiRequest): string;
+function nc_ai_build_minimal_prompt(const request: TncAiRequest): string;
 function nc_ai_get_generation_tokens(const max_suggestions: Integer): Integer;
 procedure nc_ai_parse_generated_candidates(const generated_text: string; const composition_text: string;
     const max_suggestions: Integer;
     out candidates: TncCandidateList);
 function nc_ai_build_request_signature(const request: TncAiRequest): string;
+function nc_ai_wrap_qwen_chat_prompt(const prompt: string): string;
 implementation
 
 function nc_ai_clamp_int(const value: Integer; const min_value: Integer; const max_value: Integer): Integer;
@@ -380,14 +383,6 @@ begin
         Exit;
     end;
 
-    // Mixed English explanation lines from some models (for example GPT-OSS)
-    // should never be interpreted as candidate lines.
-    if nc_ai_contains_ascii_letter(text) then
-    begin
-        Result := '';
-        Exit;
-    end;
-
     if (Pos('Pinyin', text) > 0) or (Pos('Candidate', text) > 0) or (Pos('Context', text) > 0) then
     begin
         Result := '';
@@ -451,7 +446,6 @@ end;
 
 function nc_ai_build_prompt(const request: TncAiRequest): string;
 var
-    left_context: string;
     composition: string;
     segmented_pinyin: string;
     syllable_count: Integer;
@@ -460,12 +454,7 @@ var
     normalized_composition: string;
     i: Integer;
 begin
-    left_context := nc_ai_tail_text(nc_ai_sanitize_single_line(request.context.left_context), 32);
     composition := nc_ai_sanitize_single_line(request.context.composition_text);
-    if not nc_ai_should_use_left_context(composition) then
-    begin
-        left_context := '';
-    end;
     normalized_composition := LowerCase(composition);
     normalized_composition := StringReplace(normalized_composition, ' ', '', [rfReplaceAll]);
     segmented_pinyin := '';
@@ -492,10 +481,6 @@ begin
         end;
     end;
 
-    if left_context = '' then
-    begin
-        left_context := '<empty>';
-    end;
     if segmented_pinyin = '' then
     begin
         segmented_pinyin := '<unparsed>';
@@ -503,26 +488,20 @@ begin
     syllable_count := nc_ai_count_syllables(composition);
 
     Result :=
-        '/no_think' + sLineBreak +
-        'You are a Chinese IME candidate generator.' + sLineBreak +
-        'Rules:' + sLineBreak +
-        '1) Output only candidate lines, one candidate per line.' + sLineBreak +
-        '2) Use Chinese Han characters only. No pinyin, Latin letters, digits, punctuation, explanations, or numbering.' + sLineBreak +
-        '3) Each candidate must fully match PinyinRaw pronunciation and syllables from PinyinSyllables.' + sLineBreak +
-        '4) Each candidate must contain exactly SyllableCount Chinese characters.' + sLineBreak +
-        '5) Do not continue previous context or invent unrelated semantics.' + sLineBreak +
-        '6) Output 1 to 9 distinct candidates, ranked by common usage.' + sLineBreak +
-        '7) Start outputting candidates immediately.' + sLineBreak +
-        'LeftContext: ' + left_context + sLineBreak +
-        'PinyinRaw: ' + composition + sLineBreak +
-        'PinyinSyllables: ' + segmented_pinyin + sLineBreak +
-        'SyllableCount: ' + IntToStr(syllable_count) + sLineBreak +
+        '/think' + sLineBreak +
+        'Chinese IME candidate task.' + sLineBreak +
+        'Use medium internal reasoning, then output final Hanzi candidates only.' + sLineBreak +
+        'If thinking is shown, wrap it in <think>...</think> and finish it before final answers.' + sLineBreak +
+        'After thinking, output candidates directly, one per line.' + sLineBreak +
+        'No numbering, punctuation, pinyin, or explanation.' + sLineBreak +
+        'Each line must have exactly ' + IntToStr(syllable_count) + ' Hanzi.' + sLineBreak +
+        'Pinyin: ' + composition + sLineBreak +
+        'Syllables: ' + segmented_pinyin + sLineBreak +
         'Candidates:' + sLineBreak;
 end;
 
 function nc_ai_build_retry_prompt(const request: TncAiRequest): string;
 var
-    left_context: string;
     composition: string;
     segmented_pinyin: string;
     syllable_count: Integer;
@@ -531,12 +510,7 @@ var
     normalized_composition: string;
     i: Integer;
 begin
-    left_context := nc_ai_tail_text(nc_ai_sanitize_single_line(request.context.left_context), 32);
     composition := nc_ai_sanitize_single_line(request.context.composition_text);
-    if not nc_ai_should_use_left_context(composition) then
-    begin
-        left_context := '';
-    end;
     normalized_composition := LowerCase(composition);
     normalized_composition := StringReplace(normalized_composition, ' ', '', [rfReplaceAll]);
     segmented_pinyin := '';
@@ -563,9 +537,60 @@ begin
         end;
     end;
 
-    if left_context = '' then
+    if segmented_pinyin = '' then
     begin
-        left_context := '<empty>';
+        segmented_pinyin := '<unparsed>';
+    end;
+    syllable_count := nc_ai_count_syllables(composition);
+
+    Result :=
+        '/think' + sLineBreak +
+        'Retry with strict format.' + sLineBreak +
+        'Use brief internal reasoning, then output final Hanzi candidates only.' + sLineBreak +
+        'If thinking is shown, keep it inside <think>...</think> before final answers.' + sLineBreak +
+        'One candidate per line.' + sLineBreak +
+        'No numbering/punctuation/pinyin/explanation.' + sLineBreak +
+        'Each line must have exactly ' + IntToStr(syllable_count) + ' Hanzi.' + sLineBreak +
+        'Pinyin: ' + composition + sLineBreak +
+        'Syllables: ' + segmented_pinyin + sLineBreak +
+        'Candidates:' + sLineBreak;
+end;
+
+function nc_ai_build_minimal_prompt(const request: TncAiRequest): string;
+var
+    composition: string;
+    segmented_pinyin: string;
+    syllable_count: Integer;
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    normalized_composition: string;
+    i: Integer;
+begin
+    composition := nc_ai_sanitize_single_line(request.context.composition_text);
+    normalized_composition := LowerCase(composition);
+    normalized_composition := StringReplace(normalized_composition, ' ', '', [rfReplaceAll]);
+    segmented_pinyin := '';
+    if normalized_composition <> '' then
+    begin
+        parser := TncPinyinParser.Create;
+        try
+            syllables := parser.parse(normalized_composition);
+        finally
+            parser.Free;
+        end;
+
+        for i := 0 to High(syllables) do
+        begin
+            if syllables[i].text = '' then
+            begin
+                Continue;
+            end;
+            if segmented_pinyin <> '' then
+            begin
+                segmented_pinyin := segmented_pinyin + ' ';
+            end;
+            segmented_pinyin := segmented_pinyin + syllables[i].text;
+        end;
     end;
     if segmented_pinyin = '' then
     begin
@@ -575,24 +600,20 @@ begin
 
     Result :=
         '/no_think' + sLineBreak +
-        'Output ONLY Chinese Han candidates.' + sLineBreak +
-        'One candidate per line.' + sLineBreak +
-        'No pinyin, no Latin letters, no digits, no punctuation, and no explanation.' + sLineBreak +
-        'Candidates must exactly match PinyinRaw pronunciation and PinyinSyllables.' + sLineBreak +
-        'Each candidate must contain exactly SyllableCount Chinese characters.' + sLineBreak +
-        'Do not continue previous context or invent unrelated semantics.' + sLineBreak +
-        'Output 1 to 9 distinct candidates.' + sLineBreak +
-        'LeftContext: ' + left_context + sLineBreak +
-        'PinyinRaw: ' + composition + sLineBreak +
-        'PinyinSyllables: ' + segmented_pinyin + sLineBreak +
-        'SyllableCount: ' + IntToStr(syllable_count) + sLineBreak +
+        'Hanzi only, one candidate per line.' + sLineBreak +
+        'Do not output <think> tags or reasoning.' + sLineBreak +
+        'Start directly with candidate lines.' + sLineBreak +
+        'No numbering, punctuation, pinyin, or explanation.' + sLineBreak +
+        'Each line must have exactly ' + IntToStr(syllable_count) + ' Hanzi.' + sLineBreak +
+        'Pinyin: ' + composition + sLineBreak +
+        'Syllables: ' + segmented_pinyin + sLineBreak +
         'Candidates:' + sLineBreak;
 end;
 
 function nc_ai_get_generation_tokens(const max_suggestions: Integer): Integer;
 begin
-    Result := max_suggestions * 10;
-    Result := nc_ai_clamp_int(Result, 16, 96);
+    Result := max_suggestions * 8;
+    Result := nc_ai_clamp_int(Result, 24, 96);
 end;
 
 procedure nc_ai_parse_generated_candidates(const generated_text: string; const composition_text: string;
@@ -605,7 +626,9 @@ var
     source_text: string;
     lower_text: string;
     think_end_pos: Integer;
+    next_think_end_pos: Integer;
     composition_len: Integer;
+    expected_units: Integer;
     min_candidate_len: Integer;
     i: Integer;
     j: Integer;
@@ -621,6 +644,10 @@ var
             Exit;
         end;
         if Length(candidate_text) < min_candidate_len then
+        begin
+            Exit;
+        end;
+        if (expected_units > 0) and (nc_ai_count_text_units(candidate_text) <> expected_units) then
         begin
             Exit;
         end;
@@ -645,6 +672,7 @@ begin
         Exit;
     end;
     composition_len := Length(nc_ai_sanitize_single_line(composition_text));
+    expected_units := nc_ai_count_syllables(composition_text);
     min_candidate_len := 1;
     if composition_len >= 6 then
     begin
@@ -658,7 +686,18 @@ begin
     try
         source_text := StringReplace(generated_text, #13, '', [rfReplaceAll]);
         lower_text := LowerCase(source_text);
-        think_end_pos := Pos('</think>', lower_text);
+        if (Pos('<think>', lower_text) > 0) and (Pos('</think>', lower_text) = 0) then
+        begin
+            // Incomplete think block: treat this generation as unusable.
+            Exit;
+        end;
+        think_end_pos := 0;
+        next_think_end_pos := PosEx('</think>', lower_text, 1);
+        while next_think_end_pos > 0 do
+        begin
+            think_end_pos := next_think_end_pos;
+            next_think_end_pos := PosEx('</think>', lower_text, next_think_end_pos + Length('</think>'));
+        end;
         if think_end_pos > 0 then
         begin
             source_text := Copy(source_text, think_end_pos + Length('</think>'), MaxInt);
@@ -668,13 +707,6 @@ begin
 
         for i := 0 to lines.Count - 1 do
         begin
-            // Some models may output English explanations with quoted Chinese fragments.
-            // For IME candidates we only trust lines that are free of ASCII letters.
-            if nc_ai_contains_ascii_letter(lines[i]) then
-            begin
-                Continue;
-            end;
-
             nc_ai_expand_line_to_chunks(lines[i], chunks);
             if chunks.Count = 0 then
             begin
@@ -723,6 +755,18 @@ begin
     end;
     max_count := nc_ai_clamp_int(request.max_suggestions, 1, 15);
     Result := composition + #1 + left_context + #1 + IntToStr(max_count);
+end;
+
+function nc_ai_wrap_qwen_chat_prompt(const prompt: string): string;
+begin
+    Result :=
+        '<|im_start|>system' + sLineBreak +
+        'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' + sLineBreak +
+        '<|im_end|>' + sLineBreak +
+        '<|im_start|>user' + sLineBreak +
+        prompt +
+        '<|im_end|>' + sLineBreak +
+        '<|im_start|>assistant' + sLineBreak;
 end;
 
 end.

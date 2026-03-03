@@ -58,6 +58,7 @@ type
         procedure log_info(const msg: string);
         procedure log_warn(const msg: string);
         procedure log_error(const msg: string);
+        procedure log_raw_output_full(const tag: string; const raw_text: string);
         procedure clear_pending_locked;
         function effective_timeout_ms(const request_timeout_ms: Integer): Integer;
         function build_request_signature(const request: TncAiRequest): string;
@@ -80,7 +81,7 @@ type
 implementation
 
 const
-    c_default_ai_debounce_ms = 400;
+    c_default_ai_debounce_ms = 220;
     c_worker_poll_ms = 20;
     c_default_ai_timeout_ms = 1200;
     c_worker_shutdown_timeout_ms = 3000;
@@ -88,7 +89,7 @@ const
     c_failed_retry_cooldown_ms = 1500;
     c_large_model_size_threshold = Int64(16) * 1024 * 1024 * 1024;
     c_huge_model_size_threshold = Int64(24) * 1024 * 1024 * 1024;
-    c_ai_temperature = 0.0;
+    c_ai_temperature = 0.20;
 
 procedure copy_candidate_list(const source: TncCandidateList; out dest: TncCandidateList);
 var
@@ -360,6 +361,60 @@ begin
     log_message(ll_error, msg, True);
 end;
 
+procedure TncAiLlamaProvider.log_raw_output_full(const tag: string; const raw_text: string);
+const
+    c_raw_line_chunk_len = 240;
+var
+    normalized_text: string;
+    lines: TStringList;
+    i: Integer;
+    line_text: string;
+    chunk_index: Integer;
+    start_pos: Integer;
+    chunk_len: Integer;
+    chunk_text: string;
+begin
+    if raw_text = '' then
+    begin
+        log_info(tag + ' <empty>');
+        Exit;
+    end;
+
+    normalized_text := StringReplace(raw_text, #13, '', [rfReplaceAll]);
+    lines := TStringList.Create;
+    try
+        lines.Text := normalized_text;
+        log_info(Format('%s begin chars=%d lines=%d', [tag, Length(normalized_text), lines.Count]));
+        for i := 0 to lines.Count - 1 do
+        begin
+            line_text := lines[i];
+            if line_text = '' then
+            begin
+                log_info(Format('%s L%03d: <empty>', [tag, i + 1]));
+                Continue;
+            end;
+
+            chunk_index := 1;
+            start_pos := 1;
+            while start_pos <= Length(line_text) do
+            begin
+                chunk_len := Length(line_text) - start_pos + 1;
+                if chunk_len > c_raw_line_chunk_len then
+                begin
+                    chunk_len := c_raw_line_chunk_len;
+                end;
+                chunk_text := Copy(line_text, start_pos, chunk_len);
+                log_info(Format('%s L%03d.%02d: %s', [tag, i + 1, chunk_index, chunk_text]));
+                Inc(start_pos, chunk_len);
+                Inc(chunk_index);
+            end;
+        end;
+        log_info(tag + ' end');
+    finally
+        lines.Free;
+    end;
+end;
+
 procedure TncAiLlamaProvider.clear_pending_locked;
 begin
     m_has_pending := False;
@@ -592,19 +647,17 @@ var
     model_size_bytes: Int64;
     model_path_lower: string;
     is_gpt_oss: Boolean;
-    retry_prompt: string;
-    retry_generated_text: string;
-    retry_error_text: string;
-    retry_tokens: Integer;
-    retry_timeout_ms: Integer;
+    is_qwen_model: Boolean;
+    use_qwen_chat_template: Boolean;
     candidates: TncCandidateList;
     success: Boolean;
     saved_mask: TFPUExceptionMask;
-    raw_tail: string;
     request_pinyin: string;
     use_left_context: Boolean;
     request_signature_log: string;
-    needs_retry_due_length: Boolean;
+    templated_prompt: string;
+    template_error: string;
+    chat_system_prompt: string;
 begin
     if not m_ready then
     begin
@@ -631,13 +684,23 @@ begin
     end;
     model_path_lower := LowerCase(m_bridge.loaded_model_path);
     is_gpt_oss := Pos('gpt-oss', model_path_lower) > 0;
+    is_qwen_model := Pos('qwen', model_path_lower) > 0;
+    // Qwen GGUF variants (including names without "instruct/chat") should use
+    // chat template by default. Plain prompts tend to make the model echo
+    // instruction text instead of outputting candidates.
+    use_qwen_chat_template := is_qwen_model;
+    chat_system_prompt := 'You are a Chinese IME candidate generator. Output candidates only, one per line, no explanation.';
     if composition_len >= 10 then
     begin
-        generation_tokens := Max(generation_tokens, 128);
+        generation_tokens := Max(generation_tokens, 48);
     end;
     if composition_len >= 14 then
     begin
-        generation_tokens := Max(generation_tokens, 160);
+        generation_tokens := Max(generation_tokens, 64);
+    end;
+    if is_qwen_model then
+    begin
+        generation_tokens := Min(generation_tokens, 96);
     end;
     if is_gpt_oss and (composition_len >= 10) then
     begin
@@ -647,7 +710,18 @@ begin
     begin
         generation_tokens := Max(generation_tokens, 192);
     end;
-    generation_tokens := nc_ai_clamp_int(generation_tokens, 16, 192);
+    if is_gpt_oss then
+    begin
+        generation_tokens := nc_ai_clamp_int(generation_tokens, 32, 192);
+    end
+    else if is_qwen_model then
+    begin
+        generation_tokens := nc_ai_clamp_int(generation_tokens, 32, 128);
+    end
+    else
+    begin
+        generation_tokens := nc_ai_clamp_int(generation_tokens, 24, 80);
+    end;
     timeout_ms := effective_timeout_ms(request.timeout_ms);
     if is_gpt_oss then
     begin
@@ -655,11 +729,11 @@ begin
     end;
     if composition_len >= 10 then
     begin
-        timeout_ms := Max(timeout_ms, 2400);
+        timeout_ms := Max(timeout_ms, 1000);
     end;
     if composition_len >= 14 then
     begin
-        timeout_ms := Max(timeout_ms, 3200);
+        timeout_ms := Max(timeout_ms, 1200);
     end;
     if is_gpt_oss and (composition_len >= 10) then
     begin
@@ -669,6 +743,18 @@ begin
     begin
         timeout_ms := Max(timeout_ms, 3800);
     end;
+    if is_qwen_model then
+    begin
+        timeout_ms := Max(timeout_ms, 2200);
+    end;
+    if is_qwen_model and (composition_len >= 10) then
+    begin
+        timeout_ms := Max(timeout_ms, 2800);
+    end;
+    if is_qwen_model and (composition_len >= 14) then
+    begin
+        timeout_ms := Max(timeout_ms, 3400);
+    end;
     if model_size_bytes >= c_large_model_size_threshold then
     begin
         timeout_ms := Max(timeout_ms, 5200);
@@ -676,6 +762,14 @@ begin
     if model_size_bytes >= c_huge_model_size_threshold then
     begin
         timeout_ms := Max(timeout_ms, 7000);
+    end;
+    if is_qwen_model then
+    begin
+        timeout_ms := nc_ai_clamp_int(timeout_ms, 1000, 4200);
+    end
+    else if not is_gpt_oss then
+    begin
+        timeout_ms := nc_ai_clamp_int(timeout_ms, 700, 1800);
     end;
     request_pinyin := nc_ai_sanitize_single_line(request.context.composition_text);
     request_signature_log := StringReplace(signature, #1, '|', [rfReplaceAll]);
@@ -685,11 +779,31 @@ begin
         [request_signature_log, request_pinyin, Length(request_pinyin), Ord(use_left_context), c_ai_temperature]));
 
     prompt := nc_ai_build_prompt(request);
+    if use_qwen_chat_template then
+    begin
+        templated_prompt := '';
+        template_error := '';
+        if m_bridge.build_chat_prompt(
+            chat_system_prompt,
+            prompt, templated_prompt, template_error) then
+        begin
+            prompt := templated_prompt;
+            log_info('AI qwen chat template enabled (initial)');
+        end
+        else
+        begin
+            prompt := nc_ai_wrap_qwen_chat_prompt(prompt);
+            log_warn('AI qwen native chat template unavailable, fallback to manual wrapper: ' + template_error);
+        end;
+    end
+    else if is_qwen_model then
+    begin
+        log_debug('AI qwen initial mode: plain prompt');
+    end;
     success := False;
     generated_text := '';
     error_text := '';
     SetLength(candidates, 0);
-    needs_retry_due_length := False;
 
     saved_mask := GetExceptionMask;
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
@@ -698,59 +812,15 @@ begin
             if m_bridge.generate_text(prompt, generation_tokens, timeout_ms, c_ai_temperature, generated_text,
                 error_text) then
             begin
+                log_raw_output_full('AI raw output initial', generated_text);
                 nc_ai_parse_generated_candidates(generated_text, request.context.composition_text, max_suggestions,
                     candidates);
-                success := Length(candidates) > 0;
-                if success and (not nc_ai_has_syllable_length_match(request.context.composition_text, candidates)) then
-                begin
-                    success := False;
-                    needs_retry_due_length := True;
-                    SetLength(candidates, 0);
-                end;
+                success := (Length(candidates) > 0) and
+                    nc_ai_has_syllable_length_match(request.context.composition_text, candidates);
                 if not success then
                 begin
-                    // Retry once when model output is likely invalid:
-                    // - non-Chinese text (for example pinyin-only lines)
-                    // - Chinese output that cannot match pinyin syllable length
-                    if (generated_text <> '') and ((not nc_ai_contains_cjk(generated_text)) or needs_retry_due_length) then
-                    begin
-                        if needs_retry_due_length then
-                        begin
-                            log_debug('AI retry triggered (syllable-length mismatch), signature=' + request_signature_log);
-                        end
-                        else
-                        begin
-                            log_debug('AI retry triggered (non-cjk output), signature=' + request_signature_log);
-                        end;
-                        retry_prompt := nc_ai_build_retry_prompt(request);
-                        retry_tokens := Max(generation_tokens, 160);
-                        retry_timeout_ms := Max(timeout_ms, 2600);
-                        retry_generated_text := '';
-                        retry_error_text := '';
-                        if m_bridge.generate_text(retry_prompt, retry_tokens, retry_timeout_ms, c_ai_temperature,
-                            retry_generated_text, retry_error_text) then
-                        begin
-                            // Keep the last successful decode output for logging/diagnosis.
-                            generated_text := retry_generated_text;
-                            nc_ai_parse_generated_candidates(retry_generated_text, request.context.composition_text,
-                                max_suggestions, candidates);
-                            success := (Length(candidates) > 0) and
-                                nc_ai_has_syllable_length_match(request.context.composition_text, candidates);
-                            if success then
-                            begin
-                                // generated_text already updated above
-                            end
-                            else
-                            begin
-                                error_text := 'llama output has no usable candidates';
-                            end;
-                        end
-                        else
-                        begin
-                            error_text := retry_error_text;
-                        end;
-                    end
-                    else
+                    SetLength(candidates, 0);
+                    if error_text = '' then
                     begin
                         error_text := 'llama output has no usable candidates';
                     end;
@@ -774,23 +844,13 @@ begin
 
     if not success then
     begin
-        if generated_text <> '' then
-        begin
-            raw_tail := StringReplace(generated_text, #13, '', [rfReplaceAll]);
-            raw_tail := StringReplace(raw_tail, #10, '\n', [rfReplaceAll]);
-            raw_tail := nc_ai_tail_text(raw_tail, 300);
-            log_warn('AI raw output tail: ' + raw_tail);
-        end;
         log_warn('AI generation failed: ' + error_text);
     end
     else
     begin
+        log_info(Format('AI generation success count=%d', [Length(candidates)]));
         log_debug(Format('AI generation success signature=%s count=%d top=%s',
             [request_signature_log, Length(candidates), nc_ai_tail_text(candidates[0].text, 64)]));
-        raw_tail := StringReplace(generated_text, #13, '', [rfReplaceAll]);
-        raw_tail := StringReplace(raw_tail, #10, '\n', [rfReplaceAll]);
-        raw_tail := nc_ai_tail_text(raw_tail, 180);
-        log_debug('AI raw output tail: ' + raw_tail);
     end;
 
     store_result(signature, candidates, success, version, error_text);
@@ -875,3 +935,4 @@ begin
 end;
 
 end.
+

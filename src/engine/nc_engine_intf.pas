@@ -523,9 +523,17 @@ function TncEngine.get_ai_candidates(out out_candidates: TncCandidateList): Bool
 var
     ai_request: TncAiRequest;
     ai_response: TncAiResponse;
+    raw_count: Integer;
 begin
     SetLength(out_candidates, 0);
     if (m_ai_provider = nil) or (m_composition_text = '') then
+    begin
+        Result := False;
+        Exit;
+    end;
+    // AI candidate generation is most reliable on complete full-pinyin input.
+    // Skip partial/abbreviated composition to reduce noisy asynchronous outputs.
+    if not is_full_pinyin_key(m_composition_text) then
     begin
         Result := False;
         Exit;
@@ -548,7 +556,13 @@ begin
     end;
 
     out_candidates := ai_response.candidates;
+    raw_count := Length(out_candidates);
     filter_ai_candidates_by_pinyin(out_candidates, ai_request.context.composition_text);
+    if (raw_count > 0) and (Length(out_candidates) = 0) then
+    begin
+        OutputDebugString(PChar(Format('[engine] AI candidates filtered to zero query=%s raw=%d',
+            [ai_request.context.composition_text, raw_count])));
+    end;
     Result := Length(out_candidates) > 0;
 end;
 
@@ -738,6 +752,7 @@ var
     input_syllable_count: Integer;
     multi_syllable_cap_limit: Integer;
     normalized_lookup_text: string;
+    repeated_two_syllable_query: Boolean;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -910,6 +925,137 @@ var
     function get_input_syllable_count: Integer;
     begin
         Result := get_input_syllable_count_for_text(m_composition_text);
+    end;
+
+    function is_repeated_two_syllable_query_text(const pinyin_text: string): Boolean;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        reconstructed: string;
+    begin
+        Result := False;
+        if pinyin_text = '' then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(pinyin_text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(syllables) <> 2 then
+        begin
+            Exit;
+        end;
+
+        if (syllables[0].text = '') or (syllables[1].text = '') then
+        begin
+            Exit;
+        end;
+        if not is_valid_pinyin_syllable(syllables[0].text) or
+            (not is_valid_pinyin_syllable(syllables[1].text)) then
+        begin
+            Exit;
+        end;
+
+        reconstructed := syllables[0].text + syllables[1].text;
+        Result := SameText(reconstructed, pinyin_text) and SameText(syllables[0].text, syllables[1].text);
+    end;
+
+    function is_two_unit_redup_text(const value: string): Boolean;
+    var
+        units: TArray<string>;
+        trimmed: string;
+    begin
+        Result := False;
+        trimmed := Trim(value);
+        if trimmed = '' then
+        begin
+            Exit;
+        end;
+
+        units := split_text_units(trimmed);
+        if Length(units) <> 2 then
+        begin
+            Exit;
+        end;
+
+        Result := units[0] = units[1];
+    end;
+
+    procedure ensure_redup_complete_candidate_visible(var candidates: TncCandidateList; const boundary_limit: Integer);
+    var
+        idx: Integer;
+        best_index: Integer;
+        best_score: Integer;
+        target_index: Integer;
+        effective_boundary: Integer;
+        picked: TncCandidate;
+    begin
+        if (not repeated_two_syllable_query) or (Length(candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        effective_boundary := boundary_limit;
+        if (effective_boundary <= 0) or (effective_boundary > Length(candidates)) then
+        begin
+            effective_boundary := Length(candidates);
+        end;
+        if effective_boundary <= 0 then
+        begin
+            Exit;
+        end;
+
+        best_index := -1;
+        best_score := Low(Integer);
+        for idx := 0 to High(candidates) do
+        begin
+            if candidates[idx].comment <> '' then
+            begin
+                Continue;
+            end;
+            if not is_two_unit_redup_text(candidates[idx].text) then
+            begin
+                Continue;
+            end;
+
+            if (best_index < 0) or (candidates[idx].score > best_score) then
+            begin
+                best_index := idx;
+                best_score := candidates[idx].score;
+            end;
+        end;
+
+        if best_index < 0 then
+        begin
+            Exit;
+        end;
+
+        target_index := 4;
+        if target_index >= effective_boundary then
+        begin
+            target_index := effective_boundary - 1;
+        end;
+        if target_index < 0 then
+        begin
+            Exit;
+        end;
+
+        if best_index <= target_index then
+        begin
+            Exit;
+        end;
+
+        picked := candidates[best_index];
+        for idx := best_index downto target_index + 1 do
+        begin
+            candidates[idx] := candidates[idx - 1];
+        end;
+        candidates[target_index] := picked;
     end;
 
     procedure merge_head_only_full_lookup_candidates(var candidates: TncCandidateList;
@@ -1983,6 +2129,7 @@ begin
     end;
     input_syllable_count := get_input_syllable_count_for_text(lookup_text);
     m_last_lookup_syllable_count := input_syllable_count;
+    repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
     head_only_multi_syllable := m_config.enable_segment_candidates and
         has_multi_syllable_input and
         (m_config.segment_head_only_multi_syllable or (input_syllable_count >= 4)) and
@@ -2065,6 +2212,8 @@ begin
             end;
         end;
 
+        ensure_redup_complete_candidate_visible(raw_candidates, limit);
+
         if m_config.enable_ai and get_ai_candidates(ai_candidates) then
         begin
             clear_candidate_comments(ai_candidates);
@@ -2077,6 +2226,7 @@ begin
             sort_candidates(m_candidates);
             ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(m_candidates, get_candidate_limit, 1);
+            ensure_redup_complete_candidate_visible(m_candidates, limit);
             if Length(m_candidates) > limit then
             begin
                 SetLength(m_candidates, limit);
@@ -2111,6 +2261,7 @@ begin
         begin
             ensure_best_single_char_chain_visible(m_candidates);
         end;
+        ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_non_ai_first(m_candidates);
         m_page_index := 0;
         m_selected_index := 0;
@@ -2534,6 +2685,7 @@ function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
 var
     context_bonus: Integer;
     text_units: Integer;
+    syllable_gap: Integer;
 begin
     Result := candidate.score;
     context_bonus := get_context_bonus(candidate.text);
@@ -2552,6 +2704,27 @@ begin
         if text_units > 1 then
         begin
             Dec(Result, (text_units - 1) * 180);
+        end;
+    end;
+
+    // For multi-syllable lookups, prioritize candidates whose text-unit length
+    // is close to the input syllable count. This suppresses short noisy heads
+    // (for example single-char candidates) for long pinyin inputs.
+    if (m_last_lookup_syllable_count >= 3) and (candidate.comment = '') then
+    begin
+        text_units := Length(split_text_units(candidate.text));
+        syllable_gap := m_last_lookup_syllable_count - text_units;
+        if syllable_gap > 0 then
+        begin
+            Dec(Result, syllable_gap * 120);
+        end
+        else if syllable_gap = 0 then
+        begin
+            Inc(Result, 60);
+            if candidate.source = cs_ai then
+            begin
+                Inc(Result, 180);
+            end;
         end;
     end;
 
@@ -2819,6 +2992,7 @@ var
     i: Integer;
     j: Integer;
     normalized_pinyin: string;
+    sqlite_dict: TncSqliteDictionary;
 
     function is_single_text_unit(const value: string): Boolean;
     begin
@@ -2864,6 +3038,25 @@ begin
 
     if m_dictionary = nil then
     begin
+        Result := True;
+        Exit;
+    end;
+
+    sqlite_dict := nil;
+    if m_dictionary is TncSqliteDictionary then
+    begin
+        sqlite_dict := TncSqliteDictionary(m_dictionary);
+    end;
+    if sqlite_dict <> nil then
+    begin
+        for i := 0 to High(syllables) do
+        begin
+            syllable_text := syllables[i].text;
+            if (syllable_text = '') or (not sqlite_dict.single_char_matches_pinyin(syllable_text, text_units[i])) then
+            begin
+                Exit;
+            end;
+        end;
         Result := True;
         Exit;
     end;
@@ -2930,7 +3123,6 @@ begin
                 filtered.Add(candidates[i]);
             end;
         end;
-
         SetLength(candidates, filtered.Count);
         for i := 0 to filtered.Count - 1 do
         begin

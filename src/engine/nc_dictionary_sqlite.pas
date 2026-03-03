@@ -51,6 +51,7 @@ type
         function open: Boolean;
         procedure close;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
+        function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
         procedure record_commit(const pinyin: string; const text: string); override;
         procedure record_context_pair(const left_text: string; const committed_text: string); override;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
@@ -2991,6 +2992,82 @@ begin
         learning_bonus_map.Free;
         list.Free;
         seen.Free;
+    end;
+end;
+
+function TncSqliteDictionary.single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
+const
+    base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    user_exists_sql = 'SELECT 1 FROM dict_user WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+var
+    pinyin_key: string;
+    text_key: string;
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text_unit);
+    if (pinyin_key = '') or (text_key = '') then
+    begin
+        Exit;
+    end;
+    if not is_full_pinyin_key(pinyin_key) then
+    begin
+        Exit;
+    end;
+    if get_valid_cjk_codepoint_count(text_key) <> 1 then
+    begin
+        Exit;
+    end;
+    if not ensure_open then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if m_base_ready and m_base_connection.prepare(base_exists_sql, stmt) and
+            m_base_connection.bind_text(stmt, 1, pinyin_key) and
+            m_base_connection.bind_text(stmt, 2, text_key) then
+        begin
+            step_result := m_base_connection.step(stmt);
+            if step_result = SQLITE_ROW then
+            begin
+                Result := True;
+                Exit;
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+            stmt := nil;
+        end;
+    end;
+
+    if not m_user_ready then
+    begin
+        Exit;
+    end;
+
+    try
+        if m_user_connection.prepare(user_exists_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) then
+        begin
+            step_result := m_user_connection.step(stmt);
+            if step_result = SQLITE_ROW then
+            begin
+                Result := True;
+                Exit;
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
     end;
 end;
 

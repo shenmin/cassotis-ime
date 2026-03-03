@@ -41,6 +41,13 @@ begin
         [GUIDToString(service_clsid), GUIDToString(service_clsid), GUIDToString(category_guid)]);
 end;
 
+function language_profile_key_path(const service_clsid: TGUID; const profile_guid: TGUID;
+    const lang_id: Cardinal): string;
+begin
+    Result := Format('Software\Microsoft\CTF\TIP\%s\LanguageProfile\0x%s\%s',
+        [GUIDToString(service_clsid), IntToHex(lang_id, 8), GUIDToString(profile_guid)]);
+end;
+
 function registry_key_exists(const root_key: HKEY; const key_path: string): Boolean;
 var
     reg: TRegistry;
@@ -153,6 +160,31 @@ begin
     end;
 
     Writeln(action + ' failed: 0x' + IntToHex(hr, 8));
+end;
+
+procedure upsert_profile_registry(const root_key: HKEY; const key_path: string;
+    const desc: WideString; const icon_path: WideString);
+var
+    reg: TRegistry;
+begin
+    reg := TRegistry.Create(KEY_WRITE);
+    try
+        reg.RootKey := root_key;
+        if reg.OpenKey(key_path, True) then
+        begin
+            reg.WriteString('Description', string(desc));
+            reg.WriteInteger('Enable', 1);
+            if icon_path <> '' then
+            begin
+                reg.WriteString('IconFile', string(icon_path));
+                reg.WriteInteger('IconIndex', 0);
+            end;
+            reg.CloseKey;
+        end;
+    except
+        // Best-effort only. Machine hive may fail when not elevated.
+    end;
+    reg.Free;
 end;
 
 function register_categories(const service_clsid: TGUID): Boolean;
@@ -271,8 +303,52 @@ var
     profiles: ITfInputProcessorProfiles;
     hr: HRESULT;
     desc: WideString;
+    icon_path: WideString;
+    icon_ptr: PWideChar;
+    icon_len: Cardinal;
     service_clsid: TGUID;
     profile_guid: TGUID;
+    profile_key: string;
+    module_path: array[0..MAX_PATH - 1] of Char;
+    module_len: Cardinal;
+    base_dir: string;
+    candidate: string;
+
+    function resolve_profile_icon_path: WideString;
+    begin
+        Result := '';
+
+        module_len := GetModuleFileName(0, module_path, MAX_PATH);
+        if module_len = 0 then
+        begin
+            Exit;
+        end;
+
+        base_dir := IncludeTrailingPathDelimiter(ExtractFilePath(module_path));
+
+        // Prefer COM service module icon for TSF profile identity.
+        candidate := base_dir + 'cassotis_ime_svr.dll';
+        if FileExists(candidate) then
+        begin
+            Result := candidate;
+            Exit;
+        end;
+
+        // Fallbacks: host/tray executable icons in the same deployment folder.
+        candidate := base_dir + 'cassotis_ime_host.exe';
+        if FileExists(candidate) then
+        begin
+            Result := candidate;
+            Exit;
+        end;
+
+        candidate := base_dir + 'cassotis_ime_tray_host.exe';
+        if FileExists(candidate) then
+        begin
+            Result := candidate;
+            Exit;
+        end;
+    end;
 begin
     Result := False;
     profiles := nil;
@@ -292,9 +368,24 @@ begin
         Writeln('Register text service failed, continue with profile/category update.');
     end;
 
-    desc := 'Cassotis IME';
+    // "言泉输入法" encoded via code points to avoid source-encoding issues.
+    desc := WideString(#$8A00#$6CC9#$8F93#$5165#$6CD5);
+    icon_path := resolve_profile_icon_path;
+    if icon_path <> '' then
+    begin
+        icon_ptr := PWideChar(icon_path);
+        icon_len := Length(icon_path);
+        Writeln('Profile icon: ' + string(icon_path));
+    end
+    else
+    begin
+        icon_ptr := nil;
+        icon_len := 0;
+        Writeln('Profile icon: <none> (system default)');
+    end;
+
     hr := profiles.AddLanguageProfile(service_clsid, NC_LANG_ID_ZH_CN,
-        profile_guid, PWideChar(desc), Length(desc), nil, 0, 0);
+        profile_guid, PWideChar(desc), Length(desc), icon_ptr, icon_len, 0);
     print_hresult('Add language profile', hr);
     if not hr_ok_or_exists(hr) then
     begin
@@ -308,6 +399,12 @@ begin
     begin
         Writeln('Enable language profile failed, continue with category update.');
     end;
+
+    // Best-effort registry hints so non-admin installs can still surface
+    // profile name/icon in the current user context.
+    profile_key := language_profile_key_path(service_clsid, profile_guid, NC_LANG_ID_ZH_CN);
+    upsert_profile_registry(HKEY_CURRENT_USER, profile_key, desc, icon_path);
+    upsert_profile_registry(HKEY_LOCAL_MACHINE, profile_key, desc, icon_path);
 
     if not register_categories(service_clsid) then
     begin
