@@ -242,6 +242,11 @@ begin
         Exit;
     end;
 
+    if not register_one(GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, 'INPUTMODECOMPARTMENT') then
+    begin
+        Exit;
+    end;
+
     if not register_one(GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, 'IMMERSIVESUPPORT') then
     begin
         Exit;
@@ -292,6 +297,10 @@ begin
     hr := category_mgr.UnregisterCategory(service_guid, category_guid, service_guid);
     print_hresult('UnregisterCategory UIELEMENTENABLED', hr);
     remove_category_registry(service_guid, category_guid);
+    category_guid := GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT;
+    hr := category_mgr.UnregisterCategory(service_guid, category_guid, service_guid);
+    print_hresult('UnregisterCategory INPUTMODECOMPARTMENT', hr);
+    remove_category_registry(service_guid, category_guid);
     category_guid := GUID_TFCAT_TIP_KEYBOARD;
     hr := category_mgr.UnregisterCategory(service_guid, category_guid, service_guid);
     print_hresult('UnregisterCategory TIP_KEYBOARD', hr);
@@ -326,15 +335,16 @@ var
 
         base_dir := IncludeTrailingPathDelimiter(ExtractFilePath(module_path));
 
-        // Prefer COM service module icon for TSF profile identity.
-        candidate := base_dir + 'cassotis_ime_svr.dll';
+        // Prefer tray host icon first so profile branding is consistent with
+        // the user-facing app icon in taskbar/tray.
+        candidate := base_dir + 'cassotis_ime_tray_host.exe';
         if FileExists(candidate) then
         begin
             Result := candidate;
             Exit;
         end;
 
-        // Fallbacks: host/tray executable icons in the same deployment folder.
+        // Fallbacks in the same deployment folder.
         candidate := base_dir + 'cassotis_ime_host.exe';
         if FileExists(candidate) then
         begin
@@ -342,7 +352,7 @@ var
             Exit;
         end;
 
-        candidate := base_dir + 'cassotis_ime_tray_host.exe';
+        candidate := base_dir + 'cassotis_ime_svr.dll';
         if FileExists(candidate) then
         begin
             Result := candidate;
@@ -368,8 +378,8 @@ begin
         Writeln('Register text service failed, continue with profile/category update.');
     end;
 
-    // "言泉输入法" encoded via code points to avoid source-encoding issues.
-    desc := WideString(#$8A00#$6CC9#$8F93#$5165#$6CD5);
+    // Display name encoded via code points to avoid source-encoding issues.
+    desc := WideString('Cassotis ' + #$8A00#$6CC9#$62FC#$97F3#$8F93#$5165#$6CD5);
     icon_path := resolve_profile_icon_path;
     if icon_path <> '' then
     begin

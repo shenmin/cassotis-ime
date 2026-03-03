@@ -6,6 +6,7 @@ uses
     Winapi.Windows,
     Winapi.ActiveX,
     Winapi.Msctf,
+    Winapi.ShellAPI,
     System.Classes,
     System.SysUtils,
     System.IOUtils,
@@ -76,6 +77,7 @@ type
         m_shift_space_toggle_pending: Boolean;
         m_ctrl_period_toggle_pending: Boolean;
         m_ctrl_shift_t_toggle_pending: Boolean;
+        m_langbar_icon: HICON;
         procedure clear_state;
         procedure mark_session_dirty;
         procedure reset_session_if_needed(const force: Boolean = False);
@@ -109,6 +111,7 @@ type
         procedure toggle_full_width_mode_by_shift_space;
         procedure toggle_punctuation_mode_by_ctrl_period;
         procedure toggle_dictionary_variant_by_ctrl_shift_t;
+        procedure configure_system_input_mode_icon;
         function get_candidate_point(out point: TPoint): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
@@ -166,8 +169,59 @@ type
         rcCaret: TRect;
     end;
 
+type
+    TF_LANGBARITEMINFO = record
+        clsidService: TGUID;
+        guidItem: TGUID;
+        dwStyle: DWORD;
+        ulSort: ULONG;
+        szDescription: array [0 .. 31] of WideChar;
+    end;
+
+    ITfLangBarItem = interface(IUnknown)
+        ['{73540D69-EDEB-4EE9-96C9-23AA30B25916}']
+        function GetInfo(out pInfo: TF_LANGBARITEMINFO): HResult; stdcall;
+        function GetStatus(out pdwStatus: DWORD): HResult; stdcall;
+        function Show(fShow: BOOL): HResult; stdcall;
+        function GetTooltipString(out pbstrToolTip: WideString): HResult; stdcall;
+    end;
+
+    IEnumTfLangBarItems = interface(IUnknown)
+        ['{583F34D0-DE25-11D2-AFDD-00105A2799B5}']
+        function Clone(out ppEnum: IEnumTfLangBarItems): HResult; stdcall;
+        function Next(ulCount: ULONG; out ppItem: ITfLangBarItem; pcFetched: PULONG): HResult; stdcall;
+        function Reset: HResult; stdcall;
+        function Skip(ulCount: ULONG): HResult; stdcall;
+    end;
+
+    ITfLangBarItemMgr = interface(IUnknown)
+        ['{BA468C55-9956-4FB1-A59D-52A7DD7CC6AA}']
+        function EnumItems(out ppEnum: IEnumTfLangBarItems): HResult; stdcall;
+    end;
+
+    ITfSystemDeviceTypeLangBarItem = interface(IUnknown)
+        ['{45672EB9-9059-46A2-838D-4530355F6A77}']
+        function SetIconMode(dwFlags: DWORD): HResult; stdcall;
+        function GetIconMode(out pdwFlags: DWORD): HResult; stdcall;
+    end;
+
+    ITfSystemLangBarItem = interface(IUnknown)
+        ['{1E13E9EC-6B33-4D4A-B5EB-8A92F029F356}']
+        function SetIcon(hIcon: HICON): HResult; stdcall;
+        function SetTooltipString(pchToolTip: PWideChar; cch: ULONG): HResult; stdcall;
+    end;
+
+    ITfSystemLangBarItemText = interface(IUnknown)
+        ['{5C4CE0E5-BA49-4B52-AC6B-3B397B4F701F}']
+        function SetItemText(pch: PWideChar; cch: ULONG): HResult; stdcall;
+        function GetItemText(out pbstrText: WideString): HResult; stdcall;
+    end;
+
 function nc_get_gui_thread_info(const thread_id: DWORD; var gui_info: TncGuiThreadInfo): BOOL; stdcall;
     external 'user32.dll' name 'GetGUIThreadInfo';
+
+function TF_CreateLangBarItemMgr(out pplbim: ITfLangBarItemMgr): HRESULT; stdcall;
+    external 'msctf.dll' name 'TF_CreateLangBarItemMgr';
 
 type
     TncLogicalToPhysicalPoint = function(hwnd: HWND; var point: TPoint): BOOL; stdcall;
@@ -219,6 +273,7 @@ const
     TF_ES_READWRITE = $6;
     TF_ES_ASYNC = $8;
     c_edit_session_flags = TF_ES_READWRITE or TF_ES_ASYNCDONTCARE;
+    TF_DTLBI_USEPROFILEICON = $00000001;
 
 procedure TncTextService.Initialize;
 var
@@ -247,6 +302,12 @@ end;
 
 procedure TncTextService.clear_state;
 begin
+    if m_langbar_icon <> 0 then
+    begin
+        DestroyIcon(m_langbar_icon);
+        m_langbar_icon := 0;
+    end;
+
     m_thread_mgr := nil;
     m_thread_mgr_source := nil;
     m_thread_mgr_event_cookie := 0;
@@ -760,6 +821,7 @@ begin
 
     m_config_path := get_default_config_path;
     load_engine_config(engine_config);
+    configure_system_input_mode_icon;
     if m_session_id = '' then
     begin
         if CreateGUID(guid) = S_OK then
@@ -1443,6 +1505,215 @@ begin
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
         m_logger.debug(Format('Ctrl+Shift+T toggled dictionary variant -> %s', [variant_text]));
+    end;
+end;
+
+procedure TncTextService.configure_system_input_mode_icon;
+var
+    langbar_item_mgr: ITfLangBarItemMgr;
+    item_enum: IEnumTfLangBarItems;
+    langbar_item: ITfLangBarItem;
+    system_item: ITfSystemLangBarItem;
+    system_text_item: ITfSystemLangBarItemText;
+    device_item: ITfSystemDeviceTypeLangBarItem;
+    hr: HRESULT;
+    fetched: ULONG;
+    icon_mode_seen_count: Integer;
+    icon_mode_applied_count: Integer;
+    icon_applied_count: Integer;
+    text_applied_count: Integer;
+    system_item_seen_count: Integer;
+    module_path: array[0..MAX_PATH - 1] of Char;
+    module_len: Cardinal;
+    base_dir: string;
+    candidate: string;
+    icon_path: string;
+    large_icon: HICON;
+    small_icon: HICON;
+    display_text: WideString;
+    tooltip_text: WideString;
+    item_info: TF_LANGBARITEMINFO;
+    item_status: DWORD;
+    item_tooltip: WideString;
+    item_info_hr: HRESULT;
+    item_status_hr: HRESULT;
+    item_tooltip_hr: HRESULT;
+    set_icon_hr: HRESULT;
+    set_text_hr: HRESULT;
+    set_icon_mode_hr: HRESULT;
+begin
+    icon_mode_seen_count := 0;
+    icon_mode_applied_count := 0;
+    icon_applied_count := 0;
+    text_applied_count := 0;
+    system_item_seen_count := 0;
+    icon_path := '';
+    large_icon := 0;
+    small_icon := 0;
+    display_text := WideString(#$8A00#$6CC9);
+    tooltip_text := WideString('Cassotis ' + #$8A00#$6CC9#$62FC#$97F3#$8F93#$5165#$6CD5);
+
+    if m_langbar_icon <> 0 then
+    begin
+        DestroyIcon(m_langbar_icon);
+        m_langbar_icon := 0;
+    end;
+
+    // In an in-proc TSF DLL, module 0 is host app exe; use this module first.
+    module_len := GetModuleFileName(HInstance, module_path, MAX_PATH);
+    if module_len = 0 then
+    begin
+        module_len := GetModuleFileName(0, module_path, MAX_PATH);
+    end;
+    if module_len > 0 then
+    begin
+        base_dir := IncludeTrailingPathDelimiter(ExtractFilePath(module_path));
+        candidate := base_dir + 'cassotis_ime_tray_host.exe';
+        if FileExists(candidate) then
+        begin
+            icon_path := candidate;
+        end
+        else
+        begin
+            candidate := base_dir + 'cassotis_ime_host.exe';
+            if FileExists(candidate) then
+            begin
+                icon_path := candidate;
+            end
+            else
+            begin
+                candidate := base_dir + 'cassotis_ime_svr.dll';
+                if FileExists(candidate) then
+                begin
+                    icon_path := candidate;
+                end;
+            end;
+        end;
+    end;
+
+    if icon_path <> '' then
+    begin
+        if ExtractIconEx(PChar(icon_path), 0, large_icon, small_icon, 1) > 0 then
+        begin
+            if small_icon <> 0 then
+            begin
+                m_langbar_icon := small_icon;
+            end
+            else if large_icon <> 0 then
+            begin
+                m_langbar_icon := large_icon;
+            end;
+
+            if (large_icon <> 0) and (large_icon <> m_langbar_icon) then
+            begin
+                DestroyIcon(large_icon);
+            end;
+            if (small_icon <> 0) and (small_icon <> m_langbar_icon) then
+            begin
+                DestroyIcon(small_icon);
+            end;
+        end;
+    end;
+
+    langbar_item_mgr := nil;
+    hr := TF_CreateLangBarItemMgr(langbar_item_mgr);
+    if Failed(hr) or (langbar_item_mgr = nil) then
+    begin
+        Exit;
+    end;
+
+    item_enum := nil;
+    hr := langbar_item_mgr.EnumItems(item_enum);
+    if Failed(hr) or (item_enum = nil) then
+    begin
+        Exit;
+    end;
+
+    while True do
+    begin
+        langbar_item := nil;
+        fetched := 0;
+        hr := item_enum.Next(1, langbar_item, @fetched);
+        if (hr <> S_OK) or (fetched = 0) then
+        begin
+            Break;
+        end;
+
+        FillChar(item_info, SizeOf(item_info), 0);
+        item_info_hr := langbar_item.GetInfo(item_info);
+        item_status := 0;
+        item_status_hr := langbar_item.GetStatus(item_status);
+        item_tooltip := '';
+        item_tooltip_hr := langbar_item.GetTooltipString(item_tooltip);
+        set_icon_hr := E_FAIL;
+
+        if (langbar_item <> nil) and Supports(langbar_item, ITfSystemLangBarItem, system_item) then
+        begin
+            Inc(system_item_seen_count);
+            if m_langbar_icon <> 0 then
+            begin
+                set_icon_hr := system_item.SetIcon(m_langbar_icon);
+                if not Failed(set_icon_hr) then
+                begin
+                    Inc(icon_applied_count);
+                end;
+            end;
+            if m_langbar_icon = 0 then
+            begin
+                set_icon_hr := HRESULT($80070002); // ERROR_FILE_NOT_FOUND mapped to HRESULT
+            end;
+            system_item.SetTooltipString(PWideChar(tooltip_text), Length(tooltip_text));
+        end
+        else
+        begin
+            set_icon_hr := E_NOINTERFACE;
+        end;
+
+        if (langbar_item <> nil) and Supports(langbar_item, ITfSystemLangBarItemText, system_text_item) then
+        begin
+            set_text_hr := system_text_item.SetItemText(PWideChar(display_text), Length(display_text));
+            if not Failed(set_text_hr) then
+            begin
+                Inc(text_applied_count);
+            end;
+        end
+        else
+        begin
+            set_text_hr := E_NOINTERFACE;
+        end;
+
+        if (langbar_item <> nil) and Supports(langbar_item, ITfSystemDeviceTypeLangBarItem, device_item) then
+        begin
+            Inc(icon_mode_seen_count);
+            set_icon_mode_hr := device_item.SetIconMode(TF_DTLBI_USEPROFILEICON);
+            if not Failed(set_icon_mode_hr) then
+            begin
+                Inc(icon_mode_applied_count);
+            end;
+        end
+        else
+        begin
+            set_icon_mode_hr := E_NOINTERFACE;
+        end;
+
+        if m_logger <> nil then
+        begin
+            m_logger.info(Format(
+                'LangBar item guid=%s style=0x%s info_hr=0x%s status=0x%s status_hr=0x%s tooltip_hr=0x%s set_icon=0x%s set_text=0x%s set_icon_mode=0x%s',
+                [GUIDToString(item_info.guidItem), IntToHex(item_info.dwStyle, 8),
+                IntToHex(Cardinal(item_info_hr), 8), IntToHex(item_status, 8),
+                IntToHex(Cardinal(item_status_hr), 8), IntToHex(Cardinal(item_tooltip_hr), 8),
+                IntToHex(Cardinal(set_icon_hr), 8), IntToHex(Cardinal(set_text_hr), 8),
+                IntToHex(Cardinal(set_icon_mode_hr), 8)]));
+        end;
+    end;
+
+    if m_logger <> nil then
+    begin
+        m_logger.info(Format(
+            'LangBar branding icon_mode=%d/%d icon=%d/%d text=%d icon_source=%s',
+            [icon_mode_applied_count, icon_mode_seen_count,
+            icon_applied_count, system_item_seen_count, text_applied_count, icon_path]));
     end;
 end;
 
