@@ -1238,6 +1238,44 @@ begin
     Result := codepoint_count;
 end;
 
+function is_windows_supported_ime_text(const text: string): Boolean;
+var
+    idx: Integer;
+    codepoint: Integer;
+begin
+    Result := False;
+    if text = '' then
+    begin
+        Exit;
+    end;
+
+    idx := 1;
+    while idx <= Length(text) do
+    begin
+        codepoint := Ord(text[idx]);
+        // Reject supplementary-plane characters (surrogate pairs). A subset of
+        // these Unihan codepoints still cannot be reliably committed/rendered
+        // in common Windows text controls.
+        if (codepoint >= $D800) and (codepoint <= $DFFF) then
+        begin
+            Exit;
+        end;
+
+        if not (
+            ((codepoint >= $4E00) and (codepoint <= $9FFF)) or
+            ((codepoint >= $3400) and (codepoint <= $4DBF)) or
+            ((codepoint >= $F900) and (codepoint <= $FAFF))
+            ) then
+        begin
+            Exit;
+        end;
+
+        Inc(idx);
+    end;
+
+    Result := True;
+end;
+
 function TncSqliteDictionary.is_valid_learning_text(const text: string): Boolean;
 begin
     // Learning stats should include both single-character and phrase commits.
@@ -1778,6 +1816,9 @@ const
     c_typo_max_added = 16;
     c_typo_prefix_probe_limit = 8;
     c_typo_prefix_extra_penalty = 120;
+    c_full_query_dual_jianpin_len_min = 2;
+    c_full_query_dual_jianpin_len_max = 4;
+    c_full_query_dual_jianpin_penalty = 20;
     // Runtime homophone bonus currently relies on expensive full-table scans
     // (text contains/prefix aggregate), which can add noticeable input latency
     // on common keys like "shi"/"de". Keep this disabled by default.
@@ -1810,6 +1851,7 @@ var
     mixed_mode: Boolean;
     full_pinyin_query: Boolean;
     allow_full_query_jianpin_fallback: Boolean;
+    full_query_dual_jianpin_mode: Boolean;
     single_letter_query: Boolean;
     mixed_parser: TncPinyinParser;
     mixed_like_pattern: string;
@@ -1826,9 +1868,13 @@ var
     typo_fallback_used: Boolean;
     force_noisy_reset_before_typo: Boolean;
     normalized_query_key: string;
+    full_query_dual_jianpin_cap_score: Integer;
+    full_query_dual_jianpin_has_cap: Boolean;
 
     function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string; forward;
     function is_compact_ascii_query(const value: string): Boolean; forward;
+    procedure add_jianpin_query_key(const key_value: string); forward;
+    procedure append_jianpin_query_key_variants(const key_value: string); forward;
 
     function mixed_query_has_internal_dangling_initial(const token_list: TncMixedQueryTokenList): Boolean;
     var
@@ -1884,6 +1930,45 @@ var
         end;
     end;
 
+    procedure add_jianpin_query_key(const key_value: string);
+    var
+        idx: Integer;
+    begin
+        if key_value = '' then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(jianpin_query_keys) do
+        begin
+            if SameText(jianpin_query_keys[idx], key_value) then
+            begin
+                Exit;
+            end;
+        end;
+
+        SetLength(jianpin_query_keys, Length(jianpin_query_keys) + 1);
+        jianpin_query_keys[High(jianpin_query_keys)] := key_value;
+    end;
+
+    procedure append_jianpin_query_key_variants(const key_value: string);
+    var
+        variants: TArray<string>;
+        idx: Integer;
+    begin
+        variants := build_jianpin_query_variants(key_value);
+        if Length(variants) = 0 then
+        begin
+            add_jianpin_query_key(key_value);
+            Exit;
+        end;
+
+        for idx := 0 to High(variants) do
+        begin
+            add_jianpin_query_key(variants[idx]);
+        end;
+    end;
+
     procedure rebuild_query_mode_state;
     begin
         mixed_full_prefix := '';
@@ -1899,8 +1984,13 @@ var
         full_pinyin_query := is_full_pinyin_key(query_key);
         full_query_jianpin_key := '';
         allow_full_query_jianpin_fallback := False;
+        full_query_dual_jianpin_mode := False;
+        single_syllable_full_query := False;
+        full_query_dual_jianpin_cap_score := 0;
+        full_query_dual_jianpin_has_cap := False;
         if full_pinyin_query then
         begin
+            single_syllable_full_query := is_single_syllable_full_pinyin_key(query_key);
             full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
             if (full_query_jianpin_key <> '') and
                 (not SameText(full_query_jianpin_key, query_key)) then
@@ -1908,19 +1998,25 @@ var
                 effective_jianpin_key := full_query_jianpin_key;
                 allow_full_query_jianpin_fallback := True;
             end;
+
+            if single_syllable_full_query and
+                (Length(query_key) >= c_full_query_dual_jianpin_len_min) and
+                (Length(query_key) <= c_full_query_dual_jianpin_len_max) and
+                should_try_jianpin_lookup(query_key) then
+            begin
+                // For ambiguous keys like "en": keep full-pinyin hits, and also
+                // surface common jianpin words under the same key.
+                full_query_dual_jianpin_mode := True;
+                effective_jianpin_key := query_key;
+                allow_full_query_jianpin_fallback := True;
+            end;
         end;
 
-        jianpin_query_keys := build_jianpin_query_variants(effective_jianpin_key);
+        SetLength(jianpin_query_keys, 0);
+        append_jianpin_query_key_variants(effective_jianpin_key);
         if Length(jianpin_query_keys) = 0 then
         begin
-            SetLength(jianpin_query_keys, 1);
-            jianpin_query_keys[0] := effective_jianpin_key;
-        end;
-
-        single_syllable_full_query := False;
-        if full_pinyin_query then
-        begin
-            single_syllable_full_query := is_single_syllable_full_pinyin_key(query_key);
+            add_jianpin_query_key(effective_jianpin_key);
         end;
 
         jianpin_score_penalty := c_jianpin_score_penalty;
@@ -1958,6 +2054,10 @@ var
         const source: TncCandidateSource);
     begin
         if text = '' then
+        begin
+            Exit;
+        end;
+        if not is_windows_supported_ime_text(text) then
         begin
             Exit;
         end;
@@ -2576,8 +2676,22 @@ begin
             end;
         end;
 
+        if full_query_dual_jianpin_mode and (list.Count > 0) then
+        begin
+            full_query_dual_jianpin_cap_score := list[0].score - 1;
+            for i := 1 to list.Count - 1 do
+            begin
+                if list[i].score - 1 < full_query_dual_jianpin_cap_score then
+                begin
+                    full_query_dual_jianpin_cap_score := list[i].score - 1;
+                end;
+            end;
+            full_query_dual_jianpin_has_cap := True;
+        end;
+
         if m_base_ready and should_try_jianpin_lookup(effective_jianpin_key) and
             ((list.Count = 0) or mixed_mode or (not full_pinyin_query) or
+            full_query_dual_jianpin_mode or
             (allow_full_query_jianpin_fallback and (not exact_base_hit))) then
         begin
             typo_fallback_used := append_adjacent_transposition_typo_candidates;
@@ -2611,7 +2725,7 @@ begin
                                     step_result := m_base_connection.step(stmt);
                                     Continue;
                                 end;
-                                if full_pinyin_query and
+                                if full_pinyin_query and (not full_query_dual_jianpin_mode) and
                                     (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
                                 begin
                                     step_result := m_base_connection.step(stmt);
@@ -2621,6 +2735,16 @@ begin
                                 text_value := m_base_connection.column_text(stmt, 1);
                                 comment_value := m_base_connection.column_text(stmt, 2);
                                 score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
+                                if full_query_dual_jianpin_mode and
+                                    (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
+                                begin
+                                    Dec(score_value, c_full_query_dual_jianpin_penalty);
+                                    if full_query_dual_jianpin_has_cap and
+                                        (score_value > full_query_dual_jianpin_cap_score) then
+                                    begin
+                                        score_value := full_query_dual_jianpin_cap_score;
+                                    end;
+                                end;
                                 append_candidate(text_value, comment_value, score_value, cs_rule);
                                 step_result := m_base_connection.step(stmt);
                             end;
@@ -2665,7 +2789,7 @@ begin
                                     step_result := m_base_connection.step(stmt);
                                     Continue;
                                 end;
-                                if full_pinyin_query and
+                                if full_pinyin_query and (not full_query_dual_jianpin_mode) and
                                     (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
                                 begin
                                     step_result := m_base_connection.step(stmt);
@@ -2675,6 +2799,16 @@ begin
                                 text_value := m_base_connection.column_text(stmt, 1);
                                 comment_value := m_base_connection.column_text(stmt, 2);
                                 score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
+                                if full_query_dual_jianpin_mode and
+                                    (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
+                                begin
+                                    Dec(score_value, c_full_query_dual_jianpin_penalty);
+                                    if full_query_dual_jianpin_has_cap and
+                                        (score_value > full_query_dual_jianpin_cap_score) then
+                                    begin
+                                        score_value := full_query_dual_jianpin_cap_score;
+                                    end;
+                                end;
                                 append_candidate(text_value, comment_value, score_value, cs_rule);
                                 step_result := m_base_connection.step(stmt);
                             end;
