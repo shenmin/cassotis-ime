@@ -3073,16 +3073,6 @@ end;
 
 procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: string);
 const
-    base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
-    base_jianpin_exists_sql =
-        'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
-        'WHERE j.jianpin = ?1 AND b.text = ?2 LIMIT 1';
-    base_mixed_jianpin_exists_sql =
-        'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
-        'WHERE j.jianpin = ?1 AND b.text = ?2 AND b.pinyin LIKE ?3 LIMIT 1';
-    base_mixed_jianpin_exists_no_prefix_sql =
-        'SELECT 1 FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
-        'WHERE j.jianpin = ?1 AND b.text = ?2 LIMIT 1';
     update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_stats_sql = 'INSERT OR IGNORE INTO dict_user_stats(pinyin, text, commit_count, last_used) ' +
@@ -3095,12 +3085,7 @@ const
 var
     stmt: Psqlite3_stmt;
     pinyin_key: string;
-    base_has_entry: Boolean;
     full_pinyin_input: Boolean;
-    mixed_full_prefix: string;
-    mixed_mode: Boolean;
-    mixed_jianpin_key: string;
-    mixed_tokens: TncMixedQueryTokenList;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     if (pinyin_key = '') or (text = '') or (not is_valid_learning_text(text)) or
@@ -3109,79 +3094,7 @@ begin
         Exit;
     end;
 
-    base_has_entry := False;
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
-    mixed_full_prefix := '';
-    mixed_jianpin_key := '';
-    SetLength(mixed_tokens, 0);
-    mixed_mode := parse_mixed_jianpin_query(pinyin_key, mixed_full_prefix, mixed_jianpin_key, mixed_tokens);
-
-    if m_base_ready then
-    begin
-        stmt := nil;
-        try
-            if m_base_connection.prepare(base_exists_sql, stmt) and
-                m_base_connection.bind_text(stmt, 1, pinyin_key) and
-                m_base_connection.bind_text(stmt, 2, text) then
-            begin
-                base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
-            end;
-        finally
-            if stmt <> nil then
-            begin
-                m_base_connection.finalize(stmt);
-            end;
-        end;
-
-        if not base_has_entry then
-        begin
-            stmt := nil;
-            try
-                if m_base_connection.prepare(base_jianpin_exists_sql, stmt) and
-                    m_base_connection.bind_text(stmt, 1, pinyin_key) and
-                    m_base_connection.bind_text(stmt, 2, text) then
-                begin
-                    base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
-                end;
-            finally
-                if stmt <> nil then
-                begin
-                    m_base_connection.finalize(stmt);
-                end;
-            end;
-        end;
-
-        if (not base_has_entry) and mixed_mode and (mixed_jianpin_key <> '') then
-        begin
-            stmt := nil;
-            try
-                if (mixed_full_prefix <> '') then
-                begin
-                    if m_base_connection.prepare(base_mixed_jianpin_exists_sql, stmt) and
-                        m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
-                        m_base_connection.bind_text(stmt, 2, text) and
-                        m_base_connection.bind_text(stmt, 3, mixed_full_prefix + '%') then
-                    begin
-                        base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
-                    end;
-                end
-                else
-                begin
-                    if m_base_connection.prepare(base_mixed_jianpin_exists_no_prefix_sql, stmt) and
-                        m_base_connection.bind_text(stmt, 1, mixed_jianpin_key) and
-                        m_base_connection.bind_text(stmt, 2, text) then
-                    begin
-                        base_has_entry := m_base_connection.step(stmt) = SQLITE_ROW;
-                    end;
-                end;
-            finally
-                if stmt <> nil then
-                begin
-                    m_base_connection.finalize(stmt);
-                end;
-            end;
-        end;
-    end;
 
     stmt := nil;
     try
@@ -3236,10 +3149,10 @@ begin
         Exit;
     end;
 
-    if base_has_entry or (not full_pinyin_input) then
+    if not full_pinyin_input then
     begin
         // Keep stats learning, but do not keep dedicated user-word rows for
-        // base-covered commits or non-full-pinyin commits.
+        // non-full-pinyin commits.
         stmt := nil;
         try
             if m_user_connection.prepare(delete_user_sql, stmt) then

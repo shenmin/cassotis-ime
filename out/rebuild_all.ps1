@@ -937,9 +937,7 @@ $build_list = @(
     @{ path = 'tools\cassotis_ime_host.dproj'; exe = 'cassotis_ime_host.exe' },
     @{ path = 'tools\cassotis_ime_profile_reg.dproj'; exe = 'cassotis_ime_profile_reg.exe' },
     @{ path = 'tools\cassotis_ime_tray_host.dproj'; exe = 'cassotis_ime_tray_host.exe' },
-    @{ path = 'tools\cassotis_ime_dict_init.dproj'; exe = 'cassotis_ime_dict_init.exe' },
-    @{ path = 'tools\cassotis_ime_unihan_import.dproj'; exe = 'cassotis_ime_unihan_import.exe' },
-    @{ path = 'tools\cassotis_ime_variant_convert.dproj'; exe = 'cassotis_ime_variant_convert.exe' }
+    @{ path = 'tools\cassotis_ime_dict_init.dproj'; exe = 'cassotis_ime_dict_init.exe' }
 )
 
 foreach ($item in $build_list)

@@ -5,7 +5,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$unihan_zip_url = 'https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip'
 
 function require_path {
     param(
@@ -181,119 +180,33 @@ function ensure_directory {
     }
 }
 
-function download_file {
+function resolve_lexicon_root {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$url,
-        [Parameter(Mandatory = $true)]
-        [string]$output_path
+        [string]$repo_root
     )
 
-    try {
-        $tls12 = [System.Net.SecurityProtocolType]::Tls12
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor $tls12
+    $repo_name = [System.IO.Path]::GetFileName($repo_root)
+    if ($repo_name -like '*_public') {
+        $candidates = @(
+            (Join-Path $repo_root '..\cassotis_lexicon_public'),
+            (Join-Path $repo_root '..\cassotis_lexicon')
+        )
     }
-    catch {
+    else {
+        $candidates = @(
+            (Join-Path $repo_root '..\cassotis_lexicon'),
+            (Join-Path $repo_root '..\cassotis_lexicon_public')
+        )
     }
 
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $output_path -MaximumRedirection 5 -TimeoutSec 180
-        return
-    }
-    catch {
-        $curl = Get-Command -Name 'curl.exe' -ErrorAction SilentlyContinue
-        if ($null -eq $curl) {
-            throw
-        }
-
-        & $curl.Source '-L' '--fail' '--silent' '--show-error' $url '-o' $output_path
-        if ($LASTEXITCODE -ne 0) {
-            throw "curl download failed with exit code $LASTEXITCODE"
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
-}
 
-function resolve_unihan_entry {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$extract_dir,
-        [Parameter(Mandatory = $true)]
-        [string]$name
-    )
-
-    $item = Get-ChildItem -LiteralPath $extract_dir -Recurse -File -Filter $name | Select-Object -First 1
-    if ($null -eq $item) {
-        return $null
-    }
-
-    return $item.FullName
-}
-
-function ensure_unihan_sources {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$unihan_dir,
-        [Parameter(Mandatory = $true)]
-        [string]$unihan_readings,
-        [Parameter(Mandatory = $true)]
-        [string]$unihan_variants,
-        [Parameter(Mandatory = $true)]
-        [string]$unihan_dictlike,
-        [Parameter(Mandatory = $true)]
-        [string]$tmp_root,
-        [switch]$no_auto_download
-    )
-
-    $missing_required = @()
-    if (-not (Test-Path -LiteralPath $unihan_readings)) {
-        $missing_required += 'Unihan_Readings.txt'
-    }
-    if (-not (Test-Path -LiteralPath $unihan_variants)) {
-        $missing_required += 'Unihan_Variants.txt'
-    }
-
-    if ($missing_required.Count -eq 0) {
-        return
-    }
-
-    if ($no_auto_download) {
-        throw ("Missing Unihan source file(s): {0}`nExpected under: {1}`nAuto download is disabled by -NoAutoDownloadUnihan." -f
-            ($missing_required -join ', '), $unihan_dir)
-    }
-
-    ensure_directory $unihan_dir
-    ensure_directory $tmp_root
-    $download_dir = Join-Path $tmp_root 'unihan_download'
-    $extract_dir = Join-Path $tmp_root 'unihan_extract'
-    ensure_directory $download_dir
-    if (Test-Path -LiteralPath $extract_dir) {
-        Remove-Item -LiteralPath $extract_dir -Recurse -Force
-    }
-    ensure_directory $extract_dir
-
-    $zip_path = Join-Path $download_dir 'Unihan.zip'
-    Write-Host ("Unihan source files missing, downloading from {0}" -f $unihan_zip_url)
-    download_file -url $unihan_zip_url -output_path $zip_path
-
-    Write-Host ("Extracting Unihan package: {0}" -f $zip_path)
-    Expand-Archive -LiteralPath $zip_path -DestinationPath $extract_dir -Force
-
-    $required_names = @('Unihan_Readings.txt', 'Unihan_Variants.txt')
-    $optional_names = @('Unihan_DictionaryLikeData.txt')
-    foreach ($name in $required_names + $optional_names) {
-        $src = resolve_unihan_entry -extract_dir $extract_dir -name $name
-        if ($null -eq $src) {
-            if ($required_names -contains $name) {
-                throw "Downloaded Unihan package does not contain required file: $name"
-            }
-            continue
-        }
-
-        $dest = Join-Path $unihan_dir $name
-        Copy-Item -LiteralPath $src -Destination $dest -Force
-    }
-
-    Write-Host ("Unihan sources prepared under: {0}" -f $unihan_dir)
+    throw "Lexicon repository not found. Expected one of: $($candidates -join ', ')"
 }
 
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -301,46 +214,35 @@ Set-Location $script_dir
 $repo_root = Split-Path -Parent $script_dir
 
 $dict_init = Join-Path $script_dir 'cassotis_ime_dict_init.exe'
-$unihan_import = Join-Path $script_dir 'cassotis_ime_unihan_import.exe'
-$variant_convert = Join-Path $script_dir 'cassotis_ime_variant_convert.exe'
-$check_unihan_readings = Join-Path $script_dir 'check_unihan_readings.ps1'
-
 $schema_path = Join-Path $repo_root 'data\schema.sql'
 $base_db_sc_path = Join-Path $script_dir 'data\dict_sc.db'
 $base_db_tc_path = Join-Path $script_dir 'data\dict_tc.db'
 
-$unihan_readings = Join-Path $repo_root 'data\lexicon\unihan\Unihan_Readings.txt'
-$unihan_variants = Join-Path $repo_root 'data\lexicon\unihan\Unihan_Variants.txt'
-$unihan_dictlike = Join-Path $repo_root 'data\lexicon\unihan\Unihan_DictionaryLikeData.txt'
-$unihan_output_all = Join-Path $repo_root 'data\lexicon\unihan\dict_unihan_all.txt'
-$unihan_output_sc = Join-Path $repo_root 'data\lexicon\unihan\dict_unihan.txt'
-$unihan_output_tc = Join-Path $repo_root 'data\lexicon\unihan\dict_unihan_tc.txt'
-$tmp_build_root = Join-Path $script_dir '_tmp_build'
+$lexicon_root = resolve_lexicon_root $repo_root
+$lexicon_unihan_sc = Join-Path $lexicon_root 'data\generated\dict_unihan_sc.txt'
+$lexicon_unihan_tc = Join-Path $lexicon_root 'data\generated\dict_unihan_tc.txt'
+$lexicon_clean_sc = Join-Path $lexicon_root 'data\generated\dict_clean_sc.txt'
+$lexicon_clean_tc = Join-Path $lexicon_root 'data\generated\dict_clean_tc.txt'
 
-$external_lexicon_root = Join-Path $repo_root '..\cassotis_lexicon'
-$external_dict_sc = Join-Path $external_lexicon_root 'data\generated\dict_clean_sc.txt'
-$external_dict_tc = Join-Path $external_lexicon_root 'data\generated\dict_clean_tc.txt'
+if ($NoAutoDownloadUnihan) {
+    Write-Warning "-NoAutoDownloadUnihan is deprecated and ignored. Unihan is now sourced from lexicon outputs only."
+}
 
 require_path $dict_init 'cassotis_ime_dict_init.exe'
-require_path $unihan_import 'cassotis_ime_unihan_import.exe'
-require_path $variant_convert 'cassotis_ime_variant_convert.exe'
-require_path $check_unihan_readings 'check_unihan_readings.ps1'
 require_path $schema_path 'schema.sql'
+require_path $lexicon_unihan_sc 'lexicon dict_unihan_sc.txt'
+require_path $lexicon_unihan_tc 'lexicon dict_unihan_tc.txt'
 
-ensure_directory $tmp_build_root
+if (-not $NoExternalLexicon) {
+    require_path $lexicon_clean_sc 'lexicon dict_clean_sc.txt'
+    require_path $lexicon_clean_tc 'lexicon dict_clean_tc.txt'
+}
+else {
+    Write-Warning "-NoExternalLexicon enabled: only lexicon Unihan dictionaries will be imported."
+}
+
 ensure_directory (Split-Path -Parent $base_db_sc_path)
 ensure_directory (Split-Path -Parent $base_db_tc_path)
-ensure_directory (Split-Path -Parent $unihan_output_all)
-ensure_unihan_sources `
-    -unihan_dir (Split-Path -Parent $unihan_readings) `
-    -unihan_readings $unihan_readings `
-    -unihan_variants $unihan_variants `
-    -unihan_dictlike $unihan_dictlike `
-    -tmp_root $tmp_build_root `
-    -no_auto_download:$NoAutoDownloadUnihan
-
-require_path $unihan_readings 'Unihan_Readings.txt'
-require_path $unihan_variants 'Unihan_Variants.txt'
 
 $ime_process_names = @('cassotis_ime_host', 'cassotis_ime_host32')
 $stopped_processes = @()
@@ -358,49 +260,18 @@ try {
         remove_file_with_retry $base_db_tc_path
     }
 
-    Write-Host 'Building Unihan base dict (raw)...'
-    if (Test-Path -Path $unihan_dictlike) {
-        invoke_tool 'cassotis_ime_unihan_import' $unihan_import @($unihan_readings, $unihan_output_all, $unihan_dictlike)
-    }
-    else {
-        invoke_tool 'cassotis_ime_unihan_import' $unihan_import @($unihan_readings, $unihan_output_all)
-    }
+    Write-Host ("Importing lexicon Unihan simplified dict from: " + $lexicon_unihan_sc)
+    invoke_tool 'cassotis_ime_dict_init (lexicon unihan sc)' $dict_init @($base_db_sc_path, $schema_path, $lexicon_unihan_sc)
 
-    Write-Host 'Validating Unihan reading coverage...'
-    & $check_unihan_readings -readings_path $unihan_readings -output_path $unihan_output_all
-    if ($LASTEXITCODE -ne 0) {
-        throw "check_unihan_readings failed with exit code $LASTEXITCODE"
-    }
-
-    Write-Host 'Filtering Unihan dict (simplified only)...'
-    invoke_tool 'cassotis_ime_variant_convert (unihan filter sc)' $variant_convert @($unihan_variants, $unihan_output_all, $unihan_output_sc, 'filter_sc')
-
-    Write-Host 'Converting Unihan dict to traditional...'
-    invoke_tool 'cassotis_ime_variant_convert (unihan s2t)' $variant_convert @($unihan_variants, $unihan_output_sc, $unihan_output_tc, 's2t')
-
-    Write-Host 'Importing simplified dict...'
-    invoke_tool 'cassotis_ime_dict_init (unihan sc)' $dict_init @($base_db_sc_path, $schema_path, $unihan_output_sc)
-
-    Write-Host 'Importing traditional dict...'
-    invoke_tool 'cassotis_ime_dict_init (unihan tc)' $dict_init @($base_db_tc_path, $schema_path, $unihan_output_tc)
+    Write-Host ("Importing lexicon Unihan traditional dict from: " + $lexicon_unihan_tc)
+    invoke_tool 'cassotis_ime_dict_init (lexicon unihan tc)' $dict_init @($base_db_tc_path, $schema_path, $lexicon_unihan_tc)
 
     if (-not $NoExternalLexicon) {
-        if (Test-Path -LiteralPath $external_lexicon_root) {
-            require_path $external_dict_sc 'external dict_clean_sc.txt'
-            require_path $external_dict_tc 'external dict_clean_tc.txt'
+        Write-Host ("Importing lexicon broad simplified dict from: " + $lexicon_clean_sc)
+        invoke_tool 'cassotis_ime_dict_init (lexicon clean sc)' $dict_init @($base_db_sc_path, $schema_path, $lexicon_clean_sc)
 
-            Write-Host ("Importing external simplified dict from: " + $external_dict_sc)
-            invoke_tool 'cassotis_ime_dict_init (external sc)' $dict_init @($base_db_sc_path, $schema_path, $external_dict_sc)
-
-            Write-Host ("Importing external traditional dict from: " + $external_dict_tc)
-            invoke_tool 'cassotis_ime_dict_init (external tc)' $dict_init @($base_db_tc_path, $schema_path, $external_dict_tc)
-        }
-        else {
-            Write-Host ("External lexicon directory not found, skipping: " + $external_lexicon_root)
-        }
-    }
-    else {
-        Write-Host 'Skipping external lexicon import (-NoExternalLexicon).'
+        Write-Host ("Importing lexicon broad traditional dict from: " + $lexicon_clean_tc)
+        invoke_tool 'cassotis_ime_dict_init (lexicon clean tc)' $dict_init @($base_db_tc_path, $schema_path, $lexicon_clean_tc)
     }
 
     Write-Host 'Rebuild completed.'
