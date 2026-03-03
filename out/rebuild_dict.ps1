@@ -1,6 +1,5 @@
 param(
     [switch]$NoRestartHost,
-    [switch]$NoAutoDownloadUnihan,
     [switch]$NoExternalLexicon
 )
 
@@ -223,10 +222,6 @@ $lexicon_unihan_sc = Join-Path $lexicon_root 'data\generated\dict_unihan_sc.txt'
 $lexicon_unihan_tc = Join-Path $lexicon_root 'data\generated\dict_unihan_tc.txt'
 $lexicon_clean_sc = Join-Path $lexicon_root 'data\generated\dict_clean_sc.txt'
 $lexicon_clean_tc = Join-Path $lexicon_root 'data\generated\dict_clean_tc.txt'
-
-if ($NoAutoDownloadUnihan) {
-    Write-Warning "-NoAutoDownloadUnihan is deprecated and ignored. Unihan is now sourced from lexicon outputs only."
-}
 
 require_path $dict_init 'cassotis_ime_dict_init.exe'
 require_path $schema_path 'schema.sql'

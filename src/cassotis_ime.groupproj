@@ -18,12 +18,6 @@
         <Projects Include="..\tests\nc_engine_tests.dproj">
             <Dependencies/>
         </Projects>
-        <Projects Include="..\tools\cassotis_ime_unihan_import.dproj">
-            <Dependencies/>
-        </Projects>
-        <Projects Include="..\tools\cassotis_ime_variant_convert.dproj">
-            <Dependencies/>
-        </Projects>
         <Projects Include="..\tools\cassotis_ime_host.dproj">
             <Dependencies/>
         </Projects>
@@ -80,24 +74,6 @@
     <Target Name="nc_engine_tests:Make">
         <MSBuild Projects="..\tests\nc_engine_tests.dproj" Targets="Make"/>
     </Target>
-    <Target Name="cassotis_ime_unihan_import">
-        <MSBuild Projects="..\tools\cassotis_ime_unihan_import.dproj"/>
-    </Target>
-    <Target Name="cassotis_ime_unihan_import:Clean">
-        <MSBuild Projects="..\tools\cassotis_ime_unihan_import.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="cassotis_ime_unihan_import:Make">
-        <MSBuild Projects="..\tools\cassotis_ime_unihan_import.dproj" Targets="Make"/>
-    </Target>
-    <Target Name="cassotis_ime_variant_convert">
-        <MSBuild Projects="..\tools\cassotis_ime_variant_convert.dproj"/>
-    </Target>
-    <Target Name="cassotis_ime_variant_convert:Clean">
-        <MSBuild Projects="..\tools\cassotis_ime_variant_convert.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="cassotis_ime_variant_convert:Make">
-        <MSBuild Projects="..\tools\cassotis_ime_variant_convert.dproj" Targets="Make"/>
-    </Target>
     <Target Name="cassotis_ime_host">
         <MSBuild Projects="..\tools\cassotis_ime_host.dproj"/>
     </Target>
@@ -108,13 +84,13 @@
         <MSBuild Projects="..\tools\cassotis_ime_host.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="cassotis_ime_svr;cassotis_ime_profile_reg;cassotis_ime_tray_host;cassotis_ime_dict_init;nc_engine_tests;cassotis_ime_unihan_import;cassotis_ime_variant_convert;cassotis_ime_host"/>
+        <CallTarget Targets="cassotis_ime_svr;cassotis_ime_profile_reg;cassotis_ime_tray_host;cassotis_ime_dict_init;nc_engine_tests;cassotis_ime_host"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="cassotis_ime_svr:Clean;cassotis_ime_profile_reg:Clean;cassotis_ime_tray_host:Clean;cassotis_ime_dict_init:Clean;nc_engine_tests:Clean;cassotis_ime_unihan_import:Clean;cassotis_ime_variant_convert:Clean;cassotis_ime_host:Clean"/>
+        <CallTarget Targets="cassotis_ime_svr:Clean;cassotis_ime_profile_reg:Clean;cassotis_ime_tray_host:Clean;cassotis_ime_dict_init:Clean;nc_engine_tests:Clean;cassotis_ime_host:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="cassotis_ime_svr:Make;cassotis_ime_profile_reg:Make;cassotis_ime_tray_host:Make;cassotis_ime_dict_init:Make;nc_engine_tests:Make;cassotis_ime_unihan_import:Make;cassotis_ime_variant_convert:Make;cassotis_ime_host:Make"/>
+        <CallTarget Targets="cassotis_ime_svr:Make;cassotis_ime_profile_reg:Make;cassotis_ime_tray_host:Make;cassotis_ime_dict_init:Make;nc_engine_tests:Make;cassotis_ime_host:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>
