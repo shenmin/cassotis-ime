@@ -221,6 +221,7 @@ begin
 
         bmp.PixelFormat := pf32bit;
         bmp.SetSize(icon_size, icon_size);
+        bmp.AlphaFormat := afIgnored;
         bmp.Canvas.Brush.Color := background_color;
         bmp.Canvas.FillRect(Rect(0, 0, icon_size, icon_size));
 
@@ -236,7 +237,9 @@ begin
 
         mask.Monochrome := True;
         mask.SetSize(icon_size, icon_size);
-        mask.Canvas.Brush.Color := clWhite;
+        // Monochrome icon mask: black means opaque, white means transparent.
+        // Use opaque mask to avoid fully transparent tray icons on some shells.
+        mask.Canvas.Brush.Color := clBlack;
         mask.Canvas.FillRect(Rect(0, 0, icon_size, icon_size));
 
         FillChar(icon_info, SizeOf(icon_info), 0);
@@ -331,6 +334,9 @@ begin
 end;
 
 procedure TncTrayHost.configure_tray;
+var
+    custom_icon: TIcon;
+    icon_handle: HICON;
 begin
     BorderStyle := bsNone;
     Visible := False;
@@ -339,6 +345,39 @@ begin
     m_icon_chinese_simplified := create_mode_icon('简', RGB(30, 144, 255));
     m_icon_chinese_traditional := create_mode_icon('繁', RGB(131, 56, 236));
     m_icon_english := create_mode_icon('A', RGB(96, 96, 96));
+    custom_icon := TIcon.Create;
+    try
+        if (Application <> nil) and (Application.Icon <> nil) and (Application.Icon.Handle <> 0) then
+        begin
+            custom_icon.Assign(Application.Icon);
+        end
+        else
+        begin
+            icon_handle := HICON(
+                LoadImage(
+                    HInstance,
+                    'MAINICON',
+                    IMAGE_ICON,
+                    GetSystemMetrics(SM_CXSMICON),
+                    GetSystemMetrics(SM_CYSMICON),
+                    LR_DEFAULTCOLOR
+                )
+            );
+            if icon_handle <> 0 then
+            begin
+                custom_icon.Handle := icon_handle;
+            end;
+        end;
+
+        if custom_icon.Handle <> 0 then
+        begin
+            m_icon_chinese_simplified.Assign(custom_icon);
+            m_icon_chinese_traditional.Assign(custom_icon);
+            m_icon_english.Assign(custom_icon);
+        end;
+    finally
+        custom_icon.Free;
+    end;
 
     m_tray_icon := TTrayIcon.Create(Self);
     m_tray_icon.Visible := True;
