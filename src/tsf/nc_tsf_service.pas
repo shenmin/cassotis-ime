@@ -107,6 +107,7 @@ type
         procedure save_engine_state_to_config(const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean);
         procedure update_active_state(const active: Boolean);
+        function commit_pending_selection_before_mode_switch: Boolean;
         procedure toggle_input_mode_by_shift;
         procedure toggle_full_width_mode_by_shift_space;
         procedure toggle_punctuation_mode_by_ctrl_period;
@@ -1315,6 +1316,66 @@ begin
     Result := S_OK;
 end;
 
+function TncTextService.commit_pending_selection_before_mode_switch: Boolean;
+var
+    handled: Boolean;
+    commit_text: string;
+    display_text: string;
+    input_mode: TncInputMode;
+    full_width_mode: Boolean;
+    punctuation_full_width: Boolean;
+    key_state: TncKeyState;
+    context: ITfContext;
+begin
+    Result := False;
+    if (m_composition = nil) or (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    handled := False;
+    commit_text := '';
+    display_text := '';
+    input_mode := m_last_input_mode;
+    full_width_mode := m_last_full_width_mode;
+    punctuation_full_width := m_last_punctuation_full_width;
+    FillChar(key_state, SizeOf(key_state), 0);
+    if not m_ipc_client.process_key(m_session_id, VK_SPACE, key_state, handled, commit_text, display_text,
+        input_mode, full_width_mode, punctuation_full_width) then
+    begin
+        Exit;
+    end;
+
+    if not handled then
+    begin
+        Exit;
+    end;
+    if commit_text = '' then
+    begin
+        commit_text := display_text;
+    end;
+    if commit_text = '' then
+    begin
+        Exit;
+    end;
+
+    context := m_composition_context;
+    if context = nil then
+    begin
+        context := m_context;
+    end;
+    if context = nil then
+    begin
+        Exit;
+    end;
+
+    Result := request_commit(context, commit_text);
+    if Result and (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        m_logger.debug(Format('Commit-before-switch text=%s', [commit_text]));
+    end;
+end;
+
 procedure TncTextService.toggle_input_mode_by_shift;
 var
     input_mode: TncInputMode;
@@ -1346,6 +1407,11 @@ begin
     else
     begin
         next_input_mode := im_chinese;
+    end;
+
+    if next_input_mode = im_english then
+    begin
+        commit_pending_selection_before_mode_switch;
     end;
 
     if (m_ipc_client <> nil) and (m_session_id <> '') then
