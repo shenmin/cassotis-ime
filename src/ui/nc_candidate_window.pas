@@ -22,18 +22,25 @@ type
     TncCandidateWindow = class(TForm)
     private
         m_candidate_lines: TStringList;
+        m_candidate_weight_lines: TStringList;
         m_candidate_sources: TArray<TncCandidateSource>;
         m_candidate_is_user: TArray<Boolean>;
+        m_candidate_show_weight: TArray<Boolean>;
         m_candidate_widths: TArray<Integer>;
         m_candidate_offsets: TArray<Integer>;
         m_remove_button_rects: TArray<TRect>;
         m_selected_index: Integer;
         m_list_font: TFont;
+        m_weight_font: TFont;
         m_page_label: TLabel;
         m_preedit_label: TLabel;
         m_border_color: TColor;
+        m_debug_mode: Boolean;
+        m_show_weight_row: Boolean;
         m_base_item_height: Integer;
         m_base_list_font_size: Integer;
+        m_base_weight_font_size: Integer;
+        m_base_weight_gap: Integer;
         m_base_label_font_size: Integer;
         m_base_label_height: Integer;
         m_base_preedit_font_size: Integer;
@@ -51,6 +58,7 @@ type
         m_remove_button_gap: Integer;
         m_base_remove_hit_padding: Integer;
         m_remove_hit_padding: Integer;
+        m_weight_gap: Integer;
         m_swallow_next_button_up: Boolean;
         m_on_remove_user_candidate: TncCandidateRemoveEvent;
         procedure configure_form;
@@ -81,7 +89,7 @@ type
         constructor create; reintroduce;
         destructor Destroy; override;
         procedure update_candidates(const candidates: TncCandidateList; const page_index: Integer; const page_count: Integer;
-            const selected_index: Integer; const preedit_text: string);
+            const selected_index: Integer; const preedit_text: string; const debug_mode: Boolean);
         procedure show_at(const x: Integer; const y: Integer);
         procedure hide_window;
         property on_remove_user_candidate: TncCandidateRemoveEvent read m_on_remove_user_candidate
@@ -116,10 +124,16 @@ begin
     ensure_vcl_initialized;
     inherited CreateNew(nil);
     m_candidate_lines := TStringList.Create;
+    m_candidate_weight_lines := TStringList.Create;
     m_list_font := TFont.Create;
+    m_weight_font := TFont.Create;
     m_border_color := TColor(RGB(214, 223, 236));
+    m_debug_mode := False;
+    m_show_weight_row := False;
     m_base_item_height := 20;
     m_base_list_font_size := 9;
+    m_base_weight_font_size := 7;
+    m_base_weight_gap := 1;
     m_base_label_font_size := 8;
     m_base_label_height := 18;
     m_base_preedit_font_size := 9;
@@ -137,10 +151,12 @@ begin
     m_remove_button_gap := m_base_remove_button_gap;
     m_base_remove_hit_padding := 3;
     m_remove_hit_padding := m_base_remove_hit_padding;
+    m_weight_gap := m_base_weight_gap;
     m_swallow_next_button_up := False;
     m_selected_index := 0;
     SetLength(m_candidate_sources, 0);
     SetLength(m_candidate_is_user, 0);
+    SetLength(m_candidate_show_weight, 0);
     SetLength(m_candidate_widths, 0);
     SetLength(m_candidate_offsets, 0);
     SetLength(m_remove_button_rects, 0);
@@ -152,10 +168,20 @@ begin
     m_list_font.Name := 'Segoe UI';
     m_list_font.Size := m_base_list_font_size;
     m_list_font.Color := TColor(RGB(24, 24, 24));
+
+    m_weight_font.Name := 'Segoe UI';
+    m_weight_font.Size := m_base_weight_font_size;
+    m_weight_font.Color := TColor(RGB(112, 122, 134));
 end;
 
 destructor TncCandidateWindow.Destroy;
 begin
+    if m_candidate_weight_lines <> nil then
+    begin
+        m_candidate_weight_lines.Free;
+        m_candidate_weight_lines := nil;
+    end;
+
     if m_candidate_lines <> nil then
     begin
         m_candidate_lines.Free;
@@ -166,6 +192,12 @@ begin
     begin
         m_list_font.Free;
         m_list_font := nil;
+    end;
+
+    if m_weight_font <> nil then
+    begin
+        m_weight_font.Free;
+        m_weight_font := nil;
     end;
 
     inherited Destroy;
@@ -487,6 +519,7 @@ begin
 
     m_current_dpi := dpi;
     m_list_font.Size := MulDiv(m_base_list_font_size, dpi, 96);
+    m_weight_font.Size := MulDiv(m_base_weight_font_size, dpi, 96);
     m_list_item_height := MulDiv(m_base_item_height, dpi, 96);
     m_page_label.Font.Size := MulDiv(m_base_label_font_size, dpi, 96);
     m_page_label.Height := MulDiv(m_base_label_height, dpi, 96);
@@ -494,6 +527,7 @@ begin
     m_preedit_label.Height := MulDiv(m_base_preedit_height, dpi, 96);
     m_item_gap := MulDiv(m_base_item_gap, dpi, 96);
     m_list_padding := MulDiv(m_base_list_padding, dpi, 96);
+    m_weight_gap := MulDiv(m_base_weight_gap, dpi, 96);
     m_remove_button_size := MulDiv(m_base_remove_button_size, dpi, 96);
     m_remove_button_gap := MulDiv(m_base_remove_button_gap, dpi, 96);
     m_remove_hit_padding := MulDiv(m_base_remove_hit_padding, dpi, 96);
@@ -639,6 +673,8 @@ procedure TncCandidateWindow.update_size;
 var
     i: Integer;
     text_width: Integer;
+    main_text_width: Integer;
+    weight_text_width: Integer;
     max_width: Integer;
     item_count: Integer;
     label_height: Integer;
@@ -650,6 +686,9 @@ var
     inner_width: Integer;
     current_top: Integer;
     edge_padding: Integer;
+    main_text_height: Integer;
+    weight_text_height: Integer;
+    dynamic_item_height: Integer;
 begin
     item_count := m_candidate_lines.Count;
     if item_count = 0 then
@@ -658,12 +697,32 @@ begin
     end;
 
     Canvas.Font.Assign(m_list_font);
+    main_text_height := Canvas.TextHeight('Hg');
+    Canvas.Font.Assign(m_weight_font);
+    weight_text_height := Canvas.TextHeight('Hg');
+
+    dynamic_item_height := MulDiv(m_base_item_height, m_current_dpi, 96);
+    if m_show_weight_row then
+    begin
+        dynamic_item_height := Max(dynamic_item_height, main_text_height + m_weight_gap + weight_text_height + 4);
+    end;
+    m_list_item_height := dynamic_item_height;
+
     row_width := 0;
     SetLength(m_candidate_widths, item_count);
     SetLength(m_candidate_offsets, item_count);
     for i := 0 to item_count - 1 do
     begin
-        text_width := Canvas.TextWidth(m_candidate_lines[i]) + (m_list_padding * 2);
+        Canvas.Font.Assign(m_list_font);
+        main_text_width := Canvas.TextWidth(m_candidate_lines[i]);
+        weight_text_width := 0;
+        if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
+        begin
+            Canvas.Font.Assign(m_weight_font);
+            weight_text_width := Canvas.TextWidth(m_candidate_weight_lines[i]);
+        end;
+
+        text_width := Max(main_text_width, weight_text_width) + (m_list_padding * 2);
         if (i < Length(m_candidate_is_user)) and m_candidate_is_user[i] then
         begin
             Inc(text_width, m_remove_button_gap + m_remove_button_size + m_list_padding);
@@ -743,8 +802,11 @@ procedure TncCandidateWindow.Paint;
 var
     i: Integer;
     line_height: Integer;
-    text_height: Integer;
-    offset_y: Integer;
+    main_text_height: Integer;
+    weight_text_height: Integer;
+    content_height: Integer;
+    main_text_top: Integer;
+    weight_text_top: Integer;
     y: Integer;
     x: Integer;
     item_left: Integer;
@@ -756,6 +818,7 @@ var
     text_right: Integer;
     user_candidate: Boolean;
     text_rect: TRect;
+    weight_text_rect: TRect;
     corner_radius: Integer;
     edge_padding: Integer;
 begin
@@ -773,14 +836,16 @@ begin
         Exit;
     end;
 
-    Canvas.Font.Assign(m_list_font);
     SetBkMode(Canvas.Handle, TRANSPARENT);
     line_height := m_list_item_height;
-    text_height := Canvas.TextHeight('Hg');
-    offset_y := 0;
-    if line_height > text_height then
+    Canvas.Font.Assign(m_list_font);
+    main_text_height := Canvas.TextHeight('Hg');
+    Canvas.Font.Assign(m_weight_font);
+    weight_text_height := Canvas.TextHeight('Hg');
+    content_height := main_text_height;
+    if m_show_weight_row then
     begin
-        offset_y := (line_height - text_height) div 2;
+        content_height := content_height + m_weight_gap + weight_text_height;
     end;
     y := m_list_rect.Top;
     corner_radius := MulDiv(6, m_current_dpi, 96);
@@ -839,9 +904,37 @@ begin
             text_right := candidate_right;
         end;
 
-        text_rect := Rect(x, y + offset_y, text_right, y + line_height);
+        main_text_top := y + 1;
+        if line_height > content_height then
+        begin
+            main_text_top := y + ((line_height - content_height) div 2);
+        end;
+
+        Canvas.Font.Assign(m_list_font);
+        SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+        text_rect := Rect(x, main_text_top, text_right, main_text_top + main_text_height);
         DrawText(Canvas.Handle, PChar(m_candidate_lines[i]), Length(m_candidate_lines[i]), text_rect,
             DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+
+        if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
+        begin
+            Canvas.Font.Assign(m_weight_font);
+            if i = m_selected_index then
+            begin
+                Canvas.Font.Color := TColor(RGB(76, 86, 98));
+            end
+            else
+            begin
+                Canvas.Font.Color := m_weight_font.Color;
+            end;
+            SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+            weight_text_top := main_text_top + main_text_height + m_weight_gap;
+            weight_text_rect := Rect(x + MulDiv(2, m_current_dpi, 96), weight_text_top, text_right,
+                weight_text_top + weight_text_height);
+            DrawText(Canvas.Handle, PChar(m_candidate_weight_lines[i]), Length(m_candidate_weight_lines[i]),
+                weight_text_rect, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+        end;
+
         if not IsRectEmpty(remove_rect) then
         begin
             draw_remove_button(remove_rect, i = m_selected_index);
@@ -850,27 +943,49 @@ begin
 end;
 
 procedure TncCandidateWindow.update_candidates(const candidates: TncCandidateList; const page_index: Integer;
-    const page_count: Integer; const selected_index: Integer; const preedit_text: string);
+    const page_count: Integer; const selected_index: Integer; const preedit_text: string; const debug_mode: Boolean);
 const
     c_show_page_label = False;
 var
     i: Integer;
     count: Integer;
 begin
+    m_debug_mode := debug_mode;
     m_candidate_lines.BeginUpdate;
+    m_candidate_weight_lines.BeginUpdate;
     try
         m_candidate_lines.Clear;
+        m_candidate_weight_lines.Clear;
         count := Length(candidates);
+        m_show_weight_row := m_debug_mode and (count > 0);
         SetLength(m_candidate_sources, count);
         SetLength(m_candidate_is_user, count);
+        SetLength(m_candidate_show_weight, count);
 
         for i := 0 to count - 1 do
         begin
             m_candidate_sources[i] := candidates[i].source;
             m_candidate_is_user[i] := candidates[i].source = cs_user;
+            m_candidate_show_weight[i] := m_debug_mode and (candidates[i].source = cs_rule);
+            if m_candidate_show_weight[i] then
+            begin
+                if candidates[i].has_dict_weight then
+                begin
+                    m_candidate_weight_lines.Add(IntToStr(candidates[i].dict_weight));
+                end
+                else
+                begin
+                    m_candidate_weight_lines.Add('');
+                end;
+            end
+            else
+            begin
+                m_candidate_weight_lines.Add('');
+            end;
             m_candidate_lines.Add(format_candidate_line(i, candidates[i]));
         end;
     finally
+        m_candidate_weight_lines.EndUpdate;
         m_candidate_lines.EndUpdate;
     end;
 

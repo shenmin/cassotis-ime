@@ -664,6 +664,8 @@ var
         candidates[candidate_count].comment := '';
         candidates[candidate_count].score := 1000 - candidate_count;
         candidates[candidate_count].source := cs_ai;
+        candidates[candidate_count].has_dict_weight := False;
+        candidates[candidate_count].dict_weight := 0;
     end;
 begin
     SetLength(candidates, 0);

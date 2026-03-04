@@ -470,7 +470,8 @@ begin
     end;
 
     ensure_candidate_window;
-    m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index, m_preedit_text);
+    m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index, m_preedit_text,
+        m_engine.config.debug_mode);
 
     if has_caret then
     begin

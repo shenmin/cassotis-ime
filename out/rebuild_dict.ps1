@@ -185,19 +185,10 @@ function resolve_lexicon_root {
         [string]$repo_root
     )
 
-    $repo_name = [System.IO.Path]::GetFileName($repo_root)
-    if ($repo_name -like '*_public') {
-        $candidates = @(
-            (Join-Path $repo_root '..\cassotis_lexicon_public'),
-            (Join-Path $repo_root '..\cassotis_lexicon')
-        )
-    }
-    else {
-        $candidates = @(
-            (Join-Path $repo_root '..\cassotis_lexicon'),
-            (Join-Path $repo_root '..\cassotis_lexicon_public')
-        )
-    }
+    $candidates = @(
+        (Join-Path $repo_root '..\cassotis-lexicon'),
+        (Join-Path $repo_root '..\cassotis_lexicon')
+    )
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate) {

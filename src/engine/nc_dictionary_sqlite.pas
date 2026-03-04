@@ -1834,6 +1834,7 @@ var
     text_value: string;
     comment_value: string;
     score_value: Integer;
+    dict_weight_value: Integer;
     score_with_bonus: Integer;
     commit_count: Integer;
     last_used_value: Int64;
@@ -2052,7 +2053,8 @@ var
     end;
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
-        const source: TncCandidateSource);
+        const source: TncCandidateSource; const has_dict_weight: Boolean = False;
+        const dict_weight: Integer = 0);
     begin
         if text = '' then
         begin
@@ -2083,6 +2085,8 @@ var
         item.comment := comment;
         item.score := score_with_bonus;
         item.source := source;
+        item.has_dict_weight := (source = cs_rule) and has_dict_weight;
+        item.dict_weight := dict_weight;
         list.Add(item);
         seen.Add(key, True);
     end;
@@ -2384,9 +2388,10 @@ var
                         begin
                             text_value := m_base_connection.column_text(typo_stmt, 1);
                             comment_value := m_base_connection.column_text(typo_stmt, 2);
-                            score_value := m_base_connection.column_int(typo_stmt, 3) - c_typo_transpose_penalty;
+                            dict_weight_value := m_base_connection.column_int(typo_stmt, 3);
+                            score_value := dict_weight_value - c_typo_transpose_penalty;
                             before_count := list.Count;
-                            append_candidate(text_value, comment_value, score_value, cs_rule);
+                            append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                             if list.Count > before_count then
                             begin
                                 Inc(typo_added);
@@ -2420,10 +2425,11 @@ var
                             begin
                                 text_value := m_base_connection.column_text(prefix_stmt, 1);
                                 comment_value := m_base_connection.column_text(prefix_stmt, 2);
-                                score_value := m_base_connection.column_int(prefix_stmt, 3) -
+                                dict_weight_value := m_base_connection.column_int(prefix_stmt, 3);
+                                score_value := dict_weight_value -
                                     c_typo_transpose_penalty - c_typo_prefix_extra_penalty;
                                 before_count := list.Count;
-                                append_candidate(text_value, comment_value, score_value, cs_rule);
+                                append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                                 if list.Count > before_count then
                                 begin
                                     Inc(typo_added);
@@ -2622,13 +2628,14 @@ begin
 
                         text_value := m_base_connection.column_text(stmt, 1);
                         comment_value := m_base_connection.column_text(stmt, 2);
-                        score_value := m_base_connection.column_int(stmt, 3);
+                        dict_weight_value := m_base_connection.column_int(stmt, 3);
+                        score_value := dict_weight_value;
                         if not full_pinyin_query then
                         begin
                             // Non-full exact pinyin rows are often noisy; let jianpin candidates lead.
                             Dec(score_value, c_nonfull_exact_penalty);
                         end;
-                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                         exact_base_hit := True;
                         step_result := m_base_connection.step(stmt);
                     end;
@@ -2663,8 +2670,9 @@ begin
                         begin
                             text_value := m_base_connection.column_text(stmt, 1);
                             comment_value := m_base_connection.column_text(stmt, 2);
-                            score_value := m_base_connection.column_int(stmt, 3);
-                            append_candidate(text_value, comment_value, score_value, cs_rule);
+                            dict_weight_value := m_base_connection.column_int(stmt, 3);
+                            score_value := dict_weight_value;
+                            append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                             step_result := m_base_connection.step(stmt);
                         end;
                     end;
@@ -2735,7 +2743,8 @@ begin
 
                                 text_value := m_base_connection.column_text(stmt, 1);
                                 comment_value := m_base_connection.column_text(stmt, 2);
-                                score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
+                                dict_weight_value := m_base_connection.column_int(stmt, 3);
+                                score_value := dict_weight_value - jianpin_score_penalty;
                                 if full_query_dual_jianpin_mode and
                                     (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
                                 begin
@@ -2746,7 +2755,7 @@ begin
                                         score_value := full_query_dual_jianpin_cap_score;
                                     end;
                                 end;
-                                append_candidate(text_value, comment_value, score_value, cs_rule);
+                                append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                                 step_result := m_base_connection.step(stmt);
                             end;
                         end;
@@ -2799,7 +2808,8 @@ begin
 
                                 text_value := m_base_connection.column_text(stmt, 1);
                                 comment_value := m_base_connection.column_text(stmt, 2);
-                                score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
+                                dict_weight_value := m_base_connection.column_int(stmt, 3);
+                                score_value := dict_weight_value - jianpin_score_penalty;
                                 if full_query_dual_jianpin_mode and
                                     (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
                                 begin
@@ -2810,7 +2820,7 @@ begin
                                         score_value := full_query_dual_jianpin_cap_score;
                                     end;
                                 end;
-                                append_candidate(text_value, comment_value, score_value, cs_rule);
+                                append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                                 step_result := m_base_connection.step(stmt);
                             end;
                         end;
@@ -2851,8 +2861,9 @@ begin
 
                         text_value := m_base_connection.column_text(stmt, 1);
                         comment_value := m_base_connection.column_text(stmt, 2);
-                        score_value := m_base_connection.column_int(stmt, 3) - jianpin_score_penalty;
-                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        dict_weight_value := m_base_connection.column_int(stmt, 3);
+                        score_value := dict_weight_value - jianpin_score_penalty;
+                        append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                         if list.Count >= m_limit then
                         begin
                             Break;
@@ -2905,7 +2916,8 @@ begin
 
                         text_value := m_base_connection.column_text(stmt, 1);
                         comment_value := m_base_connection.column_text(stmt, 2);
-                        score_value := m_base_connection.column_int(stmt, 3) - c_initial_single_char_penalty;
+                        dict_weight_value := m_base_connection.column_int(stmt, 3);
+                        score_value := dict_weight_value - c_initial_single_char_penalty;
                         if full_pinyin_query then
                         begin
                             Dec(score_value, c_single_letter_full_query_extra_penalty);
@@ -2915,7 +2927,7 @@ begin
                             end;
                         end;
 
-                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                         if full_pinyin_query and single_letter_has_cap then
                         begin
                             single_letter_cap_score := (single_letter_cap_score - 1);
@@ -2952,8 +2964,9 @@ begin
                     begin
                         text_value := m_base_connection.column_text(stmt, 1);
                         comment_value := m_base_connection.column_text(stmt, 2);
-                        score_value := m_base_connection.column_int(stmt, 3) - c_initial_single_char_penalty;
-                        append_candidate(text_value, comment_value, score_value, cs_rule);
+                        dict_weight_value := m_base_connection.column_int(stmt, 3);
+                        score_value := dict_weight_value - c_initial_single_char_penalty;
+                        append_candidate(text_value, comment_value, score_value, cs_rule, True, dict_weight_value);
                         if list.Count >= m_limit then
                         begin
                             Break;

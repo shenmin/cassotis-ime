@@ -322,6 +322,8 @@ begin
         results[i].comment := '';
         results[i].score := score_base - i;
         results[i].source := cs_rule;
+        results[i].has_dict_weight := True;
+        results[i].dict_weight := results[i].score;
     end;
 end;
 
@@ -1160,6 +1162,8 @@ var
         out_candidate.comment := '';
         out_candidate.score := 0;
         out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
 
         if m_dictionary = nil then
         begin
@@ -1236,6 +1240,8 @@ var
         out_candidate.source := cs_rule;
         out_candidate.score := ((total_score div syllable_count) * 2) + c_chain_bonus -
             (syllable_count * c_chain_penalty_per_syllable);
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
         Result := True;
     end;
 
@@ -1509,6 +1515,8 @@ var
         out_candidate.comment := '';
         out_candidate.score := 0;
         out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
 
         if m_dictionary = nil then
         begin
@@ -1786,11 +1794,16 @@ var
                     candidates[existing_idx].score := candidate.score + c_confirmed_user_extension_bonus;
                 end;
                 candidates[existing_idx].source := cs_user;
+                candidates[existing_idx].has_dict_weight := False;
+                candidates[existing_idx].dict_weight := 0;
             end
             else
             begin
                 candidate.text := extension_text;
                 candidate.comment := '';
+                candidate.source := cs_user;
+                candidate.has_dict_weight := False;
+                candidate.dict_weight := 0;
                 Inc(candidate.score, c_confirmed_user_extension_bonus);
                 SetLength(candidates, Length(candidates) + 1);
                 candidates[High(candidates)] := candidate;
@@ -2302,6 +2315,8 @@ begin
     m_candidates[0].comment := fallback_comment;
     m_candidates[0].score := 0;
     m_candidates[0].source := cs_rule;
+    m_candidates[0].has_dict_weight := False;
+    m_candidates[0].dict_weight := 0;
     m_page_index := 0;
     m_selected_index := 0;
 end;
@@ -3206,15 +3221,26 @@ begin
             end
             else
             begin
-                if (secondary_candidates[i].comment <> '') and (existing_index >= 0)
-                    and (existing_index < list.Count) then
+                if (existing_index >= 0) and (existing_index < list.Count) then
                 begin
                     candidate := list[existing_index];
-                    if candidate.comment = '' then
+                    if (secondary_candidates[i].comment <> '') and (candidate.comment = '') then
                     begin
                         candidate.comment := secondary_candidates[i].comment;
-                        list[existing_index] := candidate;
                     end;
+
+                    // Preserve raw lexicon weight for debug rendering when duplicates collapse by text.
+                    if secondary_candidates[i].has_dict_weight then
+                    begin
+                        if (not candidate.has_dict_weight) or
+                            (secondary_candidates[i].dict_weight > candidate.dict_weight) then
+                        begin
+                            candidate.has_dict_weight := True;
+                            candidate.dict_weight := secondary_candidates[i].dict_weight;
+                        end;
+                    end;
+
+                    list[existing_index] := candidate;
                 end;
             end;
         end;
@@ -3404,7 +3430,9 @@ var
 
     procedure append_candidate(const text: string; const score: Integer;
         const source: TncCandidateSource;
-        const comment_override: string);
+        const comment_override: string;
+        const has_dict_weight: Boolean = False;
+        const dict_weight: Integer = 0);
     begin
         if text = '' then
         begin
@@ -3422,6 +3450,14 @@ var
                     item.score := score;
                 end;
                 item.source := merge_source_rank(item.source, source);
+                if has_dict_weight then
+                begin
+                    if (not item.has_dict_weight) or (dict_weight > item.dict_weight) then
+                    begin
+                        item.has_dict_weight := True;
+                        item.dict_weight := dict_weight;
+                    end;
+                end;
                 list[existing_index] := item;
             end;
             Exit;
@@ -3431,6 +3467,15 @@ var
         item.comment := comment_override;
         item.score := score;
         item.source := source;
+        item.has_dict_weight := (source = cs_rule) and has_dict_weight;
+        if item.has_dict_weight then
+        begin
+            item.dict_weight := dict_weight;
+        end
+        else
+        begin
+            item.dict_weight := 0;
+        end;
         list.Add(item);
         dedup.Add(dedup_key, list.Count - 1);
     end;
@@ -3598,6 +3643,8 @@ var
             local_state.comment := '0';
             local_state.score := 0;
             local_state.source := cs_rule;
+            local_state.has_dict_weight := False;
+            local_state.dict_weight := 0;
             states[0].Add(local_state);
             state_dedup[0].Add('', 0);
             SetLength(preferred_phrase_flags, Length(syllables));
@@ -3967,7 +4014,8 @@ begin
                         Inc(score_value, c_segment_surname_bonus);
                     end;
 
-                    append_candidate(candidate.text, score_value, candidate.source, remaining_pinyin);
+                    append_candidate(candidate.text, score_value, candidate.source, remaining_pinyin,
+                        candidate.has_dict_weight, candidate.dict_weight);
                 end;
             end;
 
@@ -4311,6 +4359,8 @@ var
         out_candidate.comment := '';
         out_candidate.score := 0;
         out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
         Result := True;
     end;
 
