@@ -77,6 +77,55 @@ const
     c_guid_prop_attribute: TGUID = '{34B45670-7526-11D2-A147-00105A2799B5}';
     c_guid_prop_composing: TGUID = '{E12AC060-AF15-11D0-97F0-00C04FD9C1B6}';
 
+function get_window_class_name(const window_handle: Winapi.Windows.HWND): string;
+var
+    class_buffer: array[0..255] of Char;
+    class_len: Integer;
+begin
+    Result := '';
+    if window_handle = 0 then
+    begin
+        Exit;
+    end;
+
+    class_len := GetClassName(window_handle, class_buffer, Length(class_buffer));
+    if class_len > 0 then
+    begin
+        SetString(Result, class_buffer, class_len);
+    end;
+end;
+
+function is_terminal_like_class(const class_name: string): Boolean;
+var
+    class_lower: string;
+begin
+    if class_name = '' then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    class_lower := LowerCase(class_name);
+    Result := (Pos('consolewindowclass', class_lower) > 0) or
+        (Pos('cascadia_hosting_window_class', class_lower) > 0) or
+        (Pos('terminal', class_lower) > 0) or
+        (Pos('pseudoconsole', class_lower) > 0);
+end;
+
+function is_terminal_like_view(const view: ITfContextView): Boolean;
+var
+    view_hwnd: Winapi.Windows.HWND;
+begin
+    Result := False;
+    view_hwnd := 0;
+    if (view = nil) or (view.GetWnd(view_hwnd) <> S_OK) or (view_hwnd = 0) then
+    begin
+        Exit;
+    end;
+
+    Result := is_terminal_like_class(get_window_class_name(view_hwnd));
+end;
+
 constructor TncCommitEditSession.create(const context: ITfContext; const composition_ref: PITfComposition;
     const text: string);
 begin
@@ -210,21 +259,40 @@ begin
     end;
 
     range_for_ext := nil;
-    FillChar(selection, SizeOf(selection), 0);
-    fetched := 0;
-    hr := m_context.GetSelection(ec, 0, 1, selection, fetched);
-    if (hr = S_OK) and (fetched > 0) and (selection.range <> nil) then
+    use_full_range_ext := ((m_composition_ref <> nil) and (m_composition_ref^ <> nil)) and is_terminal_like_view(view);
+
+    // During active composition in regular desktop apps, prefer composition end
+    // over selection to avoid stale anchors (observed in Chromium editors).
+    if (m_composition_ref <> nil) and (m_composition_ref^ <> nil) then
     begin
-        range_for_ext := selection.range;
-        range_for_ext.Collapse(ec, TF_ANCHOR_END);
+        if use_full_range_ext then
+        begin
+            range_for_ext := range;
+        end
+        else
+        begin
+            range_for_ext := range;
+            if (range <> nil) and (range.Clone(range_for_ext) = S_OK) and (range_for_ext <> nil) then
+            begin
+                range_for_ext.Collapse(ec, TF_ANCHOR_END);
+            end;
+        end;
+    end
+    else
+    begin
+        FillChar(selection, SizeOf(selection), 0);
+        fetched := 0;
+        hr := m_context.GetSelection(ec, 0, 1, selection, fetched);
+        if (hr = S_OK) and (fetched > 0) and (selection.range <> nil) then
+        begin
+            range_for_ext := selection.range;
+            range_for_ext.Collapse(ec, TF_ANCHOR_END);
+        end;
     end;
 
     if range_for_ext = nil then
     begin
-        // Terminal hosts may return a fixed point for collapsed ranges. When a
-        // composition exists, prefer querying the full composition range and then
-        // anchor to rect.Right so the candidate window follows typed text.
-        use_full_range_ext := (m_composition_ref <> nil) and (m_composition_ref^ <> nil);
+        // Terminal hosts may return a fixed point for collapsed ranges.
         if use_full_range_ext then
         begin
             range_for_ext := range;
@@ -258,7 +326,8 @@ begin
             if not rect_in_screen(rect, screen_rect) then
             begin
                 rect_adjusted := rect;
-                if try_adjust_with_view_hwnd(rect_adjusted) and rect_in_screen(rect_adjusted, screen_rect) then
+                if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) and
+                    rect_in_screen(rect_adjusted, screen_rect) then
                 begin
                     rect := rect_adjusted;
                 end;
@@ -267,7 +336,7 @@ begin
         else
         begin
             rect_adjusted := rect;
-            if try_adjust_with_view_hwnd(rect_adjusted) then
+            if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) then
             begin
                 rect := rect_adjusted;
             end;
@@ -579,6 +648,7 @@ var
     clipped: Integer;
     hr: HRESULT;
     screen_ok: Boolean;
+    use_full_range_ext: Boolean;
 
     function rect_in_screen(const candidate: Winapi.Windows.TRect;
         const screen_bounds: Winapi.Windows.TRect): Boolean;
@@ -666,9 +736,20 @@ begin
         Exit;
     end;
 
-    // Prefer composition range directly; selection can drift to stale anchors
-    // in some terminal hosts right after Enter/newline.
-    range_for_ext := range;
+    use_full_range_ext := is_terminal_like_view(view);
+    if use_full_range_ext then
+    begin
+        // Terminal hosts may return fixed points for collapsed ranges.
+        range_for_ext := range;
+    end
+    else
+    begin
+        range_for_ext := range;
+        if (range <> nil) and (range.Clone(range_for_ext) = S_OK) and (range_for_ext <> nil) then
+        begin
+            range_for_ext.Collapse(ec, TF_ANCHOR_END);
+        end;
+    end;
 
     hr := view.GetTextExt(ec, range_for_ext, rect, clipped);
     if (hr <> S_OK) and (range_for_ext <> range) then
@@ -689,7 +770,8 @@ begin
             if not rect_in_screen(rect, screen_rect) then
             begin
                 rect_adjusted := rect;
-                if try_adjust_with_view_hwnd(rect_adjusted) and rect_in_screen(rect_adjusted, screen_rect) then
+                if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) and
+                    rect_in_screen(rect_adjusted, screen_rect) then
                 begin
                     rect := rect_adjusted;
                 end;
@@ -698,7 +780,7 @@ begin
         else
         begin
             rect_adjusted := rect;
-            if try_adjust_with_view_hwnd(rect_adjusted) then
+            if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) then
             begin
                 rect := rect_adjusted;
             end;
