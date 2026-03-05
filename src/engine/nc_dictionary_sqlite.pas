@@ -1861,6 +1861,7 @@ var
     single_letter_cap_score: Integer;
     single_letter_has_cap: Boolean;
     single_syllable_full_query: Boolean;
+    full_query_syllable_count: Integer;
     single_char_probe_limit: Integer;
     user_nonfull_lookup: Boolean;
     user_like_pattern: string;
@@ -1872,6 +1873,7 @@ var
     normalized_query_key: string;
     full_query_dual_jianpin_cap_score: Integer;
     full_query_dual_jianpin_has_cap: Boolean;
+    disable_long_full_query_jianpin: Boolean;
 
     function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string; forward;
     function is_compact_ascii_query(const value: string): Boolean; forward;
@@ -1972,6 +1974,9 @@ var
     end;
 
     procedure rebuild_query_mode_state;
+    var
+        query_parser: TncPinyinParser;
+        query_syllables: TncPinyinParseResult;
     begin
         mixed_full_prefix := '';
         mixed_jianpin_key := query_key;
@@ -1988,14 +1993,36 @@ var
         allow_full_query_jianpin_fallback := False;
         full_query_dual_jianpin_mode := False;
         single_syllable_full_query := False;
+        full_query_syllable_count := 0;
+        disable_long_full_query_jianpin := False;
         full_query_dual_jianpin_cap_score := 0;
         full_query_dual_jianpin_has_cap := False;
         if full_pinyin_query then
         begin
             single_syllable_full_query := is_single_syllable_full_pinyin_key(query_key);
+            if single_syllable_full_query then
+            begin
+                full_query_syllable_count := 1;
+            end
+            else
+            begin
+                query_parser := TncPinyinParser.Create;
+                try
+                    query_syllables := query_parser.parse(query_key);
+                finally
+                    query_parser.Free;
+                end;
+                full_query_syllable_count := Length(query_syllables);
+                if full_query_syllable_count <= 0 then
+                begin
+                    full_query_syllable_count := 1;
+                end;
+            end;
+            disable_long_full_query_jianpin := (full_query_syllable_count >= 3);
             full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
             if (full_query_jianpin_key <> '') and
-                (not SameText(full_query_jianpin_key, query_key)) then
+                (not SameText(full_query_jianpin_key, query_key)) and
+                (full_query_syllable_count <= 2) then
             begin
                 effective_jianpin_key := full_query_jianpin_key;
                 allow_full_query_jianpin_fallback := True;
@@ -2699,6 +2726,7 @@ begin
         end;
 
         if m_base_ready and should_try_jianpin_lookup(effective_jianpin_key) and
+            (not disable_long_full_query_jianpin) and
             ((list.Count = 0) or mixed_mode or (not full_pinyin_query) or
             full_query_dual_jianpin_mode or
             (allow_full_query_jianpin_fallback and (not exact_base_hit))) then
