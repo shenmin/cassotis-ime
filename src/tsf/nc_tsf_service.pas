@@ -20,6 +20,7 @@ uses
     nc_tsf_compartments,
     nc_tsf_display_attr,
     nc_tsf_edit_session,
+    nc_caret_anchor_policy,
     nc_ipc_client;
 
 type
@@ -2277,7 +2278,6 @@ var
     cursor_point: TPoint;
     cursor_point_valid: Boolean;
     chromium_snapshot_logged: Boolean;
-    top_band_limit_y: Integer;
 
     function point_in_virtual_screen(const candidate: TPoint): Boolean;
     const
@@ -2330,62 +2330,49 @@ var
 
     function points_are_close(const left_point: TPoint; const right_point: TPoint; const max_delta: Integer): Boolean;
     begin
-        Result := (Abs(left_point.X - right_point.X) <= max_delta) and
-            (Abs(left_point.Y - right_point.Y) <= max_delta);
+        Result := nc_caret_anchor_policy.points_are_close(left_point, right_point, max_delta);
     end;
 
     function tsf_anchor_looks_like_window_origin(const candidate: TPoint): Boolean;
-    const
-        c_left_range = 220;
-        c_top_range = 180;
     var
         base_rect: TRect;
-        has_base_rect: Boolean;
     begin
-        has_base_rect := False;
         if has_context_rect then
         begin
             base_rect := context_rect;
-            has_base_rect := True;
         end
         else if has_foreground_rect then
         begin
             base_rect := foreground_rect;
-            has_base_rect := True;
-        end;
-
-        if not has_base_rect then
+        end
+        else
         begin
             Result := False;
             Exit;
         end;
 
-        // Some mixed-DPI apps can report TSF TextExt near the top-left of window
-        // while real caret is much deeper in client area.
-        Result := (candidate.X >= base_rect.Left - 48) and
-            (candidate.X <= base_rect.Left + c_left_range) and
-            (candidate.Y >= base_rect.Top - 48) and
-            (candidate.Y <= base_rect.Top + c_top_range);
+        Result := nc_caret_anchor_policy.anchor_looks_like_window_origin(candidate, base_rect, True);
     end;
 
     function is_origin_anchor_suspicious(const candidate: TPoint): Boolean;
-    const
-        c_cursor_close_delta = 180;
+    var
+        base_rect: TRect;
+        has_base_rect: Boolean;
     begin
-        Result := False;
-        if terminal_like_target or (m_composition = nil) then
+        has_base_rect := False;
+        base_rect := System.Types.Rect(0, 0, 0, 0);
+        if has_context_rect then
         begin
-            Exit;
+            base_rect := context_rect;
+            has_base_rect := True;
         end;
-        if not tsf_anchor_looks_like_window_origin(candidate) then
+        if (not has_base_rect) and has_foreground_rect then
         begin
-            Exit;
+            base_rect := foreground_rect;
+            has_base_rect := True;
         end;
-        if cursor_point_valid and points_are_close(candidate, cursor_point, c_cursor_close_delta) then
-        begin
-            Exit;
-        end;
-        Result := True;
+        Result := nc_caret_anchor_policy.is_origin_anchor_suspicious(candidate, base_rect, has_base_rect,
+            cursor_point, cursor_point_valid, terminal_like_target, m_composition <> nil);
     end;
 
     function try_adjust_terminal_client_point(var candidate: TPoint): Boolean;
@@ -2608,11 +2595,6 @@ begin
     cursor_point_valid := GetCursorPos(cursor_point) and point_in_virtual_screen(cursor_point) and
         point_in_foreground(cursor_point);
     chromium_snapshot_logged := False;
-    top_band_limit_y := 180;
-    if has_foreground_rect then
-    begin
-        top_band_limit_y := foreground_rect.Top + 180;
-    end;
     if tsf_point_valid and terminal_like_target then
     begin
         converted_tsf_point := tsf_point;
@@ -2955,17 +2937,15 @@ begin
             end;
         end;
 
-        if chromium_like_target and gui_point_valid and tsf_point_valid and has_foreground_rect then
+        if nc_caret_anchor_policy.should_reject_chromium_top_band_point(gui_point, gui_point_valid, tsf_point,
+            tsf_point_valid, chromium_like_target, foreground_rect, has_foreground_rect) then
         begin
-            if (gui_point.Y <= top_band_limit_y) and (tsf_point.Y > top_band_limit_y) then
+            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
             begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('Reject Chromium GUI top-band point gui=(%d,%d) tsf=(%d,%d)',
-                        [gui_point.X, gui_point.Y, tsf_point.X, tsf_point.Y]));
-                end;
-                gui_point_valid := False;
+                m_logger.debug(Format('Reject Chromium GUI top-band point gui=(%d,%d) tsf=(%d,%d)',
+                    [gui_point.X, gui_point.Y, tsf_point.X, tsf_point.Y]));
             end;
+            gui_point_valid := False;
         end;
 
         if chromium_like_target and gui_point_valid and is_origin_anchor_suspicious(gui_point) then
@@ -3045,17 +3025,15 @@ begin
             end;
         end;
 
-        if chromium_like_target and caret_point_valid and tsf_point_valid and has_foreground_rect then
+        if nc_caret_anchor_policy.should_reject_chromium_top_band_point(caret_point, caret_point_valid, tsf_point,
+            tsf_point_valid, chromium_like_target, foreground_rect, has_foreground_rect) then
         begin
-            if (caret_point.Y <= top_band_limit_y) and (tsf_point.Y > top_band_limit_y) then
+            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
             begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('Reject Chromium CaretPos top-band point caret=(%d,%d) tsf=(%d,%d)',
-                        [caret_point.X, caret_point.Y, tsf_point.X, tsf_point.Y]));
-                end;
-                caret_point_valid := False;
+                m_logger.debug(Format('Reject Chromium CaretPos top-band point caret=(%d,%d) tsf=(%d,%d)',
+                    [caret_point.X, caret_point.Y, tsf_point.X, tsf_point.Y]));
             end;
+            caret_point_valid := False;
         end;
 
         if chromium_like_target and caret_point_valid and is_origin_anchor_suspicious(caret_point) then
