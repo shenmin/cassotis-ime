@@ -118,6 +118,33 @@ var
         final_value: string;
         token_text: string;
         token_len: Integer;
+
+        function get_no_initial_penalty(const final_token: string; const token_start: Integer): Integer;
+        begin
+            // In the middle of a raw pinyin stream, no-initial syllables are often
+            // artifacts of greedy over-merge (e.g. "sange" -> "sang"+"e").
+            // Keep them possible, but score them lower so regular initial+final
+            // paths win unless no better parse exists.
+            if token_start <= 0 then
+            begin
+                Exit(0);
+            end;
+            if (token_start > 0) and (lower_text[token_start] = '''') then
+            begin
+                Exit(0);
+            end;
+
+            if (final_token = 'a') or (final_token = 'e') or (final_token = 'o') then
+            begin
+                Exit(160);
+            end;
+            if final_token = 'er' then
+            begin
+                Exit(100);
+            end;
+
+            Result := 60;
+        end;
     begin
         if start_index >= text_length then
         begin
@@ -195,7 +222,8 @@ var
             token_text := final_value;
             token_len := Length(token_text);
             next_index := start_index + token_len;
-            score_value := solve(next_index) + (token_len * token_len * 10);
+            score_value := solve(next_index) + (token_len * token_len * 10) -
+                get_no_initial_penalty(final_value, start_index);
             if score_value > best_score then
             begin
                 best_score := score_value;
