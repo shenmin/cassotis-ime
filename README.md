@@ -50,7 +50,7 @@ Project focus:
 ```
 src/          source code
 tools/        utility projects (registration, dictionary build, diagnostics)
-data/         database schema and lexicon source data
+data/         database schema and sample dictionary import data
 out/          compiled binaries and build/management scripts
 third_party/  vendored dependencies (SQLite runtime)
 ```
@@ -92,17 +92,21 @@ For the complete build guide — including incremental updates, manual IDE build
 
 ## Dictionary
 
-The base dictionary is derived from Unicode Unihan data:
+The base dictionary pipeline imports generated lexicon artifacts from sibling `cassotis_lexicon` / `cassotis_lexicon_public` repository:
 
-- Source files: `data/lexicon/unihan/`
+- Lexicon inputs: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt`
 - Generated databases: `out/data/dict_sc.db` (simplified), `out/data/dict_tc.db` (traditional)
-- User dictionary: `out/config/user_dict.db`
+- User dictionary: `out/data/user_dict.db`
 
-If the required Unihan source files are missing, `rebuild_dict.ps1` downloads them automatically from Unicode. Pass `-NoAutoDownloadUnihan` for offline-only execution.
+Main rebuild entry:
+
+```powershell
+.\rebuild_dict.ps1
+```
 
 ## Configuration
 
-Config file: `out/config/cassotis_ime.ini`
+Config file: `out/cassotis_ime.ini`
 
 Detailed option reference: [CONFIGURE.md](CONFIGURE.md)
 

@@ -20,7 +20,6 @@ This file lists third-party software/data used by Cassotis IME and the related l
 - Used for: generating base single-character Chinese dictionary data
 - Source:
   - https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
-  - local artifacts under `data/lexicon/unihan/` (for example: `Unihan_Readings.txt`, `Unihan_DictionaryLikeData.txt`, `Unihan_Variants.txt`)
 - License/terms:
   - Unicode Terms of Use: https://www.unicode.org/terms_of_use.html
 - Compliance notes:

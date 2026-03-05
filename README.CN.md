@@ -94,15 +94,15 @@ TSF DLL 与 host 进程均须存在，输入法才能正常工作。
 
 基础词库来源于 Unicode Unihan 数据：
 
-- 源数据：`data/lexicon/unihan/`
+- 导入输入文件：`dict_unihan_sc.txt`、`dict_unihan_tc.txt`、`dict_clean_sc.txt`、`dict_clean_tc.txt`
 - 生成数据库：`out/data/dict_sc.db`（简体）、`out/data/dict_tc.db`（繁体）
-- 用户词库：`out/config/user_dict.db`
+- 用户词库：`out/data/user_dict.db`
 
-若必要的 Unihan 源文件缺失，`rebuild_dict.ps1` 默认会自动从 Unicode 下载。如需纯离线运行，可传入 `-NoAutoDownloadUnihan` 参数。
+当前基础词库流程改为从同级 `cassotis_lexicon` / `cassotis_lexicon_public` 仓库导入生成产物。
 
 ## 配置
 
-配置文件：`out/config/cassotis_ime.ini`
+配置文件：`out/cassotis_ime.ini`
 
 详细配置项说明：[CONFIGURE.CN.md](CONFIGURE.CN.md)
 

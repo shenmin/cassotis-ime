@@ -7,7 +7,7 @@
   `C:\Program Files (x86)\Embarcadero\Studio\21.0\`
 - An **administrator PowerShell session** for the registration step
 
-The SQLite runtime (`sqlite3_64.dll`) is copied automatically from `third_party/sqlite/win64/` by `rebuild_all.ps1` â€” no separate installation is needed.
+The SQLite runtime (`sqlite3_64.dll`) is copied automatically from `third_party/sqlite/win64/` by `rebuild_all.ps1` â€?no separate installation is needed.
 
 ---
 
@@ -15,7 +15,7 @@ The SQLite runtime (`sqlite3_64.dll`) is copied automatically from `third_party/
 
 All scripts below are located in and must be run from the `out/` directory.
 
-### Step 1 â€” Build all binaries
+### Step 1 â€?Build all binaries
 
 ```powershell
 .\rebuild_all.ps1
@@ -27,7 +27,7 @@ This script performs a full clean build:
 2. Builds `cassotis_ime_svr.dproj` for both Win32 and Win64, producing:
    - `cassotis_ime_svr32.dll` (Win32 TSF COM server)
    - `cassotis_ime_svr.dll` (Win64 TSF COM server)
-3. Builds all tool executables (Win64): host, profile_reg, tray_host, dict_init, unihan_import, variant_convert
+3. Builds all tool executables (Win64): host, profile_reg, tray_host, dict_init
 4. Copies `sqlite3_64.dll` from `third_party/sqlite/win64/`
 
 The default build timeout is 1800 seconds. To override:
@@ -37,7 +37,7 @@ $env:CASSOTIS_BUILD_TIMEOUT_SECONDS = '3600'
 .\rebuild_all.ps1
 ```
 
-### Step 2 â€” Register with Windows
+### Step 2 â€?Register with Windows
 
 > **Requires administrator.** Open PowerShell as Administrator before running this step.
 
@@ -60,33 +60,36 @@ Passing either DLL is sufficient; the script finds and registers its pair automa
 .\register_tsf.ps1 -single
 ```
 
-### Step 3 â€” Build dictionaries
+### Step 3 â€?Build dictionaries
 
 ```powershell
 .\rebuild_dict.ps1
 ```
 
-This script runs the full dictionary pipeline:
+This script runs the dictionary pipeline using generated lexicon artifacts from sibling
+`cassotis_lexicon` / `cassotis_lexicon_public` repository:
 
-1. Checks for required Unihan source files under `data/lexicon/unihan/`; if missing, downloads `Unihan.zip` from Unicode automatically
-2. Parses `Unihan_Readings.txt` (and optionally `Unihan_DictionaryLikeData.txt`) into a raw intermediate dictionary
-3. Validates reading coverage with `check_unihan_readings.ps1`
-4. Filters to simplified-only entries (`filter_sc`)
-5. Derives a traditional variant using `Unihan_Variants.txt` (`s2t`)
-6. Imports both dictionaries into `out/data/dict_sc.db` and `out/data/dict_tc.db`
-7. Restarts the host process if it was stopped at the beginning
+1. Locates lexicon root (`..\cassotis-lexicon` first, then `..\cassotis_lexicon`)
+2. Imports Unihan base dictionaries:
+   - `data/generated/dict_unihan_sc.txt`
+   - `data/generated/dict_unihan_tc.txt`
+3. Imports broad cleaned dictionaries (unless `-NoExternalLexicon`):
+   - `data/generated/dict_clean_sc.txt`
+   - `data/generated/dict_clean_tc.txt`
+4. Rebuilds `out/data/dict_sc.db` and `out/data/dict_tc.db`
+5. Restarts the host process if it was stopped at the beginning
 
 Options:
 
 ```powershell
-# Offline mode â€” Unihan files must already exist under data/lexicon/unihan/
-.\rebuild_dict.ps1 -NoAutoDownloadUnihan
+# Import Unihan-only (skip external broad clean dictionaries)
+.\rebuild_dict.ps1 -NoExternalLexicon
 
 # Skip restarting the host process after rebuild
 .\rebuild_dict.ps1 -NoRestartHost
 ```
 
-### Step 4 â€” Start TSF
+### Step 4 â€?Start TSF
 
 ```powershell
 .\start_tsf.ps1
@@ -217,7 +220,7 @@ To specify a non-default CUDA Toolkit path:
 ### After building
 
 1. Place model files (`.gguf`) under `out/models/`
-2. Configure the `[ai]` section in `out/config/cassotis_ime.ini`
+2. Configure the `[ai]` section in `out/cassotis_ime.ini`
 
 ---
 

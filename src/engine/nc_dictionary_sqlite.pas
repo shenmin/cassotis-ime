@@ -1812,7 +1812,10 @@ const
     c_initial_single_char_penalty = 120;
     c_single_letter_full_query_extra_penalty = 120;
     c_typo_transpose_penalty = 80;
-    c_typo_min_query_len = 4;
+    // For malformed non-full keys (e.g. "chagn"), allow typo swap at length >= 5.
+    c_typo_min_query_len_nonfull = 5;
+    // For full pinyin keys (e.g. "duole"), keep a stricter threshold.
+    c_typo_min_query_len_full = 6;
     c_typo_probe_limit = 24;
     c_typo_max_added = 16;
     c_typo_prefix_probe_limit = 8;
@@ -1909,7 +1912,7 @@ var
         swap_char: Char;
     begin
         Result := '';
-        if (Length(value) < c_typo_min_query_len) or (not is_compact_ascii_query(value)) then
+        if (Length(value) < c_typo_min_query_len_nonfull) or (not is_compact_ascii_query(value)) then
         begin
             Exit;
         end;
@@ -2327,6 +2330,7 @@ var
         swap_char: Char;
         existing_idx: Integer;
         has_user_existing: Boolean;
+        typo_min_query_len: Integer;
     begin
         Result := False;
         if not m_base_ready then
@@ -2339,7 +2343,15 @@ var
         begin
             Exit;
         end;
-        if Length(query_key) < c_typo_min_query_len then
+        if full_pinyin_query then
+        begin
+            typo_min_query_len := c_typo_min_query_len_full;
+        end
+        else
+        begin
+            typo_min_query_len := c_typo_min_query_len_nonfull;
+        end;
+        if Length(query_key) < typo_min_query_len then
         begin
             Exit;
         end;

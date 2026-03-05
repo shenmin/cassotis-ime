@@ -3066,13 +3066,15 @@ begin
 end;
 
 function TncEngine.normalize_adjacent_swap_typo(const value: string): string;
+const
+    c_adjacent_swap_typo_min_query_len = 5;
 var
     swap_idx: Integer;
     swap_value: string;
     swap_char: Char;
 begin
     Result := '';
-    if (value = '') or (Length(value) < 4) then
+    if (value = '') or (Length(value) < c_adjacent_swap_typo_min_query_len) then
     begin
         Exit;
     end;
