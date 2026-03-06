@@ -105,7 +105,6 @@ type
         function get_front_row_confidence_bonus(const candidate: TncCandidate): Integer;
         function get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
         function get_rank_score(const candidate: TncCandidate): Integer;
-        function compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
         procedure sort_candidates(var candidates: TncCandidateList);
         function normalize_pinyin_text(const input_text: string): string;
         function is_valid_pinyin_syllable(const syllable: string): Boolean;
@@ -815,6 +814,7 @@ var
     segment_candidates: TncCandidateList;
     full_lookup_candidates: TncCandidateList;
     ai_candidates: TncCandidateList;
+    lookup_cache: TDictionary<string, TncCandidateList>;
     fusion: TncCandidateFusion;
     limit: Integer;
     i: Integer;
@@ -973,6 +973,27 @@ var
             codepoint := ((Ord(value[1]) - $D800) shl 10) + (Ord(value[2]) - $DC00) + $10000;
             Result := True;
         end;
+    end;
+
+    function dictionary_lookup_cached(const pinyin_key: string; out out_results: TncCandidateList): Boolean;
+    begin
+        SetLength(out_results, 0);
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit(False);
+        end;
+
+        if lookup_cache.TryGetValue(pinyin_key, out_results) then
+        begin
+            Exit(Length(out_results) > 0);
+        end;
+
+        if not m_dictionary.lookup(pinyin_key, out_results) then
+        begin
+            SetLength(out_results, 0);
+        end;
+        lookup_cache.AddOrSetValue(pinyin_key, out_results);
+        Result := Length(out_results) > 0;
     end;
 
     function is_common_surname_text(const value: string): Boolean;
@@ -1302,7 +1323,7 @@ var
             Exit;
         end;
 
-        if not m_dictionary.lookup(pinyin_key, full_lookup_candidates) then
+        if not dictionary_lookup_cached(pinyin_key, full_lookup_candidates) then
         begin
             Exit;
         end;
@@ -1419,7 +1440,7 @@ var
                 Exit;
             end;
 
-            if not m_dictionary.lookup(syllable_text, local_lookup) then
+            if not dictionary_lookup_cached(syllable_text, local_lookup) then
             begin
                 Exit;
             end;
@@ -1559,7 +1580,7 @@ var
             Exit;
         end;
 
-        if not m_dictionary.lookup(syllables[0].text, local_lookup) then
+        if not dictionary_lookup_cached(syllables[0].text, local_lookup) then
         begin
             Exit;
         end;
@@ -1643,7 +1664,7 @@ var
             begin
                 Exit;
             end;
-            if not m_dictionary.lookup(syllable_text, local_lookup) then
+            if not dictionary_lookup_cached(syllable_text, local_lookup) then
             begin
                 Exit;
             end;
@@ -2215,7 +2236,7 @@ var
             Exit;
         end;
 
-        if not m_dictionary.lookup(first_syllable, fallback_lookup) then
+        if not dictionary_lookup_cached(first_syllable, fallback_lookup) then
         begin
             Exit;
         end;
@@ -2327,7 +2348,7 @@ var
             Exit;
         end;
 
-        if not m_dictionary.lookup(first_syllable, fallback_lookup) then
+        if not dictionary_lookup_cached(first_syllable, fallback_lookup) then
         begin
             Exit;
         end;
@@ -2560,7 +2581,7 @@ var
         end;
 
         full_query := confirmed_pinyin + normalized_current;
-        if not m_dictionary.lookup(full_query, full_candidates) then
+        if not dictionary_lookup_cached(full_query, full_candidates) then
         begin
             Exit;
         end;
@@ -2834,7 +2855,7 @@ var
             begin
                 unit_rank_maps[syllable_idx] := TDictionary<string, Integer>.Create;
 
-                if not m_dictionary.lookup(syllables[syllable_idx].text, lookup_results) then
+                if not dictionary_lookup_cached(syllables[syllable_idx].text, lookup_results) then
                 begin
                     unit_rank_maps[syllable_idx].Free;
                     unit_rank_maps[syllable_idx] := nil;
@@ -2971,87 +2992,89 @@ var
         end;
     end;
 begin
-    SetLength(m_candidates, 0);
-    m_last_lookup_key := '';
-    m_last_lookup_normalized_from := '';
-    m_last_lookup_syllable_count := 0;
-    m_last_lookup_debug_extra := '';
-    m_runtime_chain_text := '';
-    m_runtime_common_pattern_text := '';
-    m_runtime_redup_text := '';
-    if m_composition_text = '' then
-    begin
-        Exit;
-    end;
+    lookup_cache := TDictionary<string, TncCandidateList>.Create;
+    try
+        SetLength(m_candidates, 0);
+        m_last_lookup_key := '';
+        m_last_lookup_normalized_from := '';
+        m_last_lookup_syllable_count := 0;
+        m_last_lookup_debug_extra := '';
+        m_runtime_chain_text := '';
+        m_runtime_common_pattern_text := '';
+        m_runtime_redup_text := '';
+        if m_composition_text = '' then
+        begin
+            Exit;
+        end;
 
-    has_raw_candidates := False;
-    has_segment_candidates := False;
-    raw_from_dictionary := False;
-    lookup_text := normalize_pinyin_text(m_composition_text);
-    if not is_full_pinyin_key(lookup_text) then
-    begin
-        normalized_lookup_text := normalize_adjacent_swap_typo(lookup_text);
-        if (normalized_lookup_text <> '') and (not SameText(normalized_lookup_text, lookup_text)) then
+        has_raw_candidates := False;
+        has_segment_candidates := False;
+        raw_from_dictionary := False;
+        lookup_text := normalize_pinyin_text(m_composition_text);
+        if not is_full_pinyin_key(lookup_text) then
         begin
-            m_last_lookup_normalized_from := lookup_text;
-            lookup_text := normalized_lookup_text;
+            normalized_lookup_text := normalize_adjacent_swap_typo(lookup_text);
+            if (normalized_lookup_text <> '') and (not SameText(normalized_lookup_text, lookup_text)) then
+            begin
+                m_last_lookup_normalized_from := lookup_text;
+                lookup_text := normalized_lookup_text;
+            end;
         end;
-    end;
-    m_last_lookup_key := lookup_text;
-    fallback_comment := build_pinyin_comment(m_composition_text);
-    if fallback_comment = '' then
-    begin
-        fallback_comment := build_pinyin_comment(lookup_text);
-    end;
-    has_multi_syllable_input := fallback_comment <> '';
-    has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
-    if m_last_lookup_normalized_from <> '' then
-    begin
-        // If lookup key is typo-normalized (e.g. chagn->chang), segmenting by raw input
-        // is usually noisy; force dangling-initial guard to suppress that path.
-        has_internal_dangling_initial := True;
-    end;
-    input_syllable_count := get_input_syllable_count_for_text(m_composition_text);
-    if input_syllable_count <= 0 then
-    begin
-        input_syllable_count := get_input_syllable_count_for_text(lookup_text);
-    end;
-    m_last_lookup_syllable_count := input_syllable_count;
-    repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
-    single_char_partial_min_count := 1;
-    if repeated_two_syllable_query then
-    begin
-        // For repeated two-syllable input like "shishi", keep extra single-char
-        // continuation options visible to reduce phrase-only crowding.
-        single_char_partial_min_count := 2;
-    end;
-    runtime_phrase_added := False;
-    runtime_redup_added := False;
-    head_only_multi_syllable := m_config.enable_segment_candidates and
-        has_multi_syllable_input and
-        m_config.segment_head_only_multi_syllable and
-        (not has_internal_dangling_initial);
-    if m_dictionary <> nil then
-    begin
-        if head_only_multi_syllable and build_segment_candidates(segment_candidates, False) then
+        m_last_lookup_key := lookup_text;
+        fallback_comment := build_pinyin_comment(m_composition_text);
+        if fallback_comment = '' then
         begin
-            has_raw_candidates := True;
-            has_segment_candidates := True;
-            raw_candidates := segment_candidates;
-            merge_head_only_full_lookup_candidates(raw_candidates, lookup_text);
-        end
-        else if m_dictionary.lookup(lookup_text, raw_candidates) then
-        begin
-            has_raw_candidates := True;
-            raw_from_dictionary := True;
-        end
-        else if m_config.enable_segment_candidates and build_segment_candidates(segment_candidates, True) then
-        begin
-            has_raw_candidates := True;
-            has_segment_candidates := True;
-            raw_candidates := segment_candidates;
+            fallback_comment := build_pinyin_comment(lookup_text);
         end;
-    end;
+        has_multi_syllable_input := fallback_comment <> '';
+        has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
+        if m_last_lookup_normalized_from <> '' then
+        begin
+            // If lookup key is typo-normalized (e.g. chagn->chang), segmenting by raw input
+            // is usually noisy; force dangling-initial guard to suppress that path.
+            has_internal_dangling_initial := True;
+        end;
+        input_syllable_count := get_input_syllable_count_for_text(m_composition_text);
+        if input_syllable_count <= 0 then
+        begin
+            input_syllable_count := get_input_syllable_count_for_text(lookup_text);
+        end;
+        m_last_lookup_syllable_count := input_syllable_count;
+        repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
+        single_char_partial_min_count := 1;
+        if repeated_two_syllable_query then
+        begin
+            // For repeated two-syllable input like "shishi", keep extra single-char
+            // continuation options visible to reduce phrase-only crowding.
+            single_char_partial_min_count := 2;
+        end;
+        runtime_phrase_added := False;
+        runtime_redup_added := False;
+        head_only_multi_syllable := m_config.enable_segment_candidates and
+            has_multi_syllable_input and
+            m_config.segment_head_only_multi_syllable and
+            (not has_internal_dangling_initial);
+        if m_dictionary <> nil then
+        begin
+            if head_only_multi_syllable and build_segment_candidates(segment_candidates, False) then
+            begin
+                has_raw_candidates := True;
+                has_segment_candidates := True;
+                raw_candidates := segment_candidates;
+                merge_head_only_full_lookup_candidates(raw_candidates, lookup_text);
+            end
+            else if dictionary_lookup_cached(lookup_text, raw_candidates) then
+            begin
+                has_raw_candidates := True;
+                raw_from_dictionary := True;
+            end
+            else if m_config.enable_segment_candidates and build_segment_candidates(segment_candidates, True) then
+            begin
+                has_raw_candidates := True;
+                has_segment_candidates := True;
+                raw_candidates := segment_candidates;
+            end;
+        end;
 
     if has_raw_candidates then
     begin
@@ -3210,23 +3233,26 @@ begin
         Exit;
     end;
 
-    SetLength(m_candidates, 1);
-    m_candidates[0].text := m_composition_text;
-    m_candidates[0].comment := fallback_comment;
-    m_candidates[0].score := 0;
-    m_candidates[0].source := cs_rule;
-    m_candidates[0].has_dict_weight := False;
-    m_candidates[0].dict_weight := 0;
-    m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
-        [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
-        Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
-    if Length(m_candidates) > 0 then
-    begin
-        m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
-            get_candidate_debug_summary(m_candidates[0]);
+        SetLength(m_candidates, 1);
+        m_candidates[0].text := m_composition_text;
+        m_candidates[0].comment := fallback_comment;
+        m_candidates[0].score := 0;
+        m_candidates[0].source := cs_rule;
+        m_candidates[0].has_dict_weight := False;
+        m_candidates[0].dict_weight := 0;
+        m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
+            [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+            Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+        if Length(m_candidates) > 0 then
+        begin
+            m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                get_candidate_debug_summary(m_candidates[0]);
+        end;
+        m_page_index := 0;
+        m_selected_index := 0;
+    finally
+        lookup_cache.Free;
     end;
-    m_page_index := 0;
-    m_selected_index := 0;
 end;
 
 procedure TncEngine.normalize_page_and_selection;
@@ -4266,84 +4292,96 @@ begin
         candidate.dict_weight, runtime_kind]);
 end;
 
-function TncEngine.compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
-var
-    left_score: Integer;
-    right_score: Integer;
-    left_layer: Integer;
-    right_layer: Integer;
-begin
-    // Learned user candidates should take priority over rule candidates when
-    // both are complete commit candidates for the same query.
-    if (left.comment = '') and (right.comment = '') then
-    begin
-        if (left.source = cs_user) and (right.source <> cs_user) then
-        begin
-            Result := -1;
-            Exit;
-        end;
-        if (right.source = cs_user) and (left.source <> cs_user) then
-        begin
-            Result := 1;
-            Exit;
-        end;
-    end;
-
-    if m_last_lookup_syllable_count >= 3 then
-    begin
-        left_layer := get_multi_syllable_intent_layer(left);
-        right_layer := get_multi_syllable_intent_layer(right);
-        Result := left_layer - right_layer;
-        if Result <> 0 then
-        begin
-            Exit;
-        end;
-    end;
-
-    left_score := get_rank_score(left);
-    right_score := get_rank_score(right);
-    Result := right_score - left_score;
-    if Result = 0 then
-    begin
-        Result := get_source_rank(left.source) - get_source_rank(right.source);
-        if Result = 0 then
-        begin
-            Result := Length(left.text) - Length(right.text);
-            if Result = 0 then
-            begin
-                Result := CompareText(left.text, right.text);
-            end;
-        end;
-    end;
-end;
-
 procedure TncEngine.sort_candidates(var candidates: TncCandidateList);
+type
+    TncCandidateSortItem = record
+        candidate: TncCandidate;
+        rank_score: Integer;
+        layer: Integer;
+        source_rank: Integer;
+        text_length: Integer;
+    end;
 var
-    list: TList<TncCandidate>;
+    list: TList<TncCandidateSortItem>;
+    item: TncCandidateSortItem;
     i: Integer;
+    use_intent_layers: Boolean;
 begin
     if Length(candidates) <= 1 then
     begin
         Exit;
     end;
 
-    list := TList<TncCandidate>.Create;
+    use_intent_layers := m_last_lookup_syllable_count >= 3;
+
+    list := TList<TncCandidateSortItem>.Create;
     try
         list.Capacity := Length(candidates);
         for i := 0 to High(candidates) do
         begin
-            list.Add(candidates[i]);
+            item.candidate := candidates[i];
+            item.rank_score := get_rank_score(candidates[i]);
+            if use_intent_layers then
+            begin
+                item.layer := get_multi_syllable_intent_layer(candidates[i]);
+            end
+            else
+            begin
+                item.layer := 0;
+            end;
+            item.source_rank := get_source_rank(candidates[i].source);
+            item.text_length := Length(candidates[i].text);
+            list.Add(item);
         end;
 
-        list.Sort(TComparer<TncCandidate>.Construct(
-            function(const left, right: TncCandidate): Integer
+        // Precompute heavy ranking keys once per candidate to avoid repeatedly
+        // recomputing context/session bonuses during every comparison.
+        list.Sort(TComparer<TncCandidateSortItem>.Construct(
+            function(const left, right: TncCandidateSortItem): Integer
             begin
-                Result := compare_candidates(left, right);
+                // Learned user candidates should take priority over rule
+                // candidates when both are complete commit candidates.
+                if (left.candidate.comment = '') and (right.candidate.comment = '') then
+                begin
+                    if (left.candidate.source = cs_user) and (right.candidate.source <> cs_user) then
+                    begin
+                        Result := -1;
+                        Exit;
+                    end;
+                    if (right.candidate.source = cs_user) and (left.candidate.source <> cs_user) then
+                    begin
+                        Result := 1;
+                        Exit;
+                    end;
+                end;
+
+                if use_intent_layers then
+                begin
+                    Result := left.layer - right.layer;
+                    if Result <> 0 then
+                    begin
+                        Exit;
+                    end;
+                end;
+
+                Result := right.rank_score - left.rank_score;
+                if Result = 0 then
+                begin
+                    Result := left.source_rank - right.source_rank;
+                    if Result = 0 then
+                    begin
+                        Result := left.text_length - right.text_length;
+                        if Result = 0 then
+                        begin
+                            Result := CompareText(left.candidate.text, right.candidate.text);
+                        end;
+                    end;
+                end;
             end));
 
         for i := 0 to High(candidates) do
         begin
-            candidates[i] := list[i];
+            candidates[i] := list[i].candidate;
         end;
     finally
         list.Free;
@@ -4887,6 +4925,7 @@ const
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
+    lookup_cache: TDictionary<string, TncCandidateList>;
     list: TList<TncCandidate>;
     dedup: TDictionary<string, Integer>;
     total_limit: Integer;
@@ -5009,6 +5048,27 @@ var
         begin
             Result := Result + syllables[idx].text;
         end;
+    end;
+
+    function dictionary_lookup_cached(const pinyin_key: string; out out_results: TncCandidateList): Boolean;
+    begin
+        SetLength(out_results, 0);
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit(False);
+        end;
+
+        if lookup_cache.TryGetValue(pinyin_key, out_results) then
+        begin
+            Exit(Length(out_results) > 0);
+        end;
+
+        if not m_dictionary.lookup(pinyin_key, out_results) then
+        begin
+            SetLength(out_results, 0);
+        end;
+        lookup_cache.AddOrSetValue(pinyin_key, out_results);
+        Result := Length(out_results) > 0;
     end;
 
     function merge_source_rank(const left: TncCandidateSource; const right: TncCandidateSource): TncCandidateSource;
@@ -5199,7 +5259,7 @@ var
                     Continue;
                 end;
 
-                if not m_dictionary.lookup(probe_segment_text, probe_lookup_results) then
+                if not dictionary_lookup_cached(probe_segment_text, probe_lookup_results) then
                 begin
                     Continue;
                 end;
@@ -5338,7 +5398,7 @@ var
             for state_pos := 0 to High(syllables) do
             begin
                 single_char_rank_maps[state_pos] := TDictionary<string, Integer>.Create;
-                if m_dictionary.lookup(syllables[state_pos].text, local_lookup_results) then
+                if dictionary_lookup_cached(syllables[state_pos].text, local_lookup_results) then
                 begin
                     local_rank := 0;
                     for candidate_index := 0 to High(local_lookup_results) do
@@ -5385,7 +5445,7 @@ var
                         Continue;
                     end;
 
-                    if not m_dictionary.lookup(local_segment_text, local_lookup_results) then
+                    if not dictionary_lookup_cached(local_segment_text, local_lookup_results) then
                     begin
                         Continue;
                     end;
@@ -5599,6 +5659,7 @@ begin
         Exit;
     end;
 
+    lookup_cache := TDictionary<string, TncCandidateList>.Create;
     parser := TncPinyinParser.create;
     try
         syllables := parser.parse(m_composition_text);
@@ -5665,7 +5726,7 @@ begin
                     Continue;
                 end;
 
-                if not m_dictionary.lookup(segment_text, lookup_results) then
+                if not dictionary_lookup_cached(segment_text, lookup_results) then
                 begin
                     Continue;
                 end;
@@ -5793,6 +5854,7 @@ begin
         end;
     finally
         parser.Free;
+        lookup_cache.Free;
     end;
 end;
 
