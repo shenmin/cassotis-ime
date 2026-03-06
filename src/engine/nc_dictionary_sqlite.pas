@@ -2089,6 +2089,8 @@ var
     full_query_dual_jianpin_cap_score: Integer;
     full_query_dual_jianpin_has_cap: Boolean;
     disable_long_full_query_jianpin: Boolean;
+    applied_learning_bonus_count: Integer;
+    applied_text_learning_bonus_count: Integer;
 
     function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string; forward;
     function is_compact_ascii_query(const value: string): Boolean; forward;
@@ -2320,6 +2322,7 @@ var
         if learning_bonus_map.TryGetValue(text, learning_bonus) then
         begin
             Inc(score_with_bonus, learning_bonus);
+            Inc(applied_learning_bonus_count);
         end;
 
         item.text := text;
@@ -2471,6 +2474,7 @@ var
 
                 candidate_item.score := candidate_item.score + bonus_value;
                 list[idx] := candidate_item;
+                Inc(applied_text_learning_bonus_count);
             end;
         finally
             if stmt_text_stats <> nil then
@@ -2869,6 +2873,8 @@ var
 begin
     SetLength(results, 0);
     m_last_lookup_debug_hint := '';
+    applied_learning_bonus_count := 0;
+    applied_text_learning_bonus_count := 0;
     if (pinyin = '') or not ensure_open then
     begin
         Result := False;
@@ -3410,10 +3416,11 @@ begin
         end;
 
         m_last_lookup_debug_hint := Format(
-            'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d n=%d]',
+            'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d learn=%d text=%d n=%d]',
             [Ord(full_pinyin_query), Ord(mixed_mode), Ord(user_nonfull_lookup), Ord(exact_base_hit),
             Ord(typo_fallback_used), Ord(full_query_dual_jianpin_mode),
-            Ord(disable_long_full_query_jianpin), list.Count]);
+            Ord(disable_long_full_query_jianpin), applied_learning_bonus_count,
+            applied_text_learning_bonus_count, list.Count]);
         Result := list.Count > 0;
     finally
         if mixed_parser <> nil then

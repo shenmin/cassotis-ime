@@ -51,10 +51,14 @@ type
         m_segment_left_context: string;
         m_context_pairs: TDictionary<string, Integer>;
         m_context_order: TQueue<string>;
+        m_phrase_context_pairs: TDictionary<string, Integer>;
+        m_phrase_context_order: TQueue<string>;
         m_session_text_counts: TDictionary<string, Integer>;
         m_session_text_last_seen: TDictionary<string, Int64>;
         m_session_text_order: TQueue<string>;
         m_session_commit_serial: Int64;
+        m_last_output_commit_text: string;
+        m_prev_output_commit_text: string;
         m_context_db_bonus_cache_key: string;
         m_context_db_bonus_cache: TDictionary<string, Integer>;
         m_pending_commit_text: string;
@@ -82,7 +86,10 @@ type
         function get_source_rank(const source: TncCandidateSource): Integer;
         function get_context_variants(const context_text: string): TArray<string>;
         function get_session_text_bonus(const candidate_text: string): Integer;
+        function get_phrase_context_bonus(const candidate_text: string): Integer;
+        function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
+        function get_candidate_debug_summary(const candidate: TncCandidate): string;
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
         function map_full_width_char(const input_char: Char): string;
         function map_punctuation_char(const input_char: Char): string;
@@ -115,6 +122,7 @@ type
         procedure update_left_context(const committed_text: string);
         procedure record_context_pair(const left_text: string; const committed_text: string);
         procedure note_session_commit(const text: string);
+        procedure note_output_phrase_context(const committed_text: string);
         procedure set_pending_commit(const text: string; const remaining_pinyin: string = '');
         procedure clear_pending_commit;
         procedure set_ai_provider(const provider: TncAiProvider);
@@ -163,6 +171,7 @@ const
     c_partial_candidate_score_penalty = 260;
     c_left_context_max_len = 20;
     c_context_history_limit = 200;
+    c_phrase_context_history_limit = 256;
     c_context_score_bonus = 80;
     c_context_score_bonus_max = 400;
     c_session_text_history_limit = 256;
@@ -361,10 +370,14 @@ begin
     m_confirmed_segments := TList<TncConfirmedSegment>.Create;
     m_context_pairs := TDictionary<string, Integer>.Create;
     m_context_order := TQueue<string>.Create;
+    m_phrase_context_pairs := TDictionary<string, Integer>.Create;
+    m_phrase_context_order := TQueue<string>.Create;
     m_session_text_counts := TDictionary<string, Integer>.Create;
     m_session_text_last_seen := TDictionary<string, Int64>.Create;
     m_session_text_order := TQueue<string>.Create;
     m_session_commit_serial := 0;
+    m_last_output_commit_text := '';
+    m_prev_output_commit_text := '';
     m_context_db_bonus_cache_key := '';
     m_context_db_bonus_cache := TDictionary<string, Integer>.Create;
     SetLength(m_candidates, 0);
@@ -390,6 +403,12 @@ begin
     begin
         m_context_order.Free;
         m_context_order := nil;
+    end;
+
+    if m_phrase_context_order <> nil then
+    begin
+        m_phrase_context_order.Free;
+        m_phrase_context_order := nil;
     end;
 
     if m_session_text_order <> nil then
@@ -421,6 +440,12 @@ begin
     begin
         m_context_pairs.Free;
         m_context_pairs := nil;
+    end;
+
+    if m_phrase_context_pairs <> nil then
+    begin
+        m_phrase_context_pairs.Free;
+        m_phrase_context_pairs := nil;
     end;
 
     if m_session_text_counts <> nil then
@@ -1560,6 +1585,207 @@ var
         Result := True;
     end;
 
+    function try_build_runtime_common_pattern_candidate(out out_candidate: TncCandidate): Boolean;
+    const
+        c_runtime_common_pattern_bonus = 560;
+        c_runtime_common_pattern_step = 40;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        expected_units: TArray<string>;
+        local_lookup: TncCandidateList;
+        chosen: TncCandidate;
+        unit_idx: Integer;
+        best_rank: Integer;
+        total_score: Integer;
+
+        function syllable_equals(const left_value: string; const right_value: string): Boolean;
+        begin
+            Result := SameText(left_value, right_value);
+        end;
+
+        function pick_expected_single_char(
+            const syllable_text: string;
+            const expected_text: string;
+            out out_single: TncCandidate
+        ): Boolean;
+        var
+            candidate_idx: Integer;
+            rank_score: Integer;
+        begin
+            Result := False;
+            out_single.text := '';
+            out_single.comment := '';
+            out_single.score := 0;
+            out_single.source := cs_rule;
+            out_single.has_dict_weight := False;
+            out_single.dict_weight := 0;
+
+            if (syllable_text = '') or (expected_text = '') then
+            begin
+                Exit;
+            end;
+            if not m_dictionary.lookup(syllable_text, local_lookup) then
+            begin
+                Exit;
+            end;
+
+            best_rank := Low(Integer);
+            for candidate_idx := 0 to High(local_lookup) do
+            begin
+                if Trim(local_lookup[candidate_idx].text) <> expected_text then
+                begin
+                    Continue;
+                end;
+                if not is_single_text_unit(expected_text) then
+                begin
+                    Continue;
+                end;
+
+                rank_score := local_lookup[candidate_idx].score;
+                if local_lookup[candidate_idx].source = cs_user then
+                begin
+                    Inc(rank_score, c_user_score_bonus);
+                end;
+                if rank_score > best_rank then
+                begin
+                    best_rank := rank_score;
+                    out_single := local_lookup[candidate_idx];
+                    Result := True;
+                end;
+            end;
+        end;
+
+        function try_match_expected_units(out out_units: TArray<string>): Boolean;
+        begin
+            SetLength(out_units, 0);
+            if Length(syllables) <> 2 then
+            begin
+                Exit(False);
+            end;
+
+            if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E2A)));
+            end
+            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+                syllable_equals(syllables[1].text, 'ge')) then
+            begin
+                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'yi') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'liang') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E24)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'ji') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($51E0)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'mei') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($6BCF)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'san') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E09)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'si') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($56DB)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'wu') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E94)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'liu') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($516D)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'qi') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E03)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'ba') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($516B)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'jiu') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E5D)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'shi') and syllable_equals(syllables[1].text, 'ge') then
+            begin
+                out_units := TArray<string>.Create(string(Char($5341)), string(Char($4E2A)));
+            end
+            else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'yang') then
+            begin
+                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($6837)));
+            end
+            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+                syllable_equals(syllables[1].text, 'yang')) then
+            begin
+                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($6837)));
+            end
+            else if syllable_equals(syllables[0].text, 'you') and syllable_equals(syllables[1].text, 'dian') then
+            begin
+                out_units := TArray<string>.Create(string(Char($6709)), string(Char($70B9)));
+            end
+            else
+            begin
+                Exit(False);
+            end;
+
+            Result := Length(out_units) = Length(syllables);
+        end;
+    begin
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
+
+        if (m_dictionary = nil) or repeated_two_syllable_query then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(lookup_text);
+        finally
+            parser.Free;
+        end;
+
+        if not try_match_expected_units(expected_units) then
+        begin
+            Exit;
+        end;
+
+        total_score := 0;
+        for unit_idx := 0 to High(expected_units) do
+        begin
+            if not pick_expected_single_char(syllables[unit_idx].text, expected_units[unit_idx], chosen) then
+            begin
+                Exit;
+            end;
+
+            out_candidate.text := out_candidate.text + expected_units[unit_idx];
+            Inc(total_score, chosen.score);
+        end;
+
+        out_candidate.score := (total_score * 2) + c_runtime_common_pattern_bonus +
+            (Length(expected_units) * c_runtime_common_pattern_step);
+        out_candidate.comment := '';
+        out_candidate.source := cs_rule;
+        Result := True;
+    end;
+
     procedure merge_runtime_constructed_candidates(var candidates: TncCandidateList);
     var
         runtime_candidates: TncCandidateList;
@@ -1577,6 +1803,14 @@ var
         SetLength(runtime_candidates, 0);
 
         if try_build_runtime_chain_candidate(runtime_item) then
+        begin
+            SetLength(runtime_candidates, runtime_count + 1);
+            runtime_candidates[runtime_count] := runtime_item;
+            Inc(runtime_count);
+            runtime_phrase_added := True;
+        end;
+
+        if try_build_runtime_common_pattern_candidate(runtime_item) then
         begin
             SetLength(runtime_candidates, runtime_count + 1);
             runtime_candidates[runtime_count] := runtime_item;
@@ -2782,6 +3016,11 @@ begin
         m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
             [Ord(has_multi_syllable_input), Ord(has_segment_candidates), Ord(has_internal_dangling_initial),
             Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+        if Length(m_candidates) > 0 then
+        begin
+            m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                get_candidate_debug_summary(m_candidates[0]);
+        end;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -2814,6 +3053,11 @@ begin
         m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
             [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
             Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+        if Length(m_candidates) > 0 then
+        begin
+            m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                get_candidate_debug_summary(m_candidates[0]);
+        end;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -2829,6 +3073,11 @@ begin
     m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
         [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
         Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+    if Length(m_candidates) > 0 then
+    begin
+        m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+            get_candidate_debug_summary(m_candidates[0]);
+    end;
     m_page_index := 0;
     m_selected_index := 0;
 end;
@@ -2958,10 +3207,10 @@ function TncEngine.get_session_text_bonus(const candidate_text: string): Integer
 const
     c_multi_text_step = 110;
     c_multi_text_base = 70;
-    c_multi_text_cap = 520;
+    c_multi_text_cap = 640;
     c_single_text_step = 48;
     c_single_text_base = 24;
-    c_single_text_cap = 180;
+    c_single_text_cap = 220;
     c_recent_phrase_bonus_top = 240;
     c_recent_phrase_bonus_mid = 150;
     c_recent_phrase_bonus_tail = 70;
@@ -3016,6 +3265,10 @@ begin
             recent_bonus := c_recent_single_bonus_tail;
         end;
         Inc(Result, recent_bonus);
+        if (count >= 3) and (serial_gap <= 2) then
+        begin
+            Inc(Result, 24);
+        end;
         if Result > c_single_text_cap then
         begin
             Result := c_single_text_cap;
@@ -3042,9 +3295,85 @@ begin
         recent_bonus := c_recent_phrase_bonus_tail;
     end;
     Inc(Result, recent_bonus);
+    if (count >= 2) and (serial_gap <= 2) then
+    begin
+        Inc(Result, 96);
+    end;
+    if (count >= 3) and (serial_gap <= 4) then
+    begin
+        Inc(Result, 72);
+    end;
     if Result > c_multi_text_cap then
     begin
         Result := c_multi_text_cap;
+    end;
+end;
+
+function TncEngine.get_phrase_context_bonus(const candidate_text: string): Integer;
+const
+    c_phrase_pair_step = 120;
+    c_phrase_pair_cap = 360;
+    c_phrase_trigram_step = 150;
+    c_phrase_trigram_cap = 460;
+    c_phrase_context_cap = 620;
+var
+    pair_count: Integer;
+    pair_bonus: Integer;
+    trigram_count: Integer;
+    trigram_bonus: Integer;
+    key: string;
+    text_key: string;
+begin
+    Result := 0;
+    if m_phrase_context_pairs = nil then
+    begin
+        Exit;
+    end;
+
+    text_key := Trim(candidate_text);
+    if (text_key = '') or (m_last_output_commit_text = '') then
+    begin
+        Exit;
+    end;
+
+    pair_bonus := 0;
+    trigram_bonus := 0;
+
+    key := m_last_output_commit_text + #1 + text_key;
+    if m_phrase_context_pairs.TryGetValue(key, pair_count) and (pair_count > 0) then
+    begin
+        pair_bonus := pair_count * c_phrase_pair_step;
+        if pair_bonus > c_phrase_pair_cap then
+        begin
+            pair_bonus := c_phrase_pair_cap;
+        end;
+    end;
+
+    if m_prev_output_commit_text <> '' then
+    begin
+        key := m_prev_output_commit_text + #2 + m_last_output_commit_text + #1 + text_key;
+        if m_phrase_context_pairs.TryGetValue(key, trigram_count) and (trigram_count > 0) then
+        begin
+            trigram_bonus := trigram_count * c_phrase_trigram_step;
+            if trigram_bonus > c_phrase_trigram_cap then
+            begin
+                trigram_bonus := c_phrase_trigram_cap;
+            end;
+        end;
+    end;
+
+    if trigram_bonus > 0 then
+    begin
+        Result := trigram_bonus + (pair_bonus div 2);
+    end
+    else
+    begin
+        Result := pair_bonus;
+    end;
+
+    if Result > c_phrase_context_cap then
+    begin
+        Result := c_phrase_context_cap;
     end;
 end;
 
@@ -3114,7 +3443,7 @@ begin
     end;
 end;
 
-function TncEngine.get_context_bonus(const candidate_text: string): Integer;
+function TncEngine.get_text_context_bonus(const candidate_text: string): Integer;
 const
     c_context_combined_cap = 620;
 var
@@ -3262,6 +3591,39 @@ begin
     if Result > c_context_combined_cap then
     begin
         Result := c_context_combined_cap;
+    end;
+end;
+
+function TncEngine.get_context_bonus(const candidate_text: string): Integer;
+const
+    c_context_total_cap = 760;
+var
+    text_context_bonus: Integer;
+    phrase_context_bonus: Integer;
+begin
+    text_context_bonus := get_text_context_bonus(candidate_text);
+    phrase_context_bonus := get_phrase_context_bonus(candidate_text);
+
+    if text_context_bonus >= phrase_context_bonus then
+    begin
+        Result := text_context_bonus;
+        if phrase_context_bonus > 0 then
+        begin
+            Inc(Result, phrase_context_bonus div 2);
+        end;
+    end
+    else
+    begin
+        Result := phrase_context_bonus;
+        if text_context_bonus > 0 then
+        begin
+            Inc(Result, text_context_bonus div 2);
+        end;
+    end;
+
+    if Result > c_context_total_cap then
+    begin
+        Result := c_context_total_cap;
     end;
 end;
 
@@ -3626,6 +3988,32 @@ begin
         cs_ai:
             Dec(Result, c_ai_score_penalty);
     end;
+end;
+
+function TncEngine.get_candidate_debug_summary(const candidate: TncCandidate): string;
+var
+    text_context_bonus: Integer;
+    phrase_context_bonus: Integer;
+    context_bonus: Integer;
+    session_bonus: Integer;
+    rank_score: Integer;
+    layer_value: Integer;
+begin
+    text_context_bonus := get_text_context_bonus(candidate.text);
+    phrase_context_bonus := get_phrase_context_bonus(candidate.text);
+    context_bonus := get_context_bonus(candidate.text);
+    session_bonus := get_session_text_bonus(candidate.text);
+    if candidate.comment <> '' then
+    begin
+        session_bonus := session_bonus div 2;
+    end;
+    rank_score := get_rank_score(candidate);
+    layer_value := get_multi_syllable_intent_layer(candidate);
+
+    Result := Format(
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d sess=%d layer=%d partial=%d]',
+        [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
+        phrase_context_bonus, session_bonus, layer_value, Ord(candidate.comment <> '')]);
 end;
 
 function TncEngine.compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
@@ -5413,6 +5801,72 @@ begin
     end;
 end;
 
+procedure TncEngine.note_output_phrase_context(const committed_text: string);
+var
+    count: Integer;
+    evict_key: string;
+    text_key: string;
+    phrase_key: string;
+begin
+    text_key := Trim(committed_text);
+    if (text_key = '') or (m_phrase_context_pairs = nil) or (m_phrase_context_order = nil) then
+    begin
+        Exit;
+    end;
+
+    if m_last_output_commit_text <> '' then
+    begin
+        phrase_key := m_last_output_commit_text + #1 + text_key;
+        if m_phrase_context_pairs.TryGetValue(phrase_key, count) then
+        begin
+            Inc(count);
+            m_phrase_context_pairs.AddOrSetValue(phrase_key, count);
+        end
+        else
+        begin
+            m_phrase_context_pairs.Add(phrase_key, 1);
+        end;
+        m_phrase_context_order.Enqueue(phrase_key);
+    end;
+
+    if (m_prev_output_commit_text <> '') and (m_last_output_commit_text <> '') then
+    begin
+        phrase_key := m_prev_output_commit_text + #2 + m_last_output_commit_text + #1 + text_key;
+        if m_phrase_context_pairs.TryGetValue(phrase_key, count) then
+        begin
+            Inc(count);
+            m_phrase_context_pairs.AddOrSetValue(phrase_key, count);
+        end
+        else
+        begin
+            m_phrase_context_pairs.Add(phrase_key, 1);
+        end;
+        m_phrase_context_order.Enqueue(phrase_key);
+    end;
+
+    while m_phrase_context_order.Count > c_phrase_context_history_limit do
+    begin
+        evict_key := m_phrase_context_order.Dequeue;
+        if not m_phrase_context_pairs.TryGetValue(evict_key, count) then
+        begin
+            Continue;
+        end;
+
+        Dec(count);
+        if count <= 0 then
+        begin
+            m_phrase_context_pairs.Remove(evict_key);
+        end
+        else
+        begin
+            m_phrase_context_pairs.AddOrSetValue(evict_key, count);
+        end;
+    end;
+
+    m_prev_output_commit_text := m_last_output_commit_text;
+    m_last_output_commit_text := text_key;
+end;
+
 procedure TncEngine.record_context_pair(const left_text: string; const committed_text: string);
 var
     context_variants: TArray<string>;
@@ -6491,6 +6945,10 @@ begin
     if (commit_text <> '') and (commit_text <> commit_segment_text) then
     begin
         note_session_commit(commit_text);
+    end;
+    if commit_text <> '' then
+    begin
+        note_output_phrase_context(commit_text);
     end;
     m_confirmed_text := '';
     m_segment_left_context := '';
