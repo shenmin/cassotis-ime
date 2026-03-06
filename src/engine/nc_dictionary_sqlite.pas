@@ -334,20 +334,85 @@ end;
 function calc_text_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_text_bonus_max = 520;
+    c_text_bonus_max = 620;
 begin
     Result := (calc_learning_bonus(commit_count, last_used_unix, now_unix) * 3) div 5;
     if commit_count >= 2 then
     begin
-        Inc(Result, 40);
+        Inc(Result, 60);
+    end;
+    if commit_count >= 3 then
+    begin
+        Inc(Result, 50);
     end;
     if commit_count >= 4 then
     begin
         Inc(Result, 40);
     end;
+    if commit_count >= 6 then
+    begin
+        Inc(Result, 30);
+    end;
     if Result > c_text_bonus_max then
     begin
         Result := c_text_bonus_max;
+    end;
+end;
+
+function calc_context_bigram_bonus(const commit_count: Integer; const last_used_unix: Int64;
+    const now_unix: Int64): Integer;
+const
+    c_bigram_bonus_cap = 620;
+    c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_7_days = 7 * c_sec_per_day;
+    c_sec_per_30_days = 30 * c_sec_per_day;
+    c_sec_per_90_days = 90 * c_sec_per_day;
+var
+    recency_bonus: Integer;
+    age_seconds: Int64;
+begin
+    Result := 0;
+    if commit_count <= 0 then
+    begin
+        Exit;
+    end;
+
+    Result := commit_count * 96;
+    if commit_count >= 2 then
+    begin
+        Inc(Result, 46);
+    end;
+    if commit_count >= 4 then
+    begin
+        Inc(Result, 38);
+    end;
+
+    recency_bonus := 0;
+    if (last_used_unix > 0) and (now_unix >= last_used_unix) then
+    begin
+        age_seconds := now_unix - last_used_unix;
+        if age_seconds <= c_sec_per_day then
+        begin
+            recency_bonus := 90;
+        end
+        else if age_seconds <= c_sec_per_7_days then
+        begin
+            recency_bonus := 60;
+        end
+        else if age_seconds <= c_sec_per_30_days then
+        begin
+            recency_bonus := 30;
+        end
+        else if age_seconds <= c_sec_per_90_days then
+        begin
+            recency_bonus := 14;
+        end;
+    end;
+    Inc(Result, recency_bonus);
+
+    if Result > c_bigram_bonus_cap then
+    begin
+        Result := c_bigram_bonus_cap;
     end;
 end;
 
@@ -385,6 +450,7 @@ var
     variant_text: string;
     idx: Integer;
     start_idx: Integer;
+    min_start_idx: Integer;
 begin
     SetLength(Result, 0);
     variant_text := Trim(context_text);
@@ -405,7 +471,8 @@ begin
             Exit;
         end;
 
-        for start_idx := Max(0, Length(context_units) - 2) to Length(context_units) - 1 do
+        min_start_idx := Max(0, Length(context_units) - 3);
+        for start_idx := min_start_idx to Length(context_units) - 1 do
         begin
             variant_text := '';
             for idx := start_idx to High(context_units) do
@@ -1943,13 +2010,16 @@ const
     c_initial_single_char_penalty = 120;
     c_single_letter_full_query_extra_penalty = 120;
     c_typo_transpose_penalty = 80;
-    // For malformed non-full keys (e.g. "chagn"), allow typo swap at length >= 5.
-    c_typo_min_query_len_nonfull = 5;
-    // For full pinyin keys (e.g. "duole"), keep a stricter threshold.
-    c_typo_min_query_len_full = 6;
-    c_typo_probe_limit = 24;
-    c_typo_max_added = 16;
-    c_typo_prefix_probe_limit = 8;
+    // For malformed non-full keys (e.g. "chagn"), adjacent-swap fallback
+    // should stay conservative because earlier normalization already handles
+    // the highest-value short typos.
+    c_typo_min_query_len_nonfull = 6;
+    // Full pinyin adjacent-swap probing is only worth trying on longer inputs;
+    // keep short exact full keys strict to avoid polluting common lookups.
+    c_typo_min_query_len_full = 7;
+    c_typo_probe_limit = 18;
+    c_typo_max_added = 12;
+    c_typo_prefix_probe_limit = 6;
     c_typo_prefix_extra_penalty = 120;
     c_full_query_dual_jianpin_len_min = 2;
     c_full_query_dual_jianpin_len_max = 4;
@@ -3659,15 +3729,14 @@ end;
 
 function TncSqliteDictionary.get_context_bonus(const left_text: string; const candidate_text: string): Integer;
 const
-    query_sql = 'SELECT commit_count FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
-    c_bigram_score_step = 110;
-    c_bigram_score_max = 520;
+    query_sql = 'SELECT commit_count, last_used FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
 var
     stmt: Psqlite3_stmt;
     step_result: Integer;
     left_key: string;
     text_key: string;
     commit_count: Integer;
+    last_used_unix: Int64;
 begin
     Result := 0;
     left_key := Trim(left_text);
@@ -3701,7 +3770,8 @@ begin
             Exit;
         end;
 
-        Result := Min(c_bigram_score_max, commit_count * c_bigram_score_step);
+        last_used_unix := m_user_connection.column_int(stmt, 1);
+        Result := calc_context_bigram_bonus(commit_count, last_used_unix, get_unix_time_now);
     finally
         if stmt <> nil then
         begin

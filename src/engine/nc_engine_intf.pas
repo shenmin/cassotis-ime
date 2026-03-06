@@ -1363,6 +1363,28 @@ var
         chain_index: Integer;
         target_index: Integer;
         visible_limit: Integer;
+        chain_units: TArray<string>;
+
+        function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
+        const
+            c_common_classifier_tail =
+                '个个位位次次点点些些种种天天年年月月里里下下回回遍遍声声面面眼眼';
+        begin
+            Result := False;
+            chain_units := split_text_units(Trim(text));
+            if Length(chain_units) <> 2 then
+            begin
+                Exit;
+            end;
+
+            if chain_units[0] = chain_units[1] then
+            begin
+                Result := True;
+                Exit;
+            end;
+
+            Result := Pos(chain_units[1] + chain_units[1], c_common_classifier_tail) > 0;
+        end;
     begin
         if not has_multi_syllable_input then
         begin
@@ -1415,7 +1437,14 @@ var
 
         if input_syllable_count <= 2 then
         begin
-            target_index := 4;
+            if is_runtime_constructed_phrase_friendly(chain_candidate.text) then
+            begin
+                target_index := 2;
+            end
+            else
+            begin
+                target_index := 4;
+            end;
         end
         else if input_syllable_count = 3 then
         begin
@@ -2637,6 +2666,7 @@ var
     variant_text: string;
     idx: Integer;
     start_idx: Integer;
+    min_start_idx: Integer;
 begin
     SetLength(Result, 0);
     variant_text := Trim(context_text);
@@ -2657,7 +2687,13 @@ begin
             Exit;
         end;
 
-        for start_idx := Length(context_units) - 2 to Length(context_units) - 1 do
+        min_start_idx := Length(context_units) - 3;
+        if min_start_idx < 0 then
+        begin
+            min_start_idx := 0;
+        end;
+
+        for start_idx := min_start_idx to Length(context_units) - 1 do
         begin
             if start_idx < 0 then
             begin
@@ -2797,6 +2833,8 @@ begin
 end;
 
 function TncEngine.get_context_bonus(const candidate_text: string): Integer;
+const
+    c_context_combined_cap = 620;
 var
     context_value: string;
     count: Integer;
@@ -2807,6 +2845,50 @@ var
     variant_weight: Integer;
     variant_key: string;
     variant_bonus: Integer;
+    secondary_bonus: Integer;
+
+    function get_variant_weight(const variant_index: Integer): Integer;
+    begin
+        case variant_index of
+            0:
+                Result := 100;
+            1:
+                Result := 84;
+            2:
+                Result := 62;
+        else
+            Result := 42;
+        end;
+    end;
+
+    function merge_variant_bonus(const current_bonus: Integer; const weighted_bonus: Integer): Integer;
+    begin
+        Result := current_bonus;
+        if weighted_bonus <= 0 then
+        begin
+            Exit;
+        end;
+
+        if Result <= 0 then
+        begin
+            Result := weighted_bonus;
+            Exit;
+        end;
+
+        if weighted_bonus > Result then
+        begin
+            Result := weighted_bonus + (Result div 3);
+        end
+        else
+        begin
+            Result := Result + (weighted_bonus div 3);
+        end;
+
+        if Result > c_context_combined_cap then
+        begin
+            Result := c_context_combined_cap;
+        end;
+    end;
 begin
     Result := 0;
     local_bonus := 0;
@@ -2836,14 +2918,7 @@ begin
     begin
         for variant_idx := 0 to High(context_variants) do
         begin
-            case variant_idx of
-                0:
-                    variant_weight := 100;
-                1:
-                    variant_weight := 72;
-            else
-                variant_weight := 46;
-            end;
+            variant_weight := get_variant_weight(variant_idx);
 
             variant_key := context_variants[variant_idx] + #1 + candidate_text;
             if not m_context_pairs.TryGetValue(variant_key, count) then
@@ -2857,10 +2932,7 @@ begin
                 variant_bonus := c_context_score_bonus_max;
             end;
             variant_bonus := (variant_bonus * variant_weight) div 100;
-            if variant_bonus > local_bonus then
-            begin
-                local_bonus := variant_bonus;
-            end;
+            local_bonus := merge_variant_bonus(local_bonus, variant_bonus);
         end;
     end;
 
@@ -2874,14 +2946,7 @@ begin
 
         for variant_idx := 0 to High(context_variants) do
         begin
-            case variant_idx of
-                0:
-                    variant_weight := 100;
-                1:
-                    variant_weight := 72;
-            else
-                variant_weight := 46;
-            end;
+            variant_weight := get_variant_weight(variant_idx);
 
             variant_key := context_variants[variant_idx] + #1 + candidate_text;
             if not m_context_db_bonus_cache.TryGetValue(variant_key, variant_bonus) then
@@ -2891,20 +2956,28 @@ begin
             end;
 
             variant_bonus := (variant_bonus * variant_weight) div 100;
-            if variant_bonus > persistent_bonus then
-            begin
-                persistent_bonus := variant_bonus;
-            end;
+            persistent_bonus := merge_variant_bonus(persistent_bonus, variant_bonus);
         end;
     end;
 
     if local_bonus >= persistent_bonus then
     begin
         Result := local_bonus;
+        secondary_bonus := persistent_bonus;
     end
     else
     begin
         Result := persistent_bonus;
+        secondary_bonus := local_bonus;
+    end;
+
+    if secondary_bonus > 0 then
+    begin
+        Inc(Result, secondary_bonus div 2);
+    end;
+    if Result > c_context_combined_cap then
+    begin
+        Result := c_context_combined_cap;
     end;
 end;
 
