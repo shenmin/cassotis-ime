@@ -4,6 +4,7 @@ interface
 
 uses
     System.SysUtils,
+    System.Classes,
     System.IOUtils,
     System.SyncObjs,
     System.Generics.Collections,
@@ -51,7 +52,9 @@ type
         m_context_pairs: TDictionary<string, Integer>;
         m_context_order: TQueue<string>;
         m_session_text_counts: TDictionary<string, Integer>;
+        m_session_text_last_seen: TDictionary<string, Int64>;
         m_session_text_order: TQueue<string>;
+        m_session_commit_serial: Int64;
         m_context_db_bonus_cache_key: string;
         m_context_db_bonus_cache: TDictionary<string, Integer>;
         m_pending_commit_text: string;
@@ -60,6 +63,7 @@ type
         m_last_lookup_key: string;
         m_last_lookup_normalized_from: string;
         m_last_lookup_syllable_count: Integer;
+        m_last_lookup_debug_extra: string;
         m_single_quote_open: Boolean;
         m_double_quote_open: Boolean;
         m_page_index: Integer;
@@ -92,6 +96,7 @@ type
         function is_full_pinyin_key(const value: string): Boolean;
         function normalize_adjacent_swap_typo(const value: string): string;
         function split_text_units(const input_text: string): TArray<string>;
+        function is_common_surname_text(const value: string): Boolean;
         function ai_candidate_matches_pinyin(const candidate_text: string; const pinyin_text: string): Boolean;
         procedure filter_ai_candidates_by_pinyin(var candidates: TncCandidateList; const pinyin_text: string);
         procedure ensure_non_ai_first(var candidates: TncCandidateList);
@@ -163,11 +168,6 @@ const
     c_session_text_history_limit = 256;
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
-    c_common_surname_chars =
-        '赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜戚谢邹喻苏潘葛范彭郎鲁韦马苗凤方俞任袁柳鲍史唐费' +
-        '薛雷贺倪汤殷罗毕郝邬安常乐于傅皮齐康伍余元顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米明臧计伏成戴' +
-        '宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林' +
-        '钟徐邱骆高夏蔡田樊胡凌霍虞万柯卢莫房缪解应丁邓郁崔龚程邢裴陆荣翁荀羊惠甄封芮储靳段巫焦巴弓牧车侯宓蓬全';
 
 type
     TncAiSharedProvider = class(TncAiProvider)
@@ -346,6 +346,7 @@ begin
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
+    m_last_lookup_debug_extra := '';
     m_single_quote_open := False;
     m_double_quote_open := False;
     m_page_index := 0;
@@ -361,7 +362,9 @@ begin
     m_context_pairs := TDictionary<string, Integer>.Create;
     m_context_order := TQueue<string>.Create;
     m_session_text_counts := TDictionary<string, Integer>.Create;
+    m_session_text_last_seen := TDictionary<string, Int64>.Create;
     m_session_text_order := TQueue<string>.Create;
+    m_session_commit_serial := 0;
     m_context_db_bonus_cache_key := '';
     m_context_db_bonus_cache := TDictionary<string, Integer>.Create;
     SetLength(m_candidates, 0);
@@ -393,6 +396,12 @@ begin
     begin
         m_session_text_order.Free;
         m_session_text_order := nil;
+    end;
+
+    if m_session_text_last_seen <> nil then
+    begin
+        m_session_text_last_seen.Free;
+        m_session_text_last_seen := nil;
     end;
 
     if m_context_db_bonus_cache <> nil then
@@ -435,6 +444,7 @@ begin
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
+    m_last_lookup_debug_extra := '';
     m_page_index := 0;
     m_selected_index := 0;
     m_confirmed_text := '';
@@ -778,6 +788,8 @@ var
     normalized_lookup_text: string;
     repeated_two_syllable_query: Boolean;
     single_char_partial_min_count: Integer;
+    runtime_phrase_added: Boolean;
+    runtime_redup_added: Boolean;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -917,6 +929,40 @@ var
         begin
             codepoint := ((Ord(value[1]) - $D800) shl 10) + (Ord(value[2]) - $DC00) + $10000;
             Result := True;
+        end;
+    end;
+
+    function is_common_surname_text(const value: string): Boolean;
+    var
+        codepoint: Integer;
+    begin
+        Result := False;
+        if not try_get_single_text_unit_codepoint(value, codepoint) then
+        begin
+            Exit;
+        end;
+
+        case codepoint of
+            $8D75, $94B1, $5B59, $674E, $5468, $5434, $90D1, $738B, $51AF, $9648,
+            $891A, $536B, $848B, $6C88, $97E9, $6768, $6731, $79E6, $8BB8, $4F55,
+            $5415, $65BD, $5F20, $5B54, $66F9, $4E25, $534E, $91D1, $9B4F, $9676,
+            $59DC, $621A, $8C22, $90B9, $55BB, $82CF, $6F58, $845B, $8303, $5F6D,
+            $90CE, $9C81, $97E6, $9A6C, $82D7, $51E4, $65B9, $4FDE, $4EFB, $8881,
+            $67F3, $9C8D, $53F2, $5510, $8D39, $5EC9, $5C91, $859B, $96F7, $8D3A,
+            $502A, $6C64, $6ED5, $6BB7, $7F57, $6BD5, $90DD, $90AC, $5B89, $5E38,
+            $4E50, $4E8E, $5085, $76AE, $9F50, $5EB7, $4F0D, $4F59, $5143, $987E,
+            $5B5F, $5E73, $9EC4, $548C, $7A46, $8427, $5C39, $59DA, $90B5, $6E5B,
+            $6C6A, $7941, $6BDB, $79B9, $72C4, $7C73, $660E, $81E7, $8BA1, $4F0F,
+            $6210, $6234, $5B8B, $8305, $5E9E, $718A, $7EAA, $8212, $5C48, $9879,
+            $795D, $8463, $6881, $675C, $962E, $84DD, $95F5, $5E2D, $5B63, $9EBB,
+            $5F3A, $8D3E, $8DEF, $5A04, $5371, $6C5F, $7AE5, $989C, $90ED, $6885,
+            $76DB, $6797, $949F, $5F90, $90B1, $9A86, $9AD8, $590F, $8521, $7530,
+            $6A0A, $80E1, $51CC, $970D, $865E, $4E07, $67EF, $5362, $83AB, $623F,
+            $7F2A, $89E3, $5E94, $4E01, $9093, $90C1, $5D14, $9F9A, $7A0B, $90A2,
+            $88F4, $9646, $8363, $7FC1, $8340, $7F8A, $60E0, $7504, $5C01, $82AE,
+            $50A8, $9773, $6BB5, $7126, $5DF4, $5F13, $7267, $8F66, $4FAF, $5B93,
+            $84EC, $5168:
+                Result := True;
         end;
     end;
 
@@ -1077,6 +1123,50 @@ var
         end;
 
         Result := units[0] = units[1];
+    end;
+
+    function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
+    var
+        units: TArray<string>;
+        tail_codepoint: Integer;
+    begin
+        Result := False;
+        units := split_text_units(Trim(text));
+        if Length(units) <> 2 then
+        begin
+            Exit;
+        end;
+
+        if units[0] = units[1] then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        if not try_get_single_text_unit_codepoint(units[1], tail_codepoint) then
+        begin
+            Exit;
+        end;
+
+        case tail_codepoint of
+            $4E2A, // 涓?
+            $4F4D, // 浣?
+            $6B21, // 娆?
+            $70B9, // 鐐?
+            $4E9B, // 浜?
+            $79CD, // 绉?
+            $5929, // 澶?
+            $5E74, // 骞?
+            $6708, // 鏈?
+            $91CC, // 閲?
+            $4E0B, // 涓?
+            $56DE, // 鍥?
+            $904D, // 閬?
+            $58F0, // 澹?
+            $9762, // 闈?
+            $773C: // 鐪?
+                Result := True;
+        end;
     end;
 
     procedure ensure_redup_complete_candidate_visible(var candidates: TncCandidateList; const boundary_limit: Integer);
@@ -1356,6 +1446,161 @@ var
         Result := True;
     end;
 
+    function try_build_runtime_chain_candidate(out out_candidate: TncCandidate): Boolean;
+    const
+        c_runtime_phrase_bonus = 220;
+        c_runtime_phrase_per_syllable = 24;
+        c_runtime_phrase_friendly_bonus = 150;
+        c_runtime_phrase_long_bonus = 80;
+    begin
+        Result := try_build_best_single_char_chain(out_candidate);
+        if not Result then
+        begin
+            Exit;
+        end;
+
+        if get_text_unit_count(out_candidate.text) <> input_syllable_count then
+        begin
+            Result := False;
+            Exit;
+        end;
+
+        Inc(out_candidate.score, c_runtime_phrase_bonus + (input_syllable_count * c_runtime_phrase_per_syllable));
+        if input_syllable_count >= 3 then
+        begin
+            Inc(out_candidate.score, c_runtime_phrase_long_bonus);
+        end;
+        if is_runtime_constructed_phrase_friendly(out_candidate.text) then
+        begin
+            Inc(out_candidate.score, c_runtime_phrase_friendly_bonus);
+        end;
+        out_candidate.comment := '';
+        out_candidate.source := cs_rule;
+    end;
+
+    function try_build_runtime_redup_candidate(out out_candidate: TncCandidate): Boolean;
+    const
+        c_runtime_redup_bonus = 420;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        local_lookup: TncCandidateList;
+        idx: Integer;
+        best_index: Integer;
+        best_rank: Integer;
+        rank_score: Integer;
+        chosen: TncCandidate;
+    begin
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
+
+        if (not repeated_two_syllable_query) or (m_dictionary = nil) then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(lookup_text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(syllables) <> 2 then
+        begin
+            Exit;
+        end;
+
+        if not m_dictionary.lookup(syllables[0].text, local_lookup) then
+        begin
+            Exit;
+        end;
+
+        best_index := -1;
+        best_rank := Low(Integer);
+        for idx := 0 to High(local_lookup) do
+        begin
+            chosen := local_lookup[idx];
+            if not is_single_text_unit(Trim(chosen.text)) then
+            begin
+                Continue;
+            end;
+
+            rank_score := chosen.score;
+            if chosen.source = cs_user then
+            begin
+                Inc(rank_score, c_user_score_bonus);
+            end;
+            if is_preferred_partial_single_char_candidate(chosen) then
+            begin
+                Inc(rank_score, 80);
+            end;
+            if rank_score > best_rank then
+            begin
+                best_rank := rank_score;
+                best_index := idx;
+            end;
+        end;
+
+        if best_index < 0 then
+        begin
+            Exit;
+        end;
+
+        chosen := local_lookup[best_index];
+        out_candidate.text := chosen.text + chosen.text;
+        out_candidate.comment := '';
+        out_candidate.score := (chosen.score * 2) + c_runtime_redup_bonus;
+        out_candidate.source := cs_rule;
+        Result := True;
+    end;
+
+    procedure merge_runtime_constructed_candidates(var candidates: TncCandidateList);
+    var
+        runtime_candidates: TncCandidateList;
+        runtime_item: TncCandidate;
+        runtime_count: Integer;
+    begin
+        runtime_phrase_added := False;
+        runtime_redup_added := False;
+        if (not has_multi_syllable_input) or (input_syllable_count < 2) or (input_syllable_count > 4) then
+        begin
+            Exit;
+        end;
+
+        runtime_count := 0;
+        SetLength(runtime_candidates, 0);
+
+        if try_build_runtime_chain_candidate(runtime_item) then
+        begin
+            SetLength(runtime_candidates, runtime_count + 1);
+            runtime_candidates[runtime_count] := runtime_item;
+            Inc(runtime_count);
+            runtime_phrase_added := True;
+        end;
+
+        if try_build_runtime_redup_candidate(runtime_item) then
+        begin
+            SetLength(runtime_candidates, runtime_count + 1);
+            runtime_candidates[runtime_count] := runtime_item;
+            Inc(runtime_count);
+            runtime_phrase_added := True;
+            runtime_redup_added := True;
+        end;
+
+        if runtime_count <= 0 then
+        begin
+            Exit;
+        end;
+
+        candidates := merge_candidate_lists(candidates, runtime_candidates, 0);
+    end;
+
     procedure ensure_best_single_char_chain_visible(var candidates: TncCandidateList);
     var
         chain_candidate: TncCandidate;
@@ -1363,28 +1608,6 @@ var
         chain_index: Integer;
         target_index: Integer;
         visible_limit: Integer;
-        chain_units: TArray<string>;
-
-        function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
-        const
-            c_common_classifier_tail =
-                '个个位位次次点点些些种种天天年年月月里里下下回回遍遍声声面面眼眼';
-        begin
-            Result := False;
-            chain_units := split_text_units(Trim(text));
-            if Length(chain_units) <> 2 then
-            begin
-                Exit;
-            end;
-
-            if chain_units[0] = chain_units[1] then
-            begin
-                Result := True;
-                Exit;
-            end;
-
-            Result := Pos(chain_units[1] + chain_units[1], c_common_classifier_tail) > 0;
-        end;
     begin
         if not has_multi_syllable_input then
         begin
@@ -1560,7 +1783,7 @@ var
         c_forced_partial_penalty_per_syllable = 120;
         c_forced_partial_prefix_bonus = 80;
         // Keep a broader single-char fallback pool so medium-rank common chars
-        // (e.g. "试" under "shi") are not dropped too early.
+        // (e.g. "鐠? under "shi") are not dropped too early.
         c_forced_partial_max_candidates = 64;
     var
         parser: TncPinyinParser;
@@ -2370,6 +2593,7 @@ begin
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
+    m_last_lookup_debug_extra := '';
     if m_composition_text = '' then
     begin
         Exit;
@@ -2416,6 +2640,8 @@ begin
         // continuation options visible to reduce phrase-only crowding.
         single_char_partial_min_count := 2;
     end;
+    runtime_phrase_added := False;
+    runtime_redup_added := False;
     head_only_multi_syllable := m_config.enable_segment_candidates and
         has_multi_syllable_input and
         m_config.segment_head_only_multi_syllable and
@@ -2473,6 +2699,7 @@ begin
         if has_multi_syllable_input then
         begin
             ensure_forced_single_char_partial(raw_candidates);
+            merge_runtime_constructed_candidates(raw_candidates);
             sort_candidates(raw_candidates);
             ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
@@ -2552,6 +2779,9 @@ begin
         end;
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_non_ai_first(m_candidates);
+        m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
+            [Ord(has_multi_syllable_input), Ord(has_segment_candidates), Ord(has_internal_dangling_initial),
+            Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -2581,6 +2811,9 @@ begin
         m_candidates := ai_candidates;
         apply_user_penalties(lookup_text, m_candidates);
         sort_candidates(m_candidates);
+        m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
+            [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
+            Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -2593,6 +2826,9 @@ begin
     m_candidates[0].source := cs_rule;
     m_candidates[0].has_dict_weight := False;
     m_candidates[0].dict_weight := 0;
+    m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
+        [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+        Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
     m_page_index := 0;
     m_selected_index := 0;
 end;
@@ -2687,7 +2923,7 @@ begin
             Exit;
         end;
 
-        min_start_idx := Length(context_units) - 3;
+        min_start_idx := Length(context_units) - 4;
         if min_start_idx < 0 then
         begin
             min_start_idx := 0;
@@ -2726,9 +2962,18 @@ const
     c_single_text_step = 48;
     c_single_text_base = 24;
     c_single_text_cap = 180;
+    c_recent_phrase_bonus_top = 240;
+    c_recent_phrase_bonus_mid = 150;
+    c_recent_phrase_bonus_tail = 70;
+    c_recent_single_bonus_top = 90;
+    c_recent_single_bonus_mid = 56;
+    c_recent_single_bonus_tail = 28;
 var
     unit_count: Integer;
     count: Integer;
+    last_seen_serial: Int64;
+    serial_gap: Int64;
+    recent_bonus: Integer;
     text_key: string;
 begin
     Result := 0;
@@ -2745,9 +2990,32 @@ begin
     end;
 
     unit_count := get_candidate_text_unit_count(text_key);
+    last_seen_serial := 0;
+    serial_gap := High(Int64);
+    if (m_session_text_last_seen <> nil) and
+        m_session_text_last_seen.TryGetValue(text_key, last_seen_serial) and
+        (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+    begin
+        serial_gap := m_session_commit_serial - last_seen_serial;
+    end;
+
     if unit_count <= 1 then
     begin
         Result := c_single_text_base + ((count - 1) * c_single_text_step);
+        recent_bonus := 0;
+        if serial_gap <= 1 then
+        begin
+            recent_bonus := c_recent_single_bonus_top;
+        end
+        else if serial_gap <= 3 then
+        begin
+            recent_bonus := c_recent_single_bonus_mid;
+        end
+        else if serial_gap <= 6 then
+        begin
+            recent_bonus := c_recent_single_bonus_tail;
+        end;
+        Inc(Result, recent_bonus);
         if Result > c_single_text_cap then
         begin
             Result := c_single_text_cap;
@@ -2760,6 +3028,20 @@ begin
     begin
         Inc(Result, 40);
     end;
+    recent_bonus := 0;
+    if serial_gap <= 1 then
+    begin
+        recent_bonus := c_recent_phrase_bonus_top;
+    end
+    else if serial_gap <= 3 then
+    begin
+        recent_bonus := c_recent_phrase_bonus_mid;
+    end
+    else if serial_gap <= 6 then
+    begin
+        recent_bonus := c_recent_phrase_bonus_tail;
+    end;
+    Inc(Result, recent_bonus);
     if Result > c_multi_text_cap then
     begin
         Result := c_multi_text_cap;
@@ -2853,9 +3135,11 @@ var
             0:
                 Result := 100;
             1:
-                Result := 84;
+                Result := 88;
             2:
-                Result := 62;
+                Result := 72;
+            3:
+                Result := 58;
         else
             Result := 42;
         end;
@@ -3596,6 +3880,57 @@ begin
     end;
 end;
 
+function TncEngine.is_common_surname_text(const value: string): Boolean;
+var
+    trimmed: string;
+    codepoint: Integer;
+begin
+    Result := False;
+    trimmed := Trim(value);
+    if trimmed = '' then
+    begin
+        Exit;
+    end;
+
+    if Length(trimmed) = 1 then
+    begin
+        codepoint := Ord(trimmed[1]);
+    end
+    else if (Length(trimmed) = 2) and
+        (Ord(trimmed[1]) >= $D800) and (Ord(trimmed[1]) <= $DBFF) and
+        (Ord(trimmed[2]) >= $DC00) and (Ord(trimmed[2]) <= $DFFF) then
+    begin
+        codepoint := ((Ord(trimmed[1]) - $D800) shl 10) + (Ord(trimmed[2]) - $DC00) + $10000;
+    end
+    else
+    begin
+        Exit;
+    end;
+
+    case codepoint of
+        $8D75, $94B1, $5B59, $674E, $5468, $5434, $90D1, $738B, $51AF, $9648,
+        $891A, $536B, $848B, $6C88, $97E9, $6768, $6731, $79E6, $8BB8, $4F55,
+        $5415, $65BD, $5F20, $5B54, $66F9, $4E25, $534E, $91D1, $9B4F, $9676,
+        $59DC, $621A, $8C22, $90B9, $55BB, $82CF, $6F58, $845B, $8303, $5F6D,
+        $90CE, $9C81, $97E6, $9A6C, $82D7, $51E4, $65B9, $4FDE, $4EFB, $8881,
+        $67F3, $9C8D, $53F2, $5510, $8D39, $5EC9, $5C91, $859B, $96F7, $8D3A,
+        $502A, $6C64, $6ED5, $6BB7, $7F57, $6BD5, $90DD, $90AC, $5B89, $5E38,
+        $4E50, $4E8E, $5085, $76AE, $9F50, $5EB7, $4F0D, $4F59, $5143, $987E,
+        $5B5F, $5E73, $9EC4, $548C, $7A46, $8427, $5C39, $59DA, $90B5, $6E5B,
+        $6C6A, $7941, $6BDB, $79B9, $72C4, $7C73, $660E, $81E7, $8BA1, $4F0F,
+        $6210, $6234, $5B8B, $8305, $5E9E, $718A, $7EAA, $8212, $5C48, $9879,
+        $795D, $8463, $6881, $675C, $962E, $84DD, $95F5, $5E2D, $5B63, $9EBB,
+        $5F3A, $8D3E, $8DEF, $5A04, $5371, $6C5F, $7AE5, $989C, $90ED, $6885,
+        $76DB, $6797, $949F, $5F90, $90B1, $9A86, $9AD8, $590F, $8521, $7530,
+        $6A0A, $80E1, $51CC, $970D, $865E, $4E07, $67EF, $5362, $83AB, $623F,
+        $7F2A, $89E3, $5E94, $4E01, $9093, $90C1, $5D14, $9F9A, $7A0B, $90A2,
+        $88F4, $9646, $8363, $7FC1, $8340, $7F8A, $60E0, $7504, $5C01, $82AE,
+        $50A8, $9773, $6BB5, $7126, $5DF4, $5F13, $7267, $8F66, $4FAF, $5B93,
+        $84EC, $5168:
+            Result := True;
+    end;
+end;
+
 function TncEngine.ai_candidate_matches_pinyin(const candidate_text: string; const pinyin_text: string): Boolean;
 var
     parser: TncPinyinParser;
@@ -3826,6 +4161,26 @@ begin
                 if (existing_index >= 0) and (existing_index < list.Count) then
                 begin
                     candidate := list[existing_index];
+                    if secondary_candidates[i].score > candidate.score then
+                    begin
+                        candidate.score := secondary_candidates[i].score;
+                    end;
+
+                    if (candidate.comment <> '') and (secondary_candidates[i].comment = '') then
+                    begin
+                        candidate.comment := '';
+                    end
+                    else if (secondary_candidates[i].comment <> '') and (candidate.comment = '') then
+                    begin
+                        candidate.comment := secondary_candidates[i].comment;
+                    end;
+
+                    if (secondary_candidates[i].comment = candidate.comment) and
+                        (get_source_rank(secondary_candidates[i].source) < get_source_rank(candidate.source)) then
+                    begin
+                        candidate.source := secondary_candidates[i].source;
+                    end;
+
                     if (secondary_candidates[i].comment <> '') and (candidate.comment = '') then
                     begin
                         candidate.comment := secondary_candidates[i].comment;
@@ -4427,7 +4782,7 @@ var
                                 Continue;
                             end;
                             // For one-syllable segment expansion, multi-char words are typically noisy bridges
-                            // (e.g. "xian" -> "西安") and hurt full-path quality.
+                            // (e.g. "xian" -> "鐟楀灝鐣?) and hurt full-path quality.
                             if candidate_has_non_ascii and (local_segment_len = 1) and
                                 (candidate_text_units > 1) then
                             begin
@@ -4438,7 +4793,7 @@ var
                             if not is_multi_char_word(local_candidate.text) then
                             begin
                                 // Allow only the top leading single-char candidate so cases like
-                                // "wo + faxian" can become "我发现", while still blocking noisy
+                                // "wo + faxian" can become "閹存垵褰傞悳?, while still blocking noisy
                                 // single-char full-path combinations in general.
                                 if candidate_has_non_ascii and (local_segment_len = 1) and
                                     (candidate_index < c_segment_full_single_top_n) then
@@ -4533,7 +4888,7 @@ var
 
                             if is_first_overall_segment and (state_pos = 0) and (local_segment_len = 1) and
                                 (next_pos < Length(syllables)) and (Length(local_candidate.text) = 1) and
-                                (Pos(local_candidate.text, c_common_surname_chars) > 0) then
+                                is_common_surname_text(local_candidate.text) then
                             begin
                                 Inc(local_new_state.score, c_segment_surname_bonus);
                             end;
@@ -4703,7 +5058,7 @@ begin
                         Continue;
                     end;
                     // Avoid over-complete long phrase suggestions on incomplete trailing initials,
-                    // e.g. "jibuzh" => "记不住" + dangling "h".
+                    // e.g. "jibuzh" => "鐠侀绗夋担? + dangling "h".
                     if (segment_len >= 3) and (remaining_syllables = 1) and
                         (High(syllables) >= 0) and
                         is_single_initial_token(syllables[High(syllables)].text) and
@@ -4743,7 +5098,7 @@ begin
                     end;
 
                     if is_first_overall_segment and (segment_len = 1) and (remaining_syllables > 0) and
-                        (Length(candidate.text) = 1) and (Pos(candidate.text, c_common_surname_chars) > 0) then
+                        (Length(candidate.text) = 1) and is_common_surname_text(candidate.text) then
                     begin
                         Inc(score_value, c_segment_surname_bonus);
                     end;
@@ -4981,12 +5336,27 @@ end;
 
 procedure TncEngine.update_left_context(const committed_text: string);
 var
+    context_units: TArray<string>;
+    idx: Integer;
+    min_idx: Integer;
     next_context: string;
 begin
-    next_context := committed_text;
-    if Length(next_context) > c_left_context_max_len then
+    next_context := Trim(m_left_context + committed_text);
+    if next_context = '' then
     begin
-        next_context := Copy(next_context, Length(next_context) - c_left_context_max_len + 1, c_left_context_max_len);
+        m_left_context := '';
+        Exit;
+    end;
+
+    context_units := split_text_units(next_context);
+    if Length(context_units) > c_left_context_max_len then
+    begin
+        min_idx := Length(context_units) - c_left_context_max_len;
+        next_context := '';
+        for idx := min_idx to High(context_units) do
+        begin
+            next_context := next_context + context_units[idx];
+        end;
     end;
     m_left_context := next_context;
 end;
@@ -5003,6 +5373,8 @@ begin
         Exit;
     end;
 
+    Inc(m_session_commit_serial);
+
     if m_session_text_counts.TryGetValue(text_key, count) then
     begin
         Inc(count);
@@ -5011,6 +5383,10 @@ begin
     else
     begin
         m_session_text_counts.Add(text_key, 1);
+    end;
+    if m_session_text_last_seen <> nil then
+    begin
+        m_session_text_last_seen.AddOrSetValue(text_key, m_session_commit_serial);
     end;
 
     m_session_text_order.Enqueue(text_key);
@@ -5025,6 +5401,10 @@ begin
         if count <= 0 then
         begin
             m_session_text_counts.Remove(evict_text);
+            if m_session_text_last_seen <> nil then
+            begin
+                m_session_text_last_seen.Remove(evict_text);
+            end;
         end
         else
         begin
@@ -5793,6 +6173,10 @@ begin
 end;
 
 function TncEngine.get_lookup_debug_info: string;
+var
+    debug_parts: TStringList;
+    sqlite_dict: TncSqliteDictionary;
+    context_preview: string;
 begin
     if m_last_lookup_key = '' then
     begin
@@ -5800,13 +6184,47 @@ begin
         Exit;
     end;
 
-    if m_last_lookup_normalized_from <> '' then
-    begin
-        Result := Format('query_norm=[%s->%s]', [m_last_lookup_normalized_from, m_last_lookup_key]);
-    end
-    else
-    begin
-        Result := Format('query=[%s]', [m_last_lookup_key]);
+    debug_parts := TStringList.Create;
+    try
+        debug_parts.Delimiter := ' ';
+        debug_parts.StrictDelimiter := True;
+        if m_last_lookup_normalized_from <> '' then
+        begin
+            debug_parts.Add(Format('query_norm=[%s->%s]', [m_last_lookup_normalized_from, m_last_lookup_key]));
+        end
+        else
+        begin
+            debug_parts.Add(Format('query=[%s]', [m_last_lookup_key]));
+        end;
+
+        if m_last_lookup_syllable_count > 0 then
+        begin
+            debug_parts.Add(Format('syll=%d', [m_last_lookup_syllable_count]));
+        end;
+
+        context_preview := Trim(m_left_context);
+        if context_preview <> '' then
+        begin
+            debug_parts.Add(Format('ctx=[%s]', [context_preview]));
+        end;
+
+        if m_last_lookup_debug_extra <> '' then
+        begin
+            debug_parts.Add(m_last_lookup_debug_extra);
+        end;
+
+        if m_dictionary is TncSqliteDictionary then
+        begin
+            sqlite_dict := TncSqliteDictionary(m_dictionary);
+            if sqlite_dict.get_last_lookup_debug_hint <> '' then
+            begin
+                debug_parts.Add(sqlite_dict.get_last_lookup_debug_hint);
+            end;
+        end;
+
+        Result := Trim(StringReplace(debug_parts.DelimitedText, '"', '', [rfReplaceAll]));
+    finally
+        debug_parts.Free;
     end;
 end;
 

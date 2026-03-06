@@ -30,6 +30,7 @@ type
         m_user_connection: TncSqliteConnection;
         m_contains_popularity_cache: TDictionary<string, Integer>;
         m_prefix_popularity_cache: TDictionary<string, Integer>;
+        m_last_lookup_debug_hint: string;
         function ensure_open: Boolean;
         function get_module_dir: string;
         function find_schema_path: string;
@@ -58,6 +59,7 @@ type
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
+        function get_last_lookup_debug_hint: string;
         property db_path: string read m_base_db_path;
         property user_db_path: string read m_user_db_path;
         property base_ready: Boolean read m_base_ready;
@@ -471,7 +473,7 @@ begin
             Exit;
         end;
 
-        min_start_idx := Max(0, Length(context_units) - 3);
+        min_start_idx := Max(0, Length(context_units) - 4);
         for start_idx := min_start_idx to Length(context_units) - 1 do
         begin
             variant_text := '';
@@ -1043,6 +1045,7 @@ begin
     m_user_connection := nil;
     m_contains_popularity_cache := TDictionary<string, Integer>.Create;
     m_prefix_popularity_cache := TDictionary<string, Integer>.Create;
+    m_last_lookup_debug_hint := '';
 end;
 
 destructor TncSqliteDictionary.Destroy;
@@ -1070,6 +1073,11 @@ begin
     end;
 
     inherited Destroy;
+end;
+
+function TncSqliteDictionary.get_last_lookup_debug_hint: string;
+begin
+    Result := m_last_lookup_debug_hint;
 end;
 
 function TncSqliteDictionary.ensure_open: Boolean;
@@ -2017,6 +2025,8 @@ const
     // Full pinyin adjacent-swap probing is only worth trying on longer inputs;
     // keep short exact full keys strict to avoid polluting common lookups.
     c_typo_min_query_len_full = 7;
+    c_typo_prefix_min_query_len_nonfull = 7;
+    c_typo_prefix_min_query_len_full = 8;
     c_typo_probe_limit = 18;
     c_typo_max_added = 12;
     c_typo_prefix_probe_limit = 6;
@@ -2807,7 +2817,9 @@ var
 
                 // If exact swapped-key rows are absent, probe a small prefix window
                 // (e.g. "chang%") so typo correction still surfaces meaningful heads.
-                if typo_added = before_swap_added then
+                if (((full_pinyin_query and (Length(swap_key) >= c_typo_prefix_min_query_len_full)) or
+                    ((not full_pinyin_query) and (Length(swap_key) >= c_typo_prefix_min_query_len_nonfull))) and
+                    (typo_added = before_swap_added)) then
                 begin
                     prefix_stmt := nil;
                     try
@@ -2856,6 +2868,7 @@ var
     end;
 begin
     SetLength(results, 0);
+    m_last_lookup_debug_hint := '';
     if (pinyin = '') or not ensure_open then
     begin
         Result := False;
@@ -3396,6 +3409,11 @@ begin
             end;
         end;
 
+        m_last_lookup_debug_hint := Format(
+            'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d n=%d]',
+            [Ord(full_pinyin_query), Ord(mixed_mode), Ord(user_nonfull_lookup), Ord(exact_base_hit),
+            Ord(typo_fallback_used), Ord(full_query_dual_jianpin_mode),
+            Ord(disable_long_full_query_jianpin), list.Count]);
         Result := list.Count > 0;
     finally
         if mixed_parser <> nil then
