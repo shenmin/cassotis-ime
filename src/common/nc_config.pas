@@ -236,7 +236,7 @@ begin
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
-    Result.segment_head_only_multi_syllable := True;
+    Result.segment_head_only_multi_syllable := False;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
@@ -282,7 +282,7 @@ begin
         Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
         Result.enable_segment_candidates := ini.ReadBool('engine', 'enable_segment_candidates', True);
         Result.segment_head_only_multi_syllable := ini.ReadBool('engine',
-            'segment_head_only_multi_syllable', True);
+            'segment_head_only_multi_syllable', False);
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
         variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);

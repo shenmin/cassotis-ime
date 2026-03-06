@@ -2025,8 +2025,7 @@ var
             disable_long_full_query_jianpin := (full_query_syllable_count >= 3);
             full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
             if (full_query_jianpin_key <> '') and
-                (not SameText(full_query_jianpin_key, query_key)) and
-                (full_query_syllable_count <= 2) then
+                (not SameText(full_query_jianpin_key, query_key)) then
             begin
                 effective_jianpin_key := full_query_jianpin_key;
                 allow_full_query_jianpin_fallback := True;
@@ -2807,10 +2806,10 @@ begin
         end;
 
         if m_base_ready and should_try_jianpin_lookup(effective_jianpin_key) and
-            (not disable_long_full_query_jianpin) and
+            ((not disable_long_full_query_jianpin) or allow_full_query_jianpin_fallback) and
             ((list.Count = 0) or mixed_mode or (not full_pinyin_query) or
             full_query_dual_jianpin_mode or
-            (allow_full_query_jianpin_fallback and (not exact_base_hit))) then
+            allow_full_query_jianpin_fallback) then
         begin
             typo_fallback_used := append_adjacent_transposition_typo_candidates;
             if (not typo_fallback_used) and mixed_mode and (mixed_full_prefix <> '') then

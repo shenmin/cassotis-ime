@@ -1710,9 +1710,9 @@ var
             Exit;
         end;
 
+        has_complete_phrase := False;
         if input_syllable_count >= 3 then
         begin
-            has_complete_phrase := False;
             for i := 0 to High(candidates) do
             begin
                 if (candidates[i].comment = '') and
@@ -1721,10 +1721,6 @@ var
                     has_complete_phrase := True;
                     Break;
                 end;
-            end;
-            if has_complete_phrase then
-            begin
-                Exit;
             end;
         end;
 
@@ -1768,11 +1764,19 @@ var
 
         // Keep a practical single-char continuation visible, but avoid occupying
         // the very front on longer queries where phrase intent is stronger.
-        if input_syllable_count >= 3 then
+        if input_syllable_count >= 4 then
+        begin
+            target_index := 2;
+        end
+        else if input_syllable_count >= 3 then
         begin
             target_index := 4;
         end
         else
+        begin
+            target_index := 2;
+        end;
+        if (input_syllable_count >= 3) and (not has_complete_phrase) and (target_index > 2) then
         begin
             target_index := 2;
         end;
@@ -2055,10 +2059,10 @@ var
     procedure apply_syllable_single_char_alignment_bonus(var candidates: TncCandidateList);
     const
         c_rank_window = 10;
-        c_rank_step = 8;
-        c_missing_rank_penalty = 40;
-        c_alignment_average_divisor = 2;
-        c_alignment_adjust_cap = 80;
+        c_rank_step = 10;
+        c_missing_rank_penalty = 48;
+        c_alignment_average_divisor = 1;
+        c_alignment_adjust_cap = 120;
         c_alignment_score_gap_limit = 140;
     var
         parser: TncPinyinParser;
@@ -2303,7 +2307,11 @@ begin
         end;
     end;
     m_last_lookup_key := lookup_text;
-    fallback_comment := build_pinyin_comment(lookup_text);
+    fallback_comment := build_pinyin_comment(m_composition_text);
+    if fallback_comment = '' then
+    begin
+        fallback_comment := build_pinyin_comment(lookup_text);
+    end;
     has_multi_syllable_input := fallback_comment <> '';
     has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
     if m_last_lookup_normalized_from <> '' then
@@ -2312,7 +2320,11 @@ begin
         // is usually noisy; force dangling-initial guard to suppress that path.
         has_internal_dangling_initial := True;
     end;
-    input_syllable_count := get_input_syllable_count_for_text(lookup_text);
+    input_syllable_count := get_input_syllable_count_for_text(m_composition_text);
+    if input_syllable_count <= 0 then
+    begin
+        input_syllable_count := get_input_syllable_count_for_text(lookup_text);
+    end;
     m_last_lookup_syllable_count := input_syllable_count;
     repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
     single_char_partial_min_count := 1;
@@ -2324,7 +2336,7 @@ begin
     end;
     head_only_multi_syllable := m_config.enable_segment_candidates and
         has_multi_syllable_input and
-        (m_config.segment_head_only_multi_syllable or (input_syllable_count >= 4)) and
+        m_config.segment_head_only_multi_syllable and
         (not has_internal_dangling_initial);
     if m_dictionary <> nil then
     begin
@@ -3486,6 +3498,10 @@ const
     c_segment_partial_single_top_n = 6;
     c_segment_text_unit_mismatch_penalty = 100;
     c_segment_text_unit_overflow_penalty = 60;
+    c_segment_alignment_rank_window = 6;
+    c_segment_alignment_rank_step = 24;
+    c_segment_alignment_missing_penalty = 60;
+    c_segment_alignment_adjust_cap = 140;
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
@@ -3706,9 +3722,13 @@ var
         allow_single_char_path: Boolean;
         preferred_phrase_flags: TArray<Boolean>;
         preferred_phrase_max_len: TArray<Integer>;
+        single_char_rank_maps: TArray<TDictionary<string, Integer>>;
+        segment_units: TArray<string>;
         text_unit_mismatch: Integer;
         candidate_has_non_ascii: Boolean;
         local_candidate_text: string;
+        local_rank_map: TDictionary<string, Integer>;
+        local_rank: Integer;
 
         function build_state_key(const text: string): string;
         begin
@@ -3825,6 +3845,70 @@ var
                 end;
             end;
         end;
+
+        function get_segment_alignment_adjustment(const start_pos: Integer; const syllable_count: Integer;
+            const candidate_text_value: string): Integer;
+        var
+            unit_idx: Integer;
+            local_adjustment: Integer;
+            local_applied_count: Integer;
+            unit_text: string;
+        begin
+            Result := 0;
+            if (start_pos < 0) or (syllable_count <= 0) then
+            begin
+                Exit;
+            end;
+
+            segment_units := split_text_units(candidate_text_value);
+            if Length(segment_units) <> syllable_count then
+            begin
+                Exit;
+            end;
+
+            local_adjustment := 0;
+            local_applied_count := 0;
+            for unit_idx := 0 to syllable_count - 1 do
+            begin
+                if (start_pos + unit_idx < 0) or (start_pos + unit_idx >= Length(single_char_rank_maps)) then
+                begin
+                    Continue;
+                end;
+
+                local_rank_map := single_char_rank_maps[start_pos + unit_idx];
+                if (local_rank_map = nil) or (local_rank_map.Count = 0) then
+                begin
+                    Continue;
+                end;
+
+                Inc(local_applied_count);
+                unit_text := segment_units[unit_idx];
+                if local_rank_map.TryGetValue(unit_text, local_rank) then
+                begin
+                    Inc(local_adjustment, (c_segment_alignment_rank_window - local_rank) *
+                        c_segment_alignment_rank_step);
+                end
+                else
+                begin
+                    Dec(local_adjustment, c_segment_alignment_missing_penalty);
+                end;
+            end;
+
+            if local_applied_count <= 0 then
+            begin
+                Exit;
+            end;
+
+            Result := local_adjustment div local_applied_count;
+            if Result > c_segment_alignment_adjust_cap then
+            begin
+                Result := c_segment_alignment_adjust_cap;
+            end
+            else if Result < -c_segment_alignment_adjust_cap then
+            begin
+                Result := -c_segment_alignment_adjust_cap;
+            end;
+        end;
     begin
         if Length(syllables) <= 1 then
         begin
@@ -3850,8 +3934,34 @@ var
             state_dedup[0].Add('', 0);
             SetLength(preferred_phrase_flags, Length(syllables));
             SetLength(preferred_phrase_max_len, Length(syllables));
+            SetLength(single_char_rank_maps, Length(syllables));
             for state_pos := 0 to High(syllables) do
             begin
+                single_char_rank_maps[state_pos] := TDictionary<string, Integer>.Create;
+                if m_dictionary.lookup(syllables[state_pos].text, local_lookup_results) then
+                begin
+                    local_rank := 0;
+                    for candidate_index := 0 to High(local_lookup_results) do
+                    begin
+                        local_candidate_text := Trim(local_lookup_results[candidate_index].text);
+                        if (local_candidate_text = '') or
+                            (not is_single_text_unit(local_candidate_text)) or
+                            (not contains_non_ascii(local_candidate_text)) then
+                        begin
+                            Continue;
+                        end;
+
+                        if not single_char_rank_maps[state_pos].ContainsKey(local_candidate_text) then
+                        begin
+                            single_char_rank_maps[state_pos].Add(local_candidate_text, local_rank);
+                            Inc(local_rank);
+                            if local_rank >= c_segment_alignment_rank_window then
+                            begin
+                                Break;
+                            end;
+                        end;
+                    end;
+                end;
                 preferred_phrase_flags[state_pos] := detect_preferred_phrase_at_position(state_pos);
             end;
 
@@ -4007,6 +4117,12 @@ var
                                         (candidate_text_units - local_segment_len) * c_segment_text_unit_overflow_penalty);
                                 end;
                             end;
+                            if candidate_has_non_ascii and (candidate_text_units = local_segment_len) and
+                                (local_segment_len >= 2) then
+                            begin
+                                Inc(local_new_state.score,
+                                    get_segment_alignment_adjustment(state_pos, local_segment_len, local_candidate_text));
+                            end;
 
                             if is_first_overall_segment and (state_pos = 0) and (local_segment_len = 1) and
                                 (next_pos < Length(syllables)) and (Length(local_candidate.text) = 1) and
@@ -4066,6 +4182,11 @@ var
                 begin
                     state_dedup[state_pos].Free;
                     state_dedup[state_pos] := nil;
+                end;
+                if (state_pos <= High(single_char_rank_maps)) and (single_char_rank_maps[state_pos] <> nil) then
+                begin
+                    single_char_rank_maps[state_pos].Free;
+                    single_char_rank_maps[state_pos] := nil;
                 end;
             end;
         end;
