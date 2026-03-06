@@ -1728,6 +1728,19 @@ var
             begin
                 out_units := TArray<string>.Create(string(Char($5341)), string(Char($4E2A)));
             end
+            else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'xie') then
+            begin
+                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E9B)));
+            end
+            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+                syllable_equals(syllables[1].text, 'xie')) then
+            begin
+                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E9B)));
+            end
+            else if syllable_equals(syllables[0].text, 'yi') and syllable_equals(syllables[1].text, 'xie') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E9B)));
+            end
             else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'yang') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($6837)));
@@ -1736,6 +1749,19 @@ var
                 syllable_equals(syllables[1].text, 'yang')) then
             begin
                 out_units := TArray<string>.Create(string(Char($90A3)), string(Char($6837)));
+            end
+            else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'me') then
+            begin
+                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E48)));
+            end
+            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+                syllable_equals(syllables[1].text, 'me')) then
+            begin
+                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E48)));
+            end
+            else if syllable_equals(syllables[0].text, 'zen') and syllable_equals(syllables[1].text, 'me') then
+            begin
+                out_units := TArray<string>.Create(string(Char($600E)), string(Char($4E48)));
             end
             else if syllable_equals(syllables[0].text, 'you') and syllable_equals(syllables[1].text, 'dian') then
             begin
