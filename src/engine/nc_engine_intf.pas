@@ -64,10 +64,12 @@ type
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
         m_has_pending_commit: Boolean;
+        m_pending_commit_allow_learning: Boolean;
         m_last_lookup_key: string;
         m_last_lookup_normalized_from: string;
         m_last_lookup_syllable_count: Integer;
         m_last_lookup_debug_extra: string;
+        m_runtime_chain_text: string;
         m_single_quote_open: Boolean;
         m_double_quote_open: Boolean;
         m_page_index: Integer;
@@ -123,7 +125,8 @@ type
         procedure record_context_pair(const left_text: string; const committed_text: string);
         procedure note_session_commit(const text: string);
         procedure note_output_phrase_context(const committed_text: string);
-        procedure set_pending_commit(const text: string; const remaining_pinyin: string = '');
+        procedure set_pending_commit(const text: string; const remaining_pinyin: string = '';
+            const allow_learning: Boolean = True);
         procedure clear_pending_commit;
         procedure set_ai_provider(const provider: TncAiProvider);
         procedure update_dictionary_state;
@@ -352,10 +355,12 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_pending_commit_allow_learning := True;
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
+    m_runtime_chain_text := '';
     m_single_quote_open := False;
     m_double_quote_open := False;
     m_page_index := 0;
@@ -466,10 +471,12 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_pending_commit_allow_learning := True;
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
+    m_runtime_chain_text := '';
     m_page_index := 0;
     m_selected_index := 0;
     m_confirmed_text := '';
@@ -1787,6 +1794,51 @@ var
     end;
 
     procedure merge_runtime_constructed_candidates(var candidates: TncCandidateList);
+        function has_complete_bmp_cjk_phrase_candidate(const source_candidates: TncCandidateList): Boolean;
+        var
+            candidate_idx: Integer;
+            units: TArray<string>;
+            unit_idx: Integer;
+            codepoint: Integer;
+            valid_phrase: Boolean;
+        begin
+            Result := False;
+            for candidate_idx := 0 to High(source_candidates) do
+            begin
+                if source_candidates[candidate_idx].comment <> '' then
+                begin
+                    Continue;
+                end;
+
+                units := split_text_units(Trim(source_candidates[candidate_idx].text));
+                if Length(units) <> input_syllable_count then
+                begin
+                    Continue;
+                end;
+                if Length(units) < 2 then
+                begin
+                    Continue;
+                end;
+
+                valid_phrase := True;
+                for unit_idx := 0 to High(units) do
+                begin
+                    if (not try_get_single_text_unit_codepoint(units[unit_idx], codepoint)) or
+                        (codepoint < $4E00) or (codepoint > $9FFF) then
+                    begin
+                        valid_phrase := False;
+                        Break;
+                    end;
+                end;
+
+                if valid_phrase then
+                begin
+                    Result := True;
+                    Exit;
+                end;
+            end;
+        end;
+
     var
         runtime_candidates: TncCandidateList;
         runtime_item: TncCandidate;
@@ -1802,12 +1854,15 @@ var
         runtime_count := 0;
         SetLength(runtime_candidates, 0);
 
-        if try_build_runtime_chain_candidate(runtime_item) then
+        if (input_syllable_count = 2) and
+            (not has_complete_bmp_cjk_phrase_candidate(candidates)) and
+            try_build_runtime_chain_candidate(runtime_item) then
         begin
             SetLength(runtime_candidates, runtime_count + 1);
             runtime_candidates[runtime_count] := runtime_item;
             Inc(runtime_count);
             runtime_phrase_added := True;
+            m_runtime_chain_text := runtime_item.text;
         end;
 
         if try_build_runtime_common_pattern_candidate(runtime_item) then
@@ -2828,6 +2883,7 @@ begin
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
+    m_runtime_chain_text := '';
     if m_composition_text = '' then
     begin
         Exit;
@@ -3007,10 +3063,6 @@ begin
         ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
         ensure_single_char_partial_visible(m_candidates, get_candidate_limit, single_char_partial_min_count);
         ensure_hard_single_char_partial_visible(m_candidates);
-        if not head_only_multi_syllable then
-        begin
-            ensure_best_single_char_chain_visible(m_candidates);
-        end;
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_non_ai_first(m_candidates);
         m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
@@ -5699,15 +5751,18 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_pending_commit_allow_learning := True;
     m_page_index := 0;
     build_candidates;
 end;
 
-procedure TncEngine.set_pending_commit(const text: string; const remaining_pinyin: string = '');
+procedure TncEngine.set_pending_commit(const text: string; const remaining_pinyin: string = '';
+    const allow_learning: Boolean = True);
 begin
     m_pending_commit_text := text;
     m_pending_commit_remaining := remaining_pinyin;
     m_has_pending_commit := True;
+    m_pending_commit_allow_learning := allow_learning;
 end;
 
 procedure TncEngine.clear_pending_commit;
@@ -5720,6 +5775,7 @@ begin
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_pending_commit_allow_learning := True;
 end;
 
 procedure TncEngine.update_left_context(const committed_text: string);
@@ -5990,6 +6046,17 @@ var
         Result := True;
     end;
 
+    function is_generic_runtime_chain_selection(const selected: TncCandidate): Boolean;
+    begin
+        Result := False;
+        if (m_runtime_chain_text = '') or selected.has_dict_weight or
+            (selected.source <> cs_rule) or (selected.comment <> '') then
+        begin
+            Exit;
+        end;
+        Result := SameText(m_runtime_chain_text, selected.text);
+    end;
+
     function is_compact_ascii_pinyin(const value: string): Boolean;
     var
         idx: Integer;
@@ -6098,7 +6165,7 @@ var
             Exit;
         end;
 
-        set_pending_commit(selected.text);
+        set_pending_commit(selected.text, '', not is_generic_runtime_chain_selection(selected));
         Result := True;
     end;
 begin
@@ -6206,6 +6273,9 @@ begin
                 begin
                     get_selected_candidate(candidate);
                     commit_text := candidate.text + punct_text;
+                    set_pending_commit(commit_text, '', not is_generic_runtime_chain_selection(candidate));
+                    Result := True;
+                    Exit;
                 end;
 
                 set_pending_commit(commit_text);
@@ -6889,6 +6959,7 @@ var
     prev_left_context: string;
     commit_text: string;
     commit_segment_text: string;
+    allow_learning: Boolean;
 begin
     out_text := '';
     if not m_has_pending_commit then
@@ -6905,14 +6976,16 @@ begin
     end;
 
     out_text := commit_text;
+    allow_learning := m_pending_commit_allow_learning;
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
+    m_pending_commit_allow_learning := True;
     prev_left_context := m_left_context;
     update_left_context(out_text);
     record_context_pair(prev_left_context, out_text);
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
-    if m_dictionary <> nil then
+    if allow_learning and (m_dictionary <> nil) then
     begin
         if (normalized_pinyin <> '') and (commit_segment_text <> '') then
         begin

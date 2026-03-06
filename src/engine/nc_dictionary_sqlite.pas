@@ -2957,6 +2957,13 @@ begin
                     while step_result = SQLITE_ROW do
                     begin
                         text_value := m_user_connection.column_text(stmt, 0);
+                        if full_pinyin_query and
+                            (get_valid_cjk_codepoint_count(text_value) = 1) and
+                            (not single_char_matches_pinyin(query_key, text_value)) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
                         score_value := m_user_connection.column_int(stmt, 1);
                         append_candidate(text_value, '', score_value, cs_user);
                         step_result := m_user_connection.step(stmt);
@@ -3437,7 +3444,6 @@ end;
 function TncSqliteDictionary.single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
 const
     base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
-    user_exists_sql = 'SELECT 1 FROM dict_user WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
 var
     pinyin_key: string;
     text_key: string;
@@ -3482,30 +3488,6 @@ begin
         begin
             m_base_connection.finalize(stmt);
             stmt := nil;
-        end;
-    end;
-
-    if not m_user_ready then
-    begin
-        Exit;
-    end;
-
-    try
-        if m_user_connection.prepare(user_exists_sql, stmt) and
-            m_user_connection.bind_text(stmt, 1, pinyin_key) and
-            m_user_connection.bind_text(stmt, 2, text_key) then
-        begin
-            step_result := m_user_connection.step(stmt);
-            if step_result = SQLITE_ROW then
-            begin
-                Result := True;
-                Exit;
-            end;
-        end;
-    finally
-        if stmt <> nil then
-        begin
-            m_user_connection.finalize(stmt);
         end;
     end;
 end;
