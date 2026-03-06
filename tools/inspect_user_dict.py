@@ -39,6 +39,12 @@ def cjk_len(value: str) -> int:
     return len(value) if CJK_BMP_RE.fullmatch(value) else 0
 
 
+def default_db_paths() -> Tuple[pathlib.Path, pathlib.Path]:
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    data_dir = repo_root / "out" / "data"
+    return data_dir / "dict_sc.db", data_dir / "user_dict.db"
+
+
 def load_rows(conn: sqlite3.Connection) -> List[Tuple[str, str, int, int]]:
     sql = """
         SELECT pinyin, text, MAX(user_weight), MAX(commit_count)
@@ -122,15 +128,16 @@ def classify_rows(
 
 
 def main() -> int:
+    default_base_db, default_user_db = default_db_paths()
     parser = argparse.ArgumentParser(description="Inspect suspicious Cassotis user-dictionary rows.")
     parser.add_argument(
         "--base-db",
-        default=r"D:\cassotis_ime_public\out\data\dict_sc.db",
+        default=str(default_base_db),
         help="Path to base dictionary SQLite DB",
     )
     parser.add_argument(
         "--user-db",
-        default=r"D:\cassotis_ime_public\out\data\user_dict.db",
+        default=str(default_user_db),
         help="Path to user dictionary SQLite DB",
     )
     parser.add_argument("--limit", type=int, default=80, help="Max rows to print")
