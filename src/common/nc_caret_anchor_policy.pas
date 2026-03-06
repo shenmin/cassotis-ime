@@ -72,16 +72,13 @@ var
     top_band_limit_y: Integer;
 begin
     Result := False;
-    if (not chromium_like_target) or (not candidate_valid) or (not tsf_point_valid) then
+    if (not chromium_like_target) or (not candidate_valid) or (not tsf_point_valid) or
+        (not has_foreground_rect) then
     begin
         Exit;
     end;
 
-    top_band_limit_y := 180;
-    if has_foreground_rect then
-    begin
-        top_band_limit_y := foreground_rect.Top + 180;
-    end;
+    top_band_limit_y := foreground_rect.Top + 180;
 
     Result := (candidate.Y <= top_band_limit_y) and (tsf_point.Y > top_band_limit_y);
 end;
