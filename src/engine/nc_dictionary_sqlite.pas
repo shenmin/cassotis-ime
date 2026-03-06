@@ -267,13 +267,15 @@ end;
 function calc_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_freq_bonus_factor = 154.0;
-    c_freq_bonus_max = 980;
-    c_recent_bonus_1d = 320;
-    c_recent_bonus_7d = 230;
-    c_recent_bonus_30d = 110;
-    c_recent_bonus_90d = 40;
+    c_freq_bonus_factor = 136.0;
+    c_freq_bonus_max = 820;
+    c_recent_bonus_1d = 260;
+    c_recent_bonus_3d = 190;
+    c_recent_bonus_7d = 135;
+    c_recent_bonus_30d = 72;
+    c_recent_bonus_90d = 28;
     c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_3_days = 3 * c_sec_per_day;
     c_sec_per_week = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
     c_sec_per_90_days = 90 * c_sec_per_day;
@@ -281,6 +283,7 @@ var
     freq_bonus: Integer;
     recency_bonus: Integer;
     quick_bonus: Integer;
+    maturity_bonus: Integer;
     age_seconds: Int64;
 begin
     if commit_count <= 0 then
@@ -298,18 +301,32 @@ begin
     quick_bonus := 0;
     if commit_count >= 2 then
     begin
-        quick_bonus := 180;
+        quick_bonus := 120;
         if commit_count >= 3 then
         begin
-            quick_bonus := 320;
+            quick_bonus := 220;
         end;
         if commit_count >= 4 then
         begin
-            quick_bonus := 430;
+            quick_bonus := 300;
         end;
         if commit_count >= 5 then
         begin
-            quick_bonus := 500 + Min(200, (commit_count - 5) * 32);
+            quick_bonus := 360 + Min(180, (commit_count - 5) * 24);
+        end;
+    end;
+
+    maturity_bonus := 0;
+    if commit_count >= 8 then
+    begin
+        maturity_bonus := 72;
+        if commit_count >= 12 then
+        begin
+            maturity_bonus := 128;
+        end;
+        if commit_count >= 20 then
+        begin
+            maturity_bonus := 196;
         end;
     end;
 
@@ -326,6 +343,10 @@ begin
         begin
             recency_bonus := c_recent_bonus_1d;
         end
+        else if age_seconds <= c_sec_per_3_days then
+        begin
+            recency_bonus := c_recent_bonus_3d;
+        end
         else if age_seconds <= c_sec_per_week then
         begin
             recency_bonus := c_recent_bonus_7d;
@@ -338,32 +359,61 @@ begin
         begin
             recency_bonus := c_recent_bonus_90d;
         end;
+
+        if commit_count = 1 then
+        begin
+            recency_bonus := recency_bonus div 2;
+        end
+        else if commit_count >= 4 then
+        begin
+            Inc(recency_bonus, recency_bonus div 5);
+        end;
     end;
 
-    Result := freq_bonus + quick_bonus + recency_bonus;
+    Result := freq_bonus + quick_bonus + maturity_bonus + recency_bonus;
 end;
 
 function calc_text_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_text_bonus_max = 620;
+    c_text_bonus_max = 700;
+    c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_3_days = 3 * c_sec_per_day;
+var
+    age_seconds: Int64;
 begin
-    Result := (calc_learning_bonus(commit_count, last_used_unix, now_unix) * 3) div 5;
+    Result := (calc_learning_bonus(commit_count, last_used_unix, now_unix) * 2) div 3;
     if commit_count >= 2 then
     begin
-        Inc(Result, 60);
+        Inc(Result, 80);
     end;
     if commit_count >= 3 then
     begin
-        Inc(Result, 50);
+        Inc(Result, 68);
     end;
     if commit_count >= 4 then
     begin
-        Inc(Result, 40);
+        Inc(Result, 56);
     end;
     if commit_count >= 6 then
     begin
-        Inc(Result, 30);
+        Inc(Result, 40);
+    end;
+    if (last_used_unix > 0) and (now_unix > 0) then
+    begin
+        age_seconds := now_unix - last_used_unix;
+        if age_seconds < 0 then
+        begin
+            age_seconds := 0;
+        end;
+        if age_seconds <= c_sec_per_day then
+        begin
+            Inc(Result, 54);
+        end
+        else if age_seconds <= c_sec_per_3_days then
+        begin
+            Inc(Result, 28);
+        end;
     end;
     if Result > c_text_bonus_max then
     begin

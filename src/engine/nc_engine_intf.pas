@@ -70,6 +70,8 @@ type
         m_last_lookup_syllable_count: Integer;
         m_last_lookup_debug_extra: string;
         m_runtime_chain_text: string;
+        m_runtime_common_pattern_text: string;
+        m_runtime_redup_text: string;
         m_single_quote_open: Boolean;
         m_double_quote_open: Boolean;
         m_page_index: Integer;
@@ -96,6 +98,11 @@ type
         function map_full_width_char(const input_char: Char): string;
         function map_punctuation_char(const input_char: Char): string;
         function get_candidate_text_unit_count(const text: string): Integer;
+        function is_runtime_chain_candidate(const candidate: TncCandidate): Boolean;
+        function is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
+        function is_runtime_redup_candidate(const candidate: TncCandidate): Boolean;
+        function get_runtime_candidate_kind(const candidate: TncCandidate): string;
+        function get_front_row_confidence_bonus(const candidate: TncCandidate): Integer;
         function get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
         function get_rank_score(const candidate: TncCandidate): Integer;
         function compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
@@ -361,6 +368,8 @@ begin
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
     m_runtime_chain_text := '';
+    m_runtime_common_pattern_text := '';
+    m_runtime_redup_text := '';
     m_single_quote_open := False;
     m_double_quote_open := False;
     m_page_index := 0;
@@ -477,6 +486,8 @@ begin
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
     m_runtime_chain_text := '';
+    m_runtime_common_pattern_text := '';
+    m_runtime_redup_text := '';
     m_page_index := 0;
     m_selected_index := 0;
     m_confirmed_text := '';
@@ -1666,106 +1677,157 @@ var
         function try_match_expected_units(out out_units: TArray<string>): Boolean;
         begin
             SetLength(out_units, 0);
-            if Length(syllables) <> 2 then
+            if (Length(syllables) <> 2) and (Length(syllables) <> 3) then
             begin
                 Exit(False);
             end;
 
-            if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'ge') then
+            if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E2A)));
             end
-            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+            else if (Length(syllables) = 2) and
+                ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'ge')) then
             begin
                 out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'yi') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'liang') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'liang') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E24)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'ji') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'ji') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($51E0)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'mei') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'mei') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($6BCF)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'san') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'san') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E09)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'si') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'si') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($56DB)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'wu') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'wu') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E94)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'liu') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'liu') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($516D)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'qi') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'qi') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E03)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'ba') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'ba') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($516B)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'jiu') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'jiu') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E5D)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'shi') and syllable_equals(syllables[1].text, 'ge') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'shi') and
+                syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($5341)), string(Char($4E2A)));
             end
-            else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'xie') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+                syllable_equals(syllables[1].text, 'xie') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E9B)));
             end
-            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+            else if (Length(syllables) = 2) and
+                ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'xie')) then
             begin
                 out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E9B)));
             end
-            else if syllable_equals(syllables[0].text, 'yi') and syllable_equals(syllables[1].text, 'xie') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
+                syllable_equals(syllables[1].text, 'xie') then
             begin
                 out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E9B)));
             end
-            else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'yang') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+                syllable_equals(syllables[1].text, 'yang') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($6837)));
             end
-            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+            else if (Length(syllables) = 2) and
+                ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'yang')) then
             begin
                 out_units := TArray<string>.Create(string(Char($90A3)), string(Char($6837)));
             end
-            else if syllable_equals(syllables[0].text, 'zhe') and syllable_equals(syllables[1].text, 'me') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+                syllable_equals(syllables[1].text, 'me') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E48)));
             end
-            else if ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+            else if (Length(syllables) = 2) and
+                ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'me')) then
             begin
                 out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E48)));
             end
-            else if syllable_equals(syllables[0].text, 'zen') and syllable_equals(syllables[1].text, 'me') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zen') and
+                syllable_equals(syllables[1].text, 'me') then
             begin
                 out_units := TArray<string>.Create(string(Char($600E)), string(Char($4E48)));
             end
-            else if syllable_equals(syllables[0].text, 'you') and syllable_equals(syllables[1].text, 'dian') then
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'you') and
+                syllable_equals(syllables[1].text, 'dian') then
             begin
                 out_units := TArray<string>.Create(string(Char($6709)), string(Char($70B9)));
+            end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'shen') and
+                syllable_equals(syllables[1].text, 'me') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4EC0)), string(Char($4E48)));
+            end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+                syllable_equals(syllables[1].text, 'zhong') then
+            begin
+                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($79CD)));
+            end
+            else if (Length(syllables) = 2) and
+                ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+                syllable_equals(syllables[1].text, 'zhong')) then
+            begin
+                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($79CD)));
+            end
+            else if (Length(syllables) = 3) and syllable_equals(syllables[0].text, 'wei') and
+                syllable_equals(syllables[1].text, 'shen') and syllable_equals(syllables[2].text, 'me') then
+            begin
+                out_units := TArray<string>.Create(
+                    string(Char($4E3A)), string(Char($4EC0)), string(Char($4E48)));
+            end
+            else if (Length(syllables) = 3) and syllable_equals(syllables[0].text, 'zen') and
+                syllable_equals(syllables[1].text, 'me') and syllable_equals(syllables[2].text, 'yang') then
+            begin
+                out_units := TArray<string>.Create(
+                    string(Char($600E)), string(Char($4E48)), string(Char($6837)));
             end
             else
             begin
@@ -1872,6 +1934,9 @@ var
     begin
         runtime_phrase_added := False;
         runtime_redup_added := False;
+        m_runtime_chain_text := '';
+        m_runtime_common_pattern_text := '';
+        m_runtime_redup_text := '';
         if (not has_multi_syllable_input) or (input_syllable_count < 2) or (input_syllable_count > 4) then
         begin
             Exit;
@@ -1897,6 +1962,7 @@ var
             runtime_candidates[runtime_count] := runtime_item;
             Inc(runtime_count);
             runtime_phrase_added := True;
+            m_runtime_common_pattern_text := runtime_item.text;
         end;
 
         if try_build_runtime_redup_candidate(runtime_item) then
@@ -1906,6 +1972,7 @@ var
             Inc(runtime_count);
             runtime_phrase_added := True;
             runtime_redup_added := True;
+            m_runtime_redup_text := runtime_item.text;
         end;
 
         if runtime_count <= 0 then
@@ -2910,6 +2977,8 @@ begin
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
     m_runtime_chain_text := '';
+    m_runtime_common_pattern_text := '';
+    m_runtime_redup_text := '';
     if m_composition_text = '' then
     begin
         Exit;
@@ -3458,6 +3527,103 @@ end;
 function TncEngine.get_candidate_text_unit_count(const text: string): Integer;
 begin
     Result := Length(split_text_units(text));
+end;
+
+function TncEngine.is_runtime_chain_candidate(const candidate: TncCandidate): Boolean;
+begin
+    Result := (m_runtime_chain_text <> '') and (candidate.source = cs_rule) and
+        (candidate.comment = '') and (not candidate.has_dict_weight) and
+        SameText(candidate.text, m_runtime_chain_text);
+end;
+
+function TncEngine.is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
+begin
+    Result := (m_runtime_common_pattern_text <> '') and (candidate.source = cs_rule) and
+        (candidate.comment = '') and (not candidate.has_dict_weight) and
+        SameText(candidate.text, m_runtime_common_pattern_text);
+end;
+
+function TncEngine.is_runtime_redup_candidate(const candidate: TncCandidate): Boolean;
+begin
+    Result := (m_runtime_redup_text <> '') and (candidate.source = cs_rule) and
+        (candidate.comment = '') and (not candidate.has_dict_weight) and
+        SameText(candidate.text, m_runtime_redup_text);
+end;
+
+function TncEngine.get_runtime_candidate_kind(const candidate: TncCandidate): string;
+begin
+    Result := '';
+    if is_runtime_chain_candidate(candidate) then
+    begin
+        Result := 'chain';
+    end
+    else if is_runtime_common_pattern_candidate(candidate) then
+    begin
+        Result := 'pattern';
+    end
+    else if is_runtime_redup_candidate(candidate) then
+    begin
+        Result := 'redup';
+    end;
+end;
+
+function TncEngine.get_front_row_confidence_bonus(const candidate: TncCandidate): Integer;
+var
+    text_units: Integer;
+    layer_value: Integer;
+begin
+    Result := 0;
+    text_units := get_candidate_text_unit_count(candidate.text);
+    layer_value := get_multi_syllable_intent_layer(candidate);
+
+    if candidate.comment <> '' then
+    begin
+        if m_last_lookup_syllable_count >= 3 then
+        begin
+            Dec(Result, 60 + (layer_value * 18));
+        end;
+        Exit;
+    end;
+
+    if candidate.has_dict_weight then
+    begin
+        if layer_value = 0 then
+        begin
+            Inc(Result, 140);
+            if (m_last_lookup_syllable_count >= 4) and (text_units >= 3) then
+            begin
+                Inc(Result, 36);
+            end;
+        end
+        else if layer_value = 1 then
+        begin
+            Inc(Result, 68);
+        end;
+        Exit;
+    end;
+
+    if is_runtime_common_pattern_candidate(candidate) then
+    begin
+        Inc(Result, 96);
+        Exit;
+    end;
+
+    if is_runtime_redup_candidate(candidate) then
+    begin
+        Inc(Result, 72);
+        Exit;
+    end;
+
+    if is_runtime_chain_candidate(candidate) then
+    begin
+        Dec(Result, 320);
+        Exit;
+    end;
+
+    if (candidate.source = cs_rule) and (text_units >= 2) then
+    begin
+        Dec(Result, 120);
+    end;
 end;
 
 function TncEngine.get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
@@ -4060,6 +4226,9 @@ begin
         // should stay available but rank below complete phrase candidates.
         Dec(Result, c_partial_candidate_score_penalty);
     end;
+
+    Inc(Result, get_front_row_confidence_bonus(candidate));
+
     case candidate.source of
         cs_user:
             Inc(Result, c_user_score_bonus);
@@ -4076,6 +4245,7 @@ var
     session_bonus: Integer;
     rank_score: Integer;
     layer_value: Integer;
+    runtime_kind: string;
 begin
     text_context_bonus := get_text_context_bonus(candidate.text);
     phrase_context_bonus := get_phrase_context_bonus(candidate.text);
@@ -4087,11 +4257,13 @@ begin
     end;
     rank_score := get_rank_score(candidate);
     layer_value := get_multi_syllable_intent_layer(candidate);
+    runtime_kind := get_runtime_candidate_kind(candidate);
 
     Result := Format(
-        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d sess=%d layer=%d partial=%d]',
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
         [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
-        phrase_context_bonus, session_bonus, layer_value, Ord(candidate.comment <> '')]);
+        phrase_context_bonus, session_bonus, layer_value, Ord(candidate.comment <> ''),
+        candidate.dict_weight, runtime_kind]);
 end;
 
 function TncEngine.compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
