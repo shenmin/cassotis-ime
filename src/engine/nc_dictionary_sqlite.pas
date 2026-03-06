@@ -255,14 +255,16 @@ end;
 function calc_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_freq_bonus_factor = 136.0;
-    c_freq_bonus_max = 860;
-    c_recent_bonus_1d = 260;
-    c_recent_bonus_7d = 170;
-    c_recent_bonus_30d = 80;
+    c_freq_bonus_factor = 154.0;
+    c_freq_bonus_max = 980;
+    c_recent_bonus_1d = 320;
+    c_recent_bonus_7d = 230;
+    c_recent_bonus_30d = 110;
+    c_recent_bonus_90d = 40;
     c_sec_per_day = 24 * 60 * 60;
     c_sec_per_week = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
+    c_sec_per_90_days = 90 * c_sec_per_day;
 var
     freq_bonus: Integer;
     recency_bonus: Integer;
@@ -284,18 +286,18 @@ begin
     quick_bonus := 0;
     if commit_count >= 2 then
     begin
-        quick_bonus := 120;
+        quick_bonus := 180;
         if commit_count >= 3 then
-        begin
-            quick_bonus := 240;
-        end;
-        if commit_count >= 4 then
         begin
             quick_bonus := 320;
         end;
+        if commit_count >= 4 then
+        begin
+            quick_bonus := 430;
+        end;
         if commit_count >= 5 then
         begin
-            quick_bonus := 380 + Min(120, (commit_count - 5) * 24);
+            quick_bonus := 500 + Min(200, (commit_count - 5) * 32);
         end;
     end;
 
@@ -319,6 +321,10 @@ begin
         else if age_seconds <= c_sec_per_30_days then
         begin
             recency_bonus := c_recent_bonus_30d;
+        end
+        else if age_seconds <= c_sec_per_90_days then
+        begin
+            recency_bonus := c_recent_bonus_90d;
         end;
     end;
 
@@ -328,10 +334,14 @@ end;
 function calc_text_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_text_bonus_max = 360;
+    c_text_bonus_max = 520;
 begin
-    Result := (calc_learning_bonus(commit_count, last_used_unix, now_unix) * 2) div 5;
-    if commit_count >= 3 then
+    Result := (calc_learning_bonus(commit_count, last_used_unix, now_unix) * 3) div 5;
+    if commit_count >= 2 then
+    begin
+        Inc(Result, 40);
+    end;
+    if commit_count >= 4 then
     begin
         Inc(Result, 40);
     end;
@@ -3557,8 +3567,8 @@ end;
 function TncSqliteDictionary.get_context_bonus(const left_text: string; const candidate_text: string): Integer;
 const
     query_sql = 'SELECT commit_count FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
-    c_bigram_score_step = 80;
-    c_bigram_score_max = 400;
+    c_bigram_score_step = 110;
+    c_bigram_score_max = 520;
 var
     stmt: Psqlite3_stmt;
     step_result: Integer;

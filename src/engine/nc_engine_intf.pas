@@ -78,6 +78,8 @@ type
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
         function map_full_width_char(const input_char: Char): string;
         function map_punctuation_char(const input_char: Char): string;
+        function get_candidate_text_unit_count(const text: string): Integer;
+        function get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
         function get_rank_score(const candidate: TncCandidate): Integer;
         function compare_candidates(const left: TncCandidate; const right: TncCandidate): Integer;
         procedure sort_candidates(var candidates: TncCandidateList);
@@ -2577,6 +2579,72 @@ begin
     end;
 end;
 
+function TncEngine.get_candidate_text_unit_count(const text: string): Integer;
+begin
+    Result := Length(split_text_units(text));
+end;
+
+function TncEngine.get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
+var
+    text_units: Integer;
+    syllable_gap: Integer;
+begin
+    Result := 0;
+    if m_last_lookup_syllable_count < 3 then
+    begin
+        Exit;
+    end;
+
+    text_units := get_candidate_text_unit_count(candidate.text);
+    syllable_gap := m_last_lookup_syllable_count - text_units;
+
+    if candidate.comment = '' then
+    begin
+        if text_units <= 0 then
+        begin
+            Result := 8;
+        end
+        else if text_units = 1 then
+        begin
+            Result := 6;
+        end
+        else if syllable_gap = 0 then
+        begin
+            Result := 0;
+        end
+        else if syllable_gap = 1 then
+        begin
+            Result := 1;
+        end
+        else if syllable_gap > 1 then
+        begin
+            Result := 2;
+        end
+        else
+        begin
+            Result := 5;
+        end;
+        Exit;
+    end;
+
+    if text_units <= 0 then
+    begin
+        Result := 9;
+    end
+    else if text_units = 1 then
+    begin
+        Result := 7;
+    end
+    else if text_units + 1 >= m_last_lookup_syllable_count then
+    begin
+        Result := 3;
+    end
+    else
+    begin
+        Result := 4;
+    end;
+end;
+
 function TncEngine.get_context_bonus(const candidate_text: string): Integer;
 var
     key: string;
@@ -2909,7 +2977,7 @@ begin
     // For one-syllable full-pinyin lookups, keep single-char candidates ahead.
     if (m_last_lookup_syllable_count = 1) and (candidate.comment = '') then
     begin
-        text_units := Length(split_text_units(candidate.text));
+        text_units := get_candidate_text_unit_count(candidate.text);
         if text_units > 1 then
         begin
             Dec(Result, (text_units - 1) * 180);
@@ -2922,7 +2990,7 @@ begin
     // lexicon contains high-weight noisy short heads.
     if (m_last_lookup_syllable_count >= 3) and (candidate.comment = '') then
     begin
-        text_units := Length(split_text_units(candidate.text));
+        text_units := get_candidate_text_unit_count(candidate.text);
         if text_units >= 2 then
         begin
             syllable_gap := m_last_lookup_syllable_count - text_units;
@@ -2963,7 +3031,7 @@ begin
     begin
         if m_last_lookup_syllable_count >= 3 then
         begin
-            text_units := Length(split_text_units(candidate.text));
+            text_units := get_candidate_text_unit_count(candidate.text);
             if text_units >= 2 then
             begin
                 if text_units + 1 >= m_last_lookup_syllable_count then
@@ -3001,6 +3069,8 @@ function TncEngine.compare_candidates(const left: TncCandidate; const right: Tnc
 var
     left_score: Integer;
     right_score: Integer;
+    left_layer: Integer;
+    right_layer: Integer;
 begin
     // Learned user candidates should take priority over rule candidates when
     // both are complete commit candidates for the same query.
@@ -3014,6 +3084,17 @@ begin
         if (right.source = cs_user) and (left.source <> cs_user) then
         begin
             Result := 1;
+            Exit;
+        end;
+    end;
+
+    if m_last_lookup_syllable_count >= 3 then
+    begin
+        left_layer := get_multi_syllable_intent_layer(left);
+        right_layer := get_multi_syllable_intent_layer(right);
+        Result := left_layer - right_layer;
+        if Result <> 0 then
+        begin
             Exit;
         end;
     end;
