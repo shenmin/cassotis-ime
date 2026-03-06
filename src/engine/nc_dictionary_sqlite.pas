@@ -7,6 +7,7 @@ uses
     System.Math,
     System.DateUtils,
     System.Generics.Collections,
+    System.Generics.Defaults,
     System.Character,
     System.IOUtils,
     Winapi.Windows,
@@ -253,11 +254,11 @@ end;
 function calc_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_freq_bonus_factor = 80.0;
-    c_freq_bonus_max = 500;
-    c_recent_bonus_1d = 120;
-    c_recent_bonus_7d = 80;
-    c_recent_bonus_30d = 40;
+    c_freq_bonus_factor = 120.0;
+    c_freq_bonus_max = 760;
+    c_recent_bonus_1d = 220;
+    c_recent_bonus_7d = 140;
+    c_recent_bonus_30d = 70;
     c_sec_per_day = 24 * 60 * 60;
     c_sec_per_week = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
@@ -2121,6 +2122,74 @@ var
         seen.Add(key, True);
     end;
 
+    procedure sort_candidate_list_by_score;
+    begin
+        if list.Count <= 1 then
+        begin
+            Exit;
+        end;
+
+        list.Sort(TComparer<TncCandidate>.Construct(
+            function(const left, right: TncCandidate): Integer
+            begin
+                Result := right.score - left.score;
+                if Result <> 0 then
+                begin
+                    Exit;
+                end;
+
+                case left.source of
+                    cs_user:
+                        Result := 0;
+                    cs_rule:
+                        Result := 1;
+                    cs_ai:
+                        Result := 2;
+                else
+                    Result := 3;
+                end;
+                case right.source of
+                    cs_user:
+                        Dec(Result, 0);
+                    cs_rule:
+                        Dec(Result, 1);
+                    cs_ai:
+                        Dec(Result, 2);
+                else
+                    Dec(Result, 3);
+                end;
+                if Result <> 0 then
+                begin
+                    Exit;
+                end;
+
+                if (left.comment = '') and (right.comment <> '') then
+                begin
+                    Result := -1;
+                    Exit;
+                end;
+                if (right.comment = '') and (left.comment <> '') then
+                begin
+                    Result := 1;
+                    Exit;
+                end;
+
+                Result := Length(left.text) - Length(right.text);
+                if Result <> 0 then
+                begin
+                    Exit;
+                end;
+
+                Result := CompareText(left.text, right.text);
+                if Result <> 0 then
+                begin
+                    Exit;
+                end;
+
+                Result := CompareText(left.comment, right.comment);
+            end));
+    end;
+
     procedure apply_homophone_commonness_bonus;
     const
         c_single_char_factor = 190.0;
@@ -3027,6 +3096,8 @@ begin
             apply_homophone_commonness_bonus;
         end;
 
+        sort_candidate_list_by_score;
+
         if list.Count > 0 then
         begin
             SetLength(results, list.Count);
@@ -3126,6 +3197,7 @@ end;
 
 procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: string);
 const
+    base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
     update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_stats_sql = 'INSERT OR IGNORE INTO dict_user_stats(pinyin, text, commit_count, last_used) ' +
@@ -3137,8 +3209,11 @@ const
     delete_user_sql = 'DELETE FROM dict_user WHERE pinyin = ?1 AND text = ?2';
 var
     stmt: Psqlite3_stmt;
+    stmt_base: Psqlite3_stmt;
+    step_result: Integer;
     pinyin_key: string;
     full_pinyin_input: Boolean;
+    base_entry_exists: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     if (pinyin_key = '') or (text = '') or (not is_valid_learning_text(text)) or
@@ -3148,6 +3223,26 @@ begin
     end;
 
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
+    base_entry_exists := False;
+    stmt_base := nil;
+
+    if m_base_ready then
+    begin
+        try
+            if m_base_connection.prepare(base_exists_sql, stmt_base) and
+                m_base_connection.bind_text(stmt_base, 1, pinyin_key) and
+                m_base_connection.bind_text(stmt_base, 2, text) then
+            begin
+                step_result := m_base_connection.step(stmt_base);
+                base_entry_exists := step_result = SQLITE_ROW;
+            end;
+        finally
+            if stmt_base <> nil then
+            begin
+                m_base_connection.finalize(stmt_base);
+            end;
+        end;
+    end;
 
     stmt := nil;
     try
@@ -3211,6 +3306,29 @@ begin
             if m_user_connection.prepare(delete_user_sql, stmt) then
             begin
                 if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
+                begin
+                    m_user_connection.step(stmt);
+                end;
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+        Exit;
+    end;
+
+    if base_entry_exists then
+    begin
+        // Base-dictionary entries should learn through stats-driven re-ranking,
+        // not by duplicating the same entry into dict_user.
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_user_sql, stmt) then
+            begin
+                if m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                    m_user_connection.bind_text(stmt, 2, text) then
                 begin
                     m_user_connection.step(stmt);
                 end;

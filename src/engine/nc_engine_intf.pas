@@ -1946,12 +1946,19 @@ var
         c_complete_phrase_bonus = 220;
         c_complete_phrase_unit_bonus = 36;
         c_partial_with_complete_penalty = 620;
+        c_exact_length_bonus = 260;
+        c_near_length_bonus = 80;
+        c_short_complete_gap_penalty = 180;
+        c_single_char_complete_penalty = 520;
+        c_short_partial_penalty = 180;
+        c_single_char_partial_penalty = 360;
     var
         idx: Integer;
         input_syllables: Integer;
         text_units: Integer;
         effective_units: Integer;
         has_complete_phrase: Boolean;
+        syllable_gap: Integer;
     begin
         if (not has_multi_syllable_input) or (Length(candidates) = 0) then
         begin
@@ -2002,10 +2009,45 @@ var
                 end;
                 Inc(candidates[idx].score,
                     c_complete_phrase_bonus + (effective_units * c_complete_phrase_unit_bonus));
+                if input_syllables >= 3 then
+                begin
+                    syllable_gap := input_syllables - text_units;
+                    if syllable_gap = 0 then
+                    begin
+                        Inc(candidates[idx].score, c_exact_length_bonus);
+                    end
+                    else if syllable_gap = 1 then
+                    begin
+                        Inc(candidates[idx].score, c_near_length_bonus);
+                    end
+                    else if syllable_gap > 1 then
+                    begin
+                        Dec(candidates[idx].score, syllable_gap * c_short_complete_gap_penalty);
+                    end
+                    else
+                    begin
+                        Dec(candidates[idx].score, Abs(syllable_gap) * (c_short_complete_gap_penalty div 2));
+                    end;
+                end;
+            end
+            else if (candidates[idx].comment = '') and (input_syllables >= 3) and (text_units = 1) then
+            begin
+                Dec(candidates[idx].score, c_single_char_complete_penalty);
             end
             else if candidates[idx].comment <> '' then
             begin
                 Dec(candidates[idx].score, c_partial_with_complete_penalty);
+                if input_syllables >= 3 then
+                begin
+                    if text_units <= 1 then
+                    begin
+                        Dec(candidates[idx].score, c_single_char_partial_penalty);
+                    end
+                    else if text_units + 1 < input_syllables then
+                    begin
+                        Dec(candidates[idx].score, c_short_partial_penalty);
+                    end;
+                end;
             end;
         end;
     end;
@@ -2871,15 +2913,31 @@ begin
         syllable_gap := m_last_lookup_syllable_count - text_units;
         if syllable_gap > 0 then
         begin
-            Dec(Result, syllable_gap * 120);
+            Dec(Result, syllable_gap * 160);
+            if text_units = 1 then
+            begin
+                Dec(Result, 260);
+            end;
         end
         else if syllable_gap = 0 then
         begin
-            Inc(Result, 60);
+            Inc(Result, 160);
             if candidate.source = cs_ai then
             begin
                 Inc(Result, 180);
             end;
+        end;
+    end
+    else if (m_last_lookup_syllable_count >= 3) and (candidate.comment <> '') then
+    begin
+        text_units := Length(split_text_units(candidate.text));
+        if text_units <= 1 then
+        begin
+            Dec(Result, 240);
+        end
+        else if text_units + 1 < m_last_lookup_syllable_count then
+        begin
+            Dec(Result, 120);
         end;
     end;
 
@@ -3425,6 +3483,7 @@ const
     c_segment_full_leading_multi_penalty = 42;
     c_segment_full_head_top_n = 4;
     c_segment_full_path_non_user_limit = 4;
+    c_segment_partial_single_top_n = 6;
     c_segment_text_unit_mismatch_penalty = 100;
     c_segment_text_unit_overflow_penalty = 60;
 var
@@ -4125,6 +4184,11 @@ begin
                         Continue;
                     end;
                     if (segment_len = 1) and (candidate_text_units > 1) then
+                    begin
+                        Continue;
+                    end;
+                    if (Length(syllables) >= 3) and (segment_len = 1) and
+                        (remaining_syllables >= 2) and (i >= c_segment_partial_single_top_n) then
                     begin
                         Continue;
                     end;
