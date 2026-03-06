@@ -117,6 +117,7 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_text ON dict_user_stats(text);' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_user_penalty (' + sLineBreak +
         '    pinyin TEXT NOT NULL,' + sLineBreak +
@@ -254,17 +255,18 @@ end;
 function calc_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
-    c_freq_bonus_factor = 120.0;
-    c_freq_bonus_max = 760;
-    c_recent_bonus_1d = 220;
-    c_recent_bonus_7d = 140;
-    c_recent_bonus_30d = 70;
+    c_freq_bonus_factor = 136.0;
+    c_freq_bonus_max = 860;
+    c_recent_bonus_1d = 260;
+    c_recent_bonus_7d = 170;
+    c_recent_bonus_30d = 80;
     c_sec_per_day = 24 * 60 * 60;
     c_sec_per_week = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
 var
     freq_bonus: Integer;
     recency_bonus: Integer;
+    quick_bonus: Integer;
     age_seconds: Int64;
 begin
     if commit_count <= 0 then
@@ -277,6 +279,24 @@ begin
     if freq_bonus > c_freq_bonus_max then
     begin
         freq_bonus := c_freq_bonus_max;
+    end;
+
+    quick_bonus := 0;
+    if commit_count >= 2 then
+    begin
+        quick_bonus := 120;
+        if commit_count >= 3 then
+        begin
+            quick_bonus := 240;
+        end;
+        if commit_count >= 4 then
+        begin
+            quick_bonus := 320;
+        end;
+        if commit_count >= 5 then
+        begin
+            quick_bonus := 380 + Min(120, (commit_count - 5) * 24);
+        end;
     end;
 
     recency_bonus := 0;
@@ -302,7 +322,23 @@ begin
         end;
     end;
 
-    Result := freq_bonus + recency_bonus;
+    Result := freq_bonus + quick_bonus + recency_bonus;
+end;
+
+function calc_text_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
+    const now_unix: Int64): Integer;
+const
+    c_text_bonus_max = 360;
+begin
+    Result := (calc_learning_bonus(commit_count, last_used_unix, now_unix) * 2) div 5;
+    if commit_count >= 3 then
+    begin
+        Inc(Result, 40);
+    end;
+    if Result > c_text_bonus_max then
+    begin
+        Result := c_text_bonus_max;
+    end;
 end;
 
 function parse_mixed_jianpin_query(const query_key: string; out full_prefix: string; out jianpin_key: string;
@@ -1022,6 +1058,12 @@ begin
     end;
 
     if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_user_stats_text ON dict_user_stats(text);') then
     begin
         Result := False;
         Exit;
@@ -1808,6 +1850,9 @@ const
     user_nonfull_sql = 'SELECT pinyin, text, weight, last_used FROM dict_user WHERE pinyin LIKE ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
     stats_sql = 'SELECT text, commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1';
+    text_stats_sql =
+        'SELECT COALESCE(SUM(commit_count), 0), COALESCE(MAX(last_used), 0) ' +
+        'FROM dict_user_stats WHERE text = ?1';
     c_jianpin_score_penalty = 30;
     c_nonfull_exact_penalty = 100;
     c_initial_single_char_penalty = 120;
@@ -1833,6 +1878,7 @@ var
     list: TList<TncCandidate>;
     seen: TDictionary<string, Boolean>;
     learning_bonus_map: TDictionary<string, Integer>;
+    text_learning_bonus_cache: TDictionary<string, Integer>;
     step_result: Integer;
     item: TncCandidate;
     text_value: string;
@@ -2187,6 +2233,86 @@ var
 
                 Result := CompareText(left.comment, right.comment);
             end));
+    end;
+
+    procedure apply_text_learning_bonus;
+    var
+        bonus_value: Integer;
+        candidate_item: TncCandidate;
+        idx: Integer;
+        stmt_text_stats: Psqlite3_stmt;
+        text_commit_count: Integer;
+        text_last_used_value: Int64;
+        text_step_result: Integer;
+    begin
+        if (not m_user_ready) or (list.Count <= 0) then
+        begin
+            Exit;
+        end;
+
+        stmt_text_stats := nil;
+        try
+            if not m_user_connection.prepare(text_stats_sql, stmt_text_stats) then
+            begin
+                Exit;
+            end;
+
+            for idx := 0 to list.Count - 1 do
+            begin
+                candidate_item := list[idx];
+                if (candidate_item.text = '') or (candidate_item.source <> cs_rule) then
+                begin
+                    Continue;
+                end;
+                if learning_bonus_map.ContainsKey(candidate_item.text) then
+                begin
+                    Continue;
+                end;
+
+                if not text_learning_bonus_cache.TryGetValue(candidate_item.text, bonus_value) then
+                begin
+                    bonus_value := 0;
+                    if m_user_connection.bind_text(stmt_text_stats, 1, candidate_item.text) then
+                    begin
+                        text_step_result := m_user_connection.step(stmt_text_stats);
+                        if text_step_result = SQLITE_ROW then
+                        begin
+                            text_commit_count := m_user_connection.column_int(stmt_text_stats, 0);
+                            text_last_used_value := m_user_connection.column_int(stmt_text_stats, 1);
+                            bonus_value := calc_text_learning_bonus(
+                                text_commit_count,
+                                text_last_used_value,
+                                now_unix);
+                        end;
+                    end;
+                    m_user_connection.reset(stmt_text_stats);
+                    m_user_connection.clear_bindings(stmt_text_stats);
+                    text_learning_bonus_cache.AddOrSetValue(candidate_item.text, bonus_value);
+                end;
+
+                if bonus_value <= 0 then
+                begin
+                    Continue;
+                end;
+
+                if candidate_item.comment <> '' then
+                begin
+                    bonus_value := bonus_value div 2;
+                end;
+                if bonus_value <= 0 then
+                begin
+                    Continue;
+                end;
+
+                candidate_item.score := candidate_item.score + bonus_value;
+                list[idx] := candidate_item;
+            end;
+        finally
+            if stmt_text_stats <> nil then
+            begin
+                m_user_connection.finalize(stmt_text_stats);
+            end;
+        end;
     end;
 
     procedure apply_homophone_commonness_bonus;
@@ -2605,6 +2731,7 @@ begin
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Boolean>.Create;
     learning_bonus_map := TDictionary<string, Integer>.Create;
+    text_learning_bonus_cache := TDictionary<string, Integer>.Create;
     exact_base_hit := False;
     typo_fallback_used := False;
     try
@@ -3095,6 +3222,7 @@ begin
             apply_homophone_commonness_bonus;
         end;
 
+        apply_text_learning_bonus;
         sort_candidate_list_by_score;
 
         if list.Count > 0 then
@@ -3112,6 +3240,7 @@ begin
         begin
             mixed_parser.Free;
         end;
+        text_learning_bonus_cache.Free;
         learning_bonus_map.Free;
         list.Free;
         seen.Free;

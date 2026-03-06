@@ -2916,45 +2916,75 @@ begin
         end;
     end;
 
-    // For multi-syllable lookups, prioritize candidates whose text-unit length
-    // is close to the input syllable count. This suppresses short noisy heads
-    // (for example single-char candidates) for long pinyin inputs.
+    // For multi-syllable lookups, rank candidates by intent layers:
+    // complete phrases > near-complete phrase chunks > shorter chunks >
+    // single-char fallbacks. This keeps long input usable even when the raw
+    // lexicon contains high-weight noisy short heads.
     if (m_last_lookup_syllable_count >= 3) and (candidate.comment = '') then
     begin
         text_units := Length(split_text_units(candidate.text));
-        syllable_gap := m_last_lookup_syllable_count - text_units;
-        if syllable_gap > 0 then
+        if text_units >= 2 then
         begin
-            Dec(Result, syllable_gap * 160);
-            if text_units = 1 then
+            syllable_gap := m_last_lookup_syllable_count - text_units;
+            if syllable_gap = 0 then
             begin
-                Dec(Result, 260);
+                Inc(Result, 520 + (text_units * 24));
+                if candidate.source = cs_ai then
+                begin
+                    Inc(Result, 180);
+                end;
+            end;
+            if syllable_gap = 1 then
+            begin
+                Inc(Result, 260);
+            end
+            else if syllable_gap < 0 then
+            begin
+                Dec(Result, Abs(syllable_gap) * 120);
+            end
+            else
+            begin
+                Dec(Result, syllable_gap * 220);
+            end;
+
+            if (m_last_lookup_syllable_count >= 4) and (text_units >= 3) and
+                (text_units + 1 >= m_last_lookup_syllable_count) then
+            begin
+                Inc(Result, 80);
             end;
         end
-        else if syllable_gap = 0 then
+        else
         begin
-            Inc(Result, 160);
-            if candidate.source = cs_ai then
-            begin
-                Inc(Result, 180);
-            end;
-        end;
-    end
-    else if (m_last_lookup_syllable_count >= 3) and (candidate.comment <> '') then
-    begin
-        text_units := Length(split_text_units(candidate.text));
-        if text_units <= 1 then
-        begin
-            Dec(Result, 240);
-        end
-        else if text_units + 1 < m_last_lookup_syllable_count then
-        begin
-            Dec(Result, 120);
+            Dec(Result, 620);
         end;
     end;
 
     if candidate.comment <> '' then
     begin
+        if m_last_lookup_syllable_count >= 3 then
+        begin
+            text_units := Length(split_text_units(candidate.text));
+            if text_units >= 2 then
+            begin
+                if text_units + 1 >= m_last_lookup_syllable_count then
+                begin
+                    Inc(Result, 340);
+                end
+                else if text_units + 2 >= m_last_lookup_syllable_count then
+                begin
+                    Inc(Result, 120);
+                end
+                else
+                begin
+                    Dec(Result, 180 + ((m_last_lookup_syllable_count - text_units - 2) * 140));
+                end;
+            end
+            else
+            begin
+                Dec(Result, 760);
+            end;
+        end;
+
         // Segment fallback candidates with remaining pinyin (e.g. "... ti")
         // should stay available but rank below complete phrase candidates.
         Dec(Result, c_partial_candidate_score_penalty);
@@ -3493,7 +3523,6 @@ const
     c_segment_full_non_leading_single_penalty = 72;
     c_segment_full_preferred_single_penalty = 24;
     c_segment_full_leading_multi_penalty = 42;
-    c_segment_full_head_top_n = 4;
     c_segment_full_path_non_user_limit = 4;
     c_segment_partial_single_top_n = 6;
     c_segment_text_unit_mismatch_penalty = 100;
@@ -3712,6 +3741,8 @@ var
         existing_state_index: Integer;
         keep_count: Integer;
         full_non_user_added: Integer;
+        full_head_top_n: Integer;
+        full_path_non_user_limit: Integer;
         local_state: TncCandidate;
         local_candidate: TncCandidate;
         local_new_state: TncCandidate;
@@ -3915,6 +3946,22 @@ var
             Exit;
         end;
 
+        if Length(syllables) >= 6 then
+        begin
+            full_head_top_n := 2;
+            full_path_non_user_limit := 3;
+        end
+        else if Length(syllables) >= 4 then
+        begin
+            full_head_top_n := 3;
+            full_path_non_user_limit := 4;
+        end
+        else
+        begin
+            full_head_top_n := 4;
+            full_path_non_user_limit := c_segment_full_path_non_user_limit;
+        end;
+
         SetLength(states, Length(syllables) + 1);
         SetLength(state_dedup, Length(syllables) + 1);
         for state_pos := 0 to High(states) do
@@ -4006,7 +4053,7 @@ var
                             // should not keep expanding into long noisy phrases.
                             if (state_pos = 0) and (local_segment_len > 1) and
                                 (next_pos < Length(syllables)) and
-                                (candidate_index >= c_segment_full_head_top_n) then
+                                (candidate_index >= full_head_top_n) then
                             begin
                                 Continue;
                             end;
@@ -4160,7 +4207,7 @@ var
                 begin
                     Continue;
                 end;
-                if (local_state.source <> cs_user) and (full_non_user_added >= c_segment_full_path_non_user_limit) then
+                if (local_state.source <> cs_user) and (full_non_user_added >= full_path_non_user_limit) then
                 begin
                     Continue;
                 end;
