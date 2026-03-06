@@ -351,6 +351,81 @@ begin
     end;
 end;
 
+function split_text_units_local(const input_text: string): TArray<string>;
+var
+    idx: Integer;
+    unit_text: string;
+begin
+    SetLength(Result, 0);
+    idx := 1;
+    while idx <= Length(input_text) do
+    begin
+        if (Ord(input_text[idx]) >= $D800) and (Ord(input_text[idx]) <= $DBFF) and
+            (idx < Length(input_text)) and
+            (Ord(input_text[idx + 1]) >= $DC00) and (Ord(input_text[idx + 1]) <= $DFFF) then
+        begin
+            unit_text := input_text[idx] + input_text[idx + 1];
+            Inc(idx, 2);
+        end
+        else
+        begin
+            unit_text := input_text[idx];
+            Inc(idx);
+        end;
+
+        SetLength(Result, Length(Result) + 1);
+        Result[High(Result)] := unit_text;
+    end;
+end;
+
+function build_context_variants_local(const context_text: string): TArray<string>;
+var
+    context_units: TArray<string>;
+    seen: TDictionary<string, Boolean>;
+    variant_text: string;
+    idx: Integer;
+    start_idx: Integer;
+begin
+    SetLength(Result, 0);
+    variant_text := Trim(context_text);
+    if variant_text = '' then
+    begin
+        Exit;
+    end;
+
+    seen := TDictionary<string, Boolean>.Create;
+    try
+        SetLength(Result, 1);
+        Result[0] := variant_text;
+        seen.Add(variant_text, True);
+
+        context_units := split_text_units_local(variant_text);
+        if Length(context_units) <= 1 then
+        begin
+            Exit;
+        end;
+
+        for start_idx := Max(0, Length(context_units) - 2) to Length(context_units) - 1 do
+        begin
+            variant_text := '';
+            for idx := start_idx to High(context_units) do
+            begin
+                variant_text := variant_text + context_units[idx];
+            end;
+            variant_text := Trim(variant_text);
+            if (variant_text = '') or seen.ContainsKey(variant_text) then
+            begin
+                Continue;
+            end;
+            seen.Add(variant_text, True);
+            SetLength(Result, Length(Result) + 1);
+            Result[High(Result)] := variant_text;
+        end;
+    finally
+        seen.Free;
+    end;
+end;
+
 function parse_mixed_jianpin_query(const query_key: string; out full_prefix: string; out jianpin_key: string;
     out tokens: TncMixedQueryTokenList): Boolean;
 var
@@ -2563,6 +2638,13 @@ var
         begin
             Exit;
         end;
+        if (not full_pinyin_query) and (not mixed_mode) and (Length(query_key) <= 6) and
+            (list.Count > 0) then
+        begin
+            // Keep short non-full inputs conservative: if they already produced
+            // direct results, avoid over-eager adjacent-swap typo recovery.
+            Exit;
+        end;
 
         // Mixed/non-full probing may already have filled list with noisy rule candidates.
         // If no user hit is present, clear them so transposition recovery can surface.
@@ -3523,6 +3605,8 @@ var
     stmt: Psqlite3_stmt;
     left_key: string;
     text_key: string;
+    context_variants: TArray<string>;
+    variant_idx: Integer;
 begin
     left_key := Trim(left_text);
     text_key := Trim(committed_text);
@@ -3531,33 +3615,42 @@ begin
         Exit;
     end;
 
-    stmt := nil;
-    try
-        if m_user_connection.prepare(update_sql, stmt) and
-            m_user_connection.bind_text(stmt, 1, left_key) and
-            m_user_connection.bind_text(stmt, 2, text_key) then
-        begin
-            m_user_connection.step(stmt);
-        end;
-    finally
-        if stmt <> nil then
-        begin
-            m_user_connection.finalize(stmt);
-        end;
+    context_variants := build_context_variants_local(left_key);
+    if Length(context_variants) = 0 then
+    begin
+        Exit;
     end;
 
-    stmt := nil;
-    try
-        if m_user_connection.prepare(insert_sql, stmt) and
-            m_user_connection.bind_text(stmt, 1, left_key) and
-            m_user_connection.bind_text(stmt, 2, text_key) then
-        begin
-            m_user_connection.step(stmt);
+    for variant_idx := 0 to High(context_variants) do
+    begin
+        stmt := nil;
+        try
+            if m_user_connection.prepare(update_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, context_variants[variant_idx]) and
+                m_user_connection.bind_text(stmt, 2, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
         end;
-    finally
-        if stmt <> nil then
-        begin
-            m_user_connection.finalize(stmt);
+
+        stmt := nil;
+        try
+            if m_user_connection.prepare(insert_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, context_variants[variant_idx]) and
+                m_user_connection.bind_text(stmt, 2, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
         end;
     end;
 

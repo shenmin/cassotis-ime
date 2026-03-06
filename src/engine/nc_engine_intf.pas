@@ -50,6 +50,8 @@ type
         m_segment_left_context: string;
         m_context_pairs: TDictionary<string, Integer>;
         m_context_order: TQueue<string>;
+        m_session_text_counts: TDictionary<string, Integer>;
+        m_session_text_order: TQueue<string>;
         m_context_db_bonus_cache_key: string;
         m_context_db_bonus_cache: TDictionary<string, Integer>;
         m_pending_commit_text: string;
@@ -74,6 +76,8 @@ type
         function get_page_count_internal(const page_size: Integer): Integer;
         procedure normalize_page_and_selection;
         function get_source_rank(const source: TncCandidateSource): Integer;
+        function get_context_variants(const context_text: string): TArray<string>;
+        function get_session_text_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
         function map_full_width_char(const input_char: Char): string;
@@ -105,6 +109,7 @@ type
         procedure apply_partial_commit(const selected_text: string; const remaining_pinyin: string);
         procedure update_left_context(const committed_text: string);
         procedure record_context_pair(const left_text: string; const committed_text: string);
+        procedure note_session_commit(const text: string);
         procedure set_pending_commit(const text: string; const remaining_pinyin: string = '');
         procedure clear_pending_commit;
         procedure set_ai_provider(const provider: TncAiProvider);
@@ -155,6 +160,7 @@ const
     c_context_history_limit = 200;
     c_context_score_bonus = 80;
     c_context_score_bonus_max = 400;
+    c_session_text_history_limit = 256;
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
     c_common_surname_chars =
@@ -354,6 +360,8 @@ begin
     m_confirmed_segments := TList<TncConfirmedSegment>.Create;
     m_context_pairs := TDictionary<string, Integer>.Create;
     m_context_order := TQueue<string>.Create;
+    m_session_text_counts := TDictionary<string, Integer>.Create;
+    m_session_text_order := TQueue<string>.Create;
     m_context_db_bonus_cache_key := '';
     m_context_db_bonus_cache := TDictionary<string, Integer>.Create;
     SetLength(m_candidates, 0);
@@ -381,6 +389,12 @@ begin
         m_context_order := nil;
     end;
 
+    if m_session_text_order <> nil then
+    begin
+        m_session_text_order.Free;
+        m_session_text_order := nil;
+    end;
+
     if m_context_db_bonus_cache <> nil then
     begin
         m_context_db_bonus_cache.Free;
@@ -398,6 +412,12 @@ begin
     begin
         m_context_pairs.Free;
         m_context_pairs := nil;
+    end;
+
+    if m_session_text_counts <> nil then
+    begin
+        m_session_text_counts.Free;
+        m_session_text_counts := nil;
     end;
 
     inherited Destroy;
@@ -933,6 +953,21 @@ var
         Result := weight_value >= c_partial_preferred_min_weight;
     end;
 
+    function is_bmp_cjk_single_char_candidate(const candidate: TncCandidate): Boolean;
+    var
+        unit_text: string;
+        codepoint: Integer;
+    begin
+        Result := False;
+        unit_text := Trim(candidate.text);
+        if not try_get_single_text_unit_codepoint(unit_text, codepoint) then
+        begin
+            Exit;
+        end;
+
+        Result := (codepoint >= $4E00) and (codepoint <= $9FFF);
+    end;
+
     function get_text_unit_count(const text: string): Integer;
     var
         idx: Integer;
@@ -1195,7 +1230,7 @@ var
 
     function try_build_best_single_char_chain(out out_candidate: TncCandidate): Boolean;
     const
-        c_chain_min_syllables = 3;
+        c_chain_min_syllables = 2;
         c_chain_bonus = 160;
         c_chain_penalty_per_syllable = 28;
     var
@@ -1270,6 +1305,11 @@ var
                     end;
                     if prefer_common_single_char and
                         (not is_preferred_partial_single_char_candidate(chosen)) then
+                    begin
+                        Continue;
+                    end;
+                    if (not prefer_common_single_char) and
+                        (not is_bmp_cjk_single_char_candidate(chosen)) then
                     begin
                         Continue;
                     end;
@@ -1373,7 +1413,18 @@ var
             Exit;
         end;
 
-        target_index := 2;
+        if input_syllable_count <= 2 then
+        begin
+            target_index := 4;
+        end
+        else if input_syllable_count = 3 then
+        begin
+            target_index := 3;
+        end
+        else
+        begin
+            target_index := 2;
+        end;
         if target_index >= visible_limit then
         begin
             target_index := visible_limit - 1;
@@ -2579,6 +2630,106 @@ begin
     end;
 end;
 
+function TncEngine.get_context_variants(const context_text: string): TArray<string>;
+var
+    context_units: TArray<string>;
+    seen: TDictionary<string, Boolean>;
+    variant_text: string;
+    idx: Integer;
+    start_idx: Integer;
+begin
+    SetLength(Result, 0);
+    variant_text := Trim(context_text);
+    if variant_text = '' then
+    begin
+        Exit;
+    end;
+
+    seen := TDictionary<string, Boolean>.Create;
+    try
+        SetLength(Result, 1);
+        Result[0] := variant_text;
+        seen.Add(variant_text, True);
+
+        context_units := split_text_units(variant_text);
+        if Length(context_units) <= 1 then
+        begin
+            Exit;
+        end;
+
+        for start_idx := Length(context_units) - 2 to Length(context_units) - 1 do
+        begin
+            if start_idx < 0 then
+            begin
+                Continue;
+            end;
+            variant_text := '';
+            for idx := start_idx to High(context_units) do
+            begin
+                variant_text := variant_text + context_units[idx];
+            end;
+            variant_text := Trim(variant_text);
+            if (variant_text = '') or seen.ContainsKey(variant_text) then
+            begin
+                Continue;
+            end;
+            seen.Add(variant_text, True);
+            SetLength(Result, Length(Result) + 1);
+            Result[High(Result)] := variant_text;
+        end;
+    finally
+        seen.Free;
+    end;
+end;
+
+function TncEngine.get_session_text_bonus(const candidate_text: string): Integer;
+const
+    c_multi_text_step = 110;
+    c_multi_text_base = 70;
+    c_multi_text_cap = 520;
+    c_single_text_step = 48;
+    c_single_text_base = 24;
+    c_single_text_cap = 180;
+var
+    unit_count: Integer;
+    count: Integer;
+    text_key: string;
+begin
+    Result := 0;
+    if m_session_text_counts = nil then
+    begin
+        Exit;
+    end;
+
+    text_key := Trim(candidate_text);
+    if (text_key = '') or (not m_session_text_counts.TryGetValue(text_key, count)) or
+        (count <= 0) then
+    begin
+        Exit;
+    end;
+
+    unit_count := get_candidate_text_unit_count(text_key);
+    if unit_count <= 1 then
+    begin
+        Result := c_single_text_base + ((count - 1) * c_single_text_step);
+        if Result > c_single_text_cap then
+        begin
+            Result := c_single_text_cap;
+        end;
+        Exit;
+    end;
+
+    Result := c_multi_text_base + ((count - 1) * c_multi_text_step);
+    if count >= 3 then
+    begin
+        Inc(Result, 40);
+    end;
+    if Result > c_multi_text_cap then
+    begin
+        Result := c_multi_text_cap;
+    end;
+end;
+
 function TncEngine.get_candidate_text_unit_count(const text: string): Integer;
 begin
     Result := Length(split_text_units(text));
@@ -2647,11 +2798,15 @@ end;
 
 function TncEngine.get_context_bonus(const candidate_text: string): Integer;
 var
-    key: string;
     context_value: string;
     count: Integer;
     local_bonus: Integer;
     persistent_bonus: Integer;
+    context_variants: TArray<string>;
+    variant_idx: Integer;
+    variant_weight: Integer;
+    variant_key: string;
+    variant_bonus: Integer;
 begin
     Result := 0;
     local_bonus := 0;
@@ -2671,15 +2826,40 @@ begin
         Exit;
     end;
 
+    context_variants := get_context_variants(context_value);
+    if Length(context_variants) = 0 then
+    begin
+        Exit;
+    end;
+
     if m_context_pairs <> nil then
     begin
-        key := context_value + #1 + candidate_text;
-        if m_context_pairs.TryGetValue(key, count) then
+        for variant_idx := 0 to High(context_variants) do
         begin
-            local_bonus := count * c_context_score_bonus;
-            if local_bonus > c_context_score_bonus_max then
+            case variant_idx of
+                0:
+                    variant_weight := 100;
+                1:
+                    variant_weight := 72;
+            else
+                variant_weight := 46;
+            end;
+
+            variant_key := context_variants[variant_idx] + #1 + candidate_text;
+            if not m_context_pairs.TryGetValue(variant_key, count) then
             begin
-                local_bonus := c_context_score_bonus_max;
+                Continue;
+            end;
+
+            variant_bonus := count * c_context_score_bonus;
+            if variant_bonus > c_context_score_bonus_max then
+            begin
+                variant_bonus := c_context_score_bonus_max;
+            end;
+            variant_bonus := (variant_bonus * variant_weight) div 100;
+            if variant_bonus > local_bonus then
+            begin
+                local_bonus := variant_bonus;
             end;
         end;
     end;
@@ -2692,10 +2872,29 @@ begin
             m_context_db_bonus_cache_key := context_value;
         end;
 
-        if not m_context_db_bonus_cache.TryGetValue(candidate_text, persistent_bonus) then
+        for variant_idx := 0 to High(context_variants) do
         begin
-            persistent_bonus := m_dictionary.get_context_bonus(context_value, candidate_text);
-            m_context_db_bonus_cache.AddOrSetValue(candidate_text, persistent_bonus);
+            case variant_idx of
+                0:
+                    variant_weight := 100;
+                1:
+                    variant_weight := 72;
+            else
+                variant_weight := 46;
+            end;
+
+            variant_key := context_variants[variant_idx] + #1 + candidate_text;
+            if not m_context_db_bonus_cache.TryGetValue(variant_key, variant_bonus) then
+            begin
+                variant_bonus := m_dictionary.get_context_bonus(context_variants[variant_idx], candidate_text);
+                m_context_db_bonus_cache.AddOrSetValue(variant_key, variant_bonus);
+            end;
+
+            variant_bonus := (variant_bonus * variant_weight) div 100;
+            if variant_bonus > persistent_bonus then
+            begin
+                persistent_bonus := variant_bonus;
+            end;
         end;
     end;
 
@@ -2961,6 +3160,7 @@ end;
 function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
 var
     context_bonus: Integer;
+    session_bonus: Integer;
     text_units: Integer;
     syllable_gap: Integer;
 begin
@@ -2973,6 +3173,12 @@ begin
         context_bonus := context_bonus div 4;
     end;
     Inc(Result, context_bonus);
+    session_bonus := get_session_text_bonus(candidate.text);
+    if candidate.comment <> '' then
+    begin
+        session_bonus := session_bonus div 2;
+    end;
+    Inc(Result, session_bonus);
 
     // For one-syllable full-pinyin lookups, keep single-char candidates ahead.
     if (m_last_lookup_syllable_count = 1) and (candidate.comment = '') then
@@ -4669,6 +4875,7 @@ begin
     begin
         m_dictionary.record_commit(prefix_pinyin, selected_text);
     end;
+    note_session_commit(selected_text);
 
     push_confirmed_segment(selected_text, prefix_pinyin);
 
@@ -4711,25 +4918,79 @@ begin
     m_left_context := next_context;
 end;
 
+procedure TncEngine.note_session_commit(const text: string);
+var
+    count: Integer;
+    evict_text: string;
+    text_key: string;
+begin
+    text_key := Trim(text);
+    if (text_key = '') or (m_session_text_counts = nil) or (m_session_text_order = nil) then
+    begin
+        Exit;
+    end;
+
+    if m_session_text_counts.TryGetValue(text_key, count) then
+    begin
+        Inc(count);
+        m_session_text_counts.AddOrSetValue(text_key, count);
+    end
+    else
+    begin
+        m_session_text_counts.Add(text_key, 1);
+    end;
+
+    m_session_text_order.Enqueue(text_key);
+    while m_session_text_order.Count > c_session_text_history_limit do
+    begin
+        evict_text := m_session_text_order.Dequeue;
+        if not m_session_text_counts.TryGetValue(evict_text, count) then
+        begin
+            Continue;
+        end;
+        Dec(count);
+        if count <= 0 then
+        begin
+            m_session_text_counts.Remove(evict_text);
+        end
+        else
+        begin
+            m_session_text_counts.AddOrSetValue(evict_text, count);
+        end;
+    end;
+end;
+
 procedure TncEngine.record_context_pair(const left_text: string; const committed_text: string);
 var
-    key: string;
+    context_variants: TArray<string>;
     evict_key: string;
     count: Integer;
+    key: string;
+    variant_idx: Integer;
 begin
     if (left_text = '') or (committed_text = '') then
     begin
         Exit;
     end;
 
-    if m_dictionary <> nil then
+    context_variants := get_context_variants(left_text);
+    if Length(context_variants) = 0 then
     begin
-        m_dictionary.record_context_pair(left_text, committed_text);
+        Exit;
     end;
 
-    if (m_context_db_bonus_cache <> nil) and (m_context_db_bonus_cache_key = left_text) then
+    if m_dictionary <> nil then
     begin
-        m_context_db_bonus_cache.Remove(committed_text);
+        for variant_idx := 0 to High(context_variants) do
+        begin
+            m_dictionary.record_context_pair(context_variants[variant_idx], committed_text);
+        end;
+    end;
+
+    if m_context_db_bonus_cache <> nil then
+    begin
+        m_context_db_bonus_cache.Clear;
+        m_context_db_bonus_cache_key := '';
     end;
 
     if m_context_pairs = nil then
@@ -4737,36 +4998,39 @@ begin
         Exit;
     end;
 
-    key := left_text + #1 + committed_text;
-    if m_context_pairs.TryGetValue(key, count) then
-    begin
-        Inc(count);
-        m_context_pairs.AddOrSetValue(key, count);
-    end
-    else
-    begin
-        m_context_pairs.Add(key, 1);
-    end;
-
     if m_context_order = nil then
     begin
         Exit;
     end;
 
-    m_context_order.Enqueue(key);
-    while m_context_order.Count > c_context_history_limit do
+    for variant_idx := 0 to High(context_variants) do
     begin
-        evict_key := m_context_order.Dequeue;
-        if m_context_pairs.TryGetValue(evict_key, count) then
+        key := context_variants[variant_idx] + #1 + committed_text;
+        if m_context_pairs.TryGetValue(key, count) then
         begin
-            Dec(count);
-            if count <= 0 then
+            Inc(count);
+            m_context_pairs.AddOrSetValue(key, count);
+        end
+        else
+        begin
+            m_context_pairs.Add(key, 1);
+        end;
+
+        m_context_order.Enqueue(key);
+        while m_context_order.Count > c_context_history_limit do
+        begin
+            evict_key := m_context_order.Dequeue;
+            if m_context_pairs.TryGetValue(evict_key, count) then
             begin
-                m_context_pairs.Remove(evict_key);
-            end
-            else
-            begin
-                m_context_pairs.AddOrSetValue(evict_key, count);
+                Dec(count);
+                if count <= 0 then
+                begin
+                    m_context_pairs.Remove(evict_key);
+                end
+                else
+                begin
+                    m_context_pairs.AddOrSetValue(evict_key, count);
+                end;
             end;
         end;
     end;
@@ -5728,6 +5992,14 @@ begin
                 m_dictionary.record_commit(full_pinyin, commit_text);
             end;
         end;
+    end;
+    if commit_segment_text <> '' then
+    begin
+        note_session_commit(commit_segment_text);
+    end;
+    if (commit_text <> '') and (commit_text <> commit_segment_text) then
+    begin
+        note_session_commit(commit_text);
     end;
     m_confirmed_text := '';
     m_segment_left_context := '';
