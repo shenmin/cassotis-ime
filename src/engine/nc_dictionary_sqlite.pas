@@ -26,6 +26,7 @@ type
         m_user_ready: Boolean;
         m_limit: Integer;
         m_bigram_prune_countdown: Integer;
+        m_write_batch_depth: Integer;
         m_base_connection: TncSqliteConnection;
         m_user_connection: TncSqliteConnection;
         m_contains_popularity_cache: TDictionary<string, Integer>;
@@ -52,6 +53,7 @@ type
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
         function is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
             const commit_count: Integer = 0; const user_weight: Integer = 0): Boolean;
+        procedure configure_user_connection;
         procedure purge_user_entry_internal(const pinyin: string; const text: string;
             const apply_penalty: Boolean; const purge_all_by_text: Boolean);
         procedure prune_user_entries_existing_in_base;
@@ -64,6 +66,9 @@ type
         procedure close;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
+        procedure begin_learning_batch; override;
+        procedure commit_learning_batch; override;
+        procedure rollback_learning_batch; override;
         procedure record_commit(const pinyin: string; const text: string); override;
         procedure record_context_pair(const left_text: string; const committed_text: string); override;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
@@ -1101,6 +1106,7 @@ begin
     m_user_ready := False;
     m_limit := 256;
     m_bigram_prune_countdown := 64;
+    m_write_batch_depth := 0;
     m_base_connection := nil;
     m_user_connection := nil;
     m_contains_popularity_cache := TDictionary<string, Integer>.Create;
@@ -1152,6 +1158,67 @@ begin
     end;
 
     Result := open;
+end;
+
+procedure TncSqliteDictionary.configure_user_connection;
+begin
+    if m_user_connection = nil then
+    begin
+        Exit;
+    end;
+
+    m_user_connection.exec('PRAGMA journal_mode=WAL;');
+    m_user_connection.exec('PRAGMA synchronous=NORMAL;');
+    m_user_connection.exec('PRAGMA temp_store=MEMORY;');
+    m_user_connection.exec('PRAGMA busy_timeout=1000;');
+end;
+
+procedure TncSqliteDictionary.begin_learning_batch;
+begin
+    if (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    if m_write_batch_depth = 0 then
+    begin
+        if not m_user_connection.exec('BEGIN IMMEDIATE TRANSACTION;') then
+        begin
+            Exit;
+        end;
+    end;
+    Inc(m_write_batch_depth);
+end;
+
+procedure TncSqliteDictionary.commit_learning_batch;
+begin
+    if m_write_batch_depth <= 0 then
+    begin
+        Exit;
+    end;
+
+    Dec(m_write_batch_depth);
+    if m_write_batch_depth = 0 then
+    begin
+        if not m_user_connection.exec('COMMIT;') then
+        begin
+            m_user_connection.exec('ROLLBACK;');
+        end;
+    end;
+end;
+
+procedure TncSqliteDictionary.rollback_learning_batch;
+begin
+    if m_write_batch_depth <= 0 then
+    begin
+        Exit;
+    end;
+
+    m_write_batch_depth := 0;
+    if m_user_connection <> nil then
+    begin
+        m_user_connection.exec('ROLLBACK;');
+    end;
 end;
 
 function TncSqliteDictionary.get_module_dir: string;
@@ -2259,6 +2326,7 @@ begin
             m_user_ready := ensure_schema(m_user_connection);
             if m_user_ready then
             begin
+                configure_user_connection;
                 prune_bigram_rows_if_needed(True);
             end;
         end;
@@ -2285,6 +2353,7 @@ begin
     begin
         m_user_connection.close;
     end;
+    m_write_batch_depth := 0;
 
     m_ready := False;
     m_base_ready := False;

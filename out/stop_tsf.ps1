@@ -3,9 +3,48 @@
     [switch]$force_kill
 )
 
+function invoke_tasklist_module_scan([string]$dll_name, [int]$timeout_ms = 4000)
+{
+    $stdout_path = Join-Path $env:TEMP ("cassotis_tasklist_{0}_{1}.out" -f $dll_name, [guid]::NewGuid().ToString('N'))
+    $stderr_path = Join-Path $env:TEMP ("cassotis_tasklist_{0}_{1}.err" -f $dll_name, [guid]::NewGuid().ToString('N'))
+    $proc = $null
+    try
+    {
+        $proc = Start-Process -FilePath tasklist.exe -ArgumentList @('/m', $dll_name, '/fo', 'csv', '/nh') `
+            -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path -PassThru -WindowStyle Hidden
+        if (-not $proc.WaitForExit($timeout_ms))
+        {
+            try
+            {
+                Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+            }
+            catch
+            {
+            }
+            Write-Warning ("tasklist /m {0} timed out after {1} ms; skip module scan." -f $dll_name, $timeout_ms)
+            return @()
+        }
+
+        if (-not (Test-Path -LiteralPath $stdout_path))
+        {
+            return @()
+        }
+
+        return @(Get-Content -LiteralPath $stdout_path -ErrorAction SilentlyContinue)
+    }
+    finally
+    {
+        if ($proc -ne $null)
+        {
+            $proc.Dispose()
+        }
+        Remove-Item -LiteralPath $stdout_path -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderr_path -Force -ErrorAction SilentlyContinue
+    }
+}
 function get_processes_using_dll([string]$dll_name)
 {
-    $lines = & tasklist /m $dll_name /fo csv /nh 2>$null
+    $lines = invoke_tasklist_module_scan $dll_name
     if ($lines -eq $null)
     {
         return @()
@@ -197,3 +236,5 @@ if ($remaining.Count -eq 0)
 Write-Host ("Still using {0}:" -f ($dll_names -join ', '))
 $remaining | Format-Table -AutoSize
 exit 1
+
+

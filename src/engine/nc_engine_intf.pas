@@ -46,6 +46,7 @@ type
         m_dictionary_write_time: TDateTime;
         m_user_dictionary_path: string;
         m_user_dictionary_write_time: TDateTime;
+        m_last_dictionary_reload_check_tick: UInt64;
         m_left_context: string;
         m_external_left_context: string;
         m_segment_left_context: string;
@@ -378,6 +379,7 @@ begin
     m_dictionary_write_time := 0;
     m_user_dictionary_path := '';
     m_user_dictionary_write_time := 0;
+    m_last_dictionary_reload_check_tick := 0;
     m_left_context := '';
     m_segment_left_context := '';
     m_confirmed_segments := TList<TncConfirmedSegment>.Create;
@@ -561,6 +563,7 @@ begin
     begin
         m_context_db_bonus_cache.Clear;
     end;
+    m_last_dictionary_reload_check_tick := 0;
     update_dictionary_state;
 end;
 
@@ -761,14 +764,25 @@ begin
 end;
 
 procedure TncEngine.reload_dictionary_if_needed;
+const
+    c_dictionary_reload_check_interval_ms = 1000;
 var
     current_write_time: TDateTime;
     user_write_time: TDateTime;
+    now_tick: UInt64;
 begin
     if (m_dictionary_path = '') and (m_user_dictionary_path = '') then
     begin
         Exit;
     end;
+
+    now_tick := GetTickCount64;
+    if (m_last_dictionary_reload_check_tick <> 0) and
+        ((now_tick - m_last_dictionary_reload_check_tick) < c_dictionary_reload_check_interval_ms) then
+    begin
+        Exit;
+    end;
+    m_last_dictionary_reload_check_tick := now_tick;
 
     if m_dictionary_path <> '' then
     begin
@@ -6001,7 +6015,14 @@ begin
 
     if (m_dictionary <> nil) and (prefix_pinyin <> '') then
     begin
-        m_dictionary.record_commit(prefix_pinyin, selected_text);
+        m_dictionary.begin_learning_batch;
+        try
+            m_dictionary.record_commit(prefix_pinyin, selected_text);
+            m_dictionary.commit_learning_batch;
+        except
+            m_dictionary.rollback_learning_batch;
+            raise;
+        end;
     end;
     note_session_commit(selected_text);
 
@@ -6204,10 +6225,7 @@ begin
 
     if m_dictionary <> nil then
     begin
-        for variant_idx := 0 to High(context_variants) do
-        begin
-            m_dictionary.record_context_pair(context_variants[variant_idx], committed_text);
-        end;
+        m_dictionary.record_context_pair(left_text, committed_text);
     end;
 
     if m_context_db_bonus_cache <> nil then
@@ -7243,33 +7261,47 @@ begin
     m_pending_commit_allow_learning := True;
     prev_left_context := m_left_context;
     update_left_context(out_text);
-    record_context_pair(prev_left_context, out_text);
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
-    if allow_learning and (m_dictionary <> nil) then
+    if m_dictionary <> nil then
     begin
-        if (normalized_pinyin <> '') and (commit_segment_text <> '') then
-        begin
-            m_dictionary.record_commit(normalized_pinyin, commit_segment_text);
-        end;
-
-        if commit_text <> '' then
-        begin
-            full_pinyin := '';
-            if m_confirmed_segments <> nil then
+        m_dictionary.begin_learning_batch;
+        try
+            record_context_pair(prev_left_context, out_text);
+            if allow_learning then
             begin
-                for segment in m_confirmed_segments do
+                if (normalized_pinyin <> '') and (commit_segment_text <> '') then
                 begin
-                    full_pinyin := full_pinyin + segment.pinyin;
+                    m_dictionary.record_commit(normalized_pinyin, commit_segment_text);
+                end;
+
+                if commit_text <> '' then
+                begin
+                    full_pinyin := '';
+                    if m_confirmed_segments <> nil then
+                    begin
+                        for segment in m_confirmed_segments do
+                        begin
+                            full_pinyin := full_pinyin + segment.pinyin;
+                        end;
+                    end;
+                    full_pinyin := full_pinyin + normalized_pinyin;
+
+                    if (full_pinyin <> '') and
+                        ((full_pinyin <> normalized_pinyin) or (commit_text <> commit_segment_text)) then
+                    begin
+                        m_dictionary.record_commit(full_pinyin, commit_text);
+                    end;
                 end;
             end;
-            full_pinyin := full_pinyin + normalized_pinyin;
-
-            if (full_pinyin <> '') and
-                ((full_pinyin <> normalized_pinyin) or (commit_text <> commit_segment_text)) then
-            begin
-                m_dictionary.record_commit(full_pinyin, commit_text);
-            end;
+            m_dictionary.commit_learning_batch;
+        except
+            m_dictionary.rollback_learning_batch;
+            raise;
         end;
+    end
+    else
+    begin
+        record_context_pair(prev_left_context, out_text);
     end;
     if commit_segment_text <> '' then
     begin

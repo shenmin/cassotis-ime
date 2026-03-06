@@ -9,6 +9,9 @@ type
     TncDictionaryProvider = class
     public
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; virtual; abstract;
+        procedure begin_learning_batch; virtual;
+        procedure commit_learning_batch; virtual;
+        procedure rollback_learning_batch; virtual;
         procedure record_commit(const pinyin: string; const text: string); virtual;
         procedure record_context_pair(const left_text: string; const committed_text: string); virtual;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; virtual;
@@ -17,6 +20,18 @@ type
     end;
 
 implementation
+
+procedure TncDictionaryProvider.begin_learning_batch;
+begin
+end;
+
+procedure TncDictionaryProvider.commit_learning_batch;
+begin
+end;
+
+procedure TncDictionaryProvider.rollback_learning_batch;
+begin
+end;
 
 procedure TncDictionaryProvider.record_commit(const pinyin: string; const text: string);
 begin
