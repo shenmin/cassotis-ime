@@ -80,10 +80,14 @@ type
         m_lookup_phrase_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_text_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_bonus_cache: TDictionary<string, Integer>;
+        m_current_segment_path_map: TDictionary<string, string>;
+        m_candidate_segment_paths: TArray<string>;
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
         m_has_pending_commit: Boolean;
         m_pending_commit_allow_learning: Boolean;
+        m_pending_commit_segment_path: string;
+        m_last_debug_commit_segment_path: string;
         m_last_lookup_key: string;
         m_last_lookup_normalized_from: string;
         m_last_lookup_syllable_count: Integer;
@@ -136,6 +140,14 @@ type
         function get_rank_score(const candidate: TncCandidate): Integer;
         procedure sort_candidates(var candidates: TncCandidateList);
         procedure clear_lookup_bonus_caches;
+        function build_candidate_identity_key(const candidate_text: string; const comment_text: string): string;
+        procedure clear_segment_path_tracking;
+        procedure remember_segment_path_for_candidate(const candidate_text: string; const comment_text: string;
+            const encoded_path: string);
+        function get_segment_path_for_candidate(const candidate: TncCandidate;
+            const candidate_index: Integer = -1): string;
+        function infer_segment_path_for_selected_text(const selected_text: string): string;
+        procedure refresh_candidate_segment_paths;
         function normalize_pinyin_text(const input_text: string): string;
         function is_valid_pinyin_syllable(const syllable: string): Boolean;
         function is_full_pinyin_key(const value: string): Boolean;
@@ -163,9 +175,11 @@ type
         procedure note_session_query_choice(const query_key: string; const text: string);
         procedure note_session_context_query_choice(const context_text: string; const query_key: string;
             const text: string);
+        procedure track_phrase_context_key(const phrase_key: string; const current_serial: Int64);
         procedure note_output_phrase_context(const committed_text: string);
+        procedure note_segment_path_context(const encoded_path: string);
         procedure set_pending_commit(const text: string; const remaining_pinyin: string = '';
-            const allow_learning: Boolean = True);
+            const allow_learning: Boolean = True; const segment_path: string = '');
         procedure clear_pending_commit;
         procedure set_ai_provider(const provider: TncAiProvider);
         procedure update_dictionary_state;
@@ -191,6 +205,11 @@ type
         function get_display_text: string;
         function get_confirmed_length: Integer;
         function get_lookup_debug_info: string;
+        function get_debug_last_output_commit_text: string;
+        function get_debug_phrase_context_pair_count(const left_text: string; const candidate_text: string): Integer;
+        function get_debug_last_commit_segment_path: string;
+        function get_debug_candidate_segment_path(const candidate_index: Integer): string;
+        function get_debug_pending_commit_segment_path: string;
         function get_dictionary_debug_info: string;
         function refresh_ai_candidates_if_ready(out out_candidates: TncCandidateList; out page_index: Integer;
             out page_count: Integer; out selected_index: Integer; out preedit_text: string): Boolean;
@@ -201,6 +220,17 @@ type
     end;
 
 implementation
+
+type
+    TncSegmentPathState = record
+        text: string;
+        score: Integer;
+        source: TncCandidateSource;
+        has_multi_segment: Boolean;
+        prev_text: string;
+        prev_prev_text: string;
+        path_text: string;
+    end;
 
 const
     c_default_page_size = 9;
@@ -214,6 +244,7 @@ const
     c_left_context_max_len = 20;
     c_context_history_limit = 200;
     c_phrase_context_history_limit = 256;
+    c_segment_path_separator = #3;
     c_context_score_bonus = 80;
     c_context_score_bonus_max = 400;
     c_session_text_history_limit = 256;
@@ -447,6 +478,9 @@ begin
     m_lookup_phrase_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_text_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
+    m_current_segment_path_map := TDictionary<string, string>.Create;
+    SetLength(m_candidate_segment_paths, 0);
+    m_pending_commit_segment_path := '';
     SetLength(m_candidates, 0);
     set_dictionary_provider(create_dictionary_from_config);
     set_ai_provider(create_ai_provider_from_config);
@@ -578,6 +612,12 @@ begin
         m_lookup_context_bonus_cache.Free;
         m_lookup_context_bonus_cache := nil;
     end;
+    if m_current_segment_path_map <> nil then
+    begin
+        m_current_segment_path_map.Free;
+        m_current_segment_path_map := nil;
+    end;
+    SetLength(m_candidate_segment_paths, 0);
 
     if m_confirmed_segments <> nil then
     begin
@@ -647,6 +687,378 @@ begin
     end;
 end;
 
+function TncEngine.build_candidate_identity_key(const candidate_text: string; const comment_text: string): string;
+begin
+    Result := LowerCase(Trim(candidate_text)) + #1 + Trim(comment_text);
+end;
+
+procedure TncEngine.clear_segment_path_tracking;
+begin
+    m_pending_commit_segment_path := '';
+    SetLength(m_candidate_segment_paths, 0);
+    if m_current_segment_path_map <> nil then
+    begin
+        m_current_segment_path_map.Clear;
+    end;
+end;
+
+procedure TncEngine.remember_segment_path_for_candidate(const candidate_text: string; const comment_text: string;
+    const encoded_path: string);
+var
+    key: string;
+    existing_path: string;
+    function get_segment_count(const path_text: string): Integer;
+    var
+        idx: Integer;
+        trimmed_path: string;
+    begin
+        trimmed_path := Trim(path_text);
+        if trimmed_path = '' then
+        begin
+            Exit(0);
+        end;
+
+        Result := 1;
+        for idx := 1 to Length(trimmed_path) do
+        begin
+            if trimmed_path[idx] = c_segment_path_separator then
+            begin
+                Inc(Result);
+            end;
+        end;
+    end;
+begin
+    if (encoded_path = '') or (m_current_segment_path_map = nil) then
+    begin
+        Exit;
+    end;
+
+    key := build_candidate_identity_key(candidate_text, comment_text);
+    if key = '' then
+    begin
+        Exit;
+    end;
+
+    if m_current_segment_path_map.TryGetValue(key, existing_path) then
+    begin
+        // The same visible candidate text can be reached through multiple segment paths.
+        // Keep the path with fewer segments so phrase-context learning records the more
+        // natural chunk boundary (e.g. "有点|奇怪" instead of "有|点|奇怪").
+        if (get_segment_count(encoded_path) < get_segment_count(existing_path)) or
+            ((get_segment_count(encoded_path) = get_segment_count(existing_path)) and
+            (Length(encoded_path) < Length(existing_path))) then
+        begin
+            m_current_segment_path_map.AddOrSetValue(key, encoded_path);
+        end;
+        Exit;
+    end;
+
+    m_current_segment_path_map.Add(key, encoded_path);
+end;
+
+function TncEngine.get_segment_path_for_candidate(const candidate: TncCandidate;
+    const candidate_index: Integer = -1): string;
+var
+    key: string;
+begin
+    Result := '';
+    if (candidate_index >= 0) and (candidate_index < Length(m_candidate_segment_paths)) then
+    begin
+        Result := m_candidate_segment_paths[candidate_index];
+        if Result <> '' then
+        begin
+            Exit;
+        end;
+    end;
+
+    if m_current_segment_path_map = nil then
+    begin
+        Exit;
+    end;
+
+    key := build_candidate_identity_key(candidate.text, candidate.comment);
+    if (key = '') or (not m_current_segment_path_map.TryGetValue(key, Result)) then
+    begin
+        Result := '';
+    end;
+end;
+
+function TncEngine.infer_segment_path_for_selected_text(const selected_text: string): string;
+type
+    TncInferredPathState = record
+        valid: Boolean;
+        score: Integer;
+        segment_count: Integer;
+        path_text: string;
+    end;
+const
+    c_infer_segment_max_syllables = 24;
+    c_infer_segment_word_max_syllables = 4;
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    target_units: TArray<string>;
+    lookup_cache: TDictionary<string, TncCandidateList>;
+    memo: TDictionary<string, TncInferredPathState>;
+    function build_syllable_key(const start_index: Integer; const syllable_count: Integer): string;
+    var
+        idx: Integer;
+        end_index: Integer;
+    begin
+        Result := '';
+        if (syllable_count <= 0) or (start_index < 0) or (start_index > High(syllables)) then
+        begin
+            Exit;
+        end;
+
+        end_index := start_index + syllable_count - 1;
+        if end_index > High(syllables) then
+        begin
+            end_index := High(syllables);
+        end;
+
+        for idx := start_index to end_index do
+        begin
+            Result := Result + syllables[idx].text;
+        end;
+    end;
+
+    function lookup_cached(const pinyin_key: string; out out_results: TncCandidateList): Boolean;
+    begin
+        SetLength(out_results, 0);
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit(False);
+        end;
+
+        if lookup_cache.TryGetValue(pinyin_key, out_results) then
+        begin
+            Exit(Length(out_results) > 0);
+        end;
+
+        if not m_dictionary.lookup(pinyin_key, out_results) then
+        begin
+            SetLength(out_results, 0);
+        end;
+        lookup_cache.AddOrSetValue(pinyin_key, out_results);
+        Result := Length(out_results) > 0;
+    end;
+
+    function is_better_state(const candidate_state: TncInferredPathState;
+        const current_state: TncInferredPathState): Boolean;
+    var
+        candidate_multi: Boolean;
+        current_multi: Boolean;
+    begin
+        if not candidate_state.valid then
+        begin
+            Exit(False);
+        end;
+        if not current_state.valid then
+        begin
+            Exit(True);
+        end;
+
+        candidate_multi := candidate_state.segment_count > 1;
+        current_multi := current_state.segment_count > 1;
+        if candidate_multi <> current_multi then
+        begin
+            Exit(candidate_multi);
+        end;
+
+        if candidate_state.segment_count <> current_state.segment_count then
+        begin
+            Exit(candidate_state.segment_count < current_state.segment_count);
+        end;
+
+        if candidate_state.score <> current_state.score then
+        begin
+            Exit(candidate_state.score > current_state.score);
+        end;
+
+        Result := Length(candidate_state.path_text) < Length(current_state.path_text);
+    end;
+
+    function matches_target_units(const candidate_text: string; const unit_index: Integer;
+        out matched_units: Integer): Boolean;
+    var
+        candidate_units: TArray<string>;
+        idx: Integer;
+    begin
+        Result := False;
+        matched_units := 0;
+        if candidate_text = '' then
+        begin
+            Exit;
+        end;
+
+        candidate_units := split_text_units(candidate_text);
+        matched_units := Length(candidate_units);
+        if (matched_units <= 0) or (unit_index + matched_units > Length(target_units)) then
+        begin
+            matched_units := 0;
+            Exit;
+        end;
+
+        for idx := 0 to matched_units - 1 do
+        begin
+            if candidate_units[idx] <> target_units[unit_index + idx] then
+            begin
+                matched_units := 0;
+                Exit(False);
+            end;
+        end;
+
+        Result := True;
+    end;
+
+    function solve(const syllable_index: Integer; const unit_index: Integer): TncInferredPathState;
+    var
+        cache_key: string;
+        segment_len: Integer;
+        next_syllable_index: Integer;
+        pinyin_key: string;
+        lookup_results: TncCandidateList;
+        candidate_index: Integer;
+        candidate: TncCandidate;
+        matched_units: Integer;
+        tail_state: TncInferredPathState;
+        candidate_state: TncInferredPathState;
+    begin
+        Result.valid := False;
+        Result.score := 0;
+        Result.segment_count := 0;
+        Result.path_text := '';
+
+        if (syllable_index = Length(syllables)) and (unit_index = Length(target_units)) then
+        begin
+            Result.valid := True;
+            Exit;
+        end;
+
+        if (syllable_index >= Length(syllables)) or (unit_index >= Length(target_units)) then
+        begin
+            Exit;
+        end;
+
+        cache_key := IntToStr(syllable_index) + '#' + IntToStr(unit_index);
+        if memo.TryGetValue(cache_key, Result) then
+        begin
+            Exit;
+        end;
+
+        for segment_len := 1 to c_infer_segment_word_max_syllables do
+        begin
+            next_syllable_index := syllable_index + segment_len;
+            if next_syllable_index > Length(syllables) then
+            begin
+                Break;
+            end;
+
+            pinyin_key := build_syllable_key(syllable_index, segment_len);
+            if not lookup_cached(pinyin_key, lookup_results) then
+            begin
+                Continue;
+            end;
+
+            for candidate_index := 0 to High(lookup_results) do
+            begin
+                candidate := lookup_results[candidate_index];
+                if candidate.comment <> '' then
+                begin
+                    Continue;
+                end;
+
+                if not matches_target_units(candidate.text, unit_index, matched_units) then
+                begin
+                    Continue;
+                end;
+
+                tail_state := solve(next_syllable_index, unit_index + matched_units);
+                if not tail_state.valid then
+                begin
+                    Continue;
+                end;
+
+                candidate_state.valid := True;
+                candidate_state.score := candidate.score + tail_state.score;
+                candidate_state.segment_count := tail_state.segment_count + 1;
+                candidate_state.path_text := candidate.text;
+                if tail_state.path_text <> '' then
+                begin
+                    candidate_state.path_text := candidate_state.path_text + c_segment_path_separator +
+                        tail_state.path_text;
+                end;
+
+                if is_better_state(candidate_state, Result) then
+                begin
+                    Result := candidate_state;
+                end;
+            end;
+        end;
+
+        memo.AddOrSetValue(cache_key, Result);
+    end;
+var
+    inferred_state: TncInferredPathState;
+begin
+    Result := '';
+    if (m_dictionary = nil) or (selected_text = '') or (m_composition_text = '') then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.Create;
+    lookup_cache := TDictionary<string, TncCandidateList>.Create;
+    memo := TDictionary<string, TncInferredPathState>.Create;
+    try
+        syllables := parser.parse(m_composition_text);
+        if (Length(syllables) <= 1) or (Length(syllables) > c_infer_segment_max_syllables) then
+        begin
+            Exit;
+        end;
+
+        target_units := split_text_units(selected_text);
+        if Length(target_units) <= 1 then
+        begin
+            Exit;
+        end;
+
+        inferred_state := solve(0, 0);
+        if inferred_state.valid and (inferred_state.segment_count > 1) then
+        begin
+            Result := inferred_state.path_text;
+        end;
+    finally
+        memo.Free;
+        lookup_cache.Free;
+        parser.Free;
+    end;
+end;
+
+procedure TncEngine.refresh_candidate_segment_paths;
+var
+    idx: Integer;
+    key: string;
+begin
+    SetLength(m_candidate_segment_paths, Length(m_candidates));
+    if (Length(m_candidates) = 0) or (m_current_segment_path_map = nil) or
+        (m_current_segment_path_map.Count <= 0) then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(m_candidates) do
+    begin
+        key := build_candidate_identity_key(m_candidates[idx].text, m_candidates[idx].comment);
+        if (key <> '') and m_current_segment_path_map.TryGetValue(key, m_candidate_segment_paths[idx]) then
+        begin
+            Continue;
+        end;
+        m_candidate_segment_paths[idx] := '';
+    end;
+end;
+
 procedure TncEngine.reset;
 var
     ai_request: TncAiRequest;
@@ -657,6 +1069,7 @@ begin
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
+    m_pending_commit_segment_path := '';
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
@@ -680,6 +1093,7 @@ begin
     begin
         m_context_db_bonus_cache.Clear;
     end;
+    clear_segment_path_tracking;
     clear_lookup_bonus_caches;
 
     if m_ai_provider <> nil then
@@ -3302,6 +3716,7 @@ begin
         m_runtime_chain_text := '';
         m_runtime_common_pattern_text := '';
         m_runtime_redup_text := '';
+        clear_segment_path_tracking;
         clear_lookup_bonus_caches;
         if m_composition_text = '' then
         begin
@@ -3518,6 +3933,7 @@ begin
                     get_candidate_debug_summary(m_candidates[0]);
             end;
         end;
+        refresh_candidate_segment_paths;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -3559,6 +3975,7 @@ begin
                     get_candidate_debug_summary(m_candidates[0]);
             end;
         end;
+        refresh_candidate_segment_paths;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -3583,6 +4000,7 @@ begin
                     get_candidate_debug_summary(m_candidates[0]);
             end;
         end;
+        refresh_candidate_segment_paths;
         m_page_index := 0;
         m_selected_index := 0;
     finally
@@ -4306,6 +4724,7 @@ const
     c_phrase_trigram_recent_top = 220;
     c_phrase_trigram_recent_mid = 132;
     c_phrase_trigram_recent_tail = 64;
+    c_context_variant_pair_cap = 420;
 var
     pair_count: Integer;
     pair_bonus: Integer;
@@ -4317,6 +4736,56 @@ var
     serial_gap: Int64;
     pair_recent_bonus: Integer;
     trigram_recent_bonus: Integer;
+    context_value: string;
+    context_variants: TArray<string>;
+    variant_idx: Integer;
+    variant_weight: Integer;
+    variant_bonus: Integer;
+
+    function get_variant_weight(const variant_index: Integer): Integer;
+    begin
+        case variant_index of
+            0:
+                Result := 100;
+            1:
+                Result := 88;
+            2:
+                Result := 72;
+            3:
+                Result := 58;
+        else
+            Result := 42;
+        end;
+    end;
+
+    function merge_bonus(const current_bonus: Integer; const next_bonus: Integer): Integer;
+    begin
+        Result := current_bonus;
+        if next_bonus <= 0 then
+        begin
+            Exit;
+        end;
+
+        if Result <= 0 then
+        begin
+            Result := next_bonus;
+            Exit;
+        end;
+
+        if next_bonus > Result then
+        begin
+            Result := next_bonus + (Result div 3);
+        end
+        else
+        begin
+            Result := Result + (next_bonus div 3);
+        end;
+
+        if Result > c_phrase_context_cap then
+        begin
+            Result := c_phrase_context_cap;
+        end;
+    end;
 
     function get_recent_phrase_bonus(
         const phrase_key: string;
@@ -4419,6 +4888,43 @@ begin
     if Result > c_phrase_context_cap then
     begin
         Result := c_phrase_context_cap;
+    end;
+
+    context_value := m_left_context;
+    if m_segment_left_context <> '' then
+    begin
+        context_value := m_segment_left_context;
+    end;
+    if (m_segment_left_context = '') and (m_external_left_context <> '') then
+    begin
+        context_value := m_external_left_context;
+    end;
+    if context_value <> '' then
+    begin
+        context_variants := get_context_variants(context_value);
+        for variant_idx := 0 to High(context_variants) do
+        begin
+            key := Trim(context_variants[variant_idx]) + #1 + text_key;
+            if (key = '') or (not m_phrase_context_pairs.TryGetValue(key, pair_count)) or (pair_count <= 0) then
+            begin
+                Continue;
+            end;
+
+            variant_bonus := pair_count * c_phrase_pair_step;
+            if variant_bonus > c_context_variant_pair_cap then
+            begin
+                variant_bonus := c_context_variant_pair_cap;
+            end;
+            Inc(variant_bonus, get_recent_phrase_bonus(
+                key,
+                c_phrase_pair_recent_top,
+                c_phrase_pair_recent_mid,
+                c_phrase_pair_recent_tail));
+
+            variant_weight := get_variant_weight(variant_idx);
+            variant_bonus := (variant_bonus * variant_weight) div 100;
+            Result := merge_bonus(Result, variant_bonus);
+        end;
     end;
 
     if (text_key <> '') and (m_lookup_phrase_context_bonus_cache <> nil) then
@@ -6362,8 +6868,9 @@ var
 
     procedure append_full_path_candidates;
     var
-        states: TArray<TList<TncCandidate>>;
+        states: TArray<TList<TncSegmentPathState>>;
         state_dedup: TArray<TDictionary<string, Integer>>;
+        transition_bonus_cache: TDictionary<string, Integer>;
         state_pos: Integer;
         next_pos: Integer;
         local_segment_len: Integer;
@@ -6377,11 +6884,11 @@ var
         full_non_user_added: Integer;
         full_head_top_n: Integer;
         full_path_non_user_limit: Integer;
-        local_state: TncCandidate;
+        local_state: TncSegmentPathState;
         local_candidate: TncCandidate;
-        local_new_state: TncCandidate;
-        local_existing_state: TncCandidate;
-        sorted_states: TncCandidateList;
+        local_new_state: TncSegmentPathState;
+        local_existing_state: TncSegmentPathState;
+        sorted_states: TArray<TncSegmentPathState>;
         local_key: string;
         allow_leading_single_char: Boolean;
         allow_single_char_path: Boolean;
@@ -6395,26 +6902,288 @@ var
         local_rank_map: TDictionary<string, Integer>;
         local_rank: Integer;
 
-        function build_state_key(const text: string): string;
+        function build_state_key(const value: TncSegmentPathState): string;
         begin
-            Result := LowerCase(Trim(text));
+            Result := LowerCase(Trim(value.text)) + #1 + LowerCase(Trim(value.prev_text)) +
+                #1 + LowerCase(Trim(value.prev_prev_text)) + #1 + IntToStr(Ord(value.has_multi_segment));
         end;
 
-        procedure append_state(const position: Integer; const value: TncCandidate);
+        function compare_state(const left: TncSegmentPathState; const right: TncSegmentPathState): Integer;
+        var
+            left_units: Integer;
+            left_segment_count: Integer;
+            right_units: Integer;
+            right_segment_count: Integer;
+            source_compare: Integer;
+            text_compare: Integer;
+            function get_segment_count(const encoded_path: string): Integer;
+            var
+                idx: Integer;
+            begin
+                Result := 0;
+                if Trim(encoded_path) = '' then
+                begin
+                    Exit;
+                end;
+
+                Result := 1;
+                for idx := 1 to Length(encoded_path) do
+                begin
+                    if encoded_path[idx] = c_segment_path_separator then
+                    begin
+                        Inc(Result);
+                    end;
+                end;
+            end;
         begin
-            local_key := build_state_key(value.text);
+            text_compare := CompareText(left.text, right.text);
+            if text_compare = 0 then
+            begin
+                left_segment_count := get_segment_count(left.path_text);
+                right_segment_count := get_segment_count(right.path_text);
+                if left_segment_count < right_segment_count then
+                begin
+                    Result := -1;
+                    Exit;
+                end;
+                if left_segment_count > right_segment_count then
+                begin
+                    Result := 1;
+                    Exit;
+                end;
+            end;
+
+            if left.score > right.score then
+            begin
+                Result := -1;
+                Exit;
+            end;
+            if left.score < right.score then
+            begin
+                Result := 1;
+                Exit;
+            end;
+
+            source_compare := get_source_rank(left.source) - get_source_rank(right.source);
+            if source_compare <> 0 then
+            begin
+                Result := source_compare;
+                Exit;
+            end;
+
+            if left.has_multi_segment <> right.has_multi_segment then
+            begin
+                if left.has_multi_segment then
+                begin
+                    Result := -1;
+                end
+                else
+                begin
+                    Result := 1;
+                end;
+                Exit;
+            end;
+
+            left_units := get_text_unit_count(Trim(left.text));
+            right_units := get_text_unit_count(Trim(right.text));
+            if left_units > right_units then
+            begin
+                Result := -1;
+                Exit;
+            end;
+            if left_units < right_units then
+            begin
+                Result := 1;
+                Exit;
+            end;
+
+            Result := text_compare;
+        end;
+
+        procedure sort_state_array(var values: TArray<TncSegmentPathState>);
+        var
+            left_idx: Integer;
+            right_idx: Integer;
+            temp_state: TncSegmentPathState;
+        begin
+            if Length(values) <= 1 then
+            begin
+                Exit;
+            end;
+
+            for left_idx := 0 to High(values) - 1 do
+            begin
+                for right_idx := left_idx + 1 to High(values) do
+                begin
+                    if compare_state(values[left_idx], values[right_idx]) > 0 then
+                    begin
+                        temp_state := values[left_idx];
+                        values[left_idx] := values[right_idx];
+                        values[right_idx] := temp_state;
+                    end;
+                end;
+            end;
+        end;
+
+        function get_exact_context_pair_bonus(const left_text: string; const candidate_text: string): Integer;
+        const
+            c_segment_pair_context_cap = 520;
+            c_segment_pair_bonus_scale = 75;
+        var
+            pair_key: string;
+            local_bonus: Integer;
+            persistent_bonus: Integer;
+            count: Integer;
+            secondary_bonus: Integer;
+        begin
+            Result := 0;
+            if (left_text = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            local_bonus := 0;
+            persistent_bonus := 0;
+            if m_context_pairs <> nil then
+            begin
+                pair_key := left_text + #1 + candidate_text;
+                if m_context_pairs.TryGetValue(pair_key, count) and (count > 0) then
+                begin
+                    local_bonus := count * c_context_score_bonus;
+                    if local_bonus > c_context_score_bonus_max then
+                    begin
+                        local_bonus := c_context_score_bonus_max;
+                    end;
+                end;
+            end;
+
+            if m_dictionary <> nil then
+            begin
+                persistent_bonus := m_dictionary.get_context_bonus(left_text, candidate_text);
+            end;
+
+            if local_bonus >= persistent_bonus then
+            begin
+                Result := local_bonus;
+                secondary_bonus := persistent_bonus;
+            end
+            else
+            begin
+                Result := persistent_bonus;
+                secondary_bonus := local_bonus;
+            end;
+
+            if secondary_bonus > 0 then
+            begin
+                Inc(Result, secondary_bonus div 2);
+            end;
+            if Result > c_segment_pair_context_cap then
+            begin
+                Result := c_segment_pair_context_cap;
+            end;
+            Result := (Result * c_segment_pair_bonus_scale) div 100;
+        end;
+
+        function get_phrase_trigram_transition_bonus(const prev_prev_text: string;
+            const prev_text: string; const candidate_text: string): Integer;
+        const
+            c_segment_trigram_step = 96;
+            c_segment_trigram_cap = 300;
+            c_segment_trigram_recent_top = 140;
+            c_segment_trigram_recent_mid = 84;
+            c_segment_trigram_recent_tail = 40;
+        var
+            trigram_key: string;
+            trigram_count: Integer;
+            last_seen_serial: Int64;
+            serial_gap: Int64;
+        begin
+            Result := 0;
+            if (prev_prev_text = '') or (prev_text = '') or (candidate_text = '') or
+                (m_phrase_context_pairs = nil) then
+            begin
+                Exit;
+            end;
+
+            trigram_key := prev_prev_text + #2 + prev_text + #1 + candidate_text;
+            if (not m_phrase_context_pairs.TryGetValue(trigram_key, trigram_count)) or (trigram_count <= 0) then
+            begin
+                Exit;
+            end;
+
+            Result := trigram_count * c_segment_trigram_step;
+            if Result > c_segment_trigram_cap then
+            begin
+                Result := c_segment_trigram_cap;
+            end;
+
+            if (m_phrase_context_last_seen <> nil) and
+                m_phrase_context_last_seen.TryGetValue(trigram_key, last_seen_serial) and
+                (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+            begin
+                serial_gap := m_session_commit_serial - last_seen_serial;
+                if serial_gap <= 1 then
+                begin
+                    Inc(Result, c_segment_trigram_recent_top);
+                end
+                else if serial_gap <= 3 then
+                begin
+                    Inc(Result, c_segment_trigram_recent_mid);
+                end
+                else if serial_gap <= 6 then
+                begin
+                    Inc(Result, c_segment_trigram_recent_tail);
+                end;
+            end;
+        end;
+
+        function get_path_transition_bonus(const prev_prev_text: string; const prev_text: string;
+            const candidate_text: string): Integer;
+        var
+            cache_key: string;
+            pair_bonus: Integer;
+            trigram_bonus: Integer;
+        begin
+            Result := 0;
+            if (prev_text = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            cache_key := prev_prev_text + #2 + prev_text + #1 + candidate_text;
+            if (transition_bonus_cache <> nil) and transition_bonus_cache.TryGetValue(cache_key, Result) then
+            begin
+                Exit;
+            end;
+
+            pair_bonus := get_exact_context_pair_bonus(prev_text, candidate_text);
+            trigram_bonus := get_phrase_trigram_transition_bonus(prev_prev_text, prev_text, candidate_text);
+            if trigram_bonus > 0 then
+            begin
+                Result := trigram_bonus + (pair_bonus div 2);
+            end
+            else
+            begin
+                Result := pair_bonus;
+            end;
+
+            if transition_bonus_cache <> nil then
+            begin
+                transition_bonus_cache.AddOrSetValue(cache_key, Result);
+            end;
+        end;
+
+        procedure append_state(const position: Integer; const value: TncSegmentPathState);
+        begin
+            local_key := build_state_key(value);
             if state_dedup[position].TryGetValue(local_key, existing_state_index) then
             begin
                 if (existing_state_index >= 0) and (existing_state_index < states[position].Count) then
                 begin
                     local_existing_state := states[position][existing_state_index];
-                    if value.score > local_existing_state.score then
+                    if compare_state(value, local_existing_state) < 0 then
                     begin
-                        local_existing_state.score := value.score;
-                    end;
-                    if value.comment = '1' then
-                    begin
-                        local_existing_state.comment := '1';
+                        local_existing_state := value;
                     end;
                     local_existing_state.source := merge_source_rank(local_existing_state.source, value.source);
                     states[position][existing_state_index] := local_existing_state;
@@ -6440,8 +7209,7 @@ var
             begin
                 sorted_states[idx] := states[position][idx];
             end;
-
-            sort_candidates(sorted_states);
+            sort_state_array(sorted_states);
             keep_count := c_segment_full_state_limit;
 
             states[position].Clear;
@@ -6449,7 +7217,7 @@ var
             for idx := 0 to keep_count - 1 do
             begin
                 states[position].Add(sorted_states[idx]);
-                state_dedup[position].Add(build_state_key(sorted_states[idx].text), idx);
+                state_dedup[position].Add(build_state_key(sorted_states[idx]), idx);
             end;
         end;
 
@@ -6574,11 +7342,11 @@ var
                 Result := -c_segment_alignment_adjust_cap;
             end;
         end;
-    begin
-        if Length(syllables) <= 1 then
         begin
-            Exit;
-        end;
+            if Length(syllables) <= 1 then
+            begin
+                Exit;
+            end;
 
         if Length(syllables) >= 6 then
         begin
@@ -6598,21 +7366,23 @@ var
 
         SetLength(states, Length(syllables) + 1);
         SetLength(state_dedup, Length(syllables) + 1);
+        transition_bonus_cache := TDictionary<string, Integer>.Create;
         for state_pos := 0 to High(states) do
         begin
-            states[state_pos] := TList<TncCandidate>.Create;
+            states[state_pos] := TList<TncSegmentPathState>.Create;
             state_dedup[state_pos] := TDictionary<string, Integer>.Create;
         end;
 
         try
             local_state.text := '';
-            local_state.comment := '0';
             local_state.score := 0;
             local_state.source := cs_rule;
-            local_state.has_dict_weight := False;
-            local_state.dict_weight := 0;
+            local_state.has_multi_segment := False;
+            local_state.prev_text := '';
+            local_state.prev_prev_text := '';
+            local_state.path_text := '';
             states[0].Add(local_state);
-            state_dedup[0].Add('', 0);
+            state_dedup[0].Add(build_state_key(local_state), 0);
             SetLength(preferred_phrase_flags, Length(syllables));
             SetLength(preferred_phrase_max_len, Length(syllables));
             SetLength(single_char_rank_maps, Length(syllables));
@@ -6733,13 +7503,13 @@ var
                             end;
 
                             local_new_state.text := local_state.text + local_candidate.text;
-                            local_new_state.comment := local_state.comment;
-                            if local_segment_len > 1 then
-                            begin
-                                local_new_state.comment := '1';
-                            end;
                             local_new_state.score := local_state.score + local_candidate.score +
                                 (local_segment_len * c_segment_prefix_bonus);
+                            Inc(local_new_state.score,
+                                get_path_transition_bonus(
+                                    local_state.prev_prev_text,
+                                    local_state.prev_text,
+                                    local_candidate_text));
                             if (state_pos = 0) and (local_segment_len > 1) and
                                 (next_pos < Length(syllables)) then
                             begin
@@ -6813,6 +7583,19 @@ var
                             end;
 
                             local_new_state.source := merge_source_rank(local_state.source, local_candidate.source);
+                            local_new_state.has_multi_segment := local_state.has_multi_segment or
+                                (local_segment_len > 1);
+                            local_new_state.prev_prev_text := local_state.prev_text;
+                            local_new_state.prev_text := local_candidate_text;
+                            local_new_state.path_text := local_state.path_text;
+                            if local_candidate_text <> '' then
+                            begin
+                                if local_new_state.path_text <> '' then
+                                begin
+                                    local_new_state.path_text := local_new_state.path_text + c_segment_path_separator;
+                                end;
+                                local_new_state.path_text := local_new_state.path_text + local_candidate_text;
+                            end;
                             append_state(next_pos, local_new_state);
                         end;
                     end;
@@ -6831,13 +7614,13 @@ var
             begin
                 sorted_states[final_index] := states[Length(syllables)][final_index];
             end;
-            sort_candidates(sorted_states);
+            sort_state_array(sorted_states);
 
             full_non_user_added := 0;
             for final_index := 0 to High(sorted_states) do
             begin
                 local_state := sorted_states[final_index];
-                if local_state.comment <> '1' then
+                if not local_state.has_multi_segment then
                 begin
                     Continue;
                 end;
@@ -6846,6 +7629,7 @@ var
                     Continue;
                 end;
                 append_candidate(local_state.text, local_state.score, local_state.source, '');
+                remember_segment_path_for_candidate(local_state.text, '', local_state.path_text);
                 if local_state.source <> cs_user then
                 begin
                     Inc(full_non_user_added);
@@ -6869,6 +7653,10 @@ var
                     single_char_rank_maps[state_pos].Free;
                     single_char_rank_maps[state_pos] := nil;
                 end;
+            end;
+            if transition_bonus_cache <> nil then
+            begin
+                transition_bonus_cache.Free;
             end;
         end;
     end;
@@ -7240,17 +8028,19 @@ begin
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
+    m_pending_commit_segment_path := '';
     m_page_index := 0;
     build_candidates;
 end;
 
 procedure TncEngine.set_pending_commit(const text: string; const remaining_pinyin: string = '';
-    const allow_learning: Boolean = True);
+    const allow_learning: Boolean = True; const segment_path: string = '');
 begin
     m_pending_commit_text := text;
     m_pending_commit_remaining := remaining_pinyin;
     m_has_pending_commit := True;
     m_pending_commit_allow_learning := allow_learning;
+    m_pending_commit_segment_path := segment_path;
 end;
 
 procedure TncEngine.clear_pending_commit;
@@ -7264,6 +8054,7 @@ begin
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
+    m_pending_commit_segment_path := '';
 end;
 
 procedure TncEngine.update_left_context(const committed_text: string);
@@ -7491,62 +8282,29 @@ begin
     end;
 end;
 
-procedure TncEngine.note_output_phrase_context(const committed_text: string);
+procedure TncEngine.track_phrase_context_key(const phrase_key: string; const current_serial: Int64);
 var
     count: Integer;
     evict_key: string;
-    text_key: string;
-    phrase_key: string;
-    current_serial: Int64;
 begin
-    text_key := Trim(committed_text);
-    if (text_key = '') or (m_phrase_context_pairs = nil) or (m_phrase_context_order = nil) then
+    if (phrase_key = '') or (m_phrase_context_pairs = nil) or (m_phrase_context_order = nil) then
     begin
         Exit;
     end;
 
-    current_serial := m_session_commit_serial;
-    if current_serial <= 0 then
+    if m_phrase_context_pairs.TryGetValue(phrase_key, count) then
     begin
-        current_serial := 1;
+        Inc(count);
+        m_phrase_context_pairs.AddOrSetValue(phrase_key, count);
+    end
+    else
+    begin
+        m_phrase_context_pairs.Add(phrase_key, 1);
     end;
-
-    if m_last_output_commit_text <> '' then
+    m_phrase_context_order.Enqueue(phrase_key);
+    if m_phrase_context_last_seen <> nil then
     begin
-        phrase_key := m_last_output_commit_text + #1 + text_key;
-        if m_phrase_context_pairs.TryGetValue(phrase_key, count) then
-        begin
-            Inc(count);
-            m_phrase_context_pairs.AddOrSetValue(phrase_key, count);
-        end
-        else
-        begin
-            m_phrase_context_pairs.Add(phrase_key, 1);
-        end;
-        m_phrase_context_order.Enqueue(phrase_key);
-        if m_phrase_context_last_seen <> nil then
-        begin
-            m_phrase_context_last_seen.AddOrSetValue(phrase_key, current_serial);
-        end;
-    end;
-
-    if (m_prev_output_commit_text <> '') and (m_last_output_commit_text <> '') then
-    begin
-        phrase_key := m_prev_output_commit_text + #2 + m_last_output_commit_text + #1 + text_key;
-        if m_phrase_context_pairs.TryGetValue(phrase_key, count) then
-        begin
-            Inc(count);
-            m_phrase_context_pairs.AddOrSetValue(phrase_key, count);
-        end
-        else
-        begin
-            m_phrase_context_pairs.Add(phrase_key, 1);
-        end;
-        m_phrase_context_order.Enqueue(phrase_key);
-        if m_phrase_context_last_seen <> nil then
-        begin
-            m_phrase_context_last_seen.AddOrSetValue(phrase_key, current_serial);
-        end;
+        m_phrase_context_last_seen.AddOrSetValue(phrase_key, current_serial);
     end;
 
     while m_phrase_context_order.Count > c_phrase_context_history_limit do
@@ -7571,9 +8329,96 @@ begin
             m_phrase_context_pairs.AddOrSetValue(evict_key, count);
         end;
     end;
+end;
+
+procedure TncEngine.note_output_phrase_context(const committed_text: string);
+var
+    text_key: string;
+    current_serial: Int64;
+begin
+    text_key := Trim(committed_text);
+    if text_key = '' then
+    begin
+        Exit;
+    end;
+
+    current_serial := m_session_commit_serial;
+    if current_serial <= 0 then
+    begin
+        current_serial := 1;
+    end;
+
+    if m_last_output_commit_text <> '' then
+    begin
+        track_phrase_context_key(m_last_output_commit_text + #1 + text_key, current_serial);
+    end;
+
+    if (m_prev_output_commit_text <> '') and (m_last_output_commit_text <> '') then
+    begin
+        track_phrase_context_key(
+            m_prev_output_commit_text + #2 + m_last_output_commit_text + #1 + text_key,
+            current_serial);
+    end;
 
     m_prev_output_commit_text := m_last_output_commit_text;
     m_last_output_commit_text := text_key;
+end;
+
+procedure TncEngine.note_segment_path_context(const encoded_path: string);
+var
+    segments: TArray<string>;
+    segment_text: string;
+    current_serial: Int64;
+    idx: Integer;
+    segment_start: Integer;
+    segment_idx: Integer;
+begin
+    if (encoded_path = '') or (m_phrase_context_pairs = nil) or (m_phrase_context_order = nil) then
+    begin
+        Exit;
+    end;
+
+    current_serial := m_session_commit_serial;
+    if current_serial <= 0 then
+    begin
+        current_serial := 1;
+    end;
+
+    SetLength(segments, 0);
+    segment_start := 1;
+    for idx := 1 to Length(encoded_path) + 1 do
+    begin
+        if (idx <= Length(encoded_path)) and (encoded_path[idx] <> c_segment_path_separator) then
+        begin
+            Continue;
+        end;
+
+        segment_text := Copy(encoded_path, segment_start, idx - segment_start);
+        segment_text := Trim(segment_text);
+        if segment_text <> '' then
+        begin
+            segment_idx := Length(segments);
+            SetLength(segments, segment_idx + 1);
+            segments[segment_idx] := segment_text;
+        end;
+        segment_start := idx + 1;
+    end;
+
+    if Length(segments) <= 1 then
+    begin
+        Exit;
+    end;
+
+    for idx := 1 to High(segments) do
+    begin
+        track_phrase_context_key(segments[idx - 1] + #1 + segments[idx], current_serial);
+        if idx >= 2 then
+        begin
+            track_phrase_context_key(
+                segments[idx - 2] + #2 + segments[idx - 1] + #1 + segments[idx],
+                current_serial);
+        end;
+    end;
 end;
 
 procedure TncEngine.record_context_pair(const left_text: string; const committed_text: string);
@@ -7712,6 +8557,7 @@ var
         text_units: Integer;
         idx: Integer;
         full_text: string;
+        segment_path: string;
         unit_text: string;
         units: TArray<string>;
     begin
@@ -7719,6 +8565,12 @@ var
         if not is_generic_runtime_chain_selection(selected) then
         begin
             Exit;
+        end;
+
+        segment_path := get_segment_path_for_candidate(selected);
+        if segment_path <> '' then
+        begin
+            Exit(False);
         end;
 
         full_text := selected.text;
@@ -7846,7 +8698,11 @@ var
         end;
     end;
 
-    function apply_candidate_selection(const selected: TncCandidate): Boolean;
+    function apply_candidate_selection(const selected: TncCandidate;
+        const selected_candidate_index: Integer = -1): Boolean;
+    var
+        allow_learning: Boolean;
+        segment_path: string;
     begin
         if (selected.comment <> '') and is_compact_ascii_pinyin(selected.comment) then
         begin
@@ -7861,7 +8717,20 @@ var
             Exit;
         end;
 
-        set_pending_commit(selected.text, '', not is_nonlearnable_runtime_chain_selection(selected));
+        segment_path := get_segment_path_for_candidate(selected, selected_candidate_index);
+        if (segment_path = '') and (selected.comment = '') then
+        begin
+            segment_path := infer_segment_path_for_selected_text(selected.text);
+        end;
+
+        allow_learning := not is_nonlearnable_runtime_chain_selection(selected);
+        if (segment_path <> '') and is_generic_runtime_chain_selection(selected) then
+        begin
+            allow_learning := True;
+        end;
+
+        set_pending_commit(selected.text, '', allow_learning,
+            segment_path);
         Result := True;
     end;
 begin
@@ -8037,7 +8906,7 @@ begin
                 begin
                     if get_selected_candidate(candidate) then
                     begin
-                        Result := apply_candidate_selection(candidate);
+                        Result := apply_candidate_selection(candidate, index);
                     end;
                 end
                 else if m_confirmed_text <> '' then
@@ -8161,7 +9030,7 @@ begin
                     index := page_offset + (key_code - Ord('1'));
                     if (index >= 0) and (index < Length(m_candidates)) then
                     begin
-                        Result := apply_candidate_selection(m_candidates[index]);
+                        Result := apply_candidate_selection(m_candidates[index], index);
                     end
                     else
                     begin
@@ -8470,6 +9339,53 @@ begin
     Result := m_selected_index;
 end;
 
+function TncEngine.get_debug_last_output_commit_text: string;
+begin
+    Result := m_last_output_commit_text;
+end;
+
+function TncEngine.get_debug_phrase_context_pair_count(const left_text: string;
+    const candidate_text: string): Integer;
+var
+    key: string;
+begin
+    Result := 0;
+    if m_phrase_context_pairs = nil then
+    begin
+        Exit;
+    end;
+
+    if (Trim(left_text) = '') or (Trim(candidate_text) = '') then
+    begin
+        Exit;
+    end;
+
+    key := Trim(left_text) + #1 + Trim(candidate_text);
+    if not m_phrase_context_pairs.TryGetValue(key, Result) then
+    begin
+        Result := 0;
+    end;
+end;
+
+function TncEngine.get_debug_last_commit_segment_path: string;
+begin
+    Result := m_last_debug_commit_segment_path;
+end;
+
+function TncEngine.get_debug_candidate_segment_path(const candidate_index: Integer): string;
+begin
+    Result := '';
+    if (candidate_index >= 0) and (candidate_index < Length(m_candidate_segment_paths)) then
+    begin
+        Result := m_candidate_segment_paths[candidate_index];
+    end;
+end;
+
+function TncEngine.get_debug_pending_commit_segment_path: string;
+begin
+    Result := m_pending_commit_segment_path;
+end;
+
 function TncEngine.get_dictionary_debug_info: string;
 var
     sqlite_dict: TncSqliteDictionary;
@@ -8665,7 +9581,92 @@ var
     prev_left_context: string;
     commit_text: string;
     commit_segment_text: string;
+    commit_segment_path: string;
+    effective_segment_path: string;
+    inferred_segment_path: string;
     allow_learning: Boolean;
+    path_segments: TArray<string>;
+    path_idx: Integer;
+    path_start: Integer;
+    path_text: string;
+    combined_segment_path: string;
+
+    function get_path_segment_count(const encoded_path: string): Integer;
+    var
+        idx: Integer;
+        trimmed_path: string;
+    begin
+        trimmed_path := Trim(encoded_path);
+        if trimmed_path = '' then
+        begin
+            Exit(0);
+        end;
+
+        Result := 1;
+        for idx := 1 to Length(trimmed_path) do
+        begin
+            if trimmed_path[idx] = c_segment_path_separator then
+            begin
+                Inc(Result);
+            end;
+        end;
+    end;
+
+    function is_high_confidence_segment_path(const encoded_path: string): Boolean;
+    var
+        idx: Integer;
+        segment_start: Integer;
+        segment_text: string;
+        has_multi_char_segment: Boolean;
+    begin
+        Result := False;
+        if get_path_segment_count(encoded_path) <= 1 then
+        begin
+            Exit;
+        end;
+
+        has_multi_char_segment := False;
+        segment_start := 1;
+        for idx := 1 to Length(encoded_path) + 1 do
+        begin
+            if (idx <= Length(encoded_path)) and (encoded_path[idx] <> c_segment_path_separator) then
+            begin
+                Continue;
+            end;
+
+            segment_text := Trim(Copy(encoded_path, segment_start, idx - segment_start));
+            if segment_text <> '' then
+            begin
+                if get_candidate_text_unit_count(segment_text) >= 2 then
+                begin
+                    has_multi_char_segment := True;
+                    Break;
+                end;
+            end;
+            segment_start := idx + 1;
+        end;
+
+        Result := has_multi_char_segment;
+    end;
+
+    procedure append_path_segment(const segment_text: string);
+    var
+        segment_index: Integer;
+    begin
+        path_text := Trim(segment_text);
+        if path_text = '' then
+        begin
+            Exit;
+        end;
+        segment_index := Length(path_segments);
+        SetLength(path_segments, segment_index + 1);
+        path_segments[segment_index] := path_text;
+        if combined_segment_path <> '' then
+        begin
+            combined_segment_path := combined_segment_path + c_segment_path_separator;
+        end;
+        combined_segment_path := combined_segment_path + path_text;
+    end;
 begin
     out_text := '';
     if not m_has_pending_commit then
@@ -8675,6 +9676,7 @@ begin
     end;
 
     commit_segment_text := m_pending_commit_text;
+    commit_segment_path := m_pending_commit_segment_path;
     commit_text := commit_segment_text;
     if m_confirmed_text <> '' then
     begin
@@ -8687,6 +9689,7 @@ begin
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
+    m_pending_commit_segment_path := '';
     prev_left_context := m_left_context;
     if m_segment_left_context <> '' then
     begin
@@ -8699,14 +9702,57 @@ begin
     update_left_context(out_text);
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
     full_pinyin := '';
+    effective_segment_path := commit_segment_path;
+    if allow_learning and (commit_segment_text <> '') and (normalized_pinyin <> '') then
+    begin
+        inferred_segment_path := infer_segment_path_for_selected_text(commit_segment_text);
+        if inferred_segment_path <> '' then
+        begin
+            if (effective_segment_path = '') or
+                ((get_path_segment_count(inferred_segment_path) > 1) and
+                ((get_path_segment_count(effective_segment_path) <= 1) or
+                (get_path_segment_count(inferred_segment_path) < get_path_segment_count(effective_segment_path)))) then
+            begin
+                effective_segment_path := inferred_segment_path;
+            end;
+        end;
+    end;
+    if (not allow_learning) and (commit_segment_text <> '') and
+        (get_candidate_text_unit_count(commit_segment_text) >= 4) and
+        is_high_confidence_segment_path(effective_segment_path) then
+    begin
+        // Segment-decoded multi-phrase commits should still participate in learning
+        // when the inferred path contains at least one real multi-char chunk.
+        allow_learning := True;
+    end;
     if m_confirmed_segments <> nil then
     begin
         for segment in m_confirmed_segments do
         begin
             full_pinyin := full_pinyin + segment.pinyin;
+            append_path_segment(segment.text);
         end;
     end;
     full_pinyin := full_pinyin + normalized_pinyin;
+    if effective_segment_path <> '' then
+    begin
+        path_start := 1;
+        for path_idx := 1 to Length(effective_segment_path) + 1 do
+        begin
+            if (path_idx <= Length(effective_segment_path)) and
+                (effective_segment_path[path_idx] <> c_segment_path_separator) then
+            begin
+                Continue;
+            end;
+
+            append_path_segment(Copy(effective_segment_path, path_start, path_idx - path_start));
+            path_start := path_idx + 1;
+        end;
+    end
+    else if commit_segment_text <> '' then
+    begin
+        append_path_segment(commit_segment_text);
+    end;
     if m_dictionary <> nil then
     begin
         m_dictionary.begin_learning_batch;
@@ -8714,6 +9760,14 @@ begin
             record_context_pair(prev_left_context, out_text);
             if allow_learning then
             begin
+                if Length(path_segments) > 1 then
+                begin
+                    for path_idx := 1 to High(path_segments) do
+                    begin
+                        record_context_pair(path_segments[path_idx - 1], path_segments[path_idx]);
+                    end;
+                end;
+
                 if (normalized_pinyin <> '') and (commit_segment_text <> '') then
                 begin
                     m_dictionary.record_commit(normalized_pinyin, commit_segment_text);
@@ -8764,6 +9818,11 @@ begin
     begin
         note_output_phrase_context(commit_text);
     end;
+    if allow_learning and (Length(path_segments) > 1) then
+    begin
+        note_segment_path_context(combined_segment_path);
+    end;
+    m_last_debug_commit_segment_path := combined_segment_path;
     m_confirmed_text := '';
     m_segment_left_context := '';
     if m_confirmed_segments <> nil then
