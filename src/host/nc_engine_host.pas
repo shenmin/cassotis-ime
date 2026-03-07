@@ -61,14 +61,19 @@ type
         m_shift_toggle_ticks: TDictionary<string, DWORD>;
         m_lock: TCriticalSection;
         m_ai_refresh_thread: TThread;
+        m_maintenance_thread: TThread;
         m_config_path: string;
         m_last_config_write: TDateTime;
         m_last_config_check_tick: UInt64;
+        m_last_user_activity_tick: UInt64;
+        m_last_user_dict_checkpoint_attempt_tick: UInt64;
+        m_last_user_dict_checkpoint_activity_tick: UInt64;
         m_config: TncEngineConfig;
         function get_config_write_time: TDateTime;
         procedure reap_ai_refresh_thread_if_stopped;
         procedure stop_ai_refresh_thread;
         procedure sync_ai_refresh_thread(const enabled: Boolean);
+        procedure maybe_checkpoint_user_dictionary;
         procedure persist_engine_config(const config: TncEngineConfig);
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
@@ -119,7 +124,20 @@ type
         procedure detach_host;
     end;
 
+    TncMaintenanceThread = class(TThread)
+    private
+        m_host: TncEngineHost;
+    protected
+        procedure Execute; override;
+    public
+        constructor create(const host: TncEngineHost);
+        procedure detach_host;
+    end;
+
 implementation
+
+uses
+    nc_sqlite;
 
 const
     c_pipe_in_buffer = 65536;
@@ -129,8 +147,11 @@ const
     // windows consistently appear below the composing text row.
     c_text_ext_offset = 8;
     c_ai_refresh_poll_ms = 120;
+    c_maintenance_poll_ms = 1000;
     c_recent_active_ttl_ms = 320;
     c_shift_toggle_dedupe_ms = 90;
+    c_user_dict_checkpoint_idle_ms = 5000;
+    c_user_dict_checkpoint_retry_ms = 5000;
     c_tray_host_mutex_name_format = 'Local\cassotis_ime_tray_host_v1_s%d';
     c_tray_host_restart_min_interval_ms = 800;
     c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)S:(ML;;NW;;;LW)';
@@ -573,9 +594,13 @@ begin
     m_shift_toggle_ticks := TDictionary<string, DWORD>.Create;
     m_lock := TCriticalSection.Create;
     m_ai_refresh_thread := nil;
+    m_maintenance_thread := nil;
     m_config_path := get_default_config_path;
     m_last_config_write := 0;
     m_last_config_check_tick := 0;
+    m_last_user_activity_tick := 0;
+    m_last_user_dict_checkpoint_attempt_tick := 0;
+    m_last_user_dict_checkpoint_activity_tick := 0;
     with TncConfigManager.create(m_config_path) do
     try
         m_config := load_engine_config;
@@ -587,10 +612,27 @@ begin
     m_last_config_write := get_config_write_time;
     m_last_config_check_tick := GetTickCount64;
     sync_ai_refresh_thread(m_config.enable_ai);
+    m_maintenance_thread := TncMaintenanceThread.create(Self);
 end;
 
 destructor TncEngineHost.Destroy;
 begin
+    if m_maintenance_thread <> nil then
+    begin
+        TncMaintenanceThread(m_maintenance_thread).detach_host;
+        m_maintenance_thread.Terminate;
+        if wait_for_thread_exit(m_maintenance_thread, 3000) then
+        begin
+            m_maintenance_thread.Free;
+            m_maintenance_thread := nil;
+        end
+        else
+        begin
+            host_log('[WARN] maintenance thread did not exit during destroy; leaving FreeOnTerminate enabled.');
+            m_maintenance_thread.FreeOnTerminate := True;
+            m_maintenance_thread := nil;
+        end;
+    end;
     stop_ai_refresh_thread;
     if m_ai_refresh_thread <> nil then
     begin
@@ -874,6 +916,108 @@ begin
     if m_active_sessions.ContainsKey(session_id) then
     begin
         m_recent_active_sessions.AddOrSetValue(session_id, GetTickCount);
+    end;
+    m_last_user_activity_tick := GetTickCount64;
+end;
+
+procedure TncEngineHost.maybe_checkpoint_user_dictionary;
+var
+    user_db_path: string;
+    debug_mode: Boolean;
+    last_activity_tick: UInt64;
+    last_checkpoint_activity_tick: UInt64;
+    last_attempt_tick: UInt64;
+    now_tick: UInt64;
+    busy_frames: Integer;
+    log_frames: Integer;
+    checkpointed_frames: Integer;
+    error_message: string;
+    checkpoint_ok: Boolean;
+begin
+    m_lock.Acquire;
+    try
+        user_db_path := Trim(m_config.user_dictionary_path);
+        debug_mode := m_config.debug_mode;
+        last_activity_tick := m_last_user_activity_tick;
+        last_checkpoint_activity_tick := m_last_user_dict_checkpoint_activity_tick;
+        last_attempt_tick := m_last_user_dict_checkpoint_attempt_tick;
+    finally
+        m_lock.Release;
+    end;
+
+    if (user_db_path = '') or (not TFile.Exists(user_db_path)) or (last_activity_tick = 0) then
+    begin
+        Exit;
+    end;
+
+    now_tick := GetTickCount64;
+    if (now_tick - last_activity_tick) < c_user_dict_checkpoint_idle_ms then
+    begin
+        Exit;
+    end;
+    if last_activity_tick <= last_checkpoint_activity_tick then
+    begin
+        Exit;
+    end;
+    if (last_attempt_tick <> 0) and ((now_tick - last_attempt_tick) < c_user_dict_checkpoint_retry_ms) then
+    begin
+        Exit;
+    end;
+    if has_active_session then
+    begin
+        Exit;
+    end;
+
+    m_lock.Acquire;
+    try
+        m_last_user_dict_checkpoint_attempt_tick := now_tick;
+    finally
+        m_lock.Release;
+    end;
+
+    with TncSqliteConnection.create(user_db_path) do
+    try
+        if open(SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE) then
+        begin
+            exec('PRAGMA busy_timeout=250;');
+            checkpoint_ok := checkpoint_wal_truncate(busy_frames, log_frames, checkpointed_frames, error_message);
+        end
+        else
+        begin
+            checkpoint_ok := False;
+            busy_frames := -1;
+            log_frames := -1;
+            checkpointed_frames := -1;
+            error_message := errmsg;
+        end;
+    finally
+        Free;
+    end;
+
+    if checkpoint_ok then
+    begin
+        m_lock.Acquire;
+        try
+            if m_last_user_dict_checkpoint_activity_tick < last_activity_tick then
+            begin
+                m_last_user_dict_checkpoint_activity_tick := last_activity_tick;
+            end;
+        finally
+            m_lock.Release;
+        end;
+
+        if debug_mode then
+        begin
+            host_log(Format('[DEBUG] user_dict wal_checkpoint busy=%d log=%d checkpointed=%d idle=%d',
+                [busy_frames, log_frames, checkpointed_frames, now_tick - last_activity_tick]));
+        end;
+        Exit;
+    end;
+
+    if debug_mode then
+    begin
+        host_log(Format('[DEBUG] user_dict wal_checkpoint skipped busy=%d log=%d checkpointed=%d err=%s',
+            [busy_frames, log_frames, checkpointed_frames, sanitize_log_text(error_message)]));
     end;
 end;
 
@@ -1461,6 +1605,46 @@ begin
             on e: Exception do
             begin
                 host_log(Format('[WARN] AI refresh exception %s: %s', [e.ClassName, e.Message]));
+            end;
+        end;
+    end;
+end;
+
+constructor TncMaintenanceThread.create(const host: TncEngineHost);
+begin
+    inherited create(False);
+    FreeOnTerminate := False;
+    m_host := host;
+end;
+
+procedure TncMaintenanceThread.detach_host;
+begin
+    m_host := nil;
+end;
+
+procedure TncMaintenanceThread.Execute;
+var
+    host: TncEngineHost;
+begin
+    while not Terminated do
+    begin
+        Sleep(c_maintenance_poll_ms);
+        if Terminated then
+        begin
+            Break;
+        end;
+
+        try
+            host := m_host;
+            if host = nil then
+            begin
+                Break;
+            end;
+            host.maybe_checkpoint_user_dictionary;
+        except
+            on e: Exception do
+            begin
+                host_log(Format('[WARN] maintenance exception %s: %s', [e.ClassName, e.Message]));
             end;
         end;
     end;

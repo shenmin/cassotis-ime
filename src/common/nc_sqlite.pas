@@ -88,6 +88,8 @@ type
         function clear_bindings(const stmt: Psqlite3_stmt): Boolean;
         function errmsg: string;
         function exec(const sql: string): Boolean;
+        function checkpoint_wal_truncate(out busy_frames: Integer; out log_frames: Integer;
+            out checkpointed_frames: Integer; out error_message: string): Boolean;
         property db_path: string read m_db_path;
         property opened: Boolean read m_opened;
     end;
@@ -640,6 +642,63 @@ begin
 
     rc := m_lib.exec(m_db, sql);
     Result := rc = SQLITE_OK;
+end;
+
+function TncSqliteConnection.checkpoint_wal_truncate(out busy_frames: Integer; out log_frames: Integer;
+    out checkpointed_frames: Integer; out error_message: string): Boolean;
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+begin
+    busy_frames := -1;
+    log_frames := -1;
+    checkpointed_frames := -1;
+    error_message := '';
+    stmt := nil;
+    if not ensure_opened then
+    begin
+        error_message := 'sqlite not open';
+        Result := False;
+        Exit;
+    end;
+
+    try
+        if not prepare('PRAGMA wal_checkpoint(TRUNCATE);', stmt) then
+        begin
+            error_message := errmsg;
+            Result := False;
+            Exit;
+        end;
+
+        step_result := step(stmt);
+        if step_result = SQLITE_ROW then
+        begin
+            busy_frames := column_int(stmt, 0);
+            log_frames := column_int(stmt, 1);
+            checkpointed_frames := column_int(stmt, 2);
+            Result := busy_frames = 0;
+            if not Result then
+            begin
+                error_message := Format('checkpoint busy=%d log=%d checkpointed=%d',
+                    [busy_frames, log_frames, checkpointed_frames]);
+            end;
+            Exit;
+        end;
+
+        if step_result = SQLITE_DONE then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        error_message := errmsg;
+        Result := False;
+    finally
+        if stmt <> nil then
+        begin
+            finalize(stmt);
+        end;
+    end;
 end;
 
 end.
