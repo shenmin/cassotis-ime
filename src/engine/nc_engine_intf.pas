@@ -5751,6 +5751,7 @@ end;
 function TncEngine.get_segment_path_preference_score(const encoded_path: string): Integer;
 var
     normalized_path: string;
+    path_penalty: Integer;
 begin
     normalized_path := Trim(encoded_path);
     if get_encoded_path_segment_count_local(normalized_path) <= 1 then
@@ -5765,6 +5766,11 @@ begin
         if m_dictionary <> nil then
         begin
             Inc(Result, m_dictionary.get_query_segment_path_bonus(m_last_lookup_key, normalized_path));
+            path_penalty := m_dictionary.get_query_segment_path_penalty(m_last_lookup_key, normalized_path);
+            if path_penalty > 0 then
+            begin
+                Dec(Result, path_penalty);
+            end;
         end;
     end;
 end;
@@ -5820,6 +5826,7 @@ var
     current_prev_prev_text: string;
     current_prev_text: string;
     transition_bonus: Integer;
+    path_penalty: Integer;
 
     function get_exact_context_pair_bonus(const left_text: string; const candidate_text: string): Integer;
     const
@@ -6137,6 +6144,11 @@ begin
             if transition_bonus > 0 then
             begin
                 Inc(Result, transition_bonus);
+            end;
+            path_penalty := m_dictionary.get_query_segment_path_penalty(m_last_lookup_key, encoded_path);
+            if path_penalty > 0 then
+            begin
+                Dec(Result, path_penalty);
             end;
         end;
     end;
@@ -8478,6 +8490,12 @@ var
                                         begin
                                             Inc(local_new_state.score, local_query_path_bonus div 2);
                                         end;
+                                        local_query_path_bonus := m_dictionary.get_query_segment_path_penalty(
+                                            m_last_lookup_key, local_new_state.path_text);
+                                        if local_query_path_bonus > 0 then
+                                        begin
+                                            Dec(local_new_state.score, local_query_path_bonus);
+                                        end;
                                     end;
                                 end;
                             end;
@@ -9653,6 +9671,7 @@ var
         selected_score: Integer;
         top_confidence_rank: Integer;
         selected_confidence_rank: Integer;
+        top_segment_path: string;
     begin
         if (selected.comment <> '') and is_compact_ascii_pinyin(selected.comment) then
         begin
@@ -9702,6 +9721,18 @@ var
                     if m_dictionary <> nil then
                     begin
                         m_dictionary.record_candidate_penalty(m_last_lookup_key, top_candidate.text);
+                        top_segment_path := get_segment_path_for_candidate(top_candidate, 0);
+                        if (top_segment_path = '') and (top_candidate.comment = '') then
+                        begin
+                            top_segment_path := infer_segment_path_for_selected_text(top_candidate.text);
+                        end;
+                        if (segment_path <> '') and (top_segment_path <> '') and
+                            (segment_path <> top_segment_path) and
+                            (get_encoded_path_segment_count_local(segment_path) > 1) and
+                            (get_encoded_path_segment_count_local(top_segment_path) > 1) then
+                        begin
+                            m_dictionary.record_query_segment_path_penalty(m_last_lookup_key, top_segment_path);
+                        end;
                     end;
                 end;
             end;
