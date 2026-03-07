@@ -6517,6 +6517,52 @@ var
         Result := SameText(m_runtime_chain_text, selected.text);
     end;
 
+    function is_nonlearnable_runtime_chain_selection(const selected: TncCandidate): Boolean;
+    var
+        text_units: Integer;
+        idx: Integer;
+        full_text: string;
+        unit_text: string;
+        units: TArray<string>;
+    begin
+        Result := False;
+        if not is_generic_runtime_chain_selection(selected) then
+        begin
+            Exit;
+        end;
+
+        full_text := selected.text;
+        if m_confirmed_text <> '' then
+        begin
+            full_text := m_confirmed_text + full_text;
+        end;
+
+        text_units := get_candidate_text_unit_count(full_text);
+        if text_units >= 4 then
+        begin
+            units := split_text_units(full_text);
+            Result := Length(units) = text_units;
+            if Result then
+            begin
+                for idx := 0 to High(units) do
+                begin
+                    unit_text := Trim(units[idx]);
+                    if (unit_text = '') or (Length(unit_text) <> 1) or (Ord(unit_text[1]) <= $7F) then
+                    begin
+                        Result := False;
+                        Break;
+                    end;
+                end;
+            end;
+            if Result then
+            begin
+                Exit(False);
+            end;
+        end;
+
+        Result := True;
+    end;
+
     function is_compact_ascii_pinyin(const value: string): Boolean;
     var
         idx: Integer;
@@ -6625,7 +6671,7 @@ var
             Exit;
         end;
 
-        set_pending_commit(selected.text, '', not is_generic_runtime_chain_selection(selected));
+        set_pending_commit(selected.text, '', not is_nonlearnable_runtime_chain_selection(selected));
         Result := True;
     end;
 begin
@@ -6733,7 +6779,7 @@ begin
                 begin
                     get_selected_candidate(candidate);
                     commit_text := candidate.text + punct_text;
-                    set_pending_commit(commit_text, '', not is_generic_runtime_chain_selection(candidate));
+                    set_pending_commit(commit_text, '', not is_nonlearnable_runtime_chain_selection(candidate));
                     Result := True;
                     Exit;
                 end;

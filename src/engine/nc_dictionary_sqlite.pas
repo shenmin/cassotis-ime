@@ -2385,6 +2385,8 @@ function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandid
 const
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
+    base_exact_entry_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
     base_typo_prefix_sql =
         'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin LIKE ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
@@ -2498,6 +2500,7 @@ var
     skipped_single_char_mismatch_count: Integer;
     skipped_noisy_user_count: Integer;
     skipped_base_dup_user_count: Integer;
+    injected_learned_base_count: Integer;
 
     function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string; forward;
     function is_compact_ascii_query(const value: string): Boolean; forward;
@@ -2887,6 +2890,64 @@ var
             if stmt_text_stats <> nil then
             begin
                 m_user_connection.finalize(stmt_text_stats);
+            end;
+        end;
+    end;
+
+    procedure append_learned_exact_base_candidates;
+    var
+        learned_stmt: Psqlite3_stmt;
+        learned_pair: TPair<string, Integer>;
+        learned_text: string;
+        learned_comment: string;
+        learned_weight: Integer;
+        learned_step_result: Integer;
+    begin
+        if (not full_pinyin_query) or (not m_base_ready) or (learning_bonus_map.Count <= 0) then
+        begin
+            Exit;
+        end;
+
+        learned_stmt := nil;
+        try
+            if not m_base_connection.prepare(base_exact_entry_sql, learned_stmt) then
+            begin
+                Exit;
+            end;
+
+            for learned_pair in learning_bonus_map do
+            begin
+                if seen.ContainsKey(learned_pair.Key) then
+                begin
+                    Continue;
+                end;
+
+                if not m_base_connection.bind_text(learned_stmt, 1, query_key) or
+                    not m_base_connection.bind_text(learned_stmt, 2, learned_pair.Key) then
+                begin
+                    m_base_connection.reset(learned_stmt);
+                    m_base_connection.clear_bindings(learned_stmt);
+                    Continue;
+                end;
+
+                learned_step_result := m_base_connection.step(learned_stmt);
+                if learned_step_result = SQLITE_ROW then
+                begin
+                    learned_text := m_base_connection.column_text(learned_stmt, 1);
+                    learned_comment := m_base_connection.column_text(learned_stmt, 2);
+                    learned_weight := m_base_connection.column_int(learned_stmt, 3);
+                    append_candidate(learned_text, learned_comment, learned_weight, cs_rule, True, learned_weight);
+                    exact_base_hit := True;
+                    Inc(injected_learned_base_count);
+                end;
+
+                m_base_connection.reset(learned_stmt);
+                m_base_connection.clear_bindings(learned_stmt);
+            end;
+        finally
+            if learned_stmt <> nil then
+            begin
+                m_base_connection.finalize(learned_stmt);
             end;
         end;
     end;
@@ -3285,6 +3346,7 @@ begin
     skipped_single_char_mismatch_count := 0;
     skipped_noisy_user_count := 0;
     skipped_base_dup_user_count := 0;
+    injected_learned_base_count := 0;
     if (pinyin = '') or not ensure_open then
     begin
         Result := False;
@@ -3381,6 +3443,7 @@ begin
                     while step_result = SQLITE_ROW do
                     begin
                         text_value := m_user_connection.column_text(stmt, 0);
+                        last_used_value := m_user_connection.column_int(stmt, 2);
                         if full_pinyin_query and
                             (get_valid_cjk_codepoint_count(text_value) = 1) and
                             (not single_char_matches_pinyin(query_key, text_value)) then
@@ -3396,7 +3459,8 @@ begin
                             Continue;
                         end;
                         score_value := m_user_connection.column_int(stmt, 1);
-                        if is_likely_noisy_constructed_phrase(query_key, text_value, 0, score_value) then
+                        if (last_used_value <= 0) and
+                            is_likely_noisy_constructed_phrase(query_key, text_value, 0, score_value) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -3444,13 +3508,15 @@ begin
 
                         text_value := m_user_connection.column_text(stmt, 1);
                         score_value := m_user_connection.column_int(stmt, 2);
+                        last_used_value := m_user_connection.column_int(stmt, 3);
                         if normalized_base_entry_exists(candidate_pinyin, text_value) then
                         begin
                             Inc(skipped_base_dup_user_count);
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        if is_likely_noisy_constructed_phrase(candidate_pinyin, text_value, 0, score_value) then
+                        if (last_used_value <= 0) and
+                            is_likely_noisy_constructed_phrase(candidate_pinyin, text_value, 0, score_value) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -3555,6 +3621,8 @@ begin
                 end;
             end;
         end;
+
+        append_learned_exact_base_candidates;
 
         if full_query_dual_jianpin_mode and (list.Count > 0) then
         begin
@@ -3872,12 +3940,13 @@ begin
         end;
 
         m_last_lookup_debug_hint := Format(
-            'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d learn=%d text=%d sc_bad=%d noise=%d dup=%d n=%d]',
+            'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d learn=%d text=%d sc_bad=%d noise=%d dup=%d inj=%d n=%d]',
             [Ord(full_pinyin_query), Ord(mixed_mode), Ord(user_nonfull_lookup), Ord(exact_base_hit),
             Ord(typo_fallback_used), Ord(full_query_dual_jianpin_mode),
             Ord(disable_long_full_query_jianpin), applied_learning_bonus_count,
             applied_text_learning_bonus_count, skipped_single_char_mismatch_count,
-            skipped_noisy_user_count, skipped_base_dup_user_count, list.Count]);
+            skipped_noisy_user_count, skipped_base_dup_user_count,
+            injected_learned_base_count, list.Count]);
         Result := list.Count > 0;
     finally
         if mixed_parser <> nil then
@@ -3945,10 +4014,10 @@ end;
 procedure TncSqliteDictionary.prune_suspicious_user_entries;
 const
     select_entries_sql =
-        'SELECT pinyin, text, MAX(user_weight), MAX(commit_count) FROM (' +
-        'SELECT pinyin, text, weight AS user_weight, 0 AS commit_count FROM dict_user ' +
+        'SELECT pinyin, text, MAX(user_weight), MAX(commit_count), MAX(last_used) FROM (' +
+        'SELECT pinyin, text, weight AS user_weight, 0 AS commit_count, last_used FROM dict_user ' +
         'UNION ALL ' +
-        'SELECT pinyin, text, 0 AS user_weight, commit_count FROM dict_user_stats' +
+        'SELECT pinyin, text, 0 AS user_weight, commit_count, last_used FROM dict_user_stats' +
         ') GROUP BY pinyin, text';
 var
     stmt: Psqlite3_stmt;
@@ -3958,6 +4027,7 @@ var
     text_unit_count: Integer;
     user_weight: Integer;
     commit_count: Integer;
+    last_used_value: Int64;
 begin
     if not m_user_ready then
     begin
@@ -3978,6 +4048,7 @@ begin
             text_value := m_user_connection.column_text(stmt, 1);
             user_weight := m_user_connection.column_int(stmt, 2);
             commit_count := m_user_connection.column_int(stmt, 3);
+            last_used_value := m_user_connection.column_int(stmt, 4);
             text_unit_count := get_valid_cjk_codepoint_count(text_value);
 
             if (pinyin_value <> '') and (text_unit_count = 1) and is_full_pinyin_key(pinyin_value) and
@@ -3985,7 +4056,8 @@ begin
             begin
                 purge_user_entry_internal(pinyin_value, text_value, False, False);
             end
-            else if is_likely_noisy_constructed_phrase(pinyin_value, text_value, commit_count, user_weight) then
+            else if (last_used_value <= 0) and
+                is_likely_noisy_constructed_phrase(pinyin_value, text_value, commit_count, user_weight) then
             begin
                 purge_user_entry_internal(pinyin_value, text_value, False, True);
             end;
