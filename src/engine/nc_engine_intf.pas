@@ -3347,6 +3347,176 @@ var
         Result := True;
     end;
 
+    function try_build_phrase_anchored_single_char_partial(const candidates: TncCandidateList;
+        out out_candidate: TncCandidate): Boolean;
+    const
+        c_phrase_anchor_follow_penalty = 48;
+        c_phrase_anchor_redup_bonus = 4096;
+        c_forced_partial_penalty_per_syllable = 120;
+        c_forced_partial_prefix_bonus = 80;
+    var
+        parser: TncPinyinParser;
+        syllables: TncPinyinParseResult;
+        first_syllable: string;
+        remaining_pinyin: string;
+        fallback_lookup: TncCandidateList;
+        visible_partials: TDictionary<string, Byte>;
+        fallback_idx: Integer;
+        candidate_idx: Integer;
+        leading_units: TArray<string>;
+        leading_text: string;
+        source_item: TncCandidate;
+        trailing_count: Integer;
+        fallback_item: TncCandidate;
+        best_source_item: TncCandidate;
+        best_fallback_item: TncCandidate;
+        anchor_rank: Integer;
+        best_anchor_rank: Integer;
+        has_redup_anchor: Boolean;
+        visible_limit: Integer;
+    begin
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
+
+        if m_dictionary = nil then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            syllables := parser.parse(m_composition_text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(syllables) <= 1 then
+        begin
+            Exit;
+        end;
+
+        first_syllable := syllables[0].text;
+        if first_syllable = '' then
+        begin
+            Exit;
+        end;
+
+        remaining_pinyin := '';
+        for candidate_idx := 1 to High(syllables) do
+        begin
+            remaining_pinyin := remaining_pinyin + syllables[candidate_idx].text;
+        end;
+        if remaining_pinyin = '' then
+        begin
+            Exit;
+        end;
+
+        if not dictionary_lookup_cached(first_syllable, fallback_lookup) then
+        begin
+            Exit;
+        end;
+
+        trailing_count := Length(syllables) - 1;
+        visible_partials := TDictionary<string, Byte>.Create;
+        try
+            best_anchor_rank := Low(Integer);
+            visible_limit := get_candidate_limit;
+            if (visible_limit <= 0) or (visible_limit > Length(candidates)) then
+            begin
+                visible_limit := Length(candidates);
+            end;
+            for candidate_idx := 0 to visible_limit - 1 do
+            begin
+                if (candidates[candidate_idx].comment = remaining_pinyin) and
+                    is_single_text_unit(Trim(candidates[candidate_idx].text)) then
+                begin
+                    visible_partials.AddOrSetValue(Trim(candidates[candidate_idx].text), 1);
+                end;
+            end;
+
+            for candidate_idx := 0 to High(candidates) do
+            begin
+                source_item := candidates[candidate_idx];
+                if source_item.comment <> '' then
+                begin
+                    Continue;
+                end;
+                leading_units := split_text_units(Trim(source_item.text));
+                if Length(leading_units) < 2 then
+                begin
+                    Continue;
+                end;
+
+                leading_text := leading_units[0];
+                if visible_partials.ContainsKey(leading_text) then
+                begin
+                    Continue;
+                end;
+                if not is_single_text_unit(leading_text) then
+                begin
+                    Continue;
+                end;
+                has_redup_anchor := repeated_two_syllable_query and
+                    is_two_unit_redup_text(source_item.text);
+                if (source_item.source <> cs_user) and
+                    (not has_redup_anchor) and
+                    (not is_runtime_chain_candidate(source_item)) and
+                    (not is_runtime_common_pattern_candidate(source_item)) and
+                    (not is_runtime_redup_candidate(source_item)) then
+                begin
+                    Continue;
+                end;
+
+                for fallback_idx := 0 to High(fallback_lookup) do
+                begin
+                    fallback_item := fallback_lookup[fallback_idx];
+                    if not SameText(Trim(fallback_item.text), leading_text) then
+                    begin
+                        Continue;
+                    end;
+                    anchor_rank := source_item.score;
+                    if source_item.source = cs_user then
+                    begin
+                        Inc(anchor_rank, c_user_score_bonus);
+                    end;
+                    if has_redup_anchor then
+                    begin
+                        Inc(anchor_rank, c_phrase_anchor_redup_bonus);
+                    end;
+
+                    if anchor_rank > best_anchor_rank then
+                    begin
+                        best_anchor_rank := anchor_rank;
+                        best_source_item := source_item;
+                        best_fallback_item := fallback_item;
+                    end;
+                    Break;
+                end;
+            end;
+
+            if best_anchor_rank <= Low(Integer) then
+            begin
+                Exit;
+            end;
+
+            out_candidate := best_fallback_item;
+            out_candidate.comment := remaining_pinyin;
+            out_candidate.score := Max(
+                best_fallback_item.score + c_forced_partial_prefix_bonus -
+                    (trailing_count * c_forced_partial_penalty_per_syllable),
+                best_source_item.score - c_phrase_anchor_follow_penalty -
+                    (trailing_count * c_forced_partial_penalty_per_syllable));
+            Result := True;
+        finally
+            visible_partials.Free;
+        end;
+    end;
+
     procedure ensure_hard_single_char_partial_visible(var candidates: TncCandidateList);
     var
         visible_limit: Integer;
@@ -3354,6 +3524,7 @@ var
         partial_index: Integer;
         target_index: Integer;
         partial_candidate: TncCandidate;
+        phrase_anchored_candidate: TncCandidate;
         best_score: Integer;
         best_index: Integer;
         has_complete_phrase: Boolean;
@@ -3383,6 +3554,31 @@ var
             Exit;
         end;
 
+        if try_build_phrase_anchored_single_char_partial(candidates, phrase_anchored_candidate) then
+        begin
+            partial_index := -1;
+            for i := 0 to High(candidates) do
+            begin
+                if (candidates[i].comment = phrase_anchored_candidate.comment) and
+                    SameText(Trim(candidates[i].text), Trim(phrase_anchored_candidate.text)) then
+                begin
+                    partial_index := i;
+                    Break;
+                end;
+            end;
+            if partial_index < 0 then
+            begin
+                SetLength(candidates, Length(candidates) + 1);
+                candidates[High(candidates)] := phrase_anchored_candidate;
+                partial_index := High(candidates);
+            end
+            else
+            begin
+                candidates[partial_index] := phrase_anchored_candidate;
+            end;
+        end
+        else
+        begin
         best_index := -1;
         best_score := Low(Integer);
         for i := 0 to High(candidates) do
@@ -3413,6 +3609,7 @@ var
         if partial_index < 0 then
         begin
             Exit;
+        end;
         end;
 
         // Keep a practical single-char continuation visible, but avoid occupying
@@ -4160,8 +4357,8 @@ begin
         sort_candidates_timed(m_candidates);
         ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
         ensure_single_char_partial_visible(m_candidates, get_candidate_limit, single_char_partial_min_count);
-        ensure_hard_single_char_partial_visible(m_candidates);
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
+        ensure_hard_single_char_partial_visible(m_candidates);
         ensure_non_ai_first(m_candidates);
         finalize_lookup_timing_info;
         if m_config.debug_mode then

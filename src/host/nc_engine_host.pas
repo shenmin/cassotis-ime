@@ -921,6 +921,8 @@ begin
 end;
 
 procedure TncEngineHost.maybe_checkpoint_user_dictionary;
+const
+    c_user_dict_checkpoint_mutex_name = 'Local\CassotisImeUserDictCheckpoint';
 var
     user_db_path: string;
     debug_mode: Boolean;
@@ -933,6 +935,9 @@ var
     checkpointed_frames: Integer;
     error_message: string;
     checkpoint_ok: Boolean;
+    checkpoint_mutex: THandle;
+    wait_result: DWORD;
+    checkpoint_mutex_acquired: Boolean;
 begin
     m_lock.Acquire;
     try
@@ -967,6 +972,20 @@ begin
     begin
         Exit;
     end;
+
+    checkpoint_mutex := CreateMutex(nil, False, c_user_dict_checkpoint_mutex_name);
+    if checkpoint_mutex = 0 then
+    begin
+        Exit;
+    end;
+    checkpoint_mutex_acquired := False;
+    try
+        wait_result := WaitForSingleObject(checkpoint_mutex, 0);
+        if (wait_result <> WAIT_OBJECT_0) and (wait_result <> WAIT_ABANDONED) then
+        begin
+            Exit;
+        end;
+        checkpoint_mutex_acquired := True;
 
     m_lock.Acquire;
     try
@@ -1018,6 +1037,13 @@ begin
     begin
         host_log(Format('[DEBUG] user_dict wal_checkpoint skipped busy=%d log=%d checkpointed=%d err=%s',
             [busy_frames, log_frames, checkpointed_frames, sanitize_log_text(error_message)]));
+    end;
+    finally
+        if checkpoint_mutex_acquired then
+        begin
+            ReleaseMutex(checkpoint_mutex);
+        end;
+        CloseHandle(checkpoint_mutex);
     end;
 end;
 

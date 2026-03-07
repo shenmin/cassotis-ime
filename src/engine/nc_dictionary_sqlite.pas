@@ -39,6 +39,12 @@ type
         m_stmt_query_path_bonus: Psqlite3_stmt;
         m_stmt_query_path_penalty: Psqlite3_stmt;
         m_stmt_candidate_penalty: Psqlite3_stmt;
+        m_stmt_record_context_pair_update: Psqlite3_stmt;
+        m_stmt_record_context_pair_insert: Psqlite3_stmt;
+        m_stmt_record_context_trigram_update: Psqlite3_stmt;
+        m_stmt_record_context_trigram_insert: Psqlite3_stmt;
+        m_stmt_record_query_path_update: Psqlite3_stmt;
+        m_stmt_record_query_path_insert: Psqlite3_stmt;
         m_query_path_penalty_cache: TDictionary<string, Integer>;
         m_candidate_penalty_cache: TDictionary<string, Integer>;
         m_debug_mode: Boolean;
@@ -1619,6 +1625,12 @@ begin
     m_stmt_query_path_bonus := nil;
     m_stmt_query_path_penalty := nil;
     m_stmt_candidate_penalty := nil;
+    m_stmt_record_context_pair_update := nil;
+    m_stmt_record_context_pair_insert := nil;
+    m_stmt_record_context_trigram_update := nil;
+    m_stmt_record_context_trigram_insert := nil;
+    m_stmt_record_query_path_update := nil;
+    m_stmt_record_query_path_insert := nil;
     m_base_connection := nil;
     m_user_connection := nil;
     m_contains_popularity_cache := TDictionary<string, Integer>.Create;
@@ -3252,6 +3264,36 @@ begin
     begin
         m_user_connection.finalize(m_stmt_candidate_penalty);
         m_stmt_candidate_penalty := nil;
+    end;
+    if (m_stmt_record_context_pair_update <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_record_context_pair_update);
+        m_stmt_record_context_pair_update := nil;
+    end;
+    if (m_stmt_record_context_pair_insert <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_record_context_pair_insert);
+        m_stmt_record_context_pair_insert := nil;
+    end;
+    if (m_stmt_record_context_trigram_update <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_record_context_trigram_update);
+        m_stmt_record_context_trigram_update := nil;
+    end;
+    if (m_stmt_record_context_trigram_insert <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_record_context_trigram_insert);
+        m_stmt_record_context_trigram_insert := nil;
+    end;
+    if (m_stmt_record_query_path_update <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_record_query_path_update);
+        m_stmt_record_query_path_update := nil;
+    end;
+    if (m_stmt_record_query_path_insert <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_record_query_path_insert);
+        m_stmt_record_query_path_insert := nil;
     end;
 end;
 
@@ -5145,44 +5187,39 @@ begin
         Exit;
     end;
 
-    stmt_update := nil;
-    stmt_insert := nil;
-    try
-        if not m_user_connection.prepare(update_sql, stmt_update) then
-        begin
-            Exit;
-        end;
-        if not m_user_connection.prepare(insert_sql, stmt_insert) then
-        begin
-            Exit;
-        end;
-
-        for variant_idx := 0 to High(context_variants) do
-        begin
-            if m_user_connection.reset(stmt_update) and
-                m_user_connection.clear_bindings(stmt_update) and
-                m_user_connection.bind_text(stmt_update, 1, context_variants[variant_idx]) and
-                m_user_connection.bind_text(stmt_update, 2, text_key) then
-            begin
-                m_user_connection.step(stmt_update);
-            end;
-
-            if m_user_connection.reset(stmt_insert) and
-                m_user_connection.clear_bindings(stmt_insert) and
-                m_user_connection.bind_text(stmt_insert, 1, context_variants[variant_idx]) and
-                m_user_connection.bind_text(stmt_insert, 2, text_key) then
-            begin
-                m_user_connection.step(stmt_insert);
-            end;
-        end;
-    finally
-        if stmt_update <> nil then
+    stmt_update := m_stmt_record_context_pair_update;
+    stmt_insert := m_stmt_record_context_pair_insert;
+    if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
+    begin
+        Exit;
+    end;
+    if (stmt_insert = nil) and (not m_user_connection.prepare(insert_sql, stmt_insert)) then
+    begin
+        if (m_stmt_record_context_pair_update = nil) and (stmt_update <> nil) then
         begin
             m_user_connection.finalize(stmt_update);
         end;
-        if stmt_insert <> nil then
+        Exit;
+    end;
+    m_stmt_record_context_pair_update := stmt_update;
+    m_stmt_record_context_pair_insert := stmt_insert;
+
+    for variant_idx := 0 to High(context_variants) do
+    begin
+        if m_user_connection.reset(stmt_update) and
+            m_user_connection.clear_bindings(stmt_update) and
+            m_user_connection.bind_text(stmt_update, 1, context_variants[variant_idx]) and
+            m_user_connection.bind_text(stmt_update, 2, text_key) then
         begin
-            m_user_connection.finalize(stmt_insert);
+            m_user_connection.step(stmt_update);
+        end;
+
+        if m_user_connection.reset(stmt_insert) and
+            m_user_connection.clear_bindings(stmt_insert) and
+            m_user_connection.bind_text(stmt_insert, 1, context_variants[variant_idx]) and
+            m_user_connection.bind_text(stmt_insert, 2, text_key) then
+        begin
+            m_user_connection.step(stmt_insert);
         end;
     end;
 
@@ -5212,44 +5249,39 @@ begin
         Exit;
     end;
 
-    stmt_update := nil;
-    stmt_insert := nil;
-    try
-        if not m_user_connection.prepare(update_sql, stmt_update) then
-        begin
-            Exit;
-        end;
-        if not m_user_connection.prepare(insert_sql, stmt_insert) then
-        begin
-            Exit;
-        end;
-
-        if m_user_connection.reset(stmt_update) and
-            m_user_connection.clear_bindings(stmt_update) and
-            m_user_connection.bind_text(stmt_update, 1, prev_prev_key) and
-            m_user_connection.bind_text(stmt_update, 2, prev_key) and
-            m_user_connection.bind_text(stmt_update, 3, text_key) then
-        begin
-            m_user_connection.step(stmt_update);
-        end;
-
-        if m_user_connection.reset(stmt_insert) and
-            m_user_connection.clear_bindings(stmt_insert) and
-            m_user_connection.bind_text(stmt_insert, 1, prev_prev_key) and
-            m_user_connection.bind_text(stmt_insert, 2, prev_key) and
-            m_user_connection.bind_text(stmt_insert, 3, text_key) then
-        begin
-            m_user_connection.step(stmt_insert);
-        end;
-    finally
-        if stmt_update <> nil then
+    stmt_update := m_stmt_record_context_trigram_update;
+    stmt_insert := m_stmt_record_context_trigram_insert;
+    if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
+    begin
+        Exit;
+    end;
+    if (stmt_insert = nil) and (not m_user_connection.prepare(insert_sql, stmt_insert)) then
+    begin
+        if (m_stmt_record_context_trigram_update = nil) and (stmt_update <> nil) then
         begin
             m_user_connection.finalize(stmt_update);
         end;
-        if stmt_insert <> nil then
-        begin
-            m_user_connection.finalize(stmt_insert);
-        end;
+        Exit;
+    end;
+    m_stmt_record_context_trigram_update := stmt_update;
+    m_stmt_record_context_trigram_insert := stmt_insert;
+
+    if m_user_connection.reset(stmt_update) and
+        m_user_connection.clear_bindings(stmt_update) and
+        m_user_connection.bind_text(stmt_update, 1, prev_prev_key) and
+        m_user_connection.bind_text(stmt_update, 2, prev_key) and
+        m_user_connection.bind_text(stmt_update, 3, text_key) then
+    begin
+        m_user_connection.step(stmt_update);
+    end;
+
+    if m_user_connection.reset(stmt_insert) and
+        m_user_connection.clear_bindings(stmt_insert) and
+        m_user_connection.bind_text(stmt_insert, 1, prev_prev_key) and
+        m_user_connection.bind_text(stmt_insert, 2, prev_key) and
+        m_user_connection.bind_text(stmt_insert, 3, text_key) then
+    begin
+        m_user_connection.step(stmt_insert);
     end;
 
     prune_trigram_rows_if_needed(False);
@@ -5276,42 +5308,37 @@ begin
         Exit;
     end;
 
-    stmt_update := nil;
-    stmt_insert := nil;
-    try
-        if not m_user_connection.prepare(update_sql, stmt_update) then
-        begin
-            Exit;
-        end;
-        if not m_user_connection.prepare(insert_sql, stmt_insert) then
-        begin
-            Exit;
-        end;
-
-        if m_user_connection.reset(stmt_update) and
-            m_user_connection.clear_bindings(stmt_update) and
-            m_user_connection.bind_text(stmt_update, 1, normalized_query) and
-            m_user_connection.bind_text(stmt_update, 2, normalized_path) then
-        begin
-            m_user_connection.step(stmt_update);
-        end;
-
-        if m_user_connection.reset(stmt_insert) and
-            m_user_connection.clear_bindings(stmt_insert) and
-            m_user_connection.bind_text(stmt_insert, 1, normalized_query) and
-            m_user_connection.bind_text(stmt_insert, 2, normalized_path) then
-        begin
-            m_user_connection.step(stmt_insert);
-        end;
-    finally
-        if stmt_update <> nil then
+    stmt_update := m_stmt_record_query_path_update;
+    stmt_insert := m_stmt_record_query_path_insert;
+    if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
+    begin
+        Exit;
+    end;
+    if (stmt_insert = nil) and (not m_user_connection.prepare(insert_sql, stmt_insert)) then
+    begin
+        if (m_stmt_record_query_path_update = nil) and (stmt_update <> nil) then
         begin
             m_user_connection.finalize(stmt_update);
         end;
-        if stmt_insert <> nil then
-        begin
-            m_user_connection.finalize(stmt_insert);
-        end;
+        Exit;
+    end;
+    m_stmt_record_query_path_update := stmt_update;
+    m_stmt_record_query_path_insert := stmt_insert;
+
+    if m_user_connection.reset(stmt_update) and
+        m_user_connection.clear_bindings(stmt_update) and
+        m_user_connection.bind_text(stmt_update, 1, normalized_query) and
+        m_user_connection.bind_text(stmt_update, 2, normalized_path) then
+    begin
+        m_user_connection.step(stmt_update);
+    end;
+
+    if m_user_connection.reset(stmt_insert) and
+        m_user_connection.clear_bindings(stmt_insert) and
+        m_user_connection.bind_text(stmt_insert, 1, normalized_query) and
+        m_user_connection.bind_text(stmt_insert, 2, normalized_path) then
+    begin
+        m_user_connection.step(stmt_insert);
     end;
 
     prune_query_path_rows_if_needed(False);
