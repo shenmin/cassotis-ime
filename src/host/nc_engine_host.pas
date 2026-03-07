@@ -1204,11 +1204,24 @@ begin
 end;
 
 function TncEngineHost.set_active(const session_id: string; const active: Boolean): Boolean;
+var
+    session: TncHostSession;
 begin
     if session_id = '' then
     begin
         Result := False;
         Exit;
+    end;
+
+    if active then
+    begin
+        reload_config_if_needed;
+        session := get_or_create_session(session_id);
+        run_on_ui_thread(
+            procedure
+            begin
+                session.ensure_candidate_window;
+            end);
     end;
 
     set_session_active(session_id, active);

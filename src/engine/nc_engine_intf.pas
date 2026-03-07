@@ -54,6 +54,7 @@ type
         m_context_order: TQueue<string>;
         m_phrase_context_pairs: TDictionary<string, Integer>;
         m_phrase_context_order: TQueue<string>;
+        m_phrase_context_last_seen: TDictionary<string, Int64>;
         m_session_text_counts: TDictionary<string, Integer>;
         m_session_text_last_seen: TDictionary<string, Int64>;
         m_session_text_order: TQueue<string>;
@@ -70,6 +71,7 @@ type
         m_last_lookup_normalized_from: string;
         m_last_lookup_syllable_count: Integer;
         m_last_lookup_debug_extra: string;
+        m_last_lookup_timing_info: string;
         m_runtime_chain_text: string;
         m_runtime_common_pattern_text: string;
         m_runtime_redup_text: string;
@@ -367,6 +369,7 @@ begin
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
+    m_last_lookup_timing_info := '';
     m_runtime_chain_text := '';
     m_runtime_common_pattern_text := '';
     m_runtime_redup_text := '';
@@ -387,6 +390,7 @@ begin
     m_context_order := TQueue<string>.Create;
     m_phrase_context_pairs := TDictionary<string, Integer>.Create;
     m_phrase_context_order := TQueue<string>.Create;
+    m_phrase_context_last_seen := TDictionary<string, Int64>.Create;
     m_session_text_counts := TDictionary<string, Integer>.Create;
     m_session_text_last_seen := TDictionary<string, Int64>.Create;
     m_session_text_order := TQueue<string>.Create;
@@ -424,6 +428,12 @@ begin
     begin
         m_phrase_context_order.Free;
         m_phrase_context_order := nil;
+    end;
+
+    if m_phrase_context_last_seen <> nil then
+    begin
+        m_phrase_context_last_seen.Free;
+        m_phrase_context_last_seen := nil;
     end;
 
     if m_session_text_order <> nil then
@@ -486,6 +496,7 @@ begin
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
+    m_last_lookup_timing_info := '';
     m_runtime_chain_text := '';
     m_runtime_common_pattern_text := '';
     m_runtime_redup_text := '';
@@ -847,6 +858,13 @@ var
     single_char_partial_min_count: Integer;
     runtime_phrase_added: Boolean;
     runtime_redup_added: Boolean;
+    raw_candidates_seeded_from_runtime_only: Boolean;
+    lookup_cache_hits: Integer;
+    lookup_cache_misses: Integer;
+    lookup_elapsed_ms: Int64;
+    segment_elapsed_ms: Int64;
+    sort_elapsed_ms: Int64;
+    total_start_tick: UInt64;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -990,6 +1008,8 @@ var
     end;
 
     function dictionary_lookup_cached(const pinyin_key: string; out out_results: TncCandidateList): Boolean;
+    var
+        phase_start_tick: UInt64;
     begin
         SetLength(out_results, 0);
         if (m_dictionary = nil) or (pinyin_key = '') then
@@ -999,15 +1019,55 @@ var
 
         if lookup_cache.TryGetValue(pinyin_key, out_results) then
         begin
+            Inc(lookup_cache_hits);
             Exit(Length(out_results) > 0);
         end;
 
+        Inc(lookup_cache_misses);
+        phase_start_tick := GetTickCount64;
         if not m_dictionary.lookup(pinyin_key, out_results) then
         begin
             SetLength(out_results, 0);
         end;
+        Inc(lookup_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
         lookup_cache.AddOrSetValue(pinyin_key, out_results);
         Result := Length(out_results) > 0;
+    end;
+
+    function build_segment_candidates_timed(out out_candidates: TncCandidateList;
+        const include_full_path: Boolean = True): Boolean;
+    var
+        phase_start_tick: UInt64;
+    begin
+        phase_start_tick := GetTickCount64;
+        Result := build_segment_candidates(out_candidates, include_full_path);
+        Inc(segment_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+    end;
+
+    procedure sort_candidates_timed(var candidates: TncCandidateList);
+    var
+        phase_start_tick: UInt64;
+    begin
+        phase_start_tick := GetTickCount64;
+        sort_candidates(candidates);
+        Inc(sort_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+    end;
+
+    procedure finalize_lookup_timing_info;
+    var
+        total_elapsed_ms: Int64;
+    begin
+        if not m_config.debug_mode then
+        begin
+            m_last_lookup_timing_info := '';
+            Exit;
+        end;
+
+        total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
+        m_last_lookup_timing_info := Format(
+            'perf=[lk=%d seg=%d sort=%d cache=%d/%d total=%d]',
+            [lookup_elapsed_ms, segment_elapsed_ms, sort_elapsed_ms,
+            lookup_cache_hits, lookup_cache_misses, total_elapsed_ms]);
     end;
 
     function is_common_surname_text(const value: string): Boolean;
@@ -1804,6 +1864,16 @@ var
             begin
                 out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E9B)));
             end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
+                syllable_equals(syllables[1].text, 'dian') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E00)), string(Char($70B9)));
+            end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
+                syllable_equals(syllables[1].text, 'xia') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E0B)));
+            end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'yang') then
             begin
@@ -1845,6 +1915,16 @@ var
                 syllable_equals(syllables[1].text, 'zhong') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($79CD)));
+            end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+                syllable_equals(syllables[1].text, 'li') then
+            begin
+                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($91CC)));
+            end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
+                syllable_equals(syllables[1].text, 'hou') then
+            begin
+                out_units := TArray<string>.Create(string(Char($4EE5)), string(Char($540E)));
             end
             else if (Length(syllables) = 2) and
                 ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
@@ -1916,7 +1996,8 @@ var
         Result := True;
     end;
 
-    procedure merge_runtime_constructed_candidates(var candidates: TncCandidateList);
+    procedure merge_runtime_constructed_candidates(var candidates: TncCandidateList;
+        const allow_generic_chain: Boolean = True);
         function has_complete_bmp_cjk_phrase_candidate(const source_candidates: TncCandidateList): Boolean;
         var
             candidate_idx: Integer;
@@ -1980,7 +2061,8 @@ var
         runtime_count := 0;
         SetLength(runtime_candidates, 0);
 
-        if (input_syllable_count = 2) and
+        if allow_generic_chain and
+            (input_syllable_count = 2) and
             (not has_complete_bmp_cjk_phrase_candidate(candidates)) and
             try_build_runtime_chain_candidate(runtime_item) then
         begin
@@ -3008,11 +3090,18 @@ var
 begin
     lookup_cache := TDictionary<string, TncCandidateList>.Create;
     try
+        total_start_tick := GetTickCount64;
+        lookup_cache_hits := 0;
+        lookup_cache_misses := 0;
+        lookup_elapsed_ms := 0;
+        segment_elapsed_ms := 0;
+        sort_elapsed_ms := 0;
         SetLength(m_candidates, 0);
         m_last_lookup_key := '';
         m_last_lookup_normalized_from := '';
         m_last_lookup_syllable_count := 0;
         m_last_lookup_debug_extra := '';
+        m_last_lookup_timing_info := '';
         m_runtime_chain_text := '';
         m_runtime_common_pattern_text := '';
         m_runtime_redup_text := '';
@@ -3064,13 +3153,14 @@ begin
         end;
         runtime_phrase_added := False;
         runtime_redup_added := False;
+        raw_candidates_seeded_from_runtime_only := False;
         head_only_multi_syllable := m_config.enable_segment_candidates and
             has_multi_syllable_input and
             m_config.segment_head_only_multi_syllable and
             (not has_internal_dangling_initial);
         if m_dictionary <> nil then
         begin
-            if head_only_multi_syllable and build_segment_candidates(segment_candidates, False) then
+            if head_only_multi_syllable and build_segment_candidates_timed(segment_candidates, False) then
             begin
                 has_raw_candidates := True;
                 has_segment_candidates := True;
@@ -3082,11 +3172,23 @@ begin
                 has_raw_candidates := True;
                 raw_from_dictionary := True;
             end
-            else if m_config.enable_segment_candidates and build_segment_candidates(segment_candidates, True) then
+            else if m_config.enable_segment_candidates and build_segment_candidates_timed(segment_candidates, True) then
             begin
                 has_raw_candidates := True;
                 has_segment_candidates := True;
                 raw_candidates := segment_candidates;
+            end;
+        end;
+
+        if (not has_raw_candidates) and has_multi_syllable_input then
+        begin
+            SetLength(raw_candidates, 0);
+            ensure_forced_single_char_partial(raw_candidates);
+            merge_runtime_constructed_candidates(raw_candidates, False);
+            if (Length(raw_candidates) > 0) and (runtime_phrase_added or runtime_redup_added) then
+            begin
+                has_raw_candidates := True;
+                raw_candidates_seeded_from_runtime_only := True;
             end;
         end;
 
@@ -3097,14 +3199,14 @@ begin
             clear_candidate_comments(raw_candidates);
         end;
 
-        sort_candidates(raw_candidates);
+        sort_candidates_timed(raw_candidates);
         if m_config.enable_segment_candidates and raw_from_dictionary and (not has_internal_dangling_initial) then
         begin
             if not has_segment_candidates then
             begin
                 // For dictionary-hit multi-syllable input, still build full-path segment candidates
                 // so head-first constraints can suppress noisy direct lexicon matches.
-                has_segment_candidates := build_segment_candidates(segment_candidates, True);
+                has_segment_candidates := build_segment_candidates_timed(segment_candidates, True);
             end;
 
             if has_segment_candidates then
@@ -3120,9 +3222,12 @@ begin
         // must keep a single-char partial fallback (e.g. "hai" + "budaxing").
         if has_multi_syllable_input then
         begin
-            ensure_forced_single_char_partial(raw_candidates);
-            merge_runtime_constructed_candidates(raw_candidates);
-            sort_candidates(raw_candidates);
+            if not raw_candidates_seeded_from_runtime_only then
+            begin
+                ensure_forced_single_char_partial(raw_candidates);
+                merge_runtime_constructed_candidates(raw_candidates);
+            end;
+            sort_candidates_timed(raw_candidates);
             ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
                 single_char_partial_min_count);
@@ -3160,7 +3265,7 @@ begin
             finally
                 fusion.Free;
             end;
-            sort_candidates(m_candidates);
+            sort_candidates_timed(m_candidates);
             ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
                 single_char_partial_min_count);
@@ -3191,12 +3296,13 @@ begin
         apply_user_penalties(lookup_text, m_candidates);
         prioritize_complete_phrase_matches(m_candidates);
         apply_syllable_single_char_alignment_bonus(m_candidates);
-        sort_candidates(m_candidates);
+        sort_candidates_timed(m_candidates);
         ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
         ensure_single_char_partial_visible(m_candidates, get_candidate_limit, single_char_partial_min_count);
         ensure_hard_single_char_partial_visible(m_candidates);
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_non_ai_first(m_candidates);
+        finalize_lookup_timing_info;
         m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
             [Ord(has_multi_syllable_input), Ord(has_segment_candidates), Ord(has_internal_dangling_initial),
             Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
@@ -3213,7 +3319,7 @@ begin
     if m_config.enable_ai and get_ai_candidates(ai_candidates) then
     begin
         clear_candidate_comments(ai_candidates);
-        sort_candidates(ai_candidates);
+        sort_candidates_timed(ai_candidates);
         limit := get_total_candidate_limit;
         if m_config.enable_segment_candidates then
         begin
@@ -3233,7 +3339,8 @@ begin
 
         m_candidates := ai_candidates;
         apply_user_penalties(lookup_text, m_candidates);
-        sort_candidates(m_candidates);
+        sort_candidates_timed(m_candidates);
+        finalize_lookup_timing_info;
         m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
             [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
             Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
@@ -3254,6 +3361,7 @@ begin
         m_candidates[0].source := cs_rule;
         m_candidates[0].has_dict_weight := False;
         m_candidates[0].dict_weight := 0;
+        finalize_lookup_timing_info;
         m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
             [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
             Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
@@ -3503,6 +3611,12 @@ const
     c_phrase_trigram_step = 150;
     c_phrase_trigram_cap = 460;
     c_phrase_context_cap = 620;
+    c_phrase_pair_recent_top = 160;
+    c_phrase_pair_recent_mid = 92;
+    c_phrase_pair_recent_tail = 44;
+    c_phrase_trigram_recent_top = 220;
+    c_phrase_trigram_recent_mid = 132;
+    c_phrase_trigram_recent_tail = 64;
 var
     pair_count: Integer;
     pair_bonus: Integer;
@@ -3510,6 +3624,43 @@ var
     trigram_bonus: Integer;
     key: string;
     text_key: string;
+    last_seen_serial: Int64;
+    serial_gap: Int64;
+    pair_recent_bonus: Integer;
+    trigram_recent_bonus: Integer;
+
+    function get_recent_phrase_bonus(
+        const phrase_key: string;
+        const top_bonus: Integer;
+        const mid_bonus: Integer;
+        const tail_bonus: Integer
+    ): Integer;
+    begin
+        Result := 0;
+        if (phrase_key = '') or (m_phrase_context_last_seen = nil) then
+        begin
+            Exit;
+        end;
+        if (not m_phrase_context_last_seen.TryGetValue(phrase_key, last_seen_serial)) or
+            (last_seen_serial <= 0) or (m_session_commit_serial < last_seen_serial) then
+        begin
+            Exit;
+        end;
+
+        serial_gap := m_session_commit_serial - last_seen_serial;
+        if serial_gap <= 1 then
+        begin
+            Result := top_bonus;
+        end
+        else if serial_gap <= 3 then
+        begin
+            Result := mid_bonus;
+        end
+        else if serial_gap <= 6 then
+        begin
+            Result := tail_bonus;
+        end;
+    end;
 begin
     Result := 0;
     if m_phrase_context_pairs = nil then
@@ -3525,6 +3676,8 @@ begin
 
     pair_bonus := 0;
     trigram_bonus := 0;
+    pair_recent_bonus := 0;
+    trigram_recent_bonus := 0;
 
     key := m_last_output_commit_text + #1 + text_key;
     if m_phrase_context_pairs.TryGetValue(key, pair_count) and (pair_count > 0) then
@@ -3534,6 +3687,11 @@ begin
         begin
             pair_bonus := c_phrase_pair_cap;
         end;
+        pair_recent_bonus := get_recent_phrase_bonus(
+            key,
+            c_phrase_pair_recent_top,
+            c_phrase_pair_recent_mid,
+            c_phrase_pair_recent_tail);
     end;
 
     if m_prev_output_commit_text <> '' then
@@ -3546,16 +3704,21 @@ begin
             begin
                 trigram_bonus := c_phrase_trigram_cap;
             end;
+            trigram_recent_bonus := get_recent_phrase_bonus(
+                key,
+                c_phrase_trigram_recent_top,
+                c_phrase_trigram_recent_mid,
+                c_phrase_trigram_recent_tail);
         end;
     end;
 
     if trigram_bonus > 0 then
     begin
-        Result := trigram_bonus + (pair_bonus div 2);
+        Result := trigram_bonus + (pair_bonus div 2) + trigram_recent_bonus + (pair_recent_bonus div 2);
     end
     else
     begin
-        Result := pair_bonus;
+        Result := pair_bonus + pair_recent_bonus;
     end;
 
     if Result > c_phrase_context_cap then
@@ -6144,11 +6307,18 @@ var
     evict_key: string;
     text_key: string;
     phrase_key: string;
+    current_serial: Int64;
 begin
     text_key := Trim(committed_text);
     if (text_key = '') or (m_phrase_context_pairs = nil) or (m_phrase_context_order = nil) then
     begin
         Exit;
+    end;
+
+    current_serial := m_session_commit_serial;
+    if current_serial <= 0 then
+    begin
+        current_serial := 1;
     end;
 
     if m_last_output_commit_text <> '' then
@@ -6164,6 +6334,10 @@ begin
             m_phrase_context_pairs.Add(phrase_key, 1);
         end;
         m_phrase_context_order.Enqueue(phrase_key);
+        if m_phrase_context_last_seen <> nil then
+        begin
+            m_phrase_context_last_seen.AddOrSetValue(phrase_key, current_serial);
+        end;
     end;
 
     if (m_prev_output_commit_text <> '') and (m_last_output_commit_text <> '') then
@@ -6179,6 +6353,10 @@ begin
             m_phrase_context_pairs.Add(phrase_key, 1);
         end;
         m_phrase_context_order.Enqueue(phrase_key);
+        if m_phrase_context_last_seen <> nil then
+        begin
+            m_phrase_context_last_seen.AddOrSetValue(phrase_key, current_serial);
+        end;
     end;
 
     while m_phrase_context_order.Count > c_phrase_context_history_limit do
@@ -6193,6 +6371,10 @@ begin
         if count <= 0 then
         begin
             m_phrase_context_pairs.Remove(evict_key);
+            if m_phrase_context_last_seen <> nil then
+            begin
+                m_phrase_context_last_seen.Remove(evict_key);
+            end;
         end
         else
         begin
@@ -7013,6 +7195,10 @@ begin
         if m_last_lookup_debug_extra <> '' then
         begin
             debug_parts.Add(m_last_lookup_debug_extra);
+        end;
+        if m_last_lookup_timing_info <> '' then
+        begin
+            debug_parts.Add(m_last_lookup_timing_info);
         end;
 
         if m_dictionary is TncSqliteDictionary then
