@@ -515,13 +515,21 @@ function calc_context_bigram_bonus(const commit_count: Integer; const last_used_
 const
     c_bigram_bonus_cap = 620;
     c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_3_days = 3 * c_sec_per_day;
     c_sec_per_7_days = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
     c_sec_per_90_days = 90 * c_sec_per_day;
     c_sec_per_180_days = 180 * c_sec_per_day;
+    c_recent_pair_bonus_1d = 56;
+    c_recent_pair_bonus_3d = 28;
+    c_stale_once_penalty_30d = 88;
+    c_stale_once_penalty_90d = 132;
+    c_stale_twice_penalty_90d = 82;
+    c_stale_light_penalty_180d = 52;
 var
     recency_bonus: Integer;
     age_seconds: Int64;
+    stale_penalty: Integer;
 begin
     Result := 0;
     if commit_count <= 0 then
@@ -540,12 +548,17 @@ begin
     end;
 
     recency_bonus := 0;
+    stale_penalty := 0;
     if (last_used_unix > 0) and (now_unix >= last_used_unix) then
     begin
         age_seconds := now_unix - last_used_unix;
         if age_seconds <= c_sec_per_day then
         begin
             recency_bonus := 90;
+        end
+        else if age_seconds <= c_sec_per_3_days then
+        begin
+            recency_bonus := 74;
         end
         else if age_seconds <= c_sec_per_7_days then
         begin
@@ -560,16 +573,48 @@ begin
             recency_bonus := 14;
         end;
 
-        if (commit_count = 1) and (age_seconds > c_sec_per_90_days) then
+        if commit_count >= 2 then
         begin
-            Dec(Result, 56);
+            if age_seconds <= c_sec_per_day then
+            begin
+                Inc(recency_bonus, c_recent_pair_bonus_1d);
+            end
+            else if age_seconds <= c_sec_per_3_days then
+            begin
+                Inc(recency_bonus, c_recent_pair_bonus_3d);
+            end;
+        end;
+
+        if commit_count = 1 then
+        begin
+            if age_seconds > c_sec_per_90_days then
+            begin
+                stale_penalty := c_stale_once_penalty_90d;
+            end
+            else if age_seconds > c_sec_per_30_days then
+            begin
+                stale_penalty := c_stale_once_penalty_30d;
+            end;
         end
-        else if (commit_count <= 2) and (age_seconds > c_sec_per_180_days) then
+        else if (commit_count = 2) and (age_seconds > c_sec_per_90_days) then
         begin
-            Dec(Result, 36);
+            stale_penalty := c_stale_twice_penalty_90d;
+        end
+        else if (commit_count <= 4) and (age_seconds > c_sec_per_180_days) then
+        begin
+            stale_penalty := c_stale_light_penalty_180d;
         end;
     end;
     Inc(Result, recency_bonus);
+
+    if stale_penalty > 0 then
+    begin
+        Dec(Result, stale_penalty);
+        if Result < 0 then
+        begin
+            Result := 0;
+        end;
+    end;
 
     if Result > c_bigram_bonus_cap then
     begin

@@ -14,6 +14,9 @@ data/custom/*_dict*.txt
 *.local
 *.swp
 third_party/llama.cpp/
+out_test/
+tools/__pycache__/
+*.pyc
 # Public export guards
 DEVPROGRESS.md
 DEVPLAN.md
