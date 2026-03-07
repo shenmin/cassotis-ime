@@ -66,6 +66,12 @@ type
         m_session_query_path_choice_counts: TDictionary<string, Integer>;
         m_session_query_path_choice_last_seen: TDictionary<string, Int64>;
         m_session_query_path_choice_order: TQueue<string>;
+        m_session_query_path_penalty_counts: TDictionary<string, Integer>;
+        m_session_query_path_penalty_last_seen: TDictionary<string, Int64>;
+        m_session_query_path_penalty_order: TQueue<string>;
+        m_session_ranked_query_paths: TDictionary<string, string>;
+        m_session_ranked_query_path_scores: TDictionary<string, Integer>;
+        m_session_ranked_query_path_order: TQueue<string>;
         m_session_context_query_choice_counts: TDictionary<string, Integer>;
         m_session_context_query_choice_last_seen: TDictionary<string, Int64>;
         m_session_context_query_choice_order: TQueue<string>;
@@ -129,7 +135,10 @@ type
             const candidate_text: string): string;
         function get_session_query_bonus(const candidate_text: string): Integer;
         function get_session_query_path_bonus(const query_key: string; const encoded_path: string): Integer;
+        function get_session_query_path_penalty(const query_key: string; const encoded_path: string): Integer;
         function get_session_query_path_prefix_bonus(const query_key: string; const encoded_path: string): Integer;
+        function get_session_query_path_prefix_penalty(const query_key: string; const encoded_path: string): Integer;
+        function get_session_ranked_query_path_bonus(const encoded_path: string): Integer;
         function get_persistent_query_path_prefix_support(const encoded_path: string): Integer;
         function get_context_query_bonus(const candidate_text: string): Integer;
         function get_context_query_latest_bonus(const candidate_text: string): Integer;
@@ -198,6 +207,9 @@ type
         procedure note_session_commit(const text: string);
         procedure note_session_query_choice(const query_key: string; const text: string);
         procedure note_session_query_path_choice(const query_key: string; const encoded_path: string);
+        procedure note_session_query_path_penalty(const query_key: string; const encoded_path: string);
+        procedure note_session_ranked_query_path(const query_key: string; const encoded_path: string;
+            const path_confidence_score: Integer);
         procedure note_session_context_query_choice(const context_text: string; const query_key: string;
             const text: string);
         procedure track_phrase_context_key(const phrase_key: string; const current_serial: Int64);
@@ -250,6 +262,8 @@ type
     TncSegmentPathState = record
         text: string;
         score: Integer;
+        path_preference_score: Integer;
+        path_confidence_score: Integer;
         source: TncCandidateSource;
         has_multi_segment: Boolean;
         prev_text: string;
@@ -275,6 +289,7 @@ const
     c_session_text_history_limit = 256;
     c_session_query_history_limit = 320;
     c_session_query_path_history_limit = 384;
+    c_session_ranked_query_path_history_limit = 192;
     c_session_context_query_history_limit = 384;
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
@@ -514,6 +529,12 @@ begin
     m_session_query_path_choice_counts := TDictionary<string, Integer>.Create;
     m_session_query_path_choice_last_seen := TDictionary<string, Int64>.Create;
     m_session_query_path_choice_order := TQueue<string>.Create;
+    m_session_query_path_penalty_counts := TDictionary<string, Integer>.Create;
+    m_session_query_path_penalty_last_seen := TDictionary<string, Int64>.Create;
+    m_session_query_path_penalty_order := TQueue<string>.Create;
+    m_session_ranked_query_paths := TDictionary<string, string>.Create;
+    m_session_ranked_query_path_scores := TDictionary<string, Integer>.Create;
+    m_session_ranked_query_path_order := TQueue<string>.Create;
     m_session_context_query_choice_counts := TDictionary<string, Integer>.Create;
     m_session_context_query_choice_last_seen := TDictionary<string, Int64>.Create;
     m_session_context_query_choice_order := TQueue<string>.Create;
@@ -589,6 +610,16 @@ begin
         m_session_query_path_choice_order.Free;
         m_session_query_path_choice_order := nil;
     end;
+    if m_session_query_path_penalty_order <> nil then
+    begin
+        m_session_query_path_penalty_order.Free;
+        m_session_query_path_penalty_order := nil;
+    end;
+    if m_session_ranked_query_path_order <> nil then
+    begin
+        m_session_ranked_query_path_order.Free;
+        m_session_ranked_query_path_order := nil;
+    end;
 
     if m_session_text_last_seen <> nil then
     begin
@@ -609,6 +640,21 @@ begin
     begin
         m_session_query_path_choice_last_seen.Free;
         m_session_query_path_choice_last_seen := nil;
+    end;
+    if m_session_query_path_penalty_last_seen <> nil then
+    begin
+        m_session_query_path_penalty_last_seen.Free;
+        m_session_query_path_penalty_last_seen := nil;
+    end;
+    if m_session_ranked_query_path_scores <> nil then
+    begin
+        m_session_ranked_query_path_scores.Free;
+        m_session_ranked_query_path_scores := nil;
+    end;
+    if m_session_ranked_query_paths <> nil then
+    begin
+        m_session_ranked_query_paths.Free;
+        m_session_ranked_query_paths := nil;
     end;
     if m_session_context_query_choice_order <> nil then
     begin
@@ -732,6 +778,11 @@ begin
     begin
         m_session_query_path_choice_counts.Free;
         m_session_query_path_choice_counts := nil;
+    end;
+    if m_session_query_path_penalty_counts <> nil then
+    begin
+        m_session_query_path_penalty_counts.Free;
+        m_session_query_path_penalty_counts := nil;
     end;
 
     inherited Destroy;
@@ -1192,6 +1243,7 @@ end;
 
 procedure TncEngine.note_ranked_top_candidate;
 var
+    path_confidence_score: Integer;
     previous_query: string;
     normalized_query: string;
     top_path: string;
@@ -1235,6 +1287,11 @@ begin
     end;
 
     m_last_ranked_top_path := top_path;
+    path_confidence_score := get_candidate_path_confidence_score(m_candidates[0]);
+    if path_confidence_score >= 180 then
+    begin
+        note_session_ranked_query_path(normalized_query, top_path, path_confidence_score);
+    end;
 end;
 
 procedure TncEngine.reset;
@@ -4680,6 +4737,93 @@ begin
     end;
 end;
 
+function TncEngine.get_session_query_path_penalty(const query_key: string; const encoded_path: string): Integer;
+const
+    c_query_path_penalty_base = 68;
+    c_query_path_penalty_step = 52;
+    c_query_path_penalty_cap = 520;
+    c_query_path_penalty_recent_latest = 132;
+    c_query_path_penalty_recent_top = 88;
+    c_query_path_penalty_recent_mid = 52;
+    c_query_path_penalty_recent_tail = 24;
+var
+    cache_key: string;
+    count: Integer;
+    key: string;
+    last_seen_serial: Int64;
+    normalized_query: string;
+    normalized_path: string;
+    recent_bonus: Integer;
+    serial_gap: Int64;
+begin
+    normalized_query := normalize_pinyin_text(query_key);
+    normalized_path := Trim(encoded_path);
+    key := build_session_query_path_choice_key(normalized_query, normalized_path);
+    cache_key := 'EN' + #1 + key;
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) and
+        m_lookup_query_path_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    Result := 0;
+    if (key = '') or (m_session_query_path_penalty_counts = nil) then
+    begin
+        Exit;
+    end;
+    if (not m_session_query_path_penalty_counts.TryGetValue(key, count)) or (count <= 0) then
+    begin
+        Exit;
+    end;
+
+    last_seen_serial := 0;
+    serial_gap := High(Int64);
+    if (m_session_query_path_penalty_last_seen <> nil) and
+        m_session_query_path_penalty_last_seen.TryGetValue(key, last_seen_serial) and
+        (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+    begin
+        serial_gap := m_session_commit_serial - last_seen_serial;
+    end;
+
+    recent_bonus := 0;
+    if serial_gap = 0 then
+    begin
+        recent_bonus := c_query_path_penalty_recent_latest;
+    end
+    else if serial_gap <= 1 then
+    begin
+        recent_bonus := c_query_path_penalty_recent_top;
+    end
+    else if serial_gap <= 3 then
+    begin
+        recent_bonus := c_query_path_penalty_recent_mid;
+    end
+    else if serial_gap <= 6 then
+    begin
+        recent_bonus := c_query_path_penalty_recent_tail;
+    end;
+
+    Result := c_query_path_penalty_base + (count * c_query_path_penalty_step) + recent_bonus;
+    if count >= 2 then
+    begin
+        Inc(Result, 44);
+    end;
+    if count >= 4 then
+    begin
+        Inc(Result, 28);
+    end;
+
+    if Result > c_query_path_penalty_cap then
+    begin
+        Result := c_query_path_penalty_cap;
+    end;
+
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) then
+    begin
+        m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
 function TncEngine.get_session_query_path_prefix_bonus(const query_key: string; const encoded_path: string): Integer;
 const
     c_query_path_prefix_base = 44;
@@ -4787,6 +4931,226 @@ begin
     end;
 
     if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) then
+    begin
+        m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
+function TncEngine.get_session_query_path_prefix_penalty(const query_key: string;
+    const encoded_path: string): Integer;
+const
+    c_query_path_prefix_penalty_base = 30;
+    c_query_path_prefix_penalty_step = 24;
+    c_query_path_prefix_penalty_cap = 220;
+    c_query_path_prefix_penalty_recent_top = 40;
+    c_query_path_prefix_penalty_recent_mid = 20;
+    c_query_path_prefix_penalty_recent_tail = 8;
+var
+    cache_key: string;
+    count: Integer;
+    current_key: string;
+    current_serial: Int64;
+    key_pair: TPair<string, Integer>;
+    last_seen_serial: Int64;
+    local_penalty: Integer;
+    normalized_query: string;
+    normalized_path: string;
+    prefix_with_separator: string;
+    recent_bonus: Integer;
+    serial_gap: Int64;
+    session_query_prefix: string;
+    stored_path: string;
+begin
+    normalized_query := normalize_pinyin_text(query_key);
+    normalized_path := Trim(encoded_path);
+    if (normalized_query = '') or (normalized_path = '') or
+        (get_encoded_path_segment_count_local(normalized_path) <= 1) then
+    begin
+        Exit(0);
+    end;
+
+    cache_key := 'PN' + #1 + build_session_query_path_choice_key(normalized_query, normalized_path);
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) and
+        m_lookup_query_path_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    Result := 0;
+    if (m_session_query_path_penalty_counts = nil) or
+        (m_session_query_path_penalty_counts.Count <= 0) then
+    begin
+        Exit;
+    end;
+
+    prefix_with_separator := normalized_path + c_segment_path_separator;
+    session_query_prefix := normalized_query + c_session_query_path_separator;
+    current_serial := m_session_commit_serial;
+    for key_pair in m_session_query_path_penalty_counts do
+    begin
+        current_key := key_pair.Key;
+        if (Length(current_key) <= Length(session_query_prefix)) or
+            (Copy(current_key, 1, Length(session_query_prefix)) <> session_query_prefix) then
+        begin
+            Continue;
+        end;
+
+        stored_path := Copy(current_key, Length(session_query_prefix) + 1, MaxInt);
+        if (stored_path <> normalized_path) and
+            (Copy(stored_path, 1, Length(prefix_with_separator)) <> prefix_with_separator) then
+        begin
+            Continue;
+        end;
+
+        count := key_pair.Value;
+        if count <= 0 then
+        begin
+            Continue;
+        end;
+
+        last_seen_serial := 0;
+        serial_gap := High(Int64);
+        if (m_session_query_path_penalty_last_seen <> nil) and
+            m_session_query_path_penalty_last_seen.TryGetValue(current_key, last_seen_serial) and
+            (last_seen_serial > 0) and (current_serial >= last_seen_serial) then
+        begin
+            serial_gap := current_serial - last_seen_serial;
+        end;
+
+        recent_bonus := 0;
+        if serial_gap <= 1 then
+        begin
+            recent_bonus := c_query_path_prefix_penalty_recent_top;
+        end
+        else if serial_gap <= 3 then
+        begin
+            recent_bonus := c_query_path_prefix_penalty_recent_mid;
+        end
+        else if serial_gap <= 6 then
+        begin
+            recent_bonus := c_query_path_prefix_penalty_recent_tail;
+        end;
+
+        local_penalty := c_query_path_prefix_penalty_base +
+            (count * c_query_path_prefix_penalty_step) + recent_bonus +
+            ((get_encoded_path_segment_count_local(stored_path) -
+            get_encoded_path_segment_count_local(normalized_path)) * 8);
+        if local_penalty > c_query_path_prefix_penalty_cap then
+        begin
+            local_penalty := c_query_path_prefix_penalty_cap;
+        end;
+        if local_penalty > Result then
+        begin
+            Result := local_penalty;
+        end;
+    end;
+
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) then
+    begin
+        m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
+function TncEngine.get_session_ranked_query_path_bonus(const encoded_path: string): Integer;
+const
+    c_recent_ranked_same_path_base = 86;
+    c_recent_ranked_extended_path_base = 168;
+    c_recent_ranked_same_query_extra = 36;
+    c_recent_ranked_long_prefix_step = 18;
+    c_recent_ranked_bonus_cap = 320;
+var
+    best_bonus: Integer;
+    cache_key: string;
+    current_query: string;
+    current_score: Integer;
+    current_stored_path: string;
+    key_pair: TPair<string, string>;
+    local_bonus: Integer;
+    normalized_path: string;
+    prefix_query: string;
+begin
+    Result := 0;
+    normalized_path := Trim(encoded_path);
+    current_query := normalize_pinyin_text(m_last_lookup_key);
+    if (normalized_path = '') or (current_query = '') or
+        (get_encoded_path_segment_count_local(normalized_path) <= 1) or
+        (m_session_ranked_query_paths = nil) or
+        (m_session_ranked_query_paths.Count <= 0) then
+    begin
+        Exit;
+    end;
+
+    cache_key := 'SR' + #1 + current_query + #1 + normalized_path;
+    if (m_lookup_query_path_bonus_cache <> nil) and
+        m_lookup_query_path_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    best_bonus := 0;
+    for key_pair in m_session_ranked_query_paths do
+    begin
+        prefix_query := key_pair.Key;
+        current_stored_path := Trim(key_pair.Value);
+        if (prefix_query = '') or (current_stored_path = '') then
+        begin
+            Continue;
+        end;
+        if (Length(prefix_query) > Length(current_query)) or
+            (Copy(current_query, 1, Length(prefix_query)) <> prefix_query) then
+        begin
+            Continue;
+        end;
+
+        if not m_session_ranked_query_path_scores.TryGetValue(prefix_query, current_score) then
+        begin
+            current_score := 0;
+        end;
+
+        local_bonus := 0;
+        if normalized_path = current_stored_path then
+        begin
+            local_bonus := c_recent_ranked_same_path_base;
+        end
+        else if Copy(normalized_path, 1, Length(current_stored_path) + 1) =
+            (current_stored_path + c_segment_path_separator) then
+        begin
+            local_bonus := c_recent_ranked_extended_path_base;
+        end;
+
+        if local_bonus <= 0 then
+        begin
+            Continue;
+        end;
+
+        if SameText(prefix_query, current_query) then
+        begin
+            Inc(local_bonus, c_recent_ranked_same_query_extra);
+        end;
+
+        if Length(prefix_query) >= 4 then
+        begin
+            Inc(local_bonus, Min(72, (Length(prefix_query) - 3) * c_recent_ranked_long_prefix_step));
+        end;
+
+        if current_score > 0 then
+        begin
+            Inc(local_bonus, Min(84, current_score div 8));
+        end;
+
+        if local_bonus > best_bonus then
+        begin
+            best_bonus := local_bonus;
+        end;
+    end;
+
+    if best_bonus > c_recent_ranked_bonus_cap then
+    begin
+        best_bonus := c_recent_ranked_bonus_cap;
+    end;
+    Result := best_bonus;
+
+    if m_lookup_query_path_bonus_cache <> nil then
     begin
         m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
     end;
@@ -6000,6 +6364,9 @@ function TncEngine.get_segment_path_preference_score(const encoded_path: string)
 var
     normalized_path: string;
     path_penalty: Integer;
+    prefix_penalty: Integer;
+    recent_ranked_bonus: Integer;
+    session_path_penalty: Integer;
     prefix_support: Integer;
     session_prefix_support: Integer;
 begin
@@ -6013,10 +6380,25 @@ begin
     if m_last_lookup_key <> '' then
     begin
         Inc(Result, get_session_query_path_bonus(m_last_lookup_key, normalized_path));
+        session_path_penalty := get_session_query_path_penalty(m_last_lookup_key, normalized_path);
+        if session_path_penalty > 0 then
+        begin
+            Dec(Result, session_path_penalty);
+        end;
         session_prefix_support := get_session_query_path_prefix_bonus(m_last_lookup_key, normalized_path);
         if session_prefix_support > 0 then
         begin
             Inc(Result, session_prefix_support);
+        end;
+        recent_ranked_bonus := get_session_ranked_query_path_bonus(normalized_path);
+        if recent_ranked_bonus > 0 then
+        begin
+            Inc(Result, recent_ranked_bonus);
+        end;
+        prefix_penalty := get_session_query_path_prefix_penalty(m_last_lookup_key, normalized_path);
+        if prefix_penalty > 0 then
+        begin
+            Dec(Result, prefix_penalty);
         end;
         if m_dictionary <> nil then
         begin
@@ -6182,8 +6564,10 @@ var
     current_prev_text: string;
     transition_bonus: Integer;
     path_penalty: Integer;
+    session_path_penalty: Integer;
     prefix_support: Integer;
     session_prefix_support: Integer;
+    session_prefix_penalty: Integer;
 
     function get_exact_context_pair_bonus(const left_text: string; const candidate_text: string): Integer;
     const
@@ -6495,10 +6879,20 @@ begin
         begin
             Inc(Result, transition_bonus);
         end;
+        session_path_penalty := get_session_query_path_penalty(m_last_lookup_key, encoded_path);
+        if session_path_penalty > 0 then
+        begin
+            Dec(Result, session_path_penalty);
+        end;
         session_prefix_support := get_session_query_path_prefix_bonus(m_last_lookup_key, encoded_path);
         if session_prefix_support > 0 then
         begin
             Inc(Result, session_prefix_support);
+        end;
+        session_prefix_penalty := get_session_query_path_prefix_penalty(m_last_lookup_key, encoded_path);
+        if session_prefix_penalty > 0 then
+        begin
+            Dec(Result, session_prefix_penalty);
         end;
         if m_dictionary <> nil then
         begin
@@ -6514,11 +6908,11 @@ begin
             end;
         end;
     end;
-    prefix_support := get_persistent_query_path_prefix_support(encoded_path);
-    if prefix_support <> 0 then
-    begin
-        Inc(Result, prefix_support);
-    end;
+        prefix_support := get_persistent_query_path_prefix_support(encoded_path);
+        if prefix_support <> 0 then
+        begin
+            Inc(Result, prefix_support);
+        end;
 
     if m_lookup_segment_path_context_bonus_cache <> nil then
     begin
@@ -8036,10 +8430,16 @@ var
         text_unit_mismatch: Integer;
         candidate_has_non_ascii: Boolean;
         local_candidate_text: string;
+        local_incremental_path_bonus: Integer;
         local_rank_map: TDictionary<string, Integer>;
         local_rank: Integer;
+        local_path_confidence_score: Integer;
+        local_path_penalty_value: Integer;
+        local_path_preference_score: Integer;
+        local_recent_ranked_bonus: Integer;
         local_path_transition_bonus: Integer;
         local_query_path_bonus: Integer;
+        local_segment_count: Integer;
 
         function build_state_key(const value: TncSegmentPathState): string;
         begin
@@ -8048,9 +8448,16 @@ var
         end;
 
         function compare_state(const left: TncSegmentPathState; const right: TncSegmentPathState): Integer;
+        const
+            c_state_path_preference_margin = 72;
+            c_state_path_confidence_margin = 96;
+            c_state_score_close_gap = 144;
         var
+            score_gap: Integer;
             left_units: Integer;
             left_segment_count: Integer;
+            path_confidence_gap: Integer;
+            path_preference_gap: Integer;
             right_units: Integer;
             right_segment_count: Integer;
             source_compare: Integer;
@@ -8078,6 +8485,34 @@ var
             text_compare := CompareText(left.text, right.text);
             if text_compare = 0 then
             begin
+                path_confidence_gap := left.path_confidence_score - right.path_confidence_score;
+                if Abs(path_confidence_gap) >= c_state_path_confidence_margin then
+                begin
+                    if path_confidence_gap > 0 then
+                    begin
+                        Result := -1;
+                    end
+                    else
+                    begin
+                        Result := 1;
+                    end;
+                    Exit;
+                end;
+
+                path_preference_gap := left.path_preference_score - right.path_preference_score;
+                if Abs(path_preference_gap) >= c_state_path_preference_margin then
+                begin
+                    if path_preference_gap > 0 then
+                    begin
+                        Result := -1;
+                    end
+                    else
+                    begin
+                        Result := 1;
+                    end;
+                    Exit;
+                end;
+
                 left_segment_count := get_segment_count(left.path_text);
                 right_segment_count := get_segment_count(right.path_text);
                 if left_segment_count < right_segment_count then
@@ -8088,6 +8523,38 @@ var
                 if left_segment_count > right_segment_count then
                 begin
                     Result := 1;
+                    Exit;
+                end;
+            end;
+
+            score_gap := Abs(left.score - right.score);
+            if score_gap <= c_state_score_close_gap then
+            begin
+                path_confidence_gap := left.path_confidence_score - right.path_confidence_score;
+                if Abs(path_confidence_gap) >= c_state_path_confidence_margin then
+                begin
+                    if path_confidence_gap > 0 then
+                    begin
+                        Result := -1;
+                    end
+                    else
+                    begin
+                        Result := 1;
+                    end;
+                    Exit;
+                end;
+
+                path_preference_gap := left.path_preference_score - right.path_preference_score;
+                if Abs(path_preference_gap) >= c_state_path_preference_margin then
+                begin
+                    if path_preference_gap > 0 then
+                    begin
+                        Result := -1;
+                    end
+                    else
+                    begin
+                        Result := 1;
+                    end;
                     Exit;
                 end;
             end;
@@ -8447,7 +8914,14 @@ var
         end;
 
         procedure trim_state(const position: Integer);
+        const
+            c_segment_full_state_confidence_gap_limit = 320;
+            c_segment_full_state_min_keep = 48;
+            c_segment_full_state_score_gap_limit = 720;
         var
+            best_path_confidence: Integer;
+            best_score: Integer;
+            dynamic_keep_count: Integer;
             idx: Integer;
         begin
             if states[position].Count <= c_segment_full_state_limit then
@@ -8462,6 +8936,23 @@ var
             end;
             sort_state_array(sorted_states);
             keep_count := c_segment_full_state_limit;
+            if keep_count > c_segment_full_state_min_keep then
+            begin
+                best_score := sorted_states[0].score;
+                best_path_confidence := sorted_states[0].path_confidence_score;
+                dynamic_keep_count := c_segment_full_state_min_keep;
+                for idx := c_segment_full_state_min_keep to keep_count - 1 do
+                begin
+                    if ((best_score - sorted_states[idx].score) > c_segment_full_state_score_gap_limit) and
+                        ((best_path_confidence - sorted_states[idx].path_confidence_score) >
+                        c_segment_full_state_confidence_gap_limit) then
+                    begin
+                        Break;
+                    end;
+                    dynamic_keep_count := idx + 1;
+                end;
+                keep_count := dynamic_keep_count;
+            end;
 
             states[position].Clear;
             state_dedup[position].Clear;
@@ -8627,6 +9118,8 @@ var
         try
             local_state.text := '';
             local_state.score := 0;
+            local_state.path_preference_score := 0;
+            local_state.path_confidence_score := 0;
             local_state.source := cs_rule;
             local_state.has_multi_segment := False;
             get_recent_path_context_seed(local_state.prev_prev_text, local_state.prev_text);
@@ -8863,52 +9356,98 @@ var
                                 end;
                                 local_new_state.path_text := local_new_state.path_text + local_candidate_text;
                             end;
+                            local_new_state.path_preference_score := 0;
+                            local_new_state.path_confidence_score := 0;
                             if get_encoded_path_segment_count_local(local_new_state.path_text) > 1 then
                             begin
+                                local_segment_count := get_encoded_path_segment_count_local(local_new_state.path_text);
+                                local_path_preference_score := -(local_segment_count * 18);
+                                if local_path_transition_bonus > 0 then
+                                begin
+                                    Inc(local_path_preference_score, Min(220, local_path_transition_bonus div 2));
+                                end;
+                                local_incremental_path_bonus := get_incremental_path_stability_bonus_for_path(
+                                    local_new_state.path_text);
+                                if local_incremental_path_bonus > 0 then
+                                begin
+                                    Inc(local_path_preference_score, local_incremental_path_bonus);
+                                end;
                                 remember_segment_path_query_prefix(
                                     local_new_state.path_text,
                                     build_syllable_text(0, next_pos));
-                            end;
-                            if (m_last_lookup_key <> '') and
-                                (get_encoded_path_segment_count_local(local_new_state.path_text) > 1) then
-                            begin
-                                local_query_path_bonus := get_session_query_path_prefix_bonus(
-                                    m_last_lookup_key, local_new_state.path_text);
-                                if local_query_path_bonus > 0 then
+                                if m_last_lookup_key <> '' then
                                 begin
-                                    Inc(local_new_state.score, local_query_path_bonus);
-                                end;
-                                local_query_path_bonus := get_persistent_query_path_prefix_support(
-                                    local_new_state.path_text);
-                                if local_query_path_bonus <> 0 then
-                                begin
-                                    Inc(local_new_state.score, local_query_path_bonus);
-                                end;
-
-                                if next_pos = Length(syllables) then
-                                begin
-                                    local_query_path_bonus := get_session_query_path_bonus(
+                                    local_query_path_bonus := get_session_query_path_prefix_bonus(
                                         m_last_lookup_key, local_new_state.path_text);
                                     if local_query_path_bonus > 0 then
                                     begin
-                                        Inc(local_new_state.score, local_query_path_bonus div 2);
+                                        Inc(local_new_state.score, local_query_path_bonus);
+                                        Inc(local_path_preference_score, local_query_path_bonus);
                                     end;
-                                    if m_dictionary <> nil then
+                                    local_recent_ranked_bonus := get_session_ranked_query_path_bonus(
+                                        local_new_state.path_text);
+                                    if local_recent_ranked_bonus > 0 then
                                     begin
-                                        local_query_path_bonus := m_dictionary.get_query_segment_path_bonus(
+                                        Inc(local_new_state.score, local_recent_ranked_bonus);
+                                        Inc(local_path_preference_score, local_recent_ranked_bonus);
+                                    end;
+                                    local_path_penalty_value := get_session_query_path_prefix_penalty(
+                                        m_last_lookup_key, local_new_state.path_text);
+                                    if local_path_penalty_value > 0 then
+                                    begin
+                                        Dec(local_new_state.score, local_path_penalty_value);
+                                        Dec(local_path_preference_score, local_path_penalty_value);
+                                    end;
+                                    local_query_path_bonus := get_persistent_query_path_prefix_support(
+                                        local_new_state.path_text);
+                                    if local_query_path_bonus <> 0 then
+                                    begin
+                                        Inc(local_new_state.score, local_query_path_bonus);
+                                        Inc(local_path_preference_score, local_query_path_bonus);
+                                    end;
+
+                                    if next_pos = Length(syllables) then
+                                    begin
+                                        local_query_path_bonus := get_session_query_path_bonus(
                                             m_last_lookup_key, local_new_state.path_text);
                                         if local_query_path_bonus > 0 then
                                         begin
                                             Inc(local_new_state.score, local_query_path_bonus div 2);
+                                            Inc(local_path_preference_score, local_query_path_bonus);
                                         end;
-                                        local_query_path_bonus := m_dictionary.get_query_segment_path_penalty(
+                                        local_path_penalty_value := get_session_query_path_penalty(
                                             m_last_lookup_key, local_new_state.path_text);
-                                        if local_query_path_bonus > 0 then
+                                        if local_path_penalty_value > 0 then
                                         begin
-                                            Dec(local_new_state.score, local_query_path_bonus);
+                                            Dec(local_new_state.score, local_path_penalty_value);
+                                            Dec(local_path_preference_score, local_path_penalty_value);
+                                        end;
+                                        if m_dictionary <> nil then
+                                        begin
+                                            local_query_path_bonus := m_dictionary.get_query_segment_path_bonus(
+                                                m_last_lookup_key, local_new_state.path_text);
+                                            if local_query_path_bonus > 0 then
+                                            begin
+                                                Inc(local_new_state.score, local_query_path_bonus div 2);
+                                                Inc(local_path_preference_score, local_query_path_bonus);
+                                            end;
+                                            local_path_penalty_value := m_dictionary.get_query_segment_path_penalty(
+                                                m_last_lookup_key, local_new_state.path_text);
+                                            if local_path_penalty_value > 0 then
+                                            begin
+                                                Dec(local_new_state.score, local_path_penalty_value);
+                                                Dec(local_path_preference_score, local_path_penalty_value);
+                                            end;
                                         end;
                                     end;
                                 end;
+                                local_new_state.path_preference_score := local_path_preference_score;
+                                local_path_confidence_score := local_path_preference_score;
+                                if local_path_confidence_score < 0 then
+                                begin
+                                    local_path_confidence_score := 0;
+                                end;
+                                local_new_state.path_confidence_score := local_path_confidence_score;
                             end;
                             append_state(next_pos, local_new_state);
                         end;
@@ -9768,6 +10307,109 @@ begin
     end;
 end;
 
+procedure TncEngine.note_session_query_path_penalty(const query_key: string; const encoded_path: string);
+var
+    count: Integer;
+    current_serial: Int64;
+    evict_key: string;
+    key: string;
+begin
+    key := build_session_query_path_choice_key(normalize_pinyin_text(query_key), encoded_path);
+    if (key = '') or (m_session_query_path_penalty_counts = nil) or
+        (m_session_query_path_penalty_order = nil) then
+    begin
+        Exit;
+    end;
+
+    current_serial := m_session_commit_serial;
+    if current_serial <= 0 then
+    begin
+        current_serial := 1;
+    end;
+
+    if m_session_query_path_penalty_counts.TryGetValue(key, count) then
+    begin
+        Inc(count);
+        m_session_query_path_penalty_counts.AddOrSetValue(key, count);
+    end
+    else
+    begin
+        m_session_query_path_penalty_counts.Add(key, 1);
+    end;
+
+    if m_session_query_path_penalty_last_seen <> nil then
+    begin
+        m_session_query_path_penalty_last_seen.AddOrSetValue(key, current_serial);
+    end;
+
+    if m_lookup_query_path_bonus_cache <> nil then
+    begin
+        m_lookup_query_path_bonus_cache.Clear;
+    end;
+
+    m_session_query_path_penalty_order.Enqueue(key);
+    while m_session_query_path_penalty_order.Count > c_session_query_path_history_limit do
+    begin
+        evict_key := m_session_query_path_penalty_order.Dequeue;
+        if not m_session_query_path_penalty_counts.TryGetValue(evict_key, count) then
+        begin
+            Continue;
+        end;
+
+        Dec(count);
+        if count <= 0 then
+        begin
+            m_session_query_path_penalty_counts.Remove(evict_key);
+            if m_session_query_path_penalty_last_seen <> nil then
+            begin
+                m_session_query_path_penalty_last_seen.Remove(evict_key);
+            end;
+        end
+        else
+        begin
+            m_session_query_path_penalty_counts.AddOrSetValue(evict_key, count);
+        end;
+    end;
+end;
+
+procedure TncEngine.note_session_ranked_query_path(const query_key: string; const encoded_path: string;
+    const path_confidence_score: Integer);
+var
+    normalized_query: string;
+    normalized_path: string;
+    evict_key: string;
+begin
+    normalized_query := normalize_pinyin_text(query_key);
+    normalized_path := Trim(encoded_path);
+    if (normalized_query = '') or (normalized_path = '') or
+        (get_encoded_path_segment_count_local(normalized_path) <= 1) or
+        (m_session_ranked_query_paths = nil) or (m_session_ranked_query_path_scores = nil) or
+        (m_session_ranked_query_path_order = nil) then
+    begin
+        Exit;
+    end;
+
+    if not m_session_ranked_query_paths.ContainsKey(normalized_query) then
+    begin
+        m_session_ranked_query_path_order.Enqueue(normalized_query);
+    end;
+    m_session_ranked_query_paths.AddOrSetValue(normalized_query, normalized_path);
+    m_session_ranked_query_path_scores.AddOrSetValue(normalized_query,
+        Max(0, path_confidence_score));
+
+    if m_lookup_query_path_bonus_cache <> nil then
+    begin
+        m_lookup_query_path_bonus_cache.Clear;
+    end;
+
+    while m_session_ranked_query_path_order.Count > c_session_ranked_query_path_history_limit do
+    begin
+        evict_key := m_session_ranked_query_path_order.Dequeue;
+        m_session_ranked_query_paths.Remove(evict_key);
+        m_session_ranked_query_path_scores.Remove(evict_key);
+    end;
+end;
+
 procedure TncEngine.note_session_context_query_choice(const context_text: string; const query_key: string;
     const text: string);
 var
@@ -10357,6 +10999,7 @@ var
                 prefix_query := get_query_prefix_for_segment_path(prefix_path);
                 if prefix_query <> '' then
                 begin
+                    note_session_query_path_penalty(prefix_query, prefix_path);
                     m_dictionary.record_query_segment_path_penalty(prefix_query, prefix_path);
                 end;
             end;
@@ -10425,6 +11068,7 @@ var
                             (get_encoded_path_segment_count_local(top_segment_path) > 1) then
                         begin
                             record_divergent_query_path_prefix_penalties(segment_path, top_segment_path);
+                            note_session_query_path_penalty(m_last_lookup_key, top_segment_path);
                             m_dictionary.record_query_segment_path_penalty(m_last_lookup_key, top_segment_path);
                         end;
                     end;
