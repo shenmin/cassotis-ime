@@ -99,6 +99,8 @@ type
         m_last_lookup_syllable_count: Integer;
         m_last_lookup_debug_extra: string;
         m_last_lookup_timing_info: string;
+        m_last_ranked_query_key: string;
+        m_last_ranked_top_path: string;
         m_runtime_chain_text: string;
         m_runtime_common_pattern_text: string;
         m_runtime_redup_text: string;
@@ -136,6 +138,8 @@ type
         function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
         function get_segment_path_preference_score(const encoded_path: string): Integer;
+        function get_incremental_path_stability_bonus_for_path(const encoded_path: string): Integer;
+        function get_incremental_path_stability_bonus(const candidate: TncCandidate): Integer;
         function get_segment_path_support_score(const candidate: TncCandidate): Integer;
         procedure get_recent_path_context_seed(out prev_prev_text: string; out prev_text: string);
         function get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
@@ -148,6 +152,7 @@ type
         function is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_redup_candidate(const candidate: TncCandidate): Boolean;
         function get_runtime_candidate_kind(const candidate: TncCandidate): string;
+        function get_candidate_path_confidence_score(const candidate: TncCandidate): Integer;
         function get_candidate_path_confidence_tier(const candidate: TncCandidate): Integer;
         function get_candidate_confidence_rank(const candidate: TncCandidate): Integer;
         function get_front_row_confidence_bonus(const candidate: TncCandidate): Integer;
@@ -165,6 +170,7 @@ type
             const candidate_index: Integer = -1): string;
         function infer_segment_path_for_selected_text(const selected_text: string): string;
         procedure refresh_candidate_segment_paths;
+        procedure note_ranked_top_candidate;
         function normalize_pinyin_text(const input_text: string): string;
         function is_valid_pinyin_syllable(const syllable: string): Boolean;
         function is_full_pinyin_key(const value: string): Boolean;
@@ -178,14 +184,15 @@ type
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
         function build_segment_candidates(out out_candidates: TncCandidateList;
-            const include_full_path: Boolean = True): Boolean;
+            const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64): Boolean;
         function build_pinyin_comment(const input_text: string): string;
         procedure update_segment_left_context;
         procedure push_confirmed_segment(const text: string; const pinyin: string);
         function pop_confirmed_segment(out out_segment: TncConfirmedSegment): Boolean;
         procedure rebuild_confirmed_text;
         function rollback_last_segment: Boolean;
-        procedure apply_partial_commit(const selected_text: string; const remaining_pinyin: string);
+        procedure apply_partial_commit(const selected_text: string; const remaining_pinyin: string;
+            const segment_path: string = '');
         procedure update_left_context(const committed_text: string);
         procedure record_context_pair(const left_text: string; const committed_text: string);
         procedure note_session_commit(const text: string);
@@ -474,6 +481,8 @@ begin
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
     m_last_lookup_timing_info := '';
+    m_last_ranked_query_key := '';
+    m_last_ranked_top_path := '';
     m_runtime_chain_text := '';
     m_runtime_common_pattern_text := '';
     m_runtime_redup_text := '';
@@ -815,8 +824,10 @@ begin
         // The same visible candidate text can be reached through multiple segment paths.
         // Keep the path with fewer segments so phrase-context learning records the more
         // natural chunk boundary (e.g. "有点|奇怪" instead of "有|点|奇怪").
-        existing_preference := get_segment_path_preference_score(existing_path);
-        new_preference := get_segment_path_preference_score(encoded_path);
+        existing_preference := get_segment_path_preference_score(existing_path) +
+            get_incremental_path_stability_bonus_for_path(existing_path);
+        new_preference := get_segment_path_preference_score(encoded_path) +
+            get_incremental_path_stability_bonus_for_path(encoded_path);
         if (new_preference > existing_preference + 24) or
             ((new_preference = existing_preference) and
             (get_encoded_path_segment_count_local(encoded_path) < get_encoded_path_segment_count_local(existing_path))) or
@@ -1179,6 +1190,53 @@ begin
     end;
 end;
 
+procedure TncEngine.note_ranked_top_candidate;
+var
+    previous_query: string;
+    normalized_query: string;
+    top_path: string;
+begin
+    previous_query := normalize_pinyin_text(m_last_ranked_query_key);
+    normalized_query := normalize_pinyin_text(m_last_lookup_key);
+
+    if normalized_query = '' then
+    begin
+        m_last_ranked_query_key := '';
+        m_last_ranked_top_path := '';
+        Exit;
+    end;
+
+    m_last_ranked_query_key := normalized_query;
+
+    if Length(m_candidates) = 0 then
+    begin
+        if (previous_query = '') or
+            (Copy(normalized_query, 1, Length(previous_query)) <> previous_query) then
+        begin
+            m_last_ranked_top_path := '';
+        end;
+        Exit;
+    end;
+
+    top_path := '';
+    if m_candidates[0].comment = '' then
+    begin
+        top_path := get_segment_path_for_candidate(m_candidates[0], 0);
+    end;
+
+    if get_encoded_path_segment_count_local(top_path) <= 1 then
+    begin
+        if (previous_query = '') or
+            (Copy(normalized_query, 1, Length(previous_query)) <> previous_query) then
+        begin
+            m_last_ranked_top_path := '';
+        end;
+        Exit;
+    end;
+
+    m_last_ranked_top_path := top_path;
+end;
+
 procedure TncEngine.reset;
 var
     ai_request: TncAiRequest;
@@ -1195,6 +1253,8 @@ begin
     m_last_lookup_syllable_count := 0;
     m_last_lookup_debug_extra := '';
     m_last_lookup_timing_info := '';
+    m_last_ranked_query_key := '';
+    m_last_ranked_top_path := '';
     m_runtime_chain_text := '';
     m_runtime_common_pattern_text := '';
     m_runtime_redup_text := '';
@@ -1577,6 +1637,7 @@ var
     ai_elapsed_ms: Int64;
     post_elapsed_ms: Int64;
     sort_elapsed_ms: Int64;
+    path_search_elapsed_ms: Int64;
     total_start_tick: UInt64;
     phase_start_tick: UInt64;
 
@@ -1752,10 +1813,13 @@ var
         const include_full_path: Boolean = True): Boolean;
     var
         phase_start_tick: UInt64;
+        local_path_search_elapsed_ms: Int64;
     begin
         phase_start_tick := GetTickCount64;
-        Result := build_segment_candidates(out_candidates, include_full_path);
+        local_path_search_elapsed_ms := 0;
+        Result := build_segment_candidates(out_candidates, include_full_path, local_path_search_elapsed_ms);
         Inc(segment_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+        Inc(path_search_elapsed_ms, local_path_search_elapsed_ms);
     end;
 
     procedure sort_candidates_timed(var candidates: TncCandidateList);
@@ -1793,8 +1857,8 @@ var
 
         total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
         m_last_lookup_timing_info := Format(
-            'perf=[lk=%d seg=%d rt=%d ai=%d post=%d sort=%d cache=%d/%d total=%d]',
-            [lookup_elapsed_ms, segment_elapsed_ms, runtime_elapsed_ms, ai_elapsed_ms, post_elapsed_ms, sort_elapsed_ms,
+            'perf=[lk=%d seg=%d path=%d rt=%d ai=%d post=%d sort=%d cache=%d/%d total=%d]',
+            [lookup_elapsed_ms, segment_elapsed_ms, path_search_elapsed_ms, runtime_elapsed_ms, ai_elapsed_ms, post_elapsed_ms, sort_elapsed_ms,
             lookup_cache_hits, lookup_cache_misses, total_elapsed_ms]);
     end;
 
@@ -3827,6 +3891,7 @@ begin
         ai_elapsed_ms := 0;
         post_elapsed_ms := 0;
         sort_elapsed_ms := 0;
+        path_search_elapsed_ms := 0;
         SetLength(m_candidates, 0);
         m_last_lookup_key := '';
         m_last_lookup_normalized_from := '';
@@ -4054,6 +4119,7 @@ begin
             end;
         end;
         refresh_candidate_segment_paths;
+        note_ranked_top_candidate;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -4096,6 +4162,7 @@ begin
             end;
         end;
         refresh_candidate_segment_paths;
+        note_ranked_top_candidate;
         m_page_index := 0;
         m_selected_index := 0;
         Exit;
@@ -4121,6 +4188,7 @@ begin
             end;
         end;
         refresh_candidate_segment_paths;
+        note_ranked_top_candidate;
         m_page_index := 0;
         m_selected_index := 0;
     finally
@@ -5422,10 +5490,9 @@ begin
     end;
 end;
 
-function TncEngine.get_candidate_path_confidence_tier(const candidate: TncCandidate): Integer;
+function TncEngine.get_candidate_path_confidence_score(const candidate: TncCandidate): Integer;
 var
     encoded_path: string;
-    path_bonus: Integer;
 begin
     Result := 0;
     if candidate.comment <> '' then
@@ -5439,12 +5506,24 @@ begin
         Exit;
     end;
 
-    path_bonus := get_segment_path_support_score(candidate);
-    if path_bonus >= 880 then
+    Result := get_segment_path_support_score(candidate);
+    if Result < 0 then
+    begin
+        Result := 0;
+    end;
+end;
+
+function TncEngine.get_candidate_path_confidence_tier(const candidate: TncCandidate): Integer;
+var
+    path_confidence_score: Integer;
+begin
+    Result := 0;
+    path_confidence_score := get_candidate_path_confidence_score(candidate);
+    if path_confidence_score >= 880 then
     begin
         Result := 2;
     end
-    else if path_bonus >= 420 then
+    else if path_confidence_score >= 420 then
     begin
         Result := 1;
     end;
@@ -5458,9 +5537,11 @@ var
     query_bonus: Integer;
     session_bonus: Integer;
     path_confidence_tier: Integer;
+    path_confidence_score: Integer;
 begin
     layer_value := get_multi_syllable_intent_layer(candidate);
     text_units := get_candidate_text_unit_count(candidate.text);
+    path_confidence_score := get_candidate_path_confidence_score(candidate);
     path_confidence_tier := get_candidate_path_confidence_tier(candidate);
 
     if candidate.comment <> '' then
@@ -5548,6 +5629,10 @@ begin
     begin
         Dec(Result);
     end;
+    if path_confidence_score >= 1280 then
+    begin
+        Dec(Result);
+    end;
     if Result < 0 then
     begin
         Result := 0;
@@ -5559,10 +5644,12 @@ var
     text_units: Integer;
     layer_value: Integer;
     path_confidence_tier: Integer;
+    path_confidence_score: Integer;
 begin
     Result := 0;
     text_units := get_candidate_text_unit_count(candidate.text);
     layer_value := get_multi_syllable_intent_layer(candidate);
+    path_confidence_score := get_candidate_path_confidence_score(candidate);
     path_confidence_tier := get_candidate_path_confidence_tier(candidate);
 
     if candidate.comment <> '' then
@@ -5588,19 +5675,14 @@ begin
         begin
             Inc(Result, 68);
         end;
-        Exit;
     end;
-
-    if is_runtime_common_pattern_candidate(candidate) then
+    if (not candidate.has_dict_weight) and is_runtime_common_pattern_candidate(candidate) then
     begin
         Inc(Result, 96);
-        Exit;
     end;
-
-    if is_runtime_redup_candidate(candidate) then
+    if (not candidate.has_dict_weight) and is_runtime_redup_candidate(candidate) then
     begin
         Inc(Result, 72);
-        Exit;
     end;
 
     if is_runtime_chain_candidate(candidate) then
@@ -5615,8 +5697,12 @@ begin
     end;
 
     case path_confidence_tier of
-        1: Inc(Result, 52);
-        2: Inc(Result, 112);
+        1: Inc(Result, 28);
+        2: Inc(Result, 72);
+    end;
+    if path_confidence_score > 0 then
+    begin
+        Inc(Result, Min(48, path_confidence_score div 40));
     end;
 end;
 
@@ -5915,6 +6001,7 @@ var
     normalized_path: string;
     path_penalty: Integer;
     prefix_support: Integer;
+    session_prefix_support: Integer;
 begin
     normalized_path := Trim(encoded_path);
     if get_encoded_path_segment_count_local(normalized_path) <= 1 then
@@ -5926,6 +6013,11 @@ begin
     if m_last_lookup_key <> '' then
     begin
         Inc(Result, get_session_query_path_bonus(m_last_lookup_key, normalized_path));
+        session_prefix_support := get_session_query_path_prefix_bonus(m_last_lookup_key, normalized_path);
+        if session_prefix_support > 0 then
+        begin
+            Inc(Result, session_prefix_support);
+        end;
         if m_dictionary <> nil then
         begin
             Inc(Result, m_dictionary.get_query_segment_path_bonus(m_last_lookup_key, normalized_path));
@@ -5938,15 +6030,81 @@ begin
         prefix_support := get_persistent_query_path_prefix_support(normalized_path);
         if prefix_support <> 0 then
         begin
-            Inc(Result, prefix_support div 2);
+            Inc(Result, prefix_support);
         end;
     end;
+end;
+
+function TncEngine.get_incremental_path_stability_bonus_for_path(const encoded_path: string): Integer;
+const
+    c_same_path_bonus = 96;
+    c_extended_path_bonus = 240;
+    c_single_step_extension_bonus = 40;
+var
+    current_query: string;
+    previous_query: string;
+begin
+    Result := 0;
+    current_query := normalize_pinyin_text(m_last_lookup_key);
+    previous_query := normalize_pinyin_text(m_last_ranked_query_key);
+    if (current_query = '') or (previous_query = '') or
+        (current_query = previous_query) or
+        (Length(current_query) <= Length(previous_query)) or
+        (m_last_ranked_top_path = '') then
+    begin
+        Exit;
+    end;
+
+    if Copy(current_query, 1, Length(previous_query)) <> previous_query then
+    begin
+        Exit;
+    end;
+
+    if Length(current_query) - Length(previous_query) > 8 then
+    begin
+        Exit;
+    end;
+
+    if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+    begin
+        Exit;
+    end;
+
+    if encoded_path = m_last_ranked_top_path then
+    begin
+        Result := c_same_path_bonus;
+    end
+    else if Copy(encoded_path, 1, Length(m_last_ranked_top_path) + 1) =
+        (m_last_ranked_top_path + c_segment_path_separator) then
+    begin
+        Result := c_extended_path_bonus;
+    end;
+
+    if (Result > 0) and (Length(current_query) = Length(previous_query) + 1) then
+    begin
+        Inc(Result, c_single_step_extension_bonus);
+    end;
+end;
+
+function TncEngine.get_incremental_path_stability_bonus(const candidate: TncCandidate): Integer;
+var
+    candidate_path: string;
+begin
+    Result := 0;
+    if candidate.comment <> '' then
+    begin
+        Exit;
+    end;
+
+    candidate_path := get_segment_path_for_candidate(candidate);
+    Result := get_incremental_path_stability_bonus_for_path(candidate_path);
 end;
 
 function TncEngine.get_segment_path_support_score(const candidate: TncCandidate): Integer;
 var
     encoded_path: string;
     preference_score: Integer;
+    stability_bonus: Integer;
 begin
     Result := get_segment_path_context_bonus(candidate);
     encoded_path := get_segment_path_for_candidate(candidate);
@@ -5963,6 +6121,12 @@ begin
     else if preference_score < 0 then
     begin
         Dec(Result, Min(180, Abs(preference_score) div 3));
+    end;
+
+    stability_bonus := get_incremental_path_stability_bonus(candidate);
+    if stability_bonus > 0 then
+    begin
+        Inc(Result, stability_bonus);
     end;
 end;
 
@@ -6019,6 +6183,7 @@ var
     transition_bonus: Integer;
     path_penalty: Integer;
     prefix_support: Integer;
+    session_prefix_support: Integer;
 
     function get_exact_context_pair_bonus(const left_text: string; const candidate_text: string): Integer;
     const
@@ -6329,6 +6494,11 @@ begin
         if transition_bonus > 0 then
         begin
             Inc(Result, transition_bonus);
+        end;
+        session_prefix_support := get_session_query_path_prefix_bonus(m_last_lookup_key, encoded_path);
+        if session_prefix_support > 0 then
+        begin
+            Inc(Result, session_prefix_support);
         end;
         if m_dictionary <> nil then
         begin
@@ -6771,6 +6941,7 @@ var
     layer_value: Integer;
     runtime_kind: string;
     path_confidence_tier: Integer;
+    path_confidence_score: Integer;
 begin
     text_context_bonus := get_text_context_bonus(candidate.text);
     phrase_context_bonus := get_phrase_context_bonus(candidate.text);
@@ -6791,13 +6962,14 @@ begin
     rank_score := get_rank_score(candidate);
     layer_value := get_multi_syllable_intent_layer(candidate);
     runtime_kind := get_runtime_candidate_kind(candidate);
+    path_confidence_score := get_candidate_path_confidence_score(candidate);
     path_confidence_tier := get_candidate_path_confidence_tier(candidate);
 
     Result := Format(
-        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d spath_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d path_conf=%d partial=%d dw=%d rt=%s]',
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d spath_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d path_conf=%d path_score=%d partial=%d dw=%d rt=%s]',
         [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
         phrase_context_bonus, segment_path_context_bonus, context_query_bonus, context_query_latest_bonus, query_bonus,
-        session_bonus, layer_value, path_confidence_tier,
+        session_bonus, layer_value, path_confidence_tier, path_confidence_score,
         Ord(candidate.comment <> ''), candidate.dict_weight, runtime_kind]);
 end;
 
@@ -6808,6 +6980,7 @@ type
         rank_score: Integer;
         layer: Integer;
         confidence_rank: Integer;
+        path_confidence_score: Integer;
         conservative_margin: Integer;
         source_rank: Integer;
         text_length: Integer;
@@ -6836,6 +7009,7 @@ var
         alt_idx: Integer;
         margin: Integer;
         score_gap: Integer;
+        path_gap: Integer;
     begin
         if list.Count < 2 then
         begin
@@ -6857,7 +7031,12 @@ var
             begin
                 Continue;
             end;
-            if alt_item.confidence_rank >= top_item.confidence_rank then
+            if alt_item.confidence_rank > top_item.confidence_rank then
+            begin
+                Continue;
+            end;
+            if (alt_item.confidence_rank = top_item.confidence_rank) and
+                (alt_item.path_confidence_score <= top_item.path_confidence_score + 160) then
             begin
                 Continue;
             end;
@@ -6868,6 +7047,11 @@ var
 
             score_gap := top_item.rank_score - alt_item.rank_score;
             margin := Max(top_item.conservative_margin, alt_item.conservative_margin);
+            path_gap := alt_item.path_confidence_score - top_item.path_confidence_score;
+            if path_gap > 0 then
+            begin
+                Inc(margin, Min(96, path_gap div 3));
+            end;
             if score_gap <= margin then
             begin
                 swap_items(0, alt_idx);
@@ -6900,6 +7084,7 @@ begin
                 item.layer := 0;
             end;
             item.confidence_rank := get_candidate_confidence_rank(candidates[i]);
+            item.path_confidence_score := get_candidate_path_confidence_score(candidates[i]);
             if is_runtime_chain_candidate(candidates[i]) then
             begin
                 item.conservative_margin := 280;
@@ -7018,6 +7203,18 @@ begin
                     Max(left.conservative_margin, right.conservative_margin)) then
                 begin
                     Result := left.confidence_rank - right.confidence_rank;
+                    if Result <> 0 then
+                    begin
+                        Exit;
+                    end;
+                end;
+                if (left.candidate.comment = '') and (right.candidate.comment = '') and
+                    (left.path_confidence_score <> right.path_confidence_score) and
+                    (Abs(left.rank_score - right.rank_score) <=
+                    Max(left.conservative_margin, right.conservative_margin)) and
+                    (Abs(left.path_confidence_score - right.path_confidence_score) >= 120) then
+                begin
+                    Result := right.path_confidence_score - left.path_confidence_score;
                     if Result <> 0 then
                     begin
                         Exit;
@@ -7558,7 +7755,7 @@ begin
 end;
 
 function TncEngine.build_segment_candidates(out out_candidates: TncCandidateList;
-    const include_full_path: Boolean): Boolean;
+    const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64): Boolean;
 const
     c_segment_max_per_segment = 256;
     c_segment_max_syllables = 24;
@@ -7577,6 +7774,10 @@ const
     c_segment_full_preferred_single_penalty = 24;
     c_segment_full_leading_multi_penalty = 42;
     c_segment_full_path_non_user_limit = 4;
+    c_segment_full_partial_remaining_limit = 2;
+    c_segment_full_partial_non_user_limit = 3;
+    c_segment_full_partial_penalty = 90;
+    c_segment_full_partial_quadratic_penalty = 80;
     c_segment_partial_single_top_n = 6;
     c_segment_text_unit_mismatch_penalty = 100;
     c_segment_text_unit_overflow_penalty = 60;
@@ -7606,6 +7807,7 @@ var
     existing_index: Integer;
     is_first_overall_segment: Boolean;
     candidate_text_units: Integer;
+    path_search_start_tick: UInt64;
 
     function is_single_text_unit(const value: string): Boolean;
     begin
@@ -8716,35 +8918,96 @@ var
                 end;
             end;
 
-            if states[Length(syllables)].Count = 0 then
+            if states[Length(syllables)].Count > 0 then
             begin
-                Exit;
+                SetLength(sorted_states, states[Length(syllables)].Count);
+                for final_index := 0 to states[Length(syllables)].Count - 1 do
+                begin
+                    sorted_states[final_index] := states[Length(syllables)][final_index];
+                end;
+                sort_state_array(sorted_states);
+
+                full_non_user_added := 0;
+                for final_index := 0 to High(sorted_states) do
+                begin
+                    local_state := sorted_states[final_index];
+                    if not local_state.has_multi_segment then
+                    begin
+                        Continue;
+                    end;
+                    if (local_state.source <> cs_user) and (full_non_user_added >= full_path_non_user_limit) then
+                    begin
+                        Continue;
+                    end;
+                    append_candidate(local_state.text, local_state.score, local_state.source, '');
+                    remember_segment_path_for_candidate(local_state.text, '', local_state.path_text);
+                    if local_state.source <> cs_user then
+                    begin
+                        Inc(full_non_user_added);
+                    end;
+                end;
             end;
 
-            SetLength(sorted_states, states[Length(syllables)].Count);
-            for final_index := 0 to states[Length(syllables)].Count - 1 do
+            // Surface high-quality multi-segment prefix paths as partial candidates,
+            // e.g. "womenjintianquz" => "我们今天去|z". This keeps multi-word
+            // prefixes visible before the tail is fully typed, even when the
+            // consumed prefix itself is not a monolithic dictionary phrase.
+            for state_pos := Length(syllables) - 1 downto 2 do
             begin
-                sorted_states[final_index] := states[Length(syllables)][final_index];
-            end;
-            sort_state_array(sorted_states);
-
-            full_non_user_added := 0;
-            for final_index := 0 to High(sorted_states) do
-            begin
-                local_state := sorted_states[final_index];
-                if not local_state.has_multi_segment then
+                remaining_syllables := Length(syllables) - state_pos;
+                if (remaining_syllables <= 0) or
+                    (remaining_syllables > c_segment_full_partial_remaining_limit) or
+                    (states[state_pos].Count = 0) then
                 begin
                     Continue;
                 end;
-                if (local_state.source <> cs_user) and (full_non_user_added >= full_path_non_user_limit) then
+
+                remaining_pinyin := build_syllable_text(state_pos, remaining_syllables);
+                if remaining_pinyin = '' then
                 begin
                     Continue;
                 end;
-                append_candidate(local_state.text, local_state.score, local_state.source, '');
-                remember_segment_path_for_candidate(local_state.text, '', local_state.path_text);
-                if local_state.source <> cs_user then
+
+                SetLength(sorted_states, states[state_pos].Count);
+                for final_index := 0 to states[state_pos].Count - 1 do
                 begin
-                    Inc(full_non_user_added);
+                    sorted_states[final_index] := states[state_pos][final_index];
+                end;
+                sort_state_array(sorted_states);
+
+                full_non_user_added := 0;
+                for final_index := 0 to High(sorted_states) do
+                begin
+                    local_state := sorted_states[final_index];
+                    if not local_state.has_multi_segment then
+                    begin
+                        Continue;
+                    end;
+                    if get_encoded_path_segment_count_local(local_state.path_text) <= 1 then
+                    begin
+                        Continue;
+                    end;
+                    if get_candidate_text_unit_count(local_state.text) < 2 then
+                    begin
+                        Continue;
+                    end;
+                    if (local_state.source <> cs_user) and
+                        (full_non_user_added >= c_segment_full_partial_non_user_limit) then
+                    begin
+                        Continue;
+                    end;
+
+                    score_value := local_state.score;
+                    Dec(score_value, c_segment_full_partial_penalty * remaining_syllables);
+                    Dec(score_value, c_segment_full_partial_quadratic_penalty *
+                        remaining_syllables * (remaining_syllables - 1));
+                    append_candidate(local_state.text, score_value, local_state.source, remaining_pinyin);
+                    remember_segment_path_for_candidate(local_state.text, remaining_pinyin, local_state.path_text);
+
+                    if local_state.source <> cs_user then
+                    begin
+                        Inc(full_non_user_added);
+                    end;
                 end;
             end;
         finally
@@ -8774,6 +9037,7 @@ var
     end;
 begin
     SetLength(out_candidates, 0);
+    out_path_search_elapsed_ms := 0;
     Result := False;
     if (m_dictionary = nil) or (m_composition_text = '') then
     begin
@@ -8827,7 +9091,9 @@ begin
             if include_full_path then
             begin
                 // First, build full-path phrase candidates (for example women+jintian -> full phrase).
+                path_search_start_tick := GetTickCount64;
                 append_full_path_candidates;
+                Inc(out_path_search_elapsed_ms, Int64(GetTickCount64 - path_search_start_tick));
             end;
 
             // Keep prefix segment candidates as fallback/partial-commit choices.
@@ -9094,10 +9360,111 @@ begin
     Result := True;
 end;
 
-procedure TncEngine.apply_partial_commit(const selected_text: string; const remaining_pinyin: string);
+procedure TncEngine.apply_partial_commit(const selected_text: string; const remaining_pinyin: string;
+    const segment_path: string = '');
 var
     normalized_pinyin: string;
     prefix_pinyin: string;
+    effective_segment_path: string;
+    prev_left_context: string;
+
+    procedure record_query_path_prefixes(const tail_full_path: string; const final_query: string);
+    var
+        idx: Integer;
+        prefix_start: Integer;
+        segment_piece: string;
+        prefix_path: string;
+        prefix_query: string;
+    begin
+        if (m_dictionary = nil) or (tail_full_path = '') then
+        begin
+            Exit;
+        end;
+
+        prefix_path := '';
+        prefix_start := 1;
+        for idx := 1 to Length(tail_full_path) + 1 do
+        begin
+            if (idx <= Length(tail_full_path)) and (tail_full_path[idx] <> c_segment_path_separator) then
+            begin
+                Continue;
+            end;
+
+            segment_piece := Trim(Copy(tail_full_path, prefix_start, idx - prefix_start));
+            prefix_start := idx + 1;
+            if segment_piece = '' then
+            begin
+                Continue;
+            end;
+
+            if prefix_path <> '' then
+            begin
+                prefix_path := prefix_path + c_segment_path_separator;
+            end;
+            prefix_path := prefix_path + segment_piece;
+            if get_encoded_path_segment_count_local(prefix_path) <= 1 then
+            begin
+                Continue;
+            end;
+
+            prefix_query := get_query_prefix_for_segment_path(prefix_path);
+            if (prefix_query = '') or (prefix_query = final_query) then
+            begin
+                Continue;
+            end;
+
+            m_dictionary.record_query_segment_path(prefix_query, prefix_path);
+        end;
+    end;
+
+    procedure note_session_query_path_prefixes(const tail_full_path: string; const final_query: string);
+    var
+        idx: Integer;
+        prefix_start: Integer;
+        segment_piece: string;
+        prefix_path: string;
+        prefix_query: string;
+    begin
+        if tail_full_path = '' then
+        begin
+            Exit;
+        end;
+
+        prefix_path := '';
+        prefix_start := 1;
+        for idx := 1 to Length(tail_full_path) + 1 do
+        begin
+            if (idx <= Length(tail_full_path)) and (tail_full_path[idx] <> c_segment_path_separator) then
+            begin
+                Continue;
+            end;
+
+            segment_piece := Trim(Copy(tail_full_path, prefix_start, idx - prefix_start));
+            prefix_start := idx + 1;
+            if segment_piece = '' then
+            begin
+                Continue;
+            end;
+
+            if prefix_path <> '' then
+            begin
+                prefix_path := prefix_path + c_segment_path_separator;
+            end;
+            prefix_path := prefix_path + segment_piece;
+            if get_encoded_path_segment_count_local(prefix_path) <= 1 then
+            begin
+                Continue;
+            end;
+
+            prefix_query := get_query_prefix_for_segment_path(prefix_path);
+            if (prefix_query = '') or (prefix_query = final_query) then
+            begin
+                Continue;
+            end;
+
+            note_session_query_path_choice(prefix_query, prefix_path);
+        end;
+    end;
 begin
     if (selected_text = '') or (remaining_pinyin = '') then
     begin
@@ -9120,11 +9487,32 @@ begin
         prefix_pinyin := normalized_pinyin;
     end;
 
+    effective_segment_path := Trim(segment_path);
+    if (effective_segment_path = '') and (selected_text <> '') and (prefix_pinyin <> '') then
+    begin
+        effective_segment_path := infer_segment_path_for_selected_text(selected_text);
+    end;
+
+    prev_left_context := m_left_context;
+    if m_segment_left_context <> '' then
+    begin
+        prev_left_context := m_segment_left_context;
+    end
+    else if (prev_left_context = '') and (m_external_left_context <> '') then
+    begin
+        prev_left_context := m_external_left_context;
+    end;
+
     if (m_dictionary <> nil) and (prefix_pinyin <> '') then
     begin
         m_dictionary.begin_learning_batch;
         try
             m_dictionary.record_commit(prefix_pinyin, selected_text);
+            if get_encoded_path_segment_count_local(effective_segment_path) > 1 then
+            begin
+                record_query_path_prefixes(effective_segment_path, prefix_pinyin);
+                m_dictionary.record_query_segment_path(prefix_pinyin, effective_segment_path);
+            end;
             m_dictionary.commit_learning_batch;
         except
             m_dictionary.rollback_learning_batch;
@@ -9132,6 +9520,16 @@ begin
         end;
     end;
     note_session_commit(selected_text);
+    if prefix_pinyin <> '' then
+    begin
+        note_session_query_choice(prefix_pinyin, selected_text);
+        note_session_context_query_choice(prev_left_context, prefix_pinyin, selected_text);
+        if get_encoded_path_segment_count_local(effective_segment_path) > 1 then
+        begin
+            note_session_query_path_prefixes(effective_segment_path, prefix_pinyin);
+            note_session_query_path_choice(prefix_pinyin, effective_segment_path);
+        end;
+    end;
 
     push_confirmed_segment(selected_text, prefix_pinyin);
 
@@ -9964,9 +10362,14 @@ var
             end;
         end;
     begin
+        segment_path := get_segment_path_for_candidate(selected, selected_candidate_index);
         if (selected.comment <> '') and is_compact_ascii_pinyin(selected.comment) then
         begin
-            apply_partial_commit(selected.text, selected.comment);
+            if segment_path = '' then
+            begin
+                segment_path := infer_segment_path_for_selected_text(selected.text);
+            end;
+            apply_partial_commit(selected.text, selected.comment, segment_path);
             Result := True;
             Exit;
         end;
@@ -9977,7 +10380,6 @@ var
             Exit;
         end;
 
-        segment_path := get_segment_path_for_candidate(selected, selected_candidate_index);
         if (segment_path = '') and (selected.comment = '') then
         begin
             segment_path := infer_segment_path_for_selected_text(selected.text);
