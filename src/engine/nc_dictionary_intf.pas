@@ -15,7 +15,11 @@ type
         procedure set_debug_mode(const enabled: Boolean); virtual;
         procedure record_commit(const pinyin: string; const text: string); virtual;
         procedure record_context_pair(const left_text: string; const committed_text: string); virtual;
+        procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
+            const committed_text: string); virtual;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; virtual;
+        function get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
+            const candidate_text: string): Integer; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
     end;
@@ -46,7 +50,18 @@ procedure TncDictionaryProvider.record_context_pair(const left_text: string; con
 begin
 end;
 
+procedure TncDictionaryProvider.record_context_trigram(const prev_prev_text: string; const prev_text: string;
+    const committed_text: string);
+begin
+end;
+
 function TncDictionaryProvider.get_context_bonus(const left_text: string; const candidate_text: string): Integer;
+begin
+    Result := 0;
+end;
+
+function TncDictionaryProvider.get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
+    const candidate_text: string): Integer;
 begin
     Result := 0;
 end;

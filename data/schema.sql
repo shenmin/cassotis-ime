@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '5');
+INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '6');
 
 CREATE TABLE IF NOT EXISTS dict_base (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,3 +68,14 @@ CREATE TABLE IF NOT EXISTS dict_user_bigram (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dict_user_bigram_left_text ON dict_user_bigram(left_text);
+
+CREATE TABLE IF NOT EXISTS dict_user_trigram (
+    prev_prev_text TEXT NOT NULL,
+    prev_text TEXT NOT NULL,
+    text TEXT NOT NULL,
+    commit_count INTEGER DEFAULT 0,
+    last_used INTEGER DEFAULT 0,
+    PRIMARY KEY(prev_prev_text, prev_text, text)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dict_user_trigram_prev_pair ON dict_user_trigram(prev_prev_text, prev_text);

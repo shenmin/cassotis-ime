@@ -125,6 +125,7 @@ type
         function get_phrase_context_bonus(const candidate_text: string): Integer;
         function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
+        function get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
         function get_candidate_debug_summary(const candidate: TncCandidate): string;
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
         function map_full_width_char(const input_char: Char): string;
@@ -5429,6 +5430,72 @@ begin
     end;
 end;
 
+function TncEngine.get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
+var
+    encoded_path: string;
+    path_segments: TArray<string>;
+    segment_start: Integer;
+    idx: Integer;
+    segment_count: Integer;
+    pair_bonus: Integer;
+    trigram_bonus: Integer;
+begin
+    Result := 0;
+    if (candidate.comment <> '') or (m_dictionary = nil) then
+    begin
+        Exit;
+    end;
+
+    encoded_path := get_segment_path_for_candidate(candidate);
+    if encoded_path = '' then
+    begin
+        Exit;
+    end;
+
+    SetLength(path_segments, 0);
+    segment_start := 1;
+    for idx := 1 to Length(encoded_path) + 1 do
+    begin
+        if (idx <= Length(encoded_path)) and (encoded_path[idx] <> c_segment_path_separator) then
+        begin
+            Continue;
+        end;
+
+        if idx > segment_start then
+        begin
+            segment_count := Length(path_segments);
+            SetLength(path_segments, segment_count + 1);
+            path_segments[segment_count] := Copy(encoded_path, segment_start, idx - segment_start);
+        end;
+        segment_start := idx + 1;
+    end;
+
+    if Length(path_segments) <= 1 then
+    begin
+        Exit;
+    end;
+
+    for idx := 1 to High(path_segments) do
+    begin
+        pair_bonus := m_dictionary.get_context_bonus(
+            path_segments[idx - 1], path_segments[idx]);
+        if pair_bonus > 0 then
+        begin
+            Inc(Result, pair_bonus div 2);
+        end;
+
+        if idx >= 2 then
+        begin
+            trigram_bonus := m_dictionary.get_context_trigram_bonus(
+                path_segments[idx - 2], path_segments[idx - 1], path_segments[idx]);
+            if trigram_bonus > 0 then
+            begin
+                Inc(Result, trigram_bonus);
+            end;
+        end;
+    end;
+end;
+
 function TncEngine.get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
 begin
     Result := True;
@@ -5681,6 +5748,7 @@ end;
 function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
 var
     context_bonus: Integer;
+    segment_path_context_bonus: Integer;
     session_bonus: Integer;
     query_bonus: Integer;
     text_units: Integer;
@@ -5695,6 +5763,8 @@ begin
         context_bonus := context_bonus div 4;
     end;
     Inc(Result, context_bonus);
+    segment_path_context_bonus := get_segment_path_context_bonus(candidate);
+    Inc(Result, segment_path_context_bonus);
     query_bonus := get_session_query_bonus(candidate.text);
     if candidate.comment <> '' then
     begin
@@ -5834,6 +5904,7 @@ var
     context_query_bonus: Integer;
     context_query_latest_bonus: Integer;
     context_bonus: Integer;
+    segment_path_context_bonus: Integer;
     query_bonus: Integer;
     session_bonus: Integer;
     rank_score: Integer;
@@ -5845,6 +5916,7 @@ begin
     context_query_bonus := get_context_query_bonus(candidate.text);
     context_query_latest_bonus := get_context_query_latest_bonus(candidate.text);
     context_bonus := get_context_bonus(candidate.text);
+    segment_path_context_bonus := get_segment_path_context_bonus(candidate);
     query_bonus := get_session_query_bonus(candidate.text);
     if candidate.comment <> '' then
     begin
@@ -5860,9 +5932,10 @@ begin
     runtime_kind := get_runtime_candidate_kind(candidate);
 
     Result := Format(
-        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d spath_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
         [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
-        phrase_context_bonus, context_query_bonus, context_query_latest_bonus, query_bonus, session_bonus, layer_value,
+        phrase_context_bonus, segment_path_context_bonus, context_query_bonus, context_query_latest_bonus, query_bonus,
+        session_bonus, layer_value,
         Ord(candidate.comment <> ''), candidate.dict_weight, runtime_kind]);
 end;
 
@@ -6901,6 +6974,7 @@ var
         local_candidate_text: string;
         local_rank_map: TDictionary<string, Integer>;
         local_rank: Integer;
+        local_path_transition_bonus: Integer;
 
         function build_state_key(const value: TncSegmentPathState): string;
         begin
@@ -7137,12 +7211,91 @@ var
             end;
         end;
 
+        function get_compound_prev_trigram_bonus(const combined_prev_text: string;
+            const candidate_text: string): Integer;
+        var
+            combined_units: TArray<string>;
+            split_idx: Integer;
+            unit_idx: Integer;
+            left_part: string;
+            right_part: string;
+            local_session_bonus: Integer;
+            local_persistent_bonus: Integer;
+            local_secondary_bonus: Integer;
+            local_bonus: Integer;
+        begin
+            Result := 0;
+            if (combined_prev_text = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            combined_units := split_text_units(combined_prev_text);
+            if Length(combined_units) < 2 then
+            begin
+                Exit;
+            end;
+
+            for split_idx := 1 to High(combined_units) do
+            begin
+                left_part := '';
+                for unit_idx := 0 to split_idx - 1 do
+                begin
+                    left_part := left_part + combined_units[unit_idx];
+                end;
+
+                right_part := '';
+                for unit_idx := split_idx to High(combined_units) do
+                begin
+                    right_part := right_part + combined_units[unit_idx];
+                end;
+
+                if (left_part = '') or (right_part = '') then
+                begin
+                    Continue;
+                end;
+
+                local_session_bonus := get_phrase_trigram_transition_bonus(
+                    left_part, right_part, candidate_text);
+                local_persistent_bonus := 0;
+                if m_dictionary <> nil then
+                begin
+                    local_persistent_bonus := m_dictionary.get_context_trigram_bonus(
+                        left_part, right_part, candidate_text);
+                end;
+
+                if local_session_bonus >= local_persistent_bonus then
+                begin
+                    local_bonus := local_session_bonus;
+                    local_secondary_bonus := local_persistent_bonus;
+                end
+                else
+                begin
+                    local_bonus := local_persistent_bonus;
+                    local_secondary_bonus := local_session_bonus;
+                end;
+
+                if local_secondary_bonus > 0 then
+                begin
+                    Inc(local_bonus, local_secondary_bonus div 2);
+                end;
+
+                if local_bonus > Result then
+                begin
+                    Result := local_bonus;
+                end;
+            end;
+        end;
+
         function get_path_transition_bonus(const prev_prev_text: string; const prev_text: string;
             const candidate_text: string): Integer;
         var
             cache_key: string;
             pair_bonus: Integer;
             trigram_bonus: Integer;
+            persistent_trigram_bonus: Integer;
+            compound_prev_trigram_bonus: Integer;
+            secondary_bonus: Integer;
         begin
             Result := 0;
             if (prev_text = '') or (candidate_text = '') then
@@ -7158,9 +7311,42 @@ var
 
             pair_bonus := get_exact_context_pair_bonus(prev_text, candidate_text);
             trigram_bonus := get_phrase_trigram_transition_bonus(prev_prev_text, prev_text, candidate_text);
-            if trigram_bonus > 0 then
+            persistent_trigram_bonus := 0;
+            if (prev_prev_text <> '') and (m_dictionary <> nil) then
             begin
-                Result := trigram_bonus + (pair_bonus div 2);
+                persistent_trigram_bonus := m_dictionary.get_context_trigram_bonus(
+                    prev_prev_text, prev_text, candidate_text);
+            end;
+            compound_prev_trigram_bonus := 0;
+            if prev_prev_text = '' then
+            begin
+                compound_prev_trigram_bonus := get_compound_prev_trigram_bonus(
+                    prev_text, candidate_text);
+            end;
+
+            if trigram_bonus >= persistent_trigram_bonus then
+            begin
+                Result := trigram_bonus;
+                secondary_bonus := persistent_trigram_bonus;
+            end
+            else
+            begin
+                Result := persistent_trigram_bonus;
+                secondary_bonus := trigram_bonus;
+            end;
+
+            if secondary_bonus > 0 then
+            begin
+                Inc(Result, secondary_bonus div 2);
+            end;
+            if compound_prev_trigram_bonus > Result then
+            begin
+                Result := compound_prev_trigram_bonus;
+            end;
+
+            if Result > 0 then
+            begin
+                Inc(Result, pair_bonus div 2);
             end
             else
             begin
@@ -7479,14 +7665,28 @@ var
                             end;
                             allow_leading_single_char := False;
                             allow_single_char_path := False;
+                            local_path_transition_bonus := 0;
                             if not is_multi_char_word(local_candidate.text) then
                             begin
                                 // Allow only the top leading single-char candidate so cases like
                                 // "wo + faxian" can become "閹存垵褰傞悳?, while still blocking noisy
                                 // single-char full-path combinations in general.
                                 if candidate_has_non_ascii and (local_segment_len = 1) and
-                                    (candidate_index < c_segment_full_single_top_n) then
+                                    ((candidate_index < c_segment_full_single_top_n) or
+                                    ((local_state.prev_text <> '') and
+                                    (get_path_transition_bonus(
+                                        local_state.prev_prev_text,
+                                        local_state.prev_text,
+                                        local_candidate_text) > 0))) then
                                 begin
+                                    if (candidate_index >= c_segment_full_single_top_n) and
+                                        (local_state.prev_text <> '') then
+                                    begin
+                                        local_path_transition_bonus := get_path_transition_bonus(
+                                            local_state.prev_prev_text,
+                                            local_state.prev_text,
+                                            local_candidate_text);
+                                    end;
                                     allow_single_char_path := True;
                                     allow_leading_single_char := state_pos = 0;
                                     if (not allow_leading_single_char) and (Length(local_candidate.text) = 2) and
@@ -7505,11 +7705,14 @@ var
                             local_new_state.text := local_state.text + local_candidate.text;
                             local_new_state.score := local_state.score + local_candidate.score +
                                 (local_segment_len * c_segment_prefix_bonus);
-                            Inc(local_new_state.score,
-                                get_path_transition_bonus(
+                            if local_path_transition_bonus = 0 then
+                            begin
+                                local_path_transition_bonus := get_path_transition_bonus(
                                     local_state.prev_prev_text,
                                     local_state.prev_text,
-                                    local_candidate_text));
+                                    local_candidate_text);
+                            end;
+                            Inc(local_new_state.score, local_path_transition_bonus);
                             if (state_pos = 0) and (local_segment_len > 1) and
                                 (next_pos < Length(syllables)) then
                             begin
@@ -9765,6 +9968,16 @@ begin
                     for path_idx := 1 to High(path_segments) do
                     begin
                         record_context_pair(path_segments[path_idx - 1], path_segments[path_idx]);
+                    end;
+                    if Length(path_segments) > 2 then
+                    begin
+                        for path_idx := 2 to High(path_segments) do
+                        begin
+                            m_dictionary.record_context_trigram(
+                                path_segments[path_idx - 2],
+                                path_segments[path_idx - 1],
+                                path_segments[path_idx]);
+                        end;
                     end;
                 end;
 
