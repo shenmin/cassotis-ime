@@ -63,6 +63,11 @@ type
         m_prev_output_commit_text: string;
         m_context_db_bonus_cache_key: string;
         m_context_db_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_text_unit_count_cache: TDictionary<string, Integer>;
+        m_lookup_session_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_phrase_context_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_text_context_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_context_bonus_cache: TDictionary<string, Integer>;
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
         m_has_pending_commit: Boolean;
@@ -109,6 +114,7 @@ type
         function get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
         function get_rank_score(const candidate: TncCandidate): Integer;
         procedure sort_candidates(var candidates: TncCandidateList);
+        procedure clear_lookup_bonus_caches;
         function normalize_pinyin_text(const input_text: string): string;
         function is_valid_pinyin_syllable(const syllable: string): Boolean;
         function is_full_pinyin_key(const value: string): Boolean;
@@ -399,6 +405,11 @@ begin
     m_prev_output_commit_text := '';
     m_context_db_bonus_cache_key := '';
     m_context_db_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_text_unit_count_cache := TDictionary<string, Integer>.Create;
+    m_lookup_session_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_phrase_context_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_text_context_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
     SetLength(m_candidates, 0);
     set_dictionary_provider(create_dictionary_from_config);
     set_ai_provider(create_ai_provider_from_config);
@@ -455,6 +466,32 @@ begin
     end;
     m_context_db_bonus_cache_key := '';
 
+    if m_lookup_text_unit_count_cache <> nil then
+    begin
+        m_lookup_text_unit_count_cache.Free;
+        m_lookup_text_unit_count_cache := nil;
+    end;
+    if m_lookup_session_bonus_cache <> nil then
+    begin
+        m_lookup_session_bonus_cache.Free;
+        m_lookup_session_bonus_cache := nil;
+    end;
+    if m_lookup_phrase_context_bonus_cache <> nil then
+    begin
+        m_lookup_phrase_context_bonus_cache.Free;
+        m_lookup_phrase_context_bonus_cache := nil;
+    end;
+    if m_lookup_text_context_bonus_cache <> nil then
+    begin
+        m_lookup_text_context_bonus_cache.Free;
+        m_lookup_text_context_bonus_cache := nil;
+    end;
+    if m_lookup_context_bonus_cache <> nil then
+    begin
+        m_lookup_context_bonus_cache.Free;
+        m_lookup_context_bonus_cache := nil;
+    end;
+
     if m_confirmed_segments <> nil then
     begin
         m_confirmed_segments.Free;
@@ -480,6 +517,30 @@ begin
     end;
 
     inherited Destroy;
+end;
+
+procedure TncEngine.clear_lookup_bonus_caches;
+begin
+    if m_lookup_text_unit_count_cache <> nil then
+    begin
+        m_lookup_text_unit_count_cache.Clear;
+    end;
+    if m_lookup_session_bonus_cache <> nil then
+    begin
+        m_lookup_session_bonus_cache.Clear;
+    end;
+    if m_lookup_phrase_context_bonus_cache <> nil then
+    begin
+        m_lookup_phrase_context_bonus_cache.Clear;
+    end;
+    if m_lookup_text_context_bonus_cache <> nil then
+    begin
+        m_lookup_text_context_bonus_cache.Clear;
+    end;
+    if m_lookup_context_bonus_cache <> nil then
+    begin
+        m_lookup_context_bonus_cache.Clear;
+    end;
 end;
 
 procedure TncEngine.reset;
@@ -515,6 +576,7 @@ begin
     begin
         m_context_db_bonus_cache.Clear;
     end;
+    clear_lookup_bonus_caches;
 
     if m_ai_provider <> nil then
     begin
@@ -582,6 +644,7 @@ begin
     begin
         m_context_db_bonus_cache.Clear;
     end;
+    clear_lookup_bonus_caches;
     m_last_dictionary_reload_check_tick := 0;
     update_dictionary_state;
 end;
@@ -3114,6 +3177,7 @@ begin
         m_runtime_chain_text := '';
         m_runtime_common_pattern_text := '';
         m_runtime_redup_text := '';
+        clear_lookup_bonus_caches;
         if m_composition_text = '' then
         begin
             Exit;
@@ -3538,13 +3602,19 @@ var
     recent_bonus: Integer;
     text_key: string;
 begin
+    text_key := Trim(candidate_text);
+    if (text_key <> '') and (m_lookup_session_bonus_cache <> nil) and
+        m_lookup_session_bonus_cache.TryGetValue(text_key, Result) then
+    begin
+        Exit;
+    end;
+
     Result := 0;
     if m_session_text_counts = nil then
     begin
         Exit;
     end;
 
-    text_key := Trim(candidate_text);
     if (text_key = '') or (not m_session_text_counts.TryGetValue(text_key, count)) or
         (count <= 0) then
     begin
@@ -3620,6 +3690,11 @@ begin
     begin
         Result := c_multi_text_cap;
     end;
+
+    if (text_key <> '') and (m_lookup_session_bonus_cache <> nil) then
+    begin
+        m_lookup_session_bonus_cache.AddOrSetValue(text_key, Result);
+    end;
 end;
 
 function TncEngine.get_phrase_context_bonus(const candidate_text: string): Integer;
@@ -3680,13 +3755,19 @@ var
         end;
     end;
 begin
+    text_key := Trim(candidate_text);
+    if (text_key <> '') and (m_lookup_phrase_context_bonus_cache <> nil) and
+        m_lookup_phrase_context_bonus_cache.TryGetValue(text_key, Result) then
+    begin
+        Exit;
+    end;
+
     Result := 0;
     if m_phrase_context_pairs = nil then
     begin
         Exit;
     end;
 
-    text_key := Trim(candidate_text);
     if (text_key = '') or (m_last_output_commit_text = '') then
     begin
         Exit;
@@ -3743,11 +3824,26 @@ begin
     begin
         Result := c_phrase_context_cap;
     end;
+
+    if (text_key <> '') and (m_lookup_phrase_context_bonus_cache <> nil) then
+    begin
+        m_lookup_phrase_context_bonus_cache.AddOrSetValue(text_key, Result);
+    end;
 end;
 
 function TncEngine.get_candidate_text_unit_count(const text: string): Integer;
 begin
+    if (text <> '') and (m_lookup_text_unit_count_cache <> nil) and
+        m_lookup_text_unit_count_cache.TryGetValue(text, Result) then
+    begin
+        Exit;
+    end;
+
     Result := Length(split_text_units(text));
+    if (text <> '') and (m_lookup_text_unit_count_cache <> nil) then
+    begin
+        m_lookup_text_unit_count_cache.AddOrSetValue(text, Result);
+    end;
 end;
 
 function TncEngine.is_runtime_chain_candidate(const candidate: TncCandidate): Boolean;
@@ -3968,6 +4064,12 @@ var
         end;
     end;
 begin
+    if (candidate_text <> '') and (m_lookup_text_context_bonus_cache <> nil) and
+        m_lookup_text_context_bonus_cache.TryGetValue(candidate_text, Result) then
+    begin
+        Exit;
+    end;
+
     Result := 0;
     local_bonus := 0;
     persistent_bonus := 0;
@@ -4057,6 +4159,11 @@ begin
     begin
         Result := c_context_combined_cap;
     end;
+
+    if (candidate_text <> '') and (m_lookup_text_context_bonus_cache <> nil) then
+    begin
+        m_lookup_text_context_bonus_cache.AddOrSetValue(candidate_text, Result);
+    end;
 end;
 
 function TncEngine.get_context_bonus(const candidate_text: string): Integer;
@@ -4066,6 +4173,12 @@ var
     text_context_bonus: Integer;
     phrase_context_bonus: Integer;
 begin
+    if (candidate_text <> '') and (m_lookup_context_bonus_cache <> nil) and
+        m_lookup_context_bonus_cache.TryGetValue(candidate_text, Result) then
+    begin
+        Exit;
+    end;
+
     text_context_bonus := get_text_context_bonus(candidate_text);
     phrase_context_bonus := get_phrase_context_bonus(candidate_text);
 
@@ -4089,6 +4202,11 @@ begin
     if Result > c_context_total_cap then
     begin
         Result := c_context_total_cap;
+    end;
+
+    if (candidate_text <> '') and (m_lookup_context_bonus_cache <> nil) then
+    begin
+        m_lookup_context_bonus_cache.AddOrSetValue(candidate_text, Result);
     end;
 end;
 
@@ -4526,6 +4644,7 @@ var
     item: TncCandidateSortItem;
     i: Integer;
     use_intent_layers: Boolean;
+    has_strong_complete_phrase: Boolean;
 begin
     if Length(candidates) <= 1 then
     begin
@@ -4533,6 +4652,7 @@ begin
     end;
 
     use_intent_layers := m_last_lookup_syllable_count >= 3;
+    has_strong_complete_phrase := False;
 
     list := TList<TncCandidateSortItem>.Create;
     try
@@ -4551,7 +4671,38 @@ begin
             end;
             item.source_rank := get_source_rank(candidates[i].source);
             item.text_length := Length(candidates[i].text);
+            if use_intent_layers and (item.candidate.comment = '') and
+                (item.layer <= 1) and (get_candidate_text_unit_count(item.candidate.text) >= 2) and
+                (item.candidate.has_dict_weight or (item.candidate.source = cs_user) or
+                ((item.candidate.source = cs_rule) and
+                (not is_runtime_chain_candidate(item.candidate)) and
+                (not is_runtime_common_pattern_candidate(item.candidate)) and
+                (not is_runtime_redup_candidate(item.candidate)))) then
+            begin
+                has_strong_complete_phrase := True;
+            end;
             list.Add(item);
+        end;
+
+        if use_intent_layers and has_strong_complete_phrase then
+        begin
+            for i := 0 to list.Count - 1 do
+            begin
+                item := list[i];
+                if is_runtime_chain_candidate(item.candidate) then
+                begin
+                    Dec(item.rank_score, 220);
+                end
+                else if is_runtime_common_pattern_candidate(item.candidate) then
+                begin
+                    Dec(item.rank_score, 140);
+                end
+                else if is_runtime_redup_candidate(item.candidate) then
+                begin
+                    Dec(item.rank_score, 96);
+                end;
+                list[i] := item;
+            end;
         end;
 
         // Precompute heavy ranking keys once per candidate to avoid repeatedly

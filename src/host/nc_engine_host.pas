@@ -1206,6 +1206,9 @@ end;
 function TncEngineHost.set_active(const session_id: string; const active: Boolean): Boolean;
 var
     session: TncHostSession;
+    total_start_tick: UInt64;
+    create_elapsed_ms: Int64;
+    ui_elapsed_ms: Int64;
 begin
     if session_id = '' then
     begin
@@ -1215,13 +1218,21 @@ begin
 
     if active then
     begin
+        total_start_tick := GetTickCount64;
         reload_config_if_needed;
         session := get_or_create_session(session_id);
+        create_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
         run_on_ui_thread(
             procedure
             begin
                 session.ensure_candidate_window;
             end);
+        ui_elapsed_ms := Int64(GetTickCount64 - total_start_tick) - create_elapsed_ms;
+        if m_config.debug_mode then
+        begin
+            host_log(Format('[DEBUG] SET_ACTIVE preload session=%s create=%d ui=%d total=%d',
+                [session_id, create_elapsed_ms, ui_elapsed_ms, Int64(GetTickCount64 - total_start_tick)]));
+        end;
     end;
 
     set_session_active(session_id, active);

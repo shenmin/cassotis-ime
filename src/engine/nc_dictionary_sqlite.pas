@@ -288,18 +288,25 @@ const
     c_sec_per_day = 24 * 60 * 60;
     c_sec_per_3_days = 3 * c_sec_per_day;
     c_sec_per_week = 7 * c_sec_per_day;
+    c_sec_per_14_days = 14 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
     c_sec_per_90_days = 90 * c_sec_per_day;
+    c_sec_per_180_days = 180 * c_sec_per_day;
     c_recent_burst_bonus_1d = 88;
     c_recent_burst_bonus_3d = 52;
     c_recent_stable_bonus_7d = 46;
     c_recent_stable_bonus_30d = 28;
+    c_stale_once_penalty_14d = 96;
+    c_stale_once_penalty_30d = 168;
+    c_stale_twice_penalty_90d = 84;
+    c_stale_light_penalty_180d = 52;
 var
     freq_bonus: Integer;
     recency_bonus: Integer;
     quick_bonus: Integer;
     maturity_bonus: Integer;
     age_seconds: Int64;
+    stale_penalty: Integer;
 begin
     if commit_count <= 0 then
     begin
@@ -346,6 +353,7 @@ begin
     end;
 
     recency_bonus := 0;
+    stale_penalty := 0;
     if (last_used_unix > 0) and (now_unix > 0) then
     begin
         age_seconds := now_unix - last_used_unix;
@@ -407,9 +415,40 @@ begin
                 Inc(maturity_bonus, c_recent_stable_bonus_30d);
             end;
         end;
+
+        if commit_count = 1 then
+        begin
+            if age_seconds > c_sec_per_30_days then
+            begin
+                stale_penalty := c_stale_once_penalty_30d;
+            end
+            else if age_seconds > c_sec_per_14_days then
+            begin
+                stale_penalty := c_stale_once_penalty_14d;
+            end;
+        end
+        else if commit_count = 2 then
+        begin
+            if age_seconds > c_sec_per_90_days then
+            begin
+                stale_penalty := c_stale_twice_penalty_90d;
+            end;
+        end
+        else if (commit_count <= 4) and (age_seconds > c_sec_per_180_days) then
+        begin
+            stale_penalty := c_stale_light_penalty_180d;
+        end;
     end;
 
     Result := freq_bonus + quick_bonus + maturity_bonus + recency_bonus;
+    if stale_penalty > 0 then
+    begin
+        Dec(Result, stale_penalty);
+        if Result < 0 then
+        begin
+            Result := 0;
+        end;
+    end;
 end;
 
 function calc_text_learning_bonus(const commit_count: Integer; const last_used_unix: Int64;
@@ -479,6 +518,7 @@ const
     c_sec_per_7_days = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
     c_sec_per_90_days = 90 * c_sec_per_day;
+    c_sec_per_180_days = 180 * c_sec_per_day;
 var
     recency_bonus: Integer;
     age_seconds: Int64;
@@ -518,6 +558,15 @@ begin
         else if age_seconds <= c_sec_per_90_days then
         begin
             recency_bonus := 14;
+        end;
+
+        if (commit_count = 1) and (age_seconds > c_sec_per_90_days) then
+        begin
+            Dec(Result, 56);
+        end
+        else if (commit_count <= 2) and (age_seconds > c_sec_per_180_days) then
+        begin
+            Dec(Result, 36);
         end;
     end;
     Inc(Result, recency_bonus);
