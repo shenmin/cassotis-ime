@@ -86,6 +86,7 @@ type
         m_lookup_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_segment_path_context_bonus_cache: TDictionary<string, Integer>;
         m_current_segment_path_map: TDictionary<string, string>;
+        m_current_segment_path_query_prefix_map: TDictionary<string, string>;
         m_candidate_segment_paths: TArray<string>;
         m_pending_commit_text: string;
         m_pending_commit_remaining: string;
@@ -127,6 +128,7 @@ type
         function get_session_query_bonus(const candidate_text: string): Integer;
         function get_session_query_path_bonus(const query_key: string; const encoded_path: string): Integer;
         function get_session_query_path_prefix_bonus(const query_key: string; const encoded_path: string): Integer;
+        function get_persistent_query_path_prefix_support(const encoded_path: string): Integer;
         function get_context_query_bonus(const candidate_text: string): Integer;
         function get_context_query_latest_bonus(const candidate_text: string): Integer;
         function is_latest_session_query_choice(const candidate_text: string): Boolean;
@@ -134,6 +136,7 @@ type
         function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
         function get_segment_path_preference_score(const encoded_path: string): Integer;
+        function get_segment_path_support_score(const candidate: TncCandidate): Integer;
         procedure get_recent_path_context_seed(out prev_prev_text: string; out prev_text: string);
         function get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
         function get_candidate_debug_summary(const candidate: TncCandidate): string;
@@ -156,6 +159,8 @@ type
         procedure clear_segment_path_tracking;
         procedure remember_segment_path_for_candidate(const candidate_text: string; const comment_text: string;
             const encoded_path: string);
+        procedure remember_segment_path_query_prefix(const encoded_path: string; const query_prefix: string);
+        function get_query_prefix_for_segment_path(const encoded_path: string): string;
         function get_segment_path_for_candidate(const candidate: TncCandidate;
             const candidate_index: Integer = -1): string;
         function infer_segment_path_for_selected_text(const selected_text: string): string;
@@ -520,6 +525,7 @@ begin
     m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_segment_path_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_current_segment_path_map := TDictionary<string, string>.Create;
+    m_current_segment_path_query_prefix_map := TDictionary<string, string>.Create;
     SetLength(m_candidate_segment_paths, 0);
     m_pending_commit_segment_path := '';
     SetLength(m_candidates, 0);
@@ -678,6 +684,11 @@ begin
         m_current_segment_path_map.Free;
         m_current_segment_path_map := nil;
     end;
+    if m_current_segment_path_query_prefix_map <> nil then
+    begin
+        m_current_segment_path_query_prefix_map.Free;
+        m_current_segment_path_query_prefix_map := nil;
+    end;
     SetLength(m_candidate_segment_paths, 0);
 
     if m_confirmed_segments <> nil then
@@ -774,6 +785,10 @@ begin
     begin
         m_current_segment_path_map.Clear;
     end;
+    if m_current_segment_path_query_prefix_map <> nil then
+    begin
+        m_current_segment_path_query_prefix_map.Clear;
+    end;
 end;
 
 procedure TncEngine.remember_segment_path_for_candidate(const candidate_text: string; const comment_text: string;
@@ -815,6 +830,50 @@ begin
     end;
 
     m_current_segment_path_map.Add(key, encoded_path);
+end;
+
+procedure TncEngine.remember_segment_path_query_prefix(const encoded_path: string; const query_prefix: string);
+var
+    normalized_path: string;
+    normalized_query: string;
+    existing_query: string;
+begin
+    normalized_path := Trim(encoded_path);
+    normalized_query := normalize_pinyin_text(query_prefix);
+    if (normalized_path = '') or (normalized_query = '') or
+        (get_encoded_path_segment_count_local(normalized_path) <= 1) or
+        (m_current_segment_path_query_prefix_map = nil) then
+    begin
+        Exit;
+    end;
+
+    if m_current_segment_path_query_prefix_map.TryGetValue(normalized_path, existing_query) then
+    begin
+        if (existing_query = '') or (Length(normalized_query) > Length(existing_query)) then
+        begin
+            m_current_segment_path_query_prefix_map.AddOrSetValue(normalized_path, normalized_query);
+        end;
+        Exit;
+    end;
+
+    m_current_segment_path_query_prefix_map.Add(normalized_path, normalized_query);
+end;
+
+function TncEngine.get_query_prefix_for_segment_path(const encoded_path: string): string;
+var
+    normalized_path: string;
+begin
+    Result := '';
+    normalized_path := Trim(encoded_path);
+    if (normalized_path = '') or (m_current_segment_path_query_prefix_map = nil) then
+    begin
+        Exit;
+    end;
+
+    if not m_current_segment_path_query_prefix_map.TryGetValue(normalized_path, Result) then
+    begin
+        Result := '';
+    end;
 end;
 
 function TncEngine.get_segment_path_for_candidate(const candidate: TncCandidate;
@@ -4665,6 +4724,109 @@ begin
     end;
 end;
 
+function TncEngine.get_persistent_query_path_prefix_support(const encoded_path: string): Integer;
+const
+    c_query_path_prefix_support_cap = 420;
+    c_query_path_prefix_penalty_cap = 260;
+var
+    cache_key: string;
+    normalized_path: string;
+    segment_text: string;
+    prefix_path: string;
+    prefix_query: string;
+    normalized_lookup_query: string;
+    bonus_value: Integer;
+    penalty_value: Integer;
+    positive_total: Integer;
+    negative_total: Integer;
+    idx: Integer;
+    path_start: Integer;
+begin
+    Result := 0;
+    normalized_path := Trim(encoded_path);
+    if (normalized_path = '') or (get_encoded_path_segment_count_local(normalized_path) <= 1) or
+        (m_dictionary = nil) then
+    begin
+        Exit;
+    end;
+
+    normalized_lookup_query := normalize_pinyin_text(m_last_lookup_key);
+    if normalized_lookup_query = '' then
+    begin
+        Exit;
+    end;
+
+    cache_key := 'DP' + #1 + normalized_path;
+    if (m_lookup_query_path_bonus_cache <> nil) and
+        m_lookup_query_path_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    prefix_path := '';
+    positive_total := 0;
+    negative_total := 0;
+    path_start := 1;
+    for idx := 1 to Length(normalized_path) + 1 do
+    begin
+        if (idx <= Length(normalized_path)) and (normalized_path[idx] <> c_segment_path_separator) then
+        begin
+            Continue;
+        end;
+
+        segment_text := Trim(Copy(normalized_path, path_start, idx - path_start));
+        path_start := idx + 1;
+        if segment_text = '' then
+        begin
+            Continue;
+        end;
+
+        if prefix_path <> '' then
+        begin
+            prefix_path := prefix_path + c_segment_path_separator;
+        end;
+        prefix_path := prefix_path + segment_text;
+
+        if (prefix_path = normalized_path) or
+            (get_encoded_path_segment_count_local(prefix_path) <= 1) then
+        begin
+            Continue;
+        end;
+
+        prefix_query := get_query_prefix_for_segment_path(prefix_path);
+        if (prefix_query = '') or (prefix_query = normalized_lookup_query) then
+        begin
+            Continue;
+        end;
+
+        bonus_value := m_dictionary.get_query_segment_path_bonus(prefix_query, prefix_path);
+        penalty_value := m_dictionary.get_query_segment_path_penalty(prefix_query, prefix_path);
+        if bonus_value > 0 then
+        begin
+            Inc(positive_total, bonus_value);
+        end;
+        if penalty_value > 0 then
+        begin
+            Inc(negative_total, penalty_value);
+        end;
+    end;
+
+    if positive_total > c_query_path_prefix_support_cap then
+    begin
+        positive_total := c_query_path_prefix_support_cap;
+    end;
+    if negative_total > c_query_path_prefix_penalty_cap then
+    begin
+        negative_total := c_query_path_prefix_penalty_cap;
+    end;
+    Result := positive_total - negative_total;
+
+    if m_lookup_query_path_bonus_cache <> nil then
+    begin
+        m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
 function TncEngine.get_context_query_bonus(const candidate_text: string): Integer;
 const
     c_context_combined_cap = 720;
@@ -5277,12 +5439,12 @@ begin
         Exit;
     end;
 
-    path_bonus := get_segment_path_context_bonus(candidate);
-    if path_bonus >= 760 then
+    path_bonus := get_segment_path_support_score(candidate);
+    if path_bonus >= 880 then
     begin
         Result := 2;
     end
-    else if path_bonus >= 320 then
+    else if path_bonus >= 420 then
     begin
         Result := 1;
     end;
@@ -5752,6 +5914,7 @@ function TncEngine.get_segment_path_preference_score(const encoded_path: string)
 var
     normalized_path: string;
     path_penalty: Integer;
+    prefix_support: Integer;
 begin
     normalized_path := Trim(encoded_path);
     if get_encoded_path_segment_count_local(normalized_path) <= 1 then
@@ -5772,6 +5935,34 @@ begin
                 Dec(Result, path_penalty);
             end;
         end;
+        prefix_support := get_persistent_query_path_prefix_support(normalized_path);
+        if prefix_support <> 0 then
+        begin
+            Inc(Result, prefix_support div 2);
+        end;
+    end;
+end;
+
+function TncEngine.get_segment_path_support_score(const candidate: TncCandidate): Integer;
+var
+    encoded_path: string;
+    preference_score: Integer;
+begin
+    Result := get_segment_path_context_bonus(candidate);
+    encoded_path := get_segment_path_for_candidate(candidate);
+    if encoded_path = '' then
+    begin
+        Exit;
+    end;
+
+    preference_score := get_segment_path_preference_score(encoded_path);
+    if preference_score > 0 then
+    begin
+        Inc(Result, Min(260, preference_score div 2));
+    end
+    else if preference_score < 0 then
+    begin
+        Dec(Result, Min(180, Abs(preference_score) div 3));
     end;
 end;
 
@@ -5827,6 +6018,7 @@ var
     current_prev_text: string;
     transition_bonus: Integer;
     path_penalty: Integer;
+    prefix_support: Integer;
 
     function get_exact_context_pair_bonus(const left_text: string; const candidate_text: string): Integer;
     const
@@ -6151,6 +6343,11 @@ begin
                 Dec(Result, path_penalty);
             end;
         end;
+    end;
+    prefix_support := get_persistent_query_path_prefix_support(encoded_path);
+    if prefix_support <> 0 then
+    begin
+        Inc(Result, prefix_support);
     end;
 
     if m_lookup_segment_path_context_bonus_cache <> nil then
@@ -8464,12 +8661,24 @@ var
                                 end;
                                 local_new_state.path_text := local_new_state.path_text + local_candidate_text;
                             end;
+                            if get_encoded_path_segment_count_local(local_new_state.path_text) > 1 then
+                            begin
+                                remember_segment_path_query_prefix(
+                                    local_new_state.path_text,
+                                    build_syllable_text(0, next_pos));
+                            end;
                             if (m_last_lookup_key <> '') and
                                 (get_encoded_path_segment_count_local(local_new_state.path_text) > 1) then
                             begin
                                 local_query_path_bonus := get_session_query_path_prefix_bonus(
                                     m_last_lookup_key, local_new_state.path_text);
                                 if local_query_path_bonus > 0 then
+                                begin
+                                    Inc(local_new_state.score, local_query_path_bonus);
+                                end;
+                                local_query_path_bonus := get_persistent_query_path_prefix_support(
+                                    local_new_state.path_text);
+                                if local_query_path_bonus <> 0 then
                                 begin
                                     Inc(local_new_state.score, local_query_path_bonus);
                                 end;
@@ -9672,6 +9881,88 @@ var
         top_confidence_rank: Integer;
         selected_confidence_rank: Integer;
         top_segment_path: string;
+
+        function split_encoded_path(const encoded_path: string): TArray<string>;
+        var
+            idx: Integer;
+            start_idx: Integer;
+            segment_text: string;
+            count: Integer;
+        begin
+            SetLength(Result, 0);
+            start_idx := 1;
+            for idx := 1 to Length(encoded_path) + 1 do
+            begin
+                if (idx <= Length(encoded_path)) and (encoded_path[idx] <> c_segment_path_separator) then
+                begin
+                    Continue;
+                end;
+
+                segment_text := Trim(Copy(encoded_path, start_idx, idx - start_idx));
+                if segment_text <> '' then
+                begin
+                    count := Length(Result);
+                    SetLength(Result, count + 1);
+                    Result[count] := segment_text;
+                end;
+                start_idx := idx + 1;
+            end;
+        end;
+
+        procedure record_divergent_query_path_prefix_penalties(const selected_path: string;
+            const wrong_path: string);
+        var
+            selected_segments: TArray<string>;
+            wrong_segments: TArray<string>;
+            shared_count: Integer;
+            prefix_idx: Integer;
+            prefix_path: string;
+            prefix_query: string;
+        begin
+            if (m_dictionary = nil) or (selected_path = '') or (wrong_path = '') then
+            begin
+                Exit;
+            end;
+            if (get_encoded_path_segment_count_local(selected_path) <= 1) or
+                (get_encoded_path_segment_count_local(wrong_path) <= 1) then
+            begin
+                Exit;
+            end;
+
+            selected_segments := split_encoded_path(selected_path);
+            wrong_segments := split_encoded_path(wrong_path);
+            if (Length(selected_segments) = 0) or (Length(wrong_segments) <= 2) then
+            begin
+                Exit;
+            end;
+
+            shared_count := 0;
+            while (shared_count < Length(selected_segments)) and (shared_count < Length(wrong_segments)) and
+                SameText(Trim(selected_segments[shared_count]), Trim(wrong_segments[shared_count])) do
+            begin
+                Inc(shared_count);
+            end;
+
+            prefix_path := '';
+            for prefix_idx := 0 to High(wrong_segments) - 1 do
+            begin
+                if prefix_path <> '' then
+                begin
+                    prefix_path := prefix_path + c_segment_path_separator;
+                end;
+                prefix_path := prefix_path + wrong_segments[prefix_idx];
+                if (prefix_idx + 1 < 2) or (prefix_idx + 1 <= shared_count) then
+                begin
+                    Continue;
+                end;
+
+                prefix_query := get_query_prefix_for_segment_path(prefix_path);
+                if prefix_query <> '' then
+                begin
+                    m_dictionary.record_query_segment_path_penalty(prefix_query, prefix_path);
+                end;
+            end;
+        end;
     begin
         if (selected.comment <> '') and is_compact_ascii_pinyin(selected.comment) then
         begin
@@ -9731,6 +10022,7 @@ var
                             (get_encoded_path_segment_count_local(segment_path) > 1) and
                             (get_encoded_path_segment_count_local(top_segment_path) > 1) then
                         begin
+                            record_divergent_query_path_prefix_penalties(segment_path, top_segment_path);
                             m_dictionary.record_query_segment_path_penalty(m_last_lookup_key, top_segment_path);
                         end;
                     end;
@@ -10599,6 +10891,8 @@ var
     path_start: Integer;
     path_text: string;
     combined_segment_path: string;
+    confirmed_pinyin_prefix: string;
+    confirmed_segment_path_prefix: string;
 
     function get_path_segment_count(const encoded_path: string): Integer;
     var
@@ -10676,6 +10970,138 @@ var
         end;
         combined_segment_path := combined_segment_path + path_text;
     end;
+
+    procedure record_query_path_prefixes(const base_query_prefix: string; const base_path_prefix: string;
+        const tail_full_path: string; const final_query: string; const final_path: string);
+    var
+        idx: Integer;
+        prefix_start: Integer;
+        segment_piece: string;
+        prefix_path: string;
+        prefix_query: string;
+        combined_query: string;
+        combined_path: string;
+    begin
+        if (m_dictionary = nil) or (tail_full_path = '') then
+        begin
+            Exit;
+        end;
+
+        prefix_path := '';
+        prefix_start := 1;
+        for idx := 1 to Length(tail_full_path) + 1 do
+        begin
+            if (idx <= Length(tail_full_path)) and (tail_full_path[idx] <> c_segment_path_separator) then
+            begin
+                Continue;
+            end;
+
+            segment_piece := Trim(Copy(tail_full_path, prefix_start, idx - prefix_start));
+            prefix_start := idx + 1;
+            if segment_piece = '' then
+            begin
+                Continue;
+            end;
+
+            if prefix_path <> '' then
+            begin
+                prefix_path := prefix_path + c_segment_path_separator;
+            end;
+            prefix_path := prefix_path + segment_piece;
+
+            if get_path_segment_count(prefix_path) <= 1 then
+            begin
+                Continue;
+            end;
+
+            prefix_query := get_query_prefix_for_segment_path(prefix_path);
+            if prefix_query = '' then
+            begin
+                Continue;
+            end;
+
+            combined_query := base_query_prefix + prefix_query;
+            combined_path := prefix_path;
+            if base_path_prefix <> '' then
+            begin
+                combined_path := base_path_prefix + c_segment_path_separator + combined_path;
+            end;
+
+            if (combined_query = '') or (combined_path = '') or
+                ((combined_query = final_query) and (combined_path = final_path)) then
+            begin
+                Continue;
+            end;
+
+            m_dictionary.record_query_segment_path(combined_query, combined_path);
+        end;
+    end;
+
+    procedure note_session_query_path_prefixes(const base_query_prefix: string; const base_path_prefix: string;
+        const tail_full_path: string; const final_query: string; const final_path: string);
+    var
+        idx: Integer;
+        prefix_start: Integer;
+        segment_piece: string;
+        prefix_path: string;
+        prefix_query: string;
+        combined_query: string;
+        combined_path: string;
+    begin
+        if tail_full_path = '' then
+        begin
+            Exit;
+        end;
+
+        prefix_path := '';
+        prefix_start := 1;
+        for idx := 1 to Length(tail_full_path) + 1 do
+        begin
+            if (idx <= Length(tail_full_path)) and (tail_full_path[idx] <> c_segment_path_separator) then
+            begin
+                Continue;
+            end;
+
+            segment_piece := Trim(Copy(tail_full_path, prefix_start, idx - prefix_start));
+            prefix_start := idx + 1;
+            if segment_piece = '' then
+            begin
+                Continue;
+            end;
+
+            if prefix_path <> '' then
+            begin
+                prefix_path := prefix_path + c_segment_path_separator;
+            end;
+            prefix_path := prefix_path + segment_piece;
+
+            if get_path_segment_count(prefix_path) <= 1 then
+            begin
+                Continue;
+            end;
+
+            prefix_query := get_query_prefix_for_segment_path(prefix_path);
+            if prefix_query = '' then
+            begin
+                Continue;
+            end;
+
+            combined_query := base_query_prefix + prefix_query;
+            combined_path := prefix_path;
+            if base_path_prefix <> '' then
+            begin
+                combined_path := base_path_prefix + c_segment_path_separator + combined_path;
+            end;
+
+            if (combined_query = '') or (combined_path = '') or
+                ((combined_query = final_query) and (combined_path = final_path)) then
+            begin
+                Continue;
+            end;
+
+            note_session_query_path_choice(combined_query, combined_path);
+        end;
+    end;
 begin
     out_text := '';
     if not m_has_pending_commit then
@@ -10742,6 +11168,8 @@ begin
             append_path_segment(segment.text);
         end;
     end;
+    confirmed_pinyin_prefix := full_pinyin;
+    confirmed_segment_path_prefix := combined_segment_path;
     full_pinyin := full_pinyin + normalized_pinyin;
     if effective_segment_path <> '' then
     begin
@@ -10792,6 +11220,8 @@ begin
                     m_dictionary.record_commit(normalized_pinyin, commit_segment_text);
                     if get_path_segment_count(effective_segment_path) > 1 then
                     begin
+                        record_query_path_prefixes('', '', effective_segment_path,
+                            normalized_pinyin, effective_segment_path);
                         m_dictionary.record_query_segment_path(normalized_pinyin, effective_segment_path);
                     end;
                 end;
@@ -10804,6 +11234,12 @@ begin
                         m_dictionary.record_commit(full_pinyin, commit_text);
                         if get_path_segment_count(combined_segment_path) > 1 then
                         begin
+                            record_query_path_prefixes(
+                                confirmed_pinyin_prefix,
+                                confirmed_segment_path_prefix,
+                                effective_segment_path,
+                                full_pinyin,
+                                combined_segment_path);
                             m_dictionary.record_query_segment_path(full_pinyin, combined_segment_path);
                         end;
                     end;
@@ -10835,6 +11271,8 @@ begin
             note_session_context_query_choice(prev_left_context, normalized_pinyin, commit_segment_text);
             if get_path_segment_count(effective_segment_path) > 1 then
             begin
+                note_session_query_path_prefixes('', '', effective_segment_path,
+                    normalized_pinyin, effective_segment_path);
                 note_session_query_path_choice(normalized_pinyin, effective_segment_path);
             end;
         end;
@@ -10845,6 +11283,12 @@ begin
             note_session_context_query_choice(prev_left_context, full_pinyin, commit_text);
             if get_path_segment_count(combined_segment_path) > 1 then
             begin
+                note_session_query_path_prefixes(
+                    confirmed_pinyin_prefix,
+                    confirmed_segment_path_prefix,
+                    effective_segment_path,
+                    full_pinyin,
+                    combined_segment_path);
                 note_session_query_path_choice(full_pinyin, combined_segment_path);
             end;
         end;
