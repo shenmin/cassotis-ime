@@ -1,11 +1,11 @@
--- cassotis ime sqlite schema v5
+-- cassotis ime sqlite schema v7
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '6');
+INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '7');
 
 CREATE TABLE IF NOT EXISTS dict_base (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,3 +79,13 @@ CREATE TABLE IF NOT EXISTS dict_user_trigram (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dict_user_trigram_prev_pair ON dict_user_trigram(prev_prev_text, prev_text);
+
+CREATE TABLE IF NOT EXISTS dict_user_query_path (
+    query_pinyin TEXT NOT NULL,
+    path_text TEXT NOT NULL,
+    commit_count INTEGER DEFAULT 0,
+    last_used INTEGER DEFAULT 0,
+    PRIMARY KEY(query_pinyin, path_text)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dict_user_query_path_query ON dict_user_query_path(query_pinyin);

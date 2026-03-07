@@ -27,6 +27,7 @@ type
         m_limit: Integer;
         m_bigram_prune_countdown: Integer;
         m_trigram_prune_countdown: Integer;
+        m_query_path_prune_countdown: Integer;
         m_write_batch_depth: Integer;
         m_base_connection: TncSqliteConnection;
         m_user_connection: TncSqliteConnection;
@@ -34,6 +35,7 @@ type
         m_prefix_popularity_cache: TDictionary<string, Integer>;
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
+        m_stmt_query_path_bonus: Psqlite3_stmt;
         m_stmt_candidate_penalty: Psqlite3_stmt;
         m_candidate_penalty_cache: TDictionary<string, Integer>;
         m_debug_mode: Boolean;
@@ -66,6 +68,7 @@ type
         procedure prune_suspicious_user_entries;
         procedure prune_bigram_rows_if_needed(const force: Boolean);
         procedure prune_trigram_rows_if_needed(const force: Boolean);
+        procedure prune_query_path_rows_if_needed(const force: Boolean);
         procedure clear_cached_user_statements;
     public
         constructor create(const base_db_path: string; const user_db_path: string);
@@ -82,9 +85,11 @@ type
         procedure record_context_pair(const left_text: string; const committed_text: string); override;
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); override;
+        procedure record_query_segment_path(const query_key: string; const encoded_path: string); override;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
         function get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
             const candidate_text: string): Integer; override;
+        function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
@@ -104,7 +109,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''6'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''7'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -179,6 +184,17 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_trigram_prev_pair ON dict_user_trigram(prev_prev_text, prev_text);' +
+        sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_user_query_path (' + sLineBreak +
+        '    query_pinyin TEXT NOT NULL,' + sLineBreak +
+        '    path_text TEXT NOT NULL,' + sLineBreak +
+        '    commit_count INTEGER DEFAULT 0,' + sLineBreak +
+        '    last_used INTEGER DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(query_pinyin, path_text)' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_query_path_query ON dict_user_query_path(query_pinyin);' +
         sLineBreak;
 
 type
@@ -744,6 +760,124 @@ begin
     if Result > c_trigram_bonus_cap then
     begin
         Result := c_trigram_bonus_cap;
+    end;
+end;
+
+function calc_query_segment_path_bonus(const commit_count: Integer; const last_used_unix: Int64;
+    const now_unix: Int64): Integer;
+const
+    c_query_path_bonus_cap = 760;
+    c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_3_days = 3 * c_sec_per_day;
+    c_sec_per_7_days = 7 * c_sec_per_day;
+    c_sec_per_30_days = 30 * c_sec_per_day;
+    c_sec_per_90_days = 90 * c_sec_per_day;
+    c_recent_bonus_1d = 108;
+    c_recent_bonus_3d = 72;
+    c_recent_bonus_7d = 44;
+    c_stale_once_penalty_30d = 86;
+    c_stale_once_penalty_90d = 136;
+    c_stale_twice_penalty_90d = 74;
+var
+    recency_bonus: Integer;
+    stale_penalty: Integer;
+    age_seconds: Int64;
+begin
+    Result := 0;
+    if commit_count <= 0 then
+    begin
+        Exit;
+    end;
+
+    Result := commit_count * 112;
+    if commit_count >= 2 then
+    begin
+        Inc(Result, 64);
+    end;
+    if commit_count >= 4 then
+    begin
+        Inc(Result, 44);
+    end;
+
+    recency_bonus := 0;
+    stale_penalty := 0;
+    if (last_used_unix > 0) and (now_unix >= last_used_unix) then
+    begin
+        age_seconds := now_unix - last_used_unix;
+        if age_seconds <= c_sec_per_day then
+        begin
+            recency_bonus := c_recent_bonus_1d;
+        end
+        else if age_seconds <= c_sec_per_3_days then
+        begin
+            recency_bonus := c_recent_bonus_3d;
+        end
+        else if age_seconds <= c_sec_per_7_days then
+        begin
+            recency_bonus := c_recent_bonus_7d;
+        end
+        else if age_seconds <= c_sec_per_30_days then
+        begin
+            recency_bonus := 18;
+        end
+        else if age_seconds <= c_sec_per_90_days then
+        begin
+            recency_bonus := 6;
+        end;
+
+        if commit_count = 1 then
+        begin
+            if age_seconds > c_sec_per_90_days then
+            begin
+                stale_penalty := c_stale_once_penalty_90d;
+            end
+            else if age_seconds > c_sec_per_30_days then
+            begin
+                stale_penalty := c_stale_once_penalty_30d;
+            end;
+        end
+        else if (commit_count = 2) and (age_seconds > c_sec_per_90_days) then
+        begin
+            stale_penalty := c_stale_twice_penalty_90d;
+        end;
+    end;
+
+    Inc(Result, recency_bonus);
+    if stale_penalty > 0 then
+    begin
+        Dec(Result, stale_penalty);
+        if Result < 0 then
+        begin
+            Result := 0;
+        end;
+    end;
+
+    if Result > c_query_path_bonus_cap then
+    begin
+        Result := c_query_path_bonus_cap;
+    end;
+end;
+
+function get_encoded_path_segment_count(const encoded_path: string): Integer;
+var
+    idx: Integer;
+    normalized_path: string;
+const
+    c_segment_path_separator = #3;
+begin
+    normalized_path := Trim(encoded_path);
+    if normalized_path = '' then
+    begin
+        Exit(0);
+    end;
+
+    Result := 1;
+    for idx := 1 to Length(normalized_path) do
+    begin
+        if normalized_path[idx] = c_segment_path_separator then
+        begin
+            Inc(Result);
+        end;
     end;
 end;
 
@@ -1371,9 +1505,11 @@ begin
     m_limit := 256;
     m_bigram_prune_countdown := 64;
     m_trigram_prune_countdown := 64;
+    m_query_path_prune_countdown := 64;
     m_write_batch_depth := 0;
     m_stmt_context_bonus := nil;
     m_stmt_context_trigram_bonus := nil;
+    m_stmt_query_path_bonus := nil;
     m_stmt_candidate_penalty := nil;
     m_base_connection := nil;
     m_user_connection := nil;
@@ -1699,9 +1835,29 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_user_query_path (' +
+        'query_pinyin TEXT NOT NULL,' +
+        'path_text TEXT NOT NULL,' +
+        'commit_count INTEGER DEFAULT 0,' +
+        'last_used INTEGER DEFAULT 0,' +
+        'PRIMARY KEY(query_pinyin, path_text)' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_query_path_query ON dict_user_query_path(query_pinyin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 6);
+        set_schema_version(connection, 7);
         Result := True;
         Exit;
     end;
@@ -1734,6 +1890,11 @@ begin
     if schema_version < 6 then
     begin
         set_schema_version(connection, 6);
+    end;
+
+    if schema_version < 7 then
+    begin
+        set_schema_version(connection, 7);
     end;
 
     Result := True;
@@ -2668,6 +2829,86 @@ begin
     end;
 end;
 
+procedure TncSqliteDictionary.prune_query_path_rows_if_needed(const force: Boolean);
+const
+    count_sql = 'SELECT COUNT(1) FROM dict_user_query_path';
+    delete_sql =
+        'DELETE FROM dict_user_query_path WHERE rowid IN (' +
+        'SELECT rowid FROM dict_user_query_path ' +
+        'ORDER BY last_used ASC, commit_count ASC LIMIT ?1)';
+    c_query_path_prune_interval = 64;
+    c_query_path_max_rows = 60000;
+    c_query_path_target_rows = 52000;
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    row_count: Integer;
+    delete_count: Integer;
+begin
+    if (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    if not force then
+    begin
+        Dec(m_query_path_prune_countdown);
+        if m_query_path_prune_countdown > 0 then
+        begin
+            Exit;
+        end;
+    end;
+
+    m_query_path_prune_countdown := c_query_path_prune_interval;
+    stmt := nil;
+    row_count := 0;
+    try
+        if not m_user_connection.prepare(count_sql, stmt) then
+        begin
+            Exit;
+        end;
+        step_result := m_user_connection.step(stmt);
+        if step_result = SQLITE_ROW then
+        begin
+            row_count := m_user_connection.column_int(stmt, 0);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    if row_count <= c_query_path_max_rows then
+    begin
+        Exit;
+    end;
+
+    delete_count := row_count - c_query_path_target_rows;
+    if delete_count <= 0 then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_user_connection.prepare(delete_sql, stmt) then
+        begin
+            Exit;
+        end;
+        if not m_user_connection.bind_int(stmt, 1, delete_count) then
+        begin
+            Exit;
+        end;
+        m_user_connection.step(stmt);
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
 function TncSqliteDictionary.open: Boolean;
 begin
     m_ready := False;
@@ -2714,6 +2955,7 @@ begin
                 configure_user_connection;
                 prune_bigram_rows_if_needed(True);
                 prune_trigram_rows_if_needed(True);
+                prune_query_path_rows_if_needed(True);
             end;
         end;
     end;
@@ -2770,6 +3012,11 @@ begin
     begin
         m_user_connection.finalize(m_stmt_context_trigram_bonus);
         m_stmt_context_trigram_bonus := nil;
+    end;
+    if (m_stmt_query_path_bonus <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_query_path_bonus);
+        m_stmt_query_path_bonus := nil;
     end;
     if (m_stmt_candidate_penalty <> nil) and (m_user_connection <> nil) then
     begin
@@ -4778,6 +5025,68 @@ begin
     prune_trigram_rows_if_needed(False);
 end;
 
+procedure TncSqliteDictionary.record_query_segment_path(const query_key: string; const encoded_path: string);
+const
+    update_sql = 'UPDATE dict_user_query_path SET commit_count = commit_count + 1, ' +
+        'last_used = strftime(''%s'',''now'') WHERE query_pinyin = ?1 AND path_text = ?2';
+    insert_sql = 'INSERT OR IGNORE INTO dict_user_query_path(query_pinyin, path_text, commit_count, last_used) ' +
+        'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
+var
+    stmt_update: Psqlite3_stmt;
+    stmt_insert: Psqlite3_stmt;
+    normalized_query: string;
+    normalized_path: string;
+begin
+    normalized_query := LowerCase(Trim(query_key));
+    normalized_path := Trim(encoded_path);
+    if (normalized_query = '') or (normalized_path = '') or
+        (get_encoded_path_segment_count(normalized_path) <= 1) or
+        (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    stmt_update := nil;
+    stmt_insert := nil;
+    try
+        if not m_user_connection.prepare(update_sql, stmt_update) then
+        begin
+            Exit;
+        end;
+        if not m_user_connection.prepare(insert_sql, stmt_insert) then
+        begin
+            Exit;
+        end;
+
+        if m_user_connection.reset(stmt_update) and
+            m_user_connection.clear_bindings(stmt_update) and
+            m_user_connection.bind_text(stmt_update, 1, normalized_query) and
+            m_user_connection.bind_text(stmt_update, 2, normalized_path) then
+        begin
+            m_user_connection.step(stmt_update);
+        end;
+
+        if m_user_connection.reset(stmt_insert) and
+            m_user_connection.clear_bindings(stmt_insert) and
+            m_user_connection.bind_text(stmt_insert, 1, normalized_query) and
+            m_user_connection.bind_text(stmt_insert, 2, normalized_path) then
+        begin
+            m_user_connection.step(stmt_insert);
+        end;
+    finally
+        if stmt_update <> nil then
+        begin
+            m_user_connection.finalize(stmt_update);
+        end;
+        if stmt_insert <> nil then
+        begin
+            m_user_connection.finalize(stmt_insert);
+        end;
+    end;
+
+    prune_query_path_rows_if_needed(False);
+end;
+
 function TncSqliteDictionary.get_context_bonus(const left_text: string; const candidate_text: string): Integer;
 const
     query_sql = 'SELECT commit_count, last_used FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
@@ -4895,6 +5204,67 @@ begin
         begin
             m_user_connection.reset(m_stmt_context_trigram_bonus);
             m_user_connection.clear_bindings(m_stmt_context_trigram_bonus);
+        end;
+    end;
+end;
+
+function TncSqliteDictionary.get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer;
+const
+    query_sql =
+        'SELECT commit_count, last_used FROM dict_user_query_path ' +
+        'WHERE query_pinyin = ?1 AND path_text = ?2 LIMIT 1';
+var
+    step_result: Integer;
+    normalized_query: string;
+    normalized_path: string;
+    commit_count: Integer;
+    last_used_unix: Int64;
+begin
+    Result := 0;
+    normalized_query := LowerCase(Trim(query_key));
+    normalized_path := Trim(encoded_path);
+    if (normalized_query = '') or (normalized_path = '') or
+        (get_encoded_path_segment_count(normalized_path) <= 1) or
+        (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    try
+        if m_stmt_query_path_bonus = nil then
+        begin
+            if not m_user_connection.prepare(query_sql, m_stmt_query_path_bonus) then
+            begin
+                Exit;
+            end;
+        end;
+        if (not m_user_connection.reset(m_stmt_query_path_bonus)) or
+            (not m_user_connection.clear_bindings(m_stmt_query_path_bonus)) or
+            (not m_user_connection.bind_text(m_stmt_query_path_bonus, 1, normalized_query)) or
+            (not m_user_connection.bind_text(m_stmt_query_path_bonus, 2, normalized_path)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(m_stmt_query_path_bonus);
+        if step_result <> SQLITE_ROW then
+        begin
+            Exit;
+        end;
+
+        commit_count := m_user_connection.column_int(m_stmt_query_path_bonus, 0);
+        if commit_count <= 0 then
+        begin
+            Exit;
+        end;
+
+        last_used_unix := m_user_connection.column_int(m_stmt_query_path_bonus, 1);
+        Result := calc_query_segment_path_bonus(commit_count, last_used_unix, get_unix_time_now);
+    finally
+        if m_stmt_query_path_bonus <> nil then
+        begin
+            m_user_connection.reset(m_stmt_query_path_bonus);
+            m_user_connection.clear_bindings(m_stmt_query_path_bonus);
         end;
     end;
 end;

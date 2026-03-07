@@ -63,6 +63,9 @@ type
         m_session_query_choice_last_seen: TDictionary<string, Int64>;
         m_session_query_choice_order: TQueue<string>;
         m_session_query_latest_text: TDictionary<string, string>;
+        m_session_query_path_choice_counts: TDictionary<string, Integer>;
+        m_session_query_path_choice_last_seen: TDictionary<string, Int64>;
+        m_session_query_path_choice_order: TQueue<string>;
         m_session_context_query_choice_counts: TDictionary<string, Integer>;
         m_session_context_query_choice_last_seen: TDictionary<string, Int64>;
         m_session_context_query_choice_order: TQueue<string>;
@@ -75,6 +78,7 @@ type
         m_lookup_text_unit_count_cache: TDictionary<string, Integer>;
         m_lookup_session_bonus_cache: TDictionary<string, Integer>;
         m_lookup_query_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_query_path_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_query_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_query_latest_bonus_cache: TDictionary<string, Integer>;
         m_lookup_phrase_context_bonus_cache: TDictionary<string, Integer>;
@@ -116,16 +120,20 @@ type
         function get_context_variants(const context_text: string): TArray<string>;
         function get_session_text_bonus(const candidate_text: string): Integer;
         function build_session_query_choice_key(const query_key: string; const candidate_text: string): string;
+        function build_session_query_path_choice_key(const query_key: string; const encoded_path: string): string;
         function build_context_query_scope_key(const context_text: string; const query_key: string): string;
         function build_context_query_choice_key(const context_text: string; const query_key: string;
             const candidate_text: string): string;
         function get_session_query_bonus(const candidate_text: string): Integer;
+        function get_session_query_path_bonus(const query_key: string; const encoded_path: string): Integer;
+        function get_session_query_path_prefix_bonus(const query_key: string; const encoded_path: string): Integer;
         function get_context_query_bonus(const candidate_text: string): Integer;
         function get_context_query_latest_bonus(const candidate_text: string): Integer;
         function is_latest_session_query_choice(const candidate_text: string): Boolean;
         function get_phrase_context_bonus(const candidate_text: string): Integer;
         function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
+        function get_segment_path_preference_score(const encoded_path: string): Integer;
         procedure get_recent_path_context_seed(out prev_prev_text: string; out prev_text: string);
         function get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
         function get_candidate_debug_summary(const candidate: TncCandidate): string;
@@ -176,6 +184,7 @@ type
         procedure record_context_pair(const left_text: string; const committed_text: string);
         procedure note_session_commit(const text: string);
         procedure note_session_query_choice(const query_key: string; const text: string);
+        procedure note_session_query_path_choice(const query_key: string; const encoded_path: string);
         procedure note_session_context_query_choice(const context_text: string; const query_key: string;
             const text: string);
         procedure track_phrase_context_key(const phrase_key: string; const current_serial: Int64);
@@ -252,9 +261,11 @@ const
     c_context_score_bonus_max = 400;
     c_session_text_history_limit = 256;
     c_session_query_history_limit = 320;
+    c_session_query_path_history_limit = 384;
     c_session_context_query_history_limit = 384;
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
+    c_session_query_path_separator = #4;
 
 type
     TncAiSharedProvider = class(TncAiProvider)
@@ -279,6 +290,27 @@ begin
     Result := Format('%d|%s|%s|%s',
         [Ord(config.ai_llama_backend), LowerCase(Trim(config.ai_llama_runtime_dir_cpu)),
         LowerCase(Trim(config.ai_llama_runtime_dir_cuda)), LowerCase(Trim(config.ai_llama_model_path))]);
+end;
+
+function get_encoded_path_segment_count_local(const encoded_path: string): Integer;
+var
+    idx: Integer;
+    trimmed_path: string;
+begin
+    trimmed_path := Trim(encoded_path);
+    if trimmed_path = '' then
+    begin
+        Exit(0);
+    end;
+
+    Result := 1;
+    for idx := 1 to Length(trimmed_path) do
+    begin
+        if trimmed_path[idx] = c_segment_path_separator then
+        begin
+            Inc(Result);
+        end;
+    end;
 end;
 
 function ensure_shared_ai_provider_locked(const config: TncEngineConfig): TncAiProvider;
@@ -464,6 +496,9 @@ begin
     m_session_query_choice_last_seen := TDictionary<string, Int64>.Create;
     m_session_query_choice_order := TQueue<string>.Create;
     m_session_query_latest_text := TDictionary<string, string>.Create;
+    m_session_query_path_choice_counts := TDictionary<string, Integer>.Create;
+    m_session_query_path_choice_last_seen := TDictionary<string, Int64>.Create;
+    m_session_query_path_choice_order := TQueue<string>.Create;
     m_session_context_query_choice_counts := TDictionary<string, Integer>.Create;
     m_session_context_query_choice_last_seen := TDictionary<string, Int64>.Create;
     m_session_context_query_choice_order := TQueue<string>.Create;
@@ -476,6 +511,7 @@ begin
     m_lookup_text_unit_count_cache := TDictionary<string, Integer>.Create;
     m_lookup_session_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_query_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_query_path_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_query_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_query_latest_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_phrase_context_bonus_cache := TDictionary<string, Integer>.Create;
@@ -532,6 +568,11 @@ begin
         m_session_query_choice_order.Free;
         m_session_query_choice_order := nil;
     end;
+    if m_session_query_path_choice_order <> nil then
+    begin
+        m_session_query_path_choice_order.Free;
+        m_session_query_path_choice_order := nil;
+    end;
 
     if m_session_text_last_seen <> nil then
     begin
@@ -547,6 +588,11 @@ begin
     begin
         m_session_query_latest_text.Free;
         m_session_query_latest_text := nil;
+    end;
+    if m_session_query_path_choice_last_seen <> nil then
+    begin
+        m_session_query_path_choice_last_seen.Free;
+        m_session_query_path_choice_last_seen := nil;
     end;
     if m_session_context_query_choice_order <> nil then
     begin
@@ -590,6 +636,11 @@ begin
     begin
         m_lookup_query_bonus_cache.Free;
         m_lookup_query_bonus_cache := nil;
+    end;
+    if m_lookup_query_path_bonus_cache <> nil then
+    begin
+        m_lookup_query_path_bonus_cache.Free;
+        m_lookup_query_path_bonus_cache := nil;
     end;
     if m_lookup_context_query_bonus_cache <> nil then
     begin
@@ -656,6 +707,11 @@ begin
         m_session_query_choice_counts.Free;
         m_session_query_choice_counts := nil;
     end;
+    if m_session_query_path_choice_counts <> nil then
+    begin
+        m_session_query_path_choice_counts.Free;
+        m_session_query_path_choice_counts := nil;
+    end;
 
     inherited Destroy;
 end;
@@ -673,6 +729,10 @@ begin
     if m_lookup_query_bonus_cache <> nil then
     begin
         m_lookup_query_bonus_cache.Clear;
+    end;
+    if m_lookup_query_path_bonus_cache <> nil then
+    begin
+        m_lookup_query_path_bonus_cache.Clear;
     end;
     if m_lookup_context_query_bonus_cache <> nil then
     begin
@@ -720,26 +780,8 @@ procedure TncEngine.remember_segment_path_for_candidate(const candidate_text: st
 var
     key: string;
     existing_path: string;
-    function get_segment_count(const path_text: string): Integer;
-    var
-        idx: Integer;
-        trimmed_path: string;
-    begin
-        trimmed_path := Trim(path_text);
-        if trimmed_path = '' then
-        begin
-            Exit(0);
-        end;
-
-        Result := 1;
-        for idx := 1 to Length(trimmed_path) do
-        begin
-            if trimmed_path[idx] = c_segment_path_separator then
-            begin
-                Inc(Result);
-            end;
-        end;
-    end;
+    existing_preference: Integer;
+    new_preference: Integer;
 begin
     if (encoded_path = '') or (m_current_segment_path_map = nil) then
     begin
@@ -757,8 +799,13 @@ begin
         // The same visible candidate text can be reached through multiple segment paths.
         // Keep the path with fewer segments so phrase-context learning records the more
         // natural chunk boundary (e.g. "有点|奇怪" instead of "有|点|奇怪").
-        if (get_segment_count(encoded_path) < get_segment_count(existing_path)) or
-            ((get_segment_count(encoded_path) = get_segment_count(existing_path)) and
+        existing_preference := get_segment_path_preference_score(existing_path);
+        new_preference := get_segment_path_preference_score(encoded_path);
+        if (new_preference > existing_preference + 24) or
+            ((new_preference = existing_preference) and
+            (get_encoded_path_segment_count_local(encoded_path) < get_encoded_path_segment_count_local(existing_path))) or
+            ((new_preference = existing_preference) and
+            (get_encoded_path_segment_count_local(encoded_path) = get_encoded_path_segment_count_local(existing_path)) and
             (Length(encoded_path) < Length(existing_path))) then
         begin
             m_current_segment_path_map.AddOrSetValue(key, encoded_path);
@@ -4273,6 +4320,20 @@ begin
     Result := query_key + #1 + text_key;
 end;
 
+function TncEngine.build_session_query_path_choice_key(const query_key: string; const encoded_path: string): string;
+var
+    path_key: string;
+begin
+    path_key := Trim(encoded_path);
+    if (query_key = '') or (path_key = '') or (get_encoded_path_segment_count_local(path_key) <= 1) then
+    begin
+        Result := '';
+        Exit;
+    end;
+
+    Result := query_key + c_session_query_path_separator + path_key;
+end;
+
 function TncEngine.build_context_query_scope_key(const context_text: string; const query_key: string): string;
 var
     context_key: string;
@@ -4401,6 +4462,205 @@ begin
     if (key <> '') and (m_lookup_query_bonus_cache <> nil) then
     begin
         m_lookup_query_bonus_cache.AddOrSetValue(key, Result);
+    end;
+end;
+
+function TncEngine.get_session_query_path_bonus(const query_key: string; const encoded_path: string): Integer;
+const
+    c_query_path_base = 88;
+    c_query_path_step = 72;
+    c_query_path_cap = 760;
+    c_query_path_recent_latest = 168;
+    c_query_path_recent_top = 112;
+    c_query_path_recent_mid = 68;
+    c_query_path_recent_tail = 36;
+var
+    cache_key: string;
+    count: Integer;
+    key: string;
+    last_seen_serial: Int64;
+    normalized_query: string;
+    normalized_path: string;
+    recent_bonus: Integer;
+    serial_gap: Int64;
+begin
+    normalized_query := normalize_pinyin_text(query_key);
+    normalized_path := Trim(encoded_path);
+    key := build_session_query_path_choice_key(normalized_query, normalized_path);
+    cache_key := 'E' + #1 + key;
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) and
+        m_lookup_query_path_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    Result := 0;
+    if (key = '') or (m_session_query_path_choice_counts = nil) then
+    begin
+        Exit;
+    end;
+    if (not m_session_query_path_choice_counts.TryGetValue(key, count)) or (count <= 0) then
+    begin
+        Exit;
+    end;
+
+    last_seen_serial := 0;
+    serial_gap := High(Int64);
+    if (m_session_query_path_choice_last_seen <> nil) and
+        m_session_query_path_choice_last_seen.TryGetValue(key, last_seen_serial) and
+        (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+    begin
+        serial_gap := m_session_commit_serial - last_seen_serial;
+    end;
+
+    recent_bonus := 0;
+    if serial_gap = 0 then
+    begin
+        recent_bonus := c_query_path_recent_latest;
+    end
+    else if serial_gap <= 1 then
+    begin
+        recent_bonus := c_query_path_recent_top;
+    end
+    else if serial_gap <= 3 then
+    begin
+        recent_bonus := c_query_path_recent_mid;
+    end
+    else if serial_gap <= 6 then
+    begin
+        recent_bonus := c_query_path_recent_tail;
+    end;
+
+    Result := c_query_path_base + (count * c_query_path_step) + recent_bonus;
+    if count >= 2 then
+    begin
+        Inc(Result, 52);
+    end;
+    if count >= 4 then
+    begin
+        Inc(Result, 36);
+    end;
+
+    if Result > c_query_path_cap then
+    begin
+        Result := c_query_path_cap;
+    end;
+
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) then
+    begin
+        m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
+function TncEngine.get_session_query_path_prefix_bonus(const query_key: string; const encoded_path: string): Integer;
+const
+    c_query_path_prefix_base = 44;
+    c_query_path_prefix_step = 36;
+    c_query_path_prefix_cap = 260;
+    c_query_path_prefix_recent_top = 54;
+    c_query_path_prefix_recent_mid = 28;
+    c_query_path_prefix_recent_tail = 12;
+var
+    cache_key: string;
+    count: Integer;
+    current_key: string;
+    current_serial: Int64;
+    key_pair: TPair<string, Integer>;
+    last_seen_serial: Int64;
+    local_bonus: Integer;
+    normalized_query: string;
+    normalized_path: string;
+    prefix_with_separator: string;
+    recent_bonus: Integer;
+    serial_gap: Int64;
+    session_query_prefix: string;
+    stored_path: string;
+begin
+    normalized_query := normalize_pinyin_text(query_key);
+    normalized_path := Trim(encoded_path);
+    if (normalized_query = '') or (normalized_path = '') or
+        (get_encoded_path_segment_count_local(normalized_path) <= 1) then
+    begin
+        Exit(0);
+    end;
+
+    cache_key := 'P' + #1 + build_session_query_path_choice_key(normalized_query, normalized_path);
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) and
+        m_lookup_query_path_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    Result := 0;
+    if (m_session_query_path_choice_counts = nil) or (m_session_query_path_choice_counts.Count <= 0) then
+    begin
+        Exit;
+    end;
+
+    prefix_with_separator := normalized_path + c_segment_path_separator;
+    session_query_prefix := normalized_query + c_session_query_path_separator;
+    current_serial := m_session_commit_serial;
+    for key_pair in m_session_query_path_choice_counts do
+    begin
+        current_key := key_pair.Key;
+        if (Length(current_key) <= Length(session_query_prefix)) or
+            (Copy(current_key, 1, Length(session_query_prefix)) <> session_query_prefix) then
+        begin
+            Continue;
+        end;
+
+        stored_path := Copy(current_key, Length(session_query_prefix) + 1, MaxInt);
+        if (stored_path <> normalized_path) and
+            (Copy(stored_path, 1, Length(prefix_with_separator)) <> prefix_with_separator) then
+        begin
+            Continue;
+        end;
+
+        count := key_pair.Value;
+        if count <= 0 then
+        begin
+            Continue;
+        end;
+
+        last_seen_serial := 0;
+        serial_gap := High(Int64);
+        if (m_session_query_path_choice_last_seen <> nil) and
+            m_session_query_path_choice_last_seen.TryGetValue(current_key, last_seen_serial) and
+            (last_seen_serial > 0) and (current_serial >= last_seen_serial) then
+        begin
+            serial_gap := current_serial - last_seen_serial;
+        end;
+
+        recent_bonus := 0;
+        if serial_gap <= 1 then
+        begin
+            recent_bonus := c_query_path_prefix_recent_top;
+        end
+        else if serial_gap <= 3 then
+        begin
+            recent_bonus := c_query_path_prefix_recent_mid;
+        end
+        else if serial_gap <= 6 then
+        begin
+            recent_bonus := c_query_path_prefix_recent_tail;
+        end;
+
+        local_bonus := c_query_path_prefix_base + (count * c_query_path_prefix_step) + recent_bonus +
+            ((get_encoded_path_segment_count_local(stored_path) -
+            get_encoded_path_segment_count_local(normalized_path)) * 12);
+        if local_bonus > c_query_path_prefix_cap then
+        begin
+            local_bonus := c_query_path_prefix_cap;
+        end;
+        if local_bonus > Result then
+        begin
+            Result := local_bonus;
+        end;
+    end;
+
+    if (cache_key <> '') and (m_lookup_query_path_bonus_cache <> nil) then
+    begin
+        m_lookup_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
     end;
 end;
 
@@ -5442,6 +5702,27 @@ begin
     end;
 end;
 
+function TncEngine.get_segment_path_preference_score(const encoded_path: string): Integer;
+var
+    normalized_path: string;
+begin
+    normalized_path := Trim(encoded_path);
+    if get_encoded_path_segment_count_local(normalized_path) <= 1 then
+    begin
+        Exit(0);
+    end;
+
+    Result := -(get_encoded_path_segment_count_local(normalized_path) * 18);
+    if m_last_lookup_key <> '' then
+    begin
+        Inc(Result, get_session_query_path_bonus(m_last_lookup_key, normalized_path));
+        if m_dictionary <> nil then
+        begin
+            Inc(Result, m_dictionary.get_query_segment_path_bonus(m_last_lookup_key, normalized_path));
+        end;
+    end;
+end;
+
 procedure TncEngine.get_recent_path_context_seed(out prev_prev_text: string; out prev_text: string);
 var
     context_value: string;
@@ -5795,6 +6076,23 @@ begin
         end;
         current_prev_prev_text := current_prev_text;
         current_prev_text := path_segments[idx];
+    end;
+
+    if m_last_lookup_key <> '' then
+    begin
+        transition_bonus := get_session_query_path_bonus(m_last_lookup_key, encoded_path);
+        if transition_bonus > 0 then
+        begin
+            Inc(Result, transition_bonus);
+        end;
+        if m_dictionary <> nil then
+        begin
+            transition_bonus := m_dictionary.get_query_segment_path_bonus(m_last_lookup_key, encoded_path);
+            if transition_bonus > 0 then
+            begin
+                Inc(Result, transition_bonus);
+            end;
+        end;
     end;
 
     if m_lookup_segment_path_context_bonus_cache <> nil then
@@ -7282,6 +7580,7 @@ var
         local_rank_map: TDictionary<string, Integer>;
         local_rank: Integer;
         local_path_transition_bonus: Integer;
+        local_query_path_bonus: Integer;
 
         function build_state_key(const value: TncSegmentPathState): string;
         begin
@@ -8105,6 +8404,35 @@ var
                                 end;
                                 local_new_state.path_text := local_new_state.path_text + local_candidate_text;
                             end;
+                            if (m_last_lookup_key <> '') and
+                                (get_encoded_path_segment_count_local(local_new_state.path_text) > 1) then
+                            begin
+                                local_query_path_bonus := get_session_query_path_prefix_bonus(
+                                    m_last_lookup_key, local_new_state.path_text);
+                                if local_query_path_bonus > 0 then
+                                begin
+                                    Inc(local_new_state.score, local_query_path_bonus);
+                                end;
+
+                                if next_pos = Length(syllables) then
+                                begin
+                                    local_query_path_bonus := get_session_query_path_bonus(
+                                        m_last_lookup_key, local_new_state.path_text);
+                                    if local_query_path_bonus > 0 then
+                                    begin
+                                        Inc(local_new_state.score, local_query_path_bonus div 2);
+                                    end;
+                                    if m_dictionary <> nil then
+                                    begin
+                                        local_query_path_bonus := m_dictionary.get_query_segment_path_bonus(
+                                            m_last_lookup_key, local_new_state.path_text);
+                                        if local_query_path_bonus > 0 then
+                                        begin
+                                            Inc(local_new_state.score, local_query_path_bonus div 2);
+                                        end;
+                                    end;
+                                end;
+                            end;
                             append_state(next_pos, local_new_state);
                         end;
                     end;
@@ -8703,6 +9031,66 @@ begin
         else
         begin
             m_session_query_choice_counts.AddOrSetValue(evict_key, count);
+        end;
+    end;
+end;
+
+procedure TncEngine.note_session_query_path_choice(const query_key: string; const encoded_path: string);
+var
+    count: Integer;
+    current_serial: Int64;
+    evict_key: string;
+    key: string;
+begin
+    key := build_session_query_path_choice_key(normalize_pinyin_text(query_key), encoded_path);
+    if (key = '') or (m_session_query_path_choice_counts = nil) or
+        (m_session_query_path_choice_order = nil) then
+    begin
+        Exit;
+    end;
+
+    current_serial := m_session_commit_serial;
+    if current_serial <= 0 then
+    begin
+        current_serial := 1;
+    end;
+
+    if m_session_query_path_choice_counts.TryGetValue(key, count) then
+    begin
+        Inc(count);
+        m_session_query_path_choice_counts.AddOrSetValue(key, count);
+    end
+    else
+    begin
+        m_session_query_path_choice_counts.Add(key, 1);
+    end;
+
+    if m_session_query_path_choice_last_seen <> nil then
+    begin
+        m_session_query_path_choice_last_seen.AddOrSetValue(key, current_serial);
+    end;
+
+    m_session_query_path_choice_order.Enqueue(key);
+    while m_session_query_path_choice_order.Count > c_session_query_path_history_limit do
+    begin
+        evict_key := m_session_query_path_choice_order.Dequeue;
+        if not m_session_query_path_choice_counts.TryGetValue(evict_key, count) then
+        begin
+            Continue;
+        end;
+
+        Dec(count);
+        if count <= 0 then
+        begin
+            m_session_query_path_choice_counts.Remove(evict_key);
+            if m_session_query_path_choice_last_seen <> nil then
+            begin
+                m_session_query_path_choice_last_seen.Remove(evict_key);
+            end;
+        end
+        else
+        begin
+            m_session_query_path_choice_counts.AddOrSetValue(evict_key, count);
         end;
     end;
 end;
@@ -10290,6 +10678,10 @@ begin
                 if (normalized_pinyin <> '') and (commit_segment_text <> '') then
                 begin
                     m_dictionary.record_commit(normalized_pinyin, commit_segment_text);
+                    if get_path_segment_count(effective_segment_path) > 1 then
+                    begin
+                        m_dictionary.record_query_segment_path(normalized_pinyin, effective_segment_path);
+                    end;
                 end;
 
                 if commit_text <> '' then
@@ -10298,6 +10690,10 @@ begin
                         ((full_pinyin <> normalized_pinyin) or (commit_text <> commit_segment_text)) then
                     begin
                         m_dictionary.record_commit(full_pinyin, commit_text);
+                        if get_path_segment_count(combined_segment_path) > 1 then
+                        begin
+                            m_dictionary.record_query_segment_path(full_pinyin, combined_segment_path);
+                        end;
                     end;
                 end;
             end;
@@ -10325,12 +10721,20 @@ begin
         begin
             note_session_query_choice(normalized_pinyin, commit_segment_text);
             note_session_context_query_choice(prev_left_context, normalized_pinyin, commit_segment_text);
+            if get_path_segment_count(effective_segment_path) > 1 then
+            begin
+                note_session_query_path_choice(normalized_pinyin, effective_segment_path);
+            end;
         end;
         if (full_pinyin <> '') and ((full_pinyin <> normalized_pinyin) or (commit_text <> commit_segment_text)) and
             (commit_text <> '') then
         begin
             note_session_query_choice(full_pinyin, commit_text);
             note_session_context_query_choice(prev_left_context, full_pinyin, commit_text);
+            if get_path_segment_count(combined_segment_path) > 1 then
+            begin
+                note_session_query_path_choice(full_pinyin, combined_segment_path);
+            end;
         end;
     end;
     if commit_text <> '' then
