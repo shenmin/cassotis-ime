@@ -1156,6 +1156,8 @@ var
     global_state_changed: Boolean;
     config_to_save: TncEngineConfig;
     lookup_debug_info: string;
+    process_start_tick: UInt64;
+    process_elapsed_ms: Int64;
 begin
     handled := False;
     commit_text := '';
@@ -1177,7 +1179,9 @@ begin
     try
         touch_session_activity(session_id);
         session.engine.reload_dictionary_if_needed;
+        process_start_tick := GetTickCount64;
         handled := session.engine.process_key(key_code, key_state);
+        process_elapsed_ms := Int64(GetTickCount64 - process_start_tick);
 
         config := session.engine.config;
         input_mode := config.input_mode;
@@ -1218,6 +1222,14 @@ begin
             selected_index := session.engine.get_selected_index;
             preedit_text := session.engine.get_composition_text;
             lookup_debug_info := session.engine.get_lookup_debug_info;
+            if config.debug_mode then
+            begin
+                if lookup_debug_info <> '' then
+                begin
+                    lookup_debug_info := lookup_debug_info + ' ';
+                end;
+                lookup_debug_info := lookup_debug_info + Format('host=[proc=%d]', [process_elapsed_ms]);
+            end;
             host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
                 [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
                 sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates), page_index + 1,

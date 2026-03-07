@@ -58,6 +58,10 @@ type
         m_session_text_counts: TDictionary<string, Integer>;
         m_session_text_last_seen: TDictionary<string, Int64>;
         m_session_text_order: TQueue<string>;
+        m_session_query_choice_counts: TDictionary<string, Integer>;
+        m_session_query_choice_last_seen: TDictionary<string, Int64>;
+        m_session_query_choice_order: TQueue<string>;
+        m_session_query_latest_text: TDictionary<string, string>;
         m_session_commit_serial: Int64;
         m_last_output_commit_text: string;
         m_prev_output_commit_text: string;
@@ -65,6 +69,7 @@ type
         m_context_db_bonus_cache: TDictionary<string, Integer>;
         m_lookup_text_unit_count_cache: TDictionary<string, Integer>;
         m_lookup_session_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_query_bonus_cache: TDictionary<string, Integer>;
         m_lookup_phrase_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_text_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_bonus_cache: TDictionary<string, Integer>;
@@ -98,6 +103,9 @@ type
         function get_source_rank(const source: TncCandidateSource): Integer;
         function get_context_variants(const context_text: string): TArray<string>;
         function get_session_text_bonus(const candidate_text: string): Integer;
+        function build_session_query_choice_key(const query_key: string; const candidate_text: string): string;
+        function get_session_query_bonus(const candidate_text: string): Integer;
+        function is_latest_session_query_choice(const candidate_text: string): Boolean;
         function get_phrase_context_bonus(const candidate_text: string): Integer;
         function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
@@ -139,6 +147,7 @@ type
         procedure update_left_context(const committed_text: string);
         procedure record_context_pair(const left_text: string; const committed_text: string);
         procedure note_session_commit(const text: string);
+        procedure note_session_query_choice(const query_key: string; const text: string);
         procedure note_output_phrase_context(const committed_text: string);
         procedure set_pending_commit(const text: string; const remaining_pinyin: string = '';
             const allow_learning: Boolean = True);
@@ -193,6 +202,7 @@ const
     c_context_score_bonus = 80;
     c_context_score_bonus_max = 400;
     c_session_text_history_limit = 256;
+    c_session_query_history_limit = 320;
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
 
@@ -400,6 +410,10 @@ begin
     m_session_text_counts := TDictionary<string, Integer>.Create;
     m_session_text_last_seen := TDictionary<string, Int64>.Create;
     m_session_text_order := TQueue<string>.Create;
+    m_session_query_choice_counts := TDictionary<string, Integer>.Create;
+    m_session_query_choice_last_seen := TDictionary<string, Int64>.Create;
+    m_session_query_choice_order := TQueue<string>.Create;
+    m_session_query_latest_text := TDictionary<string, string>.Create;
     m_session_commit_serial := 0;
     m_last_output_commit_text := '';
     m_prev_output_commit_text := '';
@@ -407,6 +421,7 @@ begin
     m_context_db_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_text_unit_count_cache := TDictionary<string, Integer>.Create;
     m_lookup_session_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_query_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_phrase_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_text_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
@@ -452,11 +467,26 @@ begin
         m_session_text_order.Free;
         m_session_text_order := nil;
     end;
+    if m_session_query_choice_order <> nil then
+    begin
+        m_session_query_choice_order.Free;
+        m_session_query_choice_order := nil;
+    end;
 
     if m_session_text_last_seen <> nil then
     begin
         m_session_text_last_seen.Free;
         m_session_text_last_seen := nil;
+    end;
+    if m_session_query_choice_last_seen <> nil then
+    begin
+        m_session_query_choice_last_seen.Free;
+        m_session_query_choice_last_seen := nil;
+    end;
+    if m_session_query_latest_text <> nil then
+    begin
+        m_session_query_latest_text.Free;
+        m_session_query_latest_text := nil;
     end;
 
     if m_context_db_bonus_cache <> nil then
@@ -475,6 +505,11 @@ begin
     begin
         m_lookup_session_bonus_cache.Free;
         m_lookup_session_bonus_cache := nil;
+    end;
+    if m_lookup_query_bonus_cache <> nil then
+    begin
+        m_lookup_query_bonus_cache.Free;
+        m_lookup_query_bonus_cache := nil;
     end;
     if m_lookup_phrase_context_bonus_cache <> nil then
     begin
@@ -515,6 +550,11 @@ begin
         m_session_text_counts.Free;
         m_session_text_counts := nil;
     end;
+    if m_session_query_choice_counts <> nil then
+    begin
+        m_session_query_choice_counts.Free;
+        m_session_query_choice_counts := nil;
+    end;
 
     inherited Destroy;
 end;
@@ -528,6 +568,10 @@ begin
     if m_lookup_session_bonus_cache <> nil then
     begin
         m_lookup_session_bonus_cache.Clear;
+    end;
+    if m_lookup_query_bonus_cache <> nil then
+    begin
+        m_lookup_query_bonus_cache.Clear;
     end;
     if m_lookup_phrase_context_bonus_cache <> nil then
     begin
@@ -3697,6 +3741,140 @@ begin
     end;
 end;
 
+function TncEngine.build_session_query_choice_key(const query_key: string; const candidate_text: string): string;
+var
+    text_key: string;
+begin
+    text_key := Trim(candidate_text);
+    if (query_key = '') or (text_key = '') then
+    begin
+        Result := '';
+        Exit;
+    end;
+
+    Result := query_key + #1 + text_key;
+end;
+
+function TncEngine.get_session_query_bonus(const candidate_text: string): Integer;
+const
+    c_single_query_base = 44;
+    c_single_query_step = 34;
+    c_single_query_cap = 176;
+    c_multi_query_base = 96;
+    c_multi_query_step = 56;
+    c_multi_query_cap = 980;
+    c_query_recent_latest = 900;
+    c_query_recent_top = 180;
+    c_query_recent_mid = 96;
+    c_query_recent_tail = 52;
+var
+    key: string;
+    count: Integer;
+    last_seen_serial: Int64;
+    serial_gap: Int64;
+    text_units: Integer;
+    recent_bonus: Integer;
+begin
+    key := build_session_query_choice_key(m_last_lookup_key, candidate_text);
+    if (key <> '') and (m_lookup_query_bonus_cache <> nil) and
+        m_lookup_query_bonus_cache.TryGetValue(key, Result) then
+    begin
+        Exit;
+    end;
+
+    Result := 0;
+    if (key = '') or (m_session_query_choice_counts = nil) then
+    begin
+        Exit;
+    end;
+    if (not m_session_query_choice_counts.TryGetValue(key, count)) or (count <= 0) then
+    begin
+        Exit;
+    end;
+
+    last_seen_serial := 0;
+    serial_gap := High(Int64);
+    if (m_session_query_choice_last_seen <> nil) and
+        m_session_query_choice_last_seen.TryGetValue(key, last_seen_serial) and
+        (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+    begin
+        serial_gap := m_session_commit_serial - last_seen_serial;
+    end;
+
+    recent_bonus := 0;
+    if serial_gap = 0 then
+    begin
+        recent_bonus := c_query_recent_latest;
+    end
+    else if serial_gap <= 1 then
+    begin
+        recent_bonus := c_query_recent_top;
+    end
+    else if serial_gap <= 3 then
+    begin
+        recent_bonus := c_query_recent_mid;
+    end
+    else if serial_gap <= 6 then
+    begin
+        recent_bonus := c_query_recent_tail;
+    end;
+
+    text_units := get_candidate_text_unit_count(Trim(candidate_text));
+    if text_units <= 1 then
+    begin
+        Result := c_single_query_base + ((count - 1) * c_single_query_step) + (recent_bonus div 3);
+        if count >= 3 then
+        begin
+            Inc(Result, 18);
+        end;
+        if Result > c_single_query_cap then
+        begin
+            Result := c_single_query_cap;
+        end;
+    end
+    else
+    begin
+        Result := c_multi_query_base + ((count - 1) * c_multi_query_step) + recent_bonus;
+        if (count >= 2) and (serial_gap <= 2) then
+        begin
+            Inc(Result, 56);
+        end;
+        if (count >= 3) and (serial_gap <= 4) then
+        begin
+            Inc(Result, 32);
+        end;
+        if Result > c_multi_query_cap then
+        begin
+            Result := c_multi_query_cap;
+        end;
+    end;
+
+    if (key <> '') and (m_lookup_query_bonus_cache <> nil) then
+    begin
+        m_lookup_query_bonus_cache.AddOrSetValue(key, Result);
+    end;
+end;
+
+function TncEngine.is_latest_session_query_choice(const candidate_text: string): Boolean;
+var
+    latest_text: string;
+    text_key: string;
+begin
+    Result := False;
+    text_key := Trim(candidate_text);
+    if (m_last_lookup_key = '') or (text_key = '') or (m_session_query_latest_text = nil) then
+    begin
+        Exit;
+    end;
+
+    if not m_session_query_latest_text.TryGetValue(m_last_lookup_key, latest_text) then
+    begin
+        Exit;
+    end;
+
+    Result := SameText(text_key, latest_text);
+end;
+
 function TncEngine.get_phrase_context_bonus(const candidate_text: string): Integer;
 const
     c_phrase_pair_step = 120;
@@ -4463,6 +4641,7 @@ function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
 var
     context_bonus: Integer;
     session_bonus: Integer;
+    query_bonus: Integer;
     text_units: Integer;
     syllable_gap: Integer;
 begin
@@ -4475,6 +4654,12 @@ begin
         context_bonus := context_bonus div 4;
     end;
     Inc(Result, context_bonus);
+    query_bonus := get_session_query_bonus(candidate.text);
+    if candidate.comment <> '' then
+    begin
+        query_bonus := query_bonus div 2;
+    end;
+    Inc(Result, query_bonus);
     session_bonus := get_session_text_bonus(candidate.text);
     if candidate.comment <> '' then
     begin
@@ -4606,6 +4791,7 @@ var
     text_context_bonus: Integer;
     phrase_context_bonus: Integer;
     context_bonus: Integer;
+    query_bonus: Integer;
     session_bonus: Integer;
     rank_score: Integer;
     layer_value: Integer;
@@ -4614,6 +4800,11 @@ begin
     text_context_bonus := get_text_context_bonus(candidate.text);
     phrase_context_bonus := get_phrase_context_bonus(candidate.text);
     context_bonus := get_context_bonus(candidate.text);
+    query_bonus := get_session_query_bonus(candidate.text);
+    if candidate.comment <> '' then
+    begin
+        query_bonus := query_bonus div 2;
+    end;
     session_bonus := get_session_text_bonus(candidate.text);
     if candidate.comment <> '' then
     begin
@@ -4624,9 +4815,9 @@ begin
     runtime_kind := get_runtime_candidate_kind(candidate);
 
     Result := Format(
-        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d qsess=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
         [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
-        phrase_context_bonus, session_bonus, layer_value, Ord(candidate.comment <> ''),
+        phrase_context_bonus, query_bonus, session_bonus, layer_value, Ord(candidate.comment <> ''),
         candidate.dict_weight, runtime_kind]);
 end;
 
@@ -4638,6 +4829,7 @@ type
         layer: Integer;
         source_rank: Integer;
         text_length: Integer;
+        is_latest_query_choice: Boolean;
     end;
 var
     list: TList<TncCandidateSortItem>;
@@ -4671,6 +4863,7 @@ begin
             end;
             item.source_rank := get_source_rank(candidates[i].source);
             item.text_length := Length(candidates[i].text);
+            item.is_latest_query_choice := is_latest_session_query_choice(candidates[i].text);
             if use_intent_layers and (item.candidate.comment = '') and
                 (item.layer <= 1) and (get_candidate_text_unit_count(item.candidate.text) >= 2) and
                 (item.candidate.has_dict_weight or (item.candidate.source = cs_user) or
@@ -4710,6 +4903,20 @@ begin
         list.Sort(TComparer<TncCandidateSortItem>.Construct(
             function(const left, right: TncCandidateSortItem): Integer
             begin
+                if (left.candidate.comment = '') and (right.candidate.comment = '') then
+                begin
+                    if left.is_latest_query_choice and (not right.is_latest_query_choice) then
+                    begin
+                        Result := -1;
+                        Exit;
+                    end;
+                    if right.is_latest_query_choice and (not left.is_latest_query_choice) then
+                    begin
+                        Result := 1;
+                        Exit;
+                    end;
+                end;
+
                 // Learned user candidates should take priority over rule
                 // candidates when both are complete commit candidates.
                 if (left.candidate.comment = '') and (right.candidate.comment = '') then
@@ -6495,6 +6702,68 @@ begin
     end;
 end;
 
+procedure TncEngine.note_session_query_choice(const query_key: string; const text: string);
+var
+    count: Integer;
+    evict_key: string;
+    key: string;
+    current_serial: Int64;
+begin
+    key := build_session_query_choice_key(normalize_pinyin_text(query_key), text);
+    if (key = '') or (m_session_query_choice_counts = nil) or (m_session_query_choice_order = nil) then
+    begin
+        Exit;
+    end;
+
+    current_serial := m_session_commit_serial;
+    if current_serial <= 0 then
+    begin
+        current_serial := 1;
+    end;
+
+    if m_session_query_choice_counts.TryGetValue(key, count) then
+    begin
+        Inc(count);
+        m_session_query_choice_counts.AddOrSetValue(key, count);
+    end
+    else
+    begin
+        m_session_query_choice_counts.Add(key, 1);
+    end;
+    if m_session_query_choice_last_seen <> nil then
+    begin
+        m_session_query_choice_last_seen.AddOrSetValue(key, current_serial);
+    end;
+    if m_session_query_latest_text <> nil then
+    begin
+        m_session_query_latest_text.AddOrSetValue(normalize_pinyin_text(query_key), Trim(text));
+    end;
+
+    m_session_query_choice_order.Enqueue(key);
+    while m_session_query_choice_order.Count > c_session_query_history_limit do
+    begin
+        evict_key := m_session_query_choice_order.Dequeue;
+        if not m_session_query_choice_counts.TryGetValue(evict_key, count) then
+        begin
+            Continue;
+        end;
+
+        Dec(count);
+        if count <= 0 then
+        begin
+            m_session_query_choice_counts.Remove(evict_key);
+            if m_session_query_choice_last_seen <> nil then
+            begin
+                m_session_query_choice_last_seen.Remove(evict_key);
+            end;
+        end
+        else
+        begin
+            m_session_query_choice_counts.AddOrSetValue(evict_key, count);
+        end;
+    end;
+end;
+
 procedure TncEngine.note_output_phrase_context(const committed_text: string);
 var
     count: Integer;
@@ -7694,6 +7963,15 @@ begin
     prev_left_context := m_left_context;
     update_left_context(out_text);
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
+    full_pinyin := '';
+    if m_confirmed_segments <> nil then
+    begin
+        for segment in m_confirmed_segments do
+        begin
+            full_pinyin := full_pinyin + segment.pinyin;
+        end;
+    end;
+    full_pinyin := full_pinyin + normalized_pinyin;
     if m_dictionary <> nil then
     begin
         m_dictionary.begin_learning_batch;
@@ -7708,16 +7986,6 @@ begin
 
                 if commit_text <> '' then
                 begin
-                    full_pinyin := '';
-                    if m_confirmed_segments <> nil then
-                    begin
-                        for segment in m_confirmed_segments do
-                        begin
-                            full_pinyin := full_pinyin + segment.pinyin;
-                        end;
-                    end;
-                    full_pinyin := full_pinyin + normalized_pinyin;
-
                     if (full_pinyin <> '') and
                         ((full_pinyin <> normalized_pinyin) or (commit_text <> commit_segment_text)) then
                     begin
@@ -7742,6 +8010,18 @@ begin
     if (commit_text <> '') and (commit_text <> commit_segment_text) then
     begin
         note_session_commit(commit_text);
+    end;
+    if allow_learning then
+    begin
+        if (normalized_pinyin <> '') and (commit_segment_text <> '') then
+        begin
+            note_session_query_choice(normalized_pinyin, commit_segment_text);
+        end;
+        if (full_pinyin <> '') and ((full_pinyin <> normalized_pinyin) or (commit_text <> commit_segment_text)) and
+            (commit_text <> '') then
+        begin
+            note_session_query_choice(full_pinyin, commit_text);
+        end;
     end;
     if commit_text <> '' then
     begin
