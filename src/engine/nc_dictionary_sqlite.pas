@@ -86,6 +86,7 @@ type
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); override;
         procedure record_query_segment_path(const query_key: string; const encoded_path: string); override;
+        procedure record_candidate_penalty(const pinyin: string; const text: string); override;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
         function get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
             const candidate_text: string): Integer; override;
@@ -855,6 +856,50 @@ begin
     if Result > c_query_path_bonus_cap then
     begin
         Result := c_query_path_bonus_cap;
+    end;
+end;
+
+function calc_candidate_penalty_value(const penalty_value: Integer; const last_used_unix: Int64;
+    const now_unix: Int64): Integer;
+const
+    c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_7_days = 7 * c_sec_per_day;
+    c_sec_per_30_days = 30 * c_sec_per_day;
+    c_sec_per_90_days = 90 * c_sec_per_day;
+    c_sec_per_180_days = 180 * c_sec_per_day;
+var
+    age_seconds: Int64;
+begin
+    Result := penalty_value;
+    if Result <= 0 then
+    begin
+        Exit(0);
+    end;
+
+    if (last_used_unix > 0) and (now_unix >= last_used_unix) then
+    begin
+        age_seconds := now_unix - last_used_unix;
+        if age_seconds > c_sec_per_180_days then
+        begin
+            Result := (Result * 20) div 100;
+        end
+        else if age_seconds > c_sec_per_90_days then
+        begin
+            Result := (Result * 40) div 100;
+        end
+        else if age_seconds > c_sec_per_30_days then
+        begin
+            Result := (Result * 65) div 100;
+        end
+        else if age_seconds > c_sec_per_7_days then
+        begin
+            Result := (Result * 85) div 100;
+        end;
+    end;
+
+    if Result < 0 then
+    begin
+        Result := 0;
     end;
 end;
 
@@ -5271,12 +5316,13 @@ end;
 
 function TncSqliteDictionary.get_candidate_penalty(const pinyin: string; const text: string): Integer;
 const
-    query_penalty_sql = 'SELECT penalty FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    query_penalty_sql = 'SELECT penalty, last_used FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
 var
     pinyin_key: string;
     text_key: string;
     cache_key: string;
     step_result: Integer;
+    last_used_unix: Int64;
 begin
     Result := 0;
     pinyin_key := LowerCase(Trim(pinyin));
@@ -5312,7 +5358,11 @@ begin
         step_result := m_user_connection.step(m_stmt_candidate_penalty);
         if step_result = SQLITE_ROW then
         begin
-            Result := m_user_connection.column_int(m_stmt_candidate_penalty, 0);
+            last_used_unix := m_user_connection.column_int(m_stmt_candidate_penalty, 1);
+            Result := calc_candidate_penalty_value(
+                m_user_connection.column_int(m_stmt_candidate_penalty, 0),
+                last_used_unix,
+                get_unix_time_now);
         end;
 
         if m_candidate_penalty_cache <> nil then
@@ -5324,6 +5374,65 @@ begin
         begin
             m_user_connection.reset(m_stmt_candidate_penalty);
             m_user_connection.clear_bindings(m_stmt_candidate_penalty);
+        end;
+    end;
+end;
+
+procedure TncSqliteDictionary.record_candidate_penalty(const pinyin: string; const text: string);
+const
+    update_penalty_sql = 'UPDATE dict_user_penalty SET penalty = MIN(penalty + ?3, ?4), ' +
+        'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
+    insert_penalty_sql = 'INSERT OR IGNORE INTO dict_user_penalty(pinyin, text, penalty, last_used) ' +
+        'VALUES (?1, ?2, ?3, strftime(''%s'',''now''))';
+    c_penalty_step = 24;
+    c_penalty_max = 120;
+var
+    stmt: Psqlite3_stmt;
+    pinyin_key: string;
+    text_key: string;
+begin
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    if m_candidate_penalty_cache <> nil then
+    begin
+        m_candidate_penalty_cache.Clear;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(update_penalty_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) and
+            m_user_connection.bind_int(stmt, 3, c_penalty_step) and
+            m_user_connection.bind_int(stmt, 4, c_penalty_max) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(insert_penalty_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) and
+            m_user_connection.bind_int(stmt, 3, c_penalty_step) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
         end;
     end;
 end;

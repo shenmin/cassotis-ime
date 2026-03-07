@@ -18,6 +18,7 @@ type
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); virtual;
         procedure record_query_segment_path(const query_key: string; const encoded_path: string); virtual;
+        procedure record_candidate_penalty(const pinyin: string; const text: string); virtual;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; virtual;
         function get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
             const candidate_text: string): Integer; virtual;
@@ -58,6 +59,10 @@ begin
 end;
 
 procedure TncDictionaryProvider.record_query_segment_path(const query_key: string; const encoded_path: string);
+begin
+end;
+
+procedure TncDictionaryProvider.record_candidate_penalty(const pinyin: string; const text: string);
 begin
 end;
 

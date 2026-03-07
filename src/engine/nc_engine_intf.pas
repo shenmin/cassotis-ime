@@ -145,6 +145,7 @@ type
         function is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_redup_candidate(const candidate: TncCandidate): Boolean;
         function get_runtime_candidate_kind(const candidate: TncCandidate): string;
+        function get_candidate_path_confidence_tier(const candidate: TncCandidate): Integer;
         function get_candidate_confidence_rank(const candidate: TncCandidate): Integer;
         function get_front_row_confidence_bonus(const candidate: TncCandidate): Integer;
         function get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
@@ -5259,6 +5260,34 @@ begin
     end;
 end;
 
+function TncEngine.get_candidate_path_confidence_tier(const candidate: TncCandidate): Integer;
+var
+    encoded_path: string;
+    path_bonus: Integer;
+begin
+    Result := 0;
+    if candidate.comment <> '' then
+    begin
+        Exit;
+    end;
+
+    encoded_path := get_segment_path_for_candidate(candidate);
+    if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+    begin
+        Exit;
+    end;
+
+    path_bonus := get_segment_path_context_bonus(candidate);
+    if path_bonus >= 760 then
+    begin
+        Result := 2;
+    end
+    else if path_bonus >= 320 then
+    begin
+        Result := 1;
+    end;
+end;
+
 function TncEngine.get_candidate_confidence_rank(const candidate: TncCandidate): Integer;
 var
     layer_value: Integer;
@@ -5266,9 +5295,11 @@ var
     context_bonus: Integer;
     query_bonus: Integer;
     session_bonus: Integer;
+    path_confidence_tier: Integer;
 begin
     layer_value := get_multi_syllable_intent_layer(candidate);
     text_units := get_candidate_text_unit_count(candidate.text);
+    path_confidence_tier := get_candidate_path_confidence_tier(candidate);
 
     if candidate.comment <> '' then
     begin
@@ -5347,6 +5378,14 @@ begin
     begin
         Dec(Result);
     end;
+    if path_confidence_tier >= 2 then
+    begin
+        Dec(Result, 2);
+    end
+    else if path_confidence_tier = 1 then
+    begin
+        Dec(Result);
+    end;
     if Result < 0 then
     begin
         Result := 0;
@@ -5357,10 +5396,12 @@ function TncEngine.get_front_row_confidence_bonus(const candidate: TncCandidate)
 var
     text_units: Integer;
     layer_value: Integer;
+    path_confidence_tier: Integer;
 begin
     Result := 0;
     text_units := get_candidate_text_unit_count(candidate.text);
     layer_value := get_multi_syllable_intent_layer(candidate);
+    path_confidence_tier := get_candidate_path_confidence_tier(candidate);
 
     if candidate.comment <> '' then
     begin
@@ -5409,6 +5450,11 @@ begin
     if (candidate.source = cs_rule) and (text_units >= 2) then
     begin
         Dec(Result, 120);
+    end;
+
+    case path_confidence_tier of
+        1: Inc(Result, 52);
+        2: Inc(Result, 112);
     end;
 end;
 
@@ -6515,6 +6561,7 @@ var
     rank_score: Integer;
     layer_value: Integer;
     runtime_kind: string;
+    path_confidence_tier: Integer;
 begin
     text_context_bonus := get_text_context_bonus(candidate.text);
     phrase_context_bonus := get_phrase_context_bonus(candidate.text);
@@ -6535,12 +6582,13 @@ begin
     rank_score := get_rank_score(candidate);
     layer_value := get_multi_syllable_intent_layer(candidate);
     runtime_kind := get_runtime_candidate_kind(candidate);
+    path_confidence_tier := get_candidate_path_confidence_tier(candidate);
 
     Result := Format(
-        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d spath_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d spath_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d path_conf=%d partial=%d dw=%d rt=%s]',
         [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
         phrase_context_bonus, segment_path_context_bonus, context_query_bonus, context_query_latest_bonus, query_bonus,
-        session_bonus, layer_value,
+        session_bonus, layer_value, path_confidence_tier,
         Ord(candidate.comment <> ''), candidate.dict_weight, runtime_kind]);
 end;
 
@@ -9600,6 +9648,11 @@ var
     var
         allow_learning: Boolean;
         segment_path: string;
+        top_candidate: TncCandidate;
+        top_score: Integer;
+        selected_score: Integer;
+        top_confidence_rank: Integer;
+        selected_confidence_rank: Integer;
     begin
         if (selected.comment <> '') and is_compact_ascii_pinyin(selected.comment) then
         begin
@@ -9624,6 +9677,34 @@ var
         if (segment_path <> '') and is_generic_runtime_chain_selection(selected) then
         begin
             allow_learning := True;
+        end;
+
+        if (m_last_lookup_key <> '') and (selected_candidate_index > 0) and
+            (Length(m_candidates) > 0) then
+        begin
+            top_candidate := m_candidates[0];
+            if (top_candidate.comment = '') and (selected.comment = '') and
+                (top_candidate.text <> '') and (selected.text <> '') and
+                (top_candidate.text <> selected.text) and
+                (not is_nonlearnable_runtime_chain_selection(selected)) then
+            begin
+                top_score := get_rank_score(top_candidate);
+                selected_score := get_rank_score(selected);
+                top_confidence_rank := get_candidate_confidence_rank(top_candidate);
+                selected_confidence_rank := get_candidate_confidence_rank(selected);
+                if (selected_confidence_rank < top_confidence_rank) or
+                    ((top_score - selected_score) <= 160) or
+                    is_runtime_chain_candidate(top_candidate) or
+                    ((top_candidate.source = cs_rule) and (not top_candidate.has_dict_weight) and
+                    (not is_runtime_common_pattern_candidate(top_candidate)) and
+                    (not is_runtime_redup_candidate(top_candidate))) then
+                begin
+                    if m_dictionary <> nil then
+                    begin
+                        m_dictionary.record_candidate_penalty(m_last_lookup_key, top_candidate.text);
+                    end;
+                end;
+            end;
         end;
 
         set_pending_commit(selected.text, '', allow_learning,
