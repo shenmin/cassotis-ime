@@ -1156,8 +1156,14 @@ var
     global_state_changed: Boolean;
     config_to_save: TncEngineConfig;
     lookup_debug_info: string;
+    total_start_tick: UInt64;
+    reload_start_tick: UInt64;
     process_start_tick: UInt64;
+    readback_start_tick: UInt64;
+    reload_elapsed_ms: Int64;
     process_elapsed_ms: Int64;
+    readback_elapsed_ms: Int64;
+    total_elapsed_ms: Int64;
 begin
     handled := False;
     commit_text := '';
@@ -1175,10 +1181,13 @@ begin
     session := get_or_create_session(session_id);
     should_hide_candidates := False;
     has_result := True;
+    total_start_tick := GetTickCount64;
     m_lock.Acquire;
     try
         touch_session_activity(session_id);
+        reload_start_tick := GetTickCount64;
         session.engine.reload_dictionary_if_needed;
+        reload_elapsed_ms := Int64(GetTickCount64 - reload_start_tick);
         process_start_tick := GetTickCount64;
         handled := session.engine.process_key(key_code, key_state);
         process_elapsed_ms := Int64(GetTickCount64 - process_start_tick);
@@ -1215,6 +1224,7 @@ begin
 
         if handled and (commit_text = '') then
         begin
+            readback_start_tick := GetTickCount64;
             display_text := session.engine.get_display_text;
             candidates := session.engine.get_candidates;
             page_index := session.engine.get_page_index;
@@ -1222,13 +1232,16 @@ begin
             selected_index := session.engine.get_selected_index;
             preedit_text := session.engine.get_composition_text;
             lookup_debug_info := session.engine.get_lookup_debug_info;
+            readback_elapsed_ms := Int64(GetTickCount64 - readback_start_tick);
+            total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
             if config.debug_mode then
             begin
                 if lookup_debug_info <> '' then
                 begin
                     lookup_debug_info := lookup_debug_info + ' ';
                 end;
-                lookup_debug_info := lookup_debug_info + Format('host=[proc=%d]', [process_elapsed_ms]);
+                lookup_debug_info := lookup_debug_info + Format('host=[reload=%d proc=%d read=%d total=%d]',
+                    [reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms]);
             end;
             host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
                 [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),

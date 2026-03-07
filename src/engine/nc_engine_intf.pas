@@ -66,6 +66,7 @@ type
         m_session_context_query_choice_counts: TDictionary<string, Integer>;
         m_session_context_query_choice_last_seen: TDictionary<string, Int64>;
         m_session_context_query_choice_order: TQueue<string>;
+        m_session_context_query_latest_text: TDictionary<string, string>;
         m_session_commit_serial: Int64;
         m_last_output_commit_text: string;
         m_prev_output_commit_text: string;
@@ -75,6 +76,7 @@ type
         m_lookup_session_bonus_cache: TDictionary<string, Integer>;
         m_lookup_query_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_query_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_context_query_latest_bonus_cache: TDictionary<string, Integer>;
         m_lookup_phrase_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_text_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_bonus_cache: TDictionary<string, Integer>;
@@ -109,10 +111,12 @@ type
         function get_context_variants(const context_text: string): TArray<string>;
         function get_session_text_bonus(const candidate_text: string): Integer;
         function build_session_query_choice_key(const query_key: string; const candidate_text: string): string;
+        function build_context_query_scope_key(const context_text: string; const query_key: string): string;
         function build_context_query_choice_key(const context_text: string; const query_key: string;
             const candidate_text: string): string;
         function get_session_query_bonus(const candidate_text: string): Integer;
         function get_context_query_bonus(const candidate_text: string): Integer;
+        function get_context_query_latest_bonus(const candidate_text: string): Integer;
         function is_latest_session_query_choice(const candidate_text: string): Boolean;
         function get_phrase_context_bonus(const candidate_text: string): Integer;
         function get_text_context_bonus(const candidate_text: string): Integer;
@@ -126,6 +130,7 @@ type
         function is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_redup_candidate(const candidate: TncCandidate): Boolean;
         function get_runtime_candidate_kind(const candidate: TncCandidate): string;
+        function get_candidate_confidence_rank(const candidate: TncCandidate): Integer;
         function get_front_row_confidence_bonus(const candidate: TncCandidate): Integer;
         function get_multi_syllable_intent_layer(const candidate: TncCandidate): Integer;
         function get_rank_score(const candidate: TncCandidate): Integer;
@@ -428,6 +433,7 @@ begin
     m_session_context_query_choice_counts := TDictionary<string, Integer>.Create;
     m_session_context_query_choice_last_seen := TDictionary<string, Int64>.Create;
     m_session_context_query_choice_order := TQueue<string>.Create;
+    m_session_context_query_latest_text := TDictionary<string, string>.Create;
     m_session_commit_serial := 0;
     m_last_output_commit_text := '';
     m_prev_output_commit_text := '';
@@ -437,6 +443,7 @@ begin
     m_lookup_session_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_query_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_query_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_context_query_latest_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_phrase_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_text_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
@@ -508,6 +515,11 @@ begin
         m_session_context_query_choice_order.Free;
         m_session_context_query_choice_order := nil;
     end;
+    if m_session_context_query_latest_text <> nil then
+    begin
+        m_session_context_query_latest_text.Free;
+        m_session_context_query_latest_text := nil;
+    end;
     if m_session_context_query_choice_last_seen <> nil then
     begin
         m_session_context_query_choice_last_seen.Free;
@@ -545,6 +557,11 @@ begin
     begin
         m_lookup_context_query_bonus_cache.Free;
         m_lookup_context_query_bonus_cache := nil;
+    end;
+    if m_lookup_context_query_latest_bonus_cache <> nil then
+    begin
+        m_lookup_context_query_latest_bonus_cache.Free;
+        m_lookup_context_query_latest_bonus_cache := nil;
     end;
     if m_lookup_phrase_context_bonus_cache <> nil then
     begin
@@ -611,6 +628,10 @@ begin
     if m_lookup_context_query_bonus_cache <> nil then
     begin
         m_lookup_context_query_bonus_cache.Clear;
+    end;
+    if m_lookup_context_query_latest_bonus_cache <> nil then
+    begin
+        m_lookup_context_query_latest_bonus_cache.Clear;
     end;
     if m_lookup_phrase_context_bonus_cache <> nil then
     begin
@@ -3821,6 +3842,20 @@ begin
     Result := query_key + #1 + text_key;
 end;
 
+function TncEngine.build_context_query_scope_key(const context_text: string; const query_key: string): string;
+var
+    context_key: string;
+begin
+    context_key := Trim(context_text);
+    if (context_key = '') or (query_key = '') then
+    begin
+        Result := '';
+        Exit;
+    end;
+
+    Result := context_key + #2 + query_key;
+end;
+
 function TncEngine.build_context_query_choice_key(const context_text: string; const query_key: string;
     const candidate_text: string): string;
 var
@@ -4101,6 +4136,143 @@ begin
     end;
 end;
 
+function TncEngine.get_context_query_latest_bonus(const candidate_text: string): Integer;
+const
+    c_context_latest_cap = 320;
+    c_phrase_latest_bonus = 228;
+    c_single_latest_bonus = 92;
+var
+    context_value: string;
+    context_variants: TArray<string>;
+    variant_idx: Integer;
+    variant_weight: Integer;
+    key: string;
+    text_key: string;
+    latest_text: string;
+    text_units: Integer;
+    variant_bonus: Integer;
+
+    function get_variant_weight(const variant_index: Integer): Integer;
+    begin
+        case variant_index of
+            0:
+                Result := 100;
+            1:
+                Result := 88;
+            2:
+                Result := 72;
+            3:
+                Result := 58;
+        else
+            Result := 42;
+        end;
+    end;
+
+    function merge_variant_bonus(const current_bonus: Integer; const weighted_bonus: Integer): Integer;
+    begin
+        Result := current_bonus;
+        if weighted_bonus <= 0 then
+        begin
+            Exit;
+        end;
+
+        if Result <= 0 then
+        begin
+            Result := weighted_bonus;
+            Exit;
+        end;
+
+        if weighted_bonus > Result then
+        begin
+            Result := weighted_bonus + (Result div 3);
+        end
+        else
+        begin
+            Result := Result + (weighted_bonus div 3);
+        end;
+
+        if Result > c_context_latest_cap then
+        begin
+            Result := c_context_latest_cap;
+        end;
+    end;
+begin
+    text_key := Trim(candidate_text);
+    if (text_key <> '') and (m_lookup_context_query_latest_bonus_cache <> nil) and
+        m_lookup_context_query_latest_bonus_cache.TryGetValue(text_key, Result) then
+    begin
+        Exit;
+    end;
+
+    Result := 0;
+    if (text_key = '') or (m_last_lookup_key = '') or (m_session_context_query_latest_text = nil) then
+    begin
+        Exit;
+    end;
+
+    context_value := m_left_context;
+    if m_segment_left_context <> '' then
+    begin
+        context_value := m_segment_left_context;
+    end;
+    if (m_segment_left_context = '') and (m_external_left_context <> '') then
+    begin
+        context_value := m_external_left_context;
+    end;
+    if context_value = '' then
+    begin
+        Exit;
+    end;
+
+    context_variants := get_context_variants(context_value);
+    if Length(context_variants) = 0 then
+    begin
+        Exit;
+    end;
+
+    text_units := get_candidate_text_unit_count(text_key);
+    for variant_idx := 0 to High(context_variants) do
+    begin
+        key := build_context_query_scope_key(context_variants[variant_idx], m_last_lookup_key);
+        if (key = '') or (not m_session_context_query_latest_text.TryGetValue(key, latest_text)) then
+        begin
+            Continue;
+        end;
+        if not SameText(text_key, latest_text) then
+        begin
+            Continue;
+        end;
+        key := build_context_query_choice_key(context_variants[variant_idx], m_last_lookup_key, text_key);
+        if (key = '') or ((m_session_context_query_choice_last_seen <> nil) and
+            (not m_session_context_query_choice_last_seen.ContainsKey(key))) then
+        begin
+            Continue;
+        end;
+
+        if text_units <= 1 then
+        begin
+            variant_bonus := c_single_latest_bonus;
+        end
+        else
+        begin
+            variant_bonus := c_phrase_latest_bonus;
+            if (m_last_lookup_syllable_count >= 3) and (text_units + 1 >= m_last_lookup_syllable_count) then
+            begin
+                Inc(variant_bonus, 32);
+            end;
+        end;
+
+        variant_weight := get_variant_weight(variant_idx);
+        variant_bonus := (variant_bonus * variant_weight) div 100;
+        Result := merge_variant_bonus(Result, variant_bonus);
+    end;
+
+    if (text_key <> '') and (m_lookup_context_query_latest_bonus_cache <> nil) then
+    begin
+        m_lookup_context_query_latest_bonus_cache.AddOrSetValue(text_key, Result);
+    end;
+end;
+
 function TncEngine.is_latest_session_query_choice(const candidate_text: string): Boolean;
 var
     latest_text: string;
@@ -4305,6 +4477,100 @@ begin
     else if is_runtime_redup_candidate(candidate) then
     begin
         Result := 'redup';
+    end;
+end;
+
+function TncEngine.get_candidate_confidence_rank(const candidate: TncCandidate): Integer;
+var
+    layer_value: Integer;
+    text_units: Integer;
+    context_bonus: Integer;
+    query_bonus: Integer;
+    session_bonus: Integer;
+begin
+    layer_value := get_multi_syllable_intent_layer(candidate);
+    text_units := get_candidate_text_unit_count(candidate.text);
+
+    if candidate.comment <> '' then
+    begin
+        if text_units >= 2 then
+        begin
+            Result := 6;
+        end
+        else
+        begin
+            Result := 8;
+        end;
+        Exit;
+    end;
+
+    if candidate.source = cs_user then
+    begin
+        Result := 0;
+        Exit;
+    end;
+
+    if candidate.has_dict_weight then
+    begin
+        if layer_value = 0 then
+        begin
+            Result := 0;
+        end
+        else if layer_value = 1 then
+        begin
+            Result := 1;
+        end
+        else
+        begin
+            Result := 2;
+        end;
+    end
+    else if is_runtime_common_pattern_candidate(candidate) then
+    begin
+        Result := 3;
+    end
+    else if is_runtime_redup_candidate(candidate) then
+    begin
+        Result := 4;
+    end
+    else if candidate.source = cs_ai then
+    begin
+        Result := 4;
+    end
+    else if is_runtime_chain_candidate(candidate) then
+    begin
+        Result := 8;
+    end
+    else if (candidate.source = cs_rule) and (text_units >= 2) then
+    begin
+        Result := 5;
+    end
+    else
+    begin
+        Result := 7;
+    end;
+
+    if Result <= 0 then
+    begin
+        Exit;
+    end;
+
+    context_bonus := get_context_bonus(candidate.text);
+    query_bonus := get_session_query_bonus(candidate.text);
+    session_bonus := get_session_text_bonus(candidate.text);
+    if candidate.comment <> '' then
+    begin
+        query_bonus := query_bonus div 2;
+        session_bonus := session_bonus div 2;
+    end;
+
+    if (text_units >= 2) and ((context_bonus >= 320) or (query_bonus >= 320) or (session_bonus >= 320)) then
+    begin
+        Dec(Result);
+    end;
+    if Result < 0 then
+    begin
+        Result := 0;
     end;
 end;
 
@@ -4597,6 +4863,7 @@ var
     text_context_bonus: Integer;
     phrase_context_bonus: Integer;
     context_query_bonus: Integer;
+    context_query_latest_bonus: Integer;
     text_units: Integer;
 begin
     if (candidate_text <> '') and (m_lookup_context_bonus_cache <> nil) and
@@ -4608,6 +4875,7 @@ begin
     text_context_bonus := get_text_context_bonus(candidate_text);
     phrase_context_bonus := get_phrase_context_bonus(candidate_text);
     context_query_bonus := get_context_query_bonus(candidate_text);
+    context_query_latest_bonus := get_context_query_latest_bonus(candidate_text);
 
     if text_context_bonus >= phrase_context_bonus then
     begin
@@ -4633,6 +4901,14 @@ begin
         if (m_last_lookup_syllable_count >= 2) and (text_units >= 2) then
         begin
             Inc(Result, Min(160, context_query_bonus div 3));
+        end;
+    end;
+    if context_query_latest_bonus > 0 then
+    begin
+        Inc(Result, context_query_latest_bonus);
+        if context_query_bonus > 0 then
+        begin
+            Inc(Result, Min(96, context_query_latest_bonus div 4));
         end;
     end;
 
@@ -5050,6 +5326,7 @@ var
     text_context_bonus: Integer;
     phrase_context_bonus: Integer;
     context_query_bonus: Integer;
+    context_query_latest_bonus: Integer;
     context_bonus: Integer;
     query_bonus: Integer;
     session_bonus: Integer;
@@ -5060,6 +5337,7 @@ begin
     text_context_bonus := get_text_context_bonus(candidate.text);
     phrase_context_bonus := get_phrase_context_bonus(candidate.text);
     context_query_bonus := get_context_query_bonus(candidate.text);
+    context_query_latest_bonus := get_context_query_latest_bonus(candidate.text);
     context_bonus := get_context_bonus(candidate.text);
     query_bonus := get_session_query_bonus(candidate.text);
     if candidate.comment <> '' then
@@ -5076,9 +5354,9 @@ begin
     runtime_kind := get_runtime_candidate_kind(candidate);
 
     Result := Format(
-        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d qctx=%d qsess=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
+        'top=[%s src=%d rank=%d ctx=%d text_ctx=%d phr_ctx=%d qctx=%d qctxl=%d qsess=%d sess=%d layer=%d partial=%d dw=%d rt=%s]',
         [candidate.text, Ord(candidate.source), rank_score, context_bonus, text_context_bonus,
-        phrase_context_bonus, context_query_bonus, query_bonus, session_bonus, layer_value,
+        phrase_context_bonus, context_query_bonus, context_query_latest_bonus, query_bonus, session_bonus, layer_value,
         Ord(candidate.comment <> ''), candidate.dict_weight, runtime_kind]);
 end;
 
@@ -5088,8 +5366,11 @@ type
         candidate: TncCandidate;
         rank_score: Integer;
         layer: Integer;
+        confidence_rank: Integer;
+        conservative_margin: Integer;
         source_rank: Integer;
         text_length: Integer;
+        is_latest_context_query_choice: Boolean;
         is_latest_query_choice: Boolean;
     end;
 var
@@ -5098,6 +5379,61 @@ var
     i: Integer;
     use_intent_layers: Boolean;
     has_strong_complete_phrase: Boolean;
+    procedure swap_items(const left_index: Integer; const right_index: Integer);
+    var
+        tmp: TncCandidateSortItem;
+    begin
+        tmp := list[left_index];
+        list[left_index] := list[right_index];
+        list[right_index] := tmp;
+    end;
+
+    procedure apply_front_row_conservative_guard;
+    var
+        top_item: TncCandidateSortItem;
+        alt_item: TncCandidateSortItem;
+        alt_idx: Integer;
+        margin: Integer;
+        score_gap: Integer;
+    begin
+        if list.Count < 2 then
+        begin
+            Exit;
+        end;
+
+        top_item := list[0];
+        if top_item.is_latest_context_query_choice or top_item.is_latest_query_choice or
+            (top_item.candidate.comment <> '') or
+            (top_item.confidence_rank <= 1) then
+        begin
+            Exit;
+        end;
+
+        for alt_idx := 1 to Min(list.Count - 1, 4) do
+        begin
+            alt_item := list[alt_idx];
+            if alt_item.candidate.comment <> '' then
+            begin
+                Continue;
+            end;
+            if alt_item.confidence_rank >= top_item.confidence_rank then
+            begin
+                Continue;
+            end;
+            if use_intent_layers and (alt_item.layer > top_item.layer + 1) then
+            begin
+                Continue;
+            end;
+
+            score_gap := top_item.rank_score - alt_item.rank_score;
+            margin := Max(top_item.conservative_margin, alt_item.conservative_margin);
+            if score_gap <= margin then
+            begin
+                swap_items(0, alt_idx);
+                Break;
+            end;
+        end;
+    end;
 begin
     if Length(candidates) <= 1 then
     begin
@@ -5122,8 +5458,30 @@ begin
             begin
                 item.layer := 0;
             end;
+            item.confidence_rank := get_candidate_confidence_rank(candidates[i]);
+            if is_runtime_chain_candidate(candidates[i]) then
+            begin
+                item.conservative_margin := 280;
+            end
+            else if is_runtime_common_pattern_candidate(candidates[i]) then
+            begin
+                item.conservative_margin := 190;
+            end
+            else if is_runtime_redup_candidate(candidates[i]) then
+            begin
+                item.conservative_margin := 160;
+            end
+            else if (candidates[i].source = cs_rule) and (not candidates[i].has_dict_weight) then
+            begin
+                item.conservative_margin := 140;
+            end
+            else
+            begin
+                item.conservative_margin := 96;
+            end;
             item.source_rank := get_source_rank(candidates[i].source);
             item.text_length := Length(candidates[i].text);
+            item.is_latest_context_query_choice := get_context_query_latest_bonus(candidates[i].text) > 0;
             item.is_latest_query_choice := is_latest_session_query_choice(candidates[i].text);
             if use_intent_layers and (item.candidate.comment = '') and
                 (item.layer <= 1) and (get_candidate_text_unit_count(item.candidate.text) >= 2) and
@@ -5166,6 +5524,16 @@ begin
             begin
                 if (left.candidate.comment = '') and (right.candidate.comment = '') then
                 begin
+                    if left.is_latest_context_query_choice and (not right.is_latest_context_query_choice) then
+                    begin
+                        Result := -1;
+                        Exit;
+                    end;
+                    if right.is_latest_context_query_choice and (not left.is_latest_context_query_choice) then
+                    begin
+                        Result := 1;
+                        Exit;
+                    end;
                     if left.is_latest_query_choice and (not right.is_latest_query_choice) then
                     begin
                         Result := -1;
@@ -5203,6 +5571,18 @@ begin
                     end;
                 end;
 
+                if (left.candidate.comment = '') and (right.candidate.comment = '') and
+                    (left.confidence_rank <> right.confidence_rank) and
+                    (Abs(left.rank_score - right.rank_score) <=
+                    Max(left.conservative_margin, right.conservative_margin)) then
+                begin
+                    Result := left.confidence_rank - right.confidence_rank;
+                    if Result <> 0 then
+                    begin
+                        Exit;
+                    end;
+                end;
+
                 Result := right.rank_score - left.rank_score;
                 if Result = 0 then
                 begin
@@ -5217,6 +5597,8 @@ begin
                     end;
                 end;
             end));
+
+        apply_front_row_conservative_guard;
 
         for i := 0 to High(candidates) do
         begin
@@ -7075,6 +7457,12 @@ begin
         begin
             m_session_context_query_choice_last_seen.AddOrSetValue(key, current_serial);
         end;
+        if m_session_context_query_latest_text <> nil then
+        begin
+            m_session_context_query_latest_text.AddOrSetValue(
+                build_context_query_scope_key(context_variants[variant_idx], normalize_pinyin_text(query_key)),
+                Trim(text));
+        end;
 
         m_session_context_query_choice_order.Enqueue(key);
     end;
@@ -8300,6 +8688,14 @@ begin
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
     prev_left_context := m_left_context;
+    if m_segment_left_context <> '' then
+    begin
+        prev_left_context := m_segment_left_context;
+    end
+    else if (prev_left_context = '') and (m_external_left_context <> '') then
+    begin
+        prev_left_context := m_external_left_context;
+    end;
     update_left_context(out_text);
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
     full_pinyin := '';
