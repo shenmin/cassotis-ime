@@ -80,6 +80,7 @@ type
         m_lookup_phrase_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_text_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_segment_path_context_bonus_cache: TDictionary<string, Integer>;
         m_current_segment_path_map: TDictionary<string, string>;
         m_candidate_segment_paths: TArray<string>;
         m_pending_commit_text: string;
@@ -125,6 +126,7 @@ type
         function get_phrase_context_bonus(const candidate_text: string): Integer;
         function get_text_context_bonus(const candidate_text: string): Integer;
         function get_context_bonus(const candidate_text: string): Integer;
+        procedure get_recent_path_context_seed(out prev_prev_text: string; out prev_text: string);
         function get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
         function get_candidate_debug_summary(const candidate: TncCandidate): string;
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
@@ -479,6 +481,7 @@ begin
     m_lookup_phrase_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_text_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_segment_path_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_current_segment_path_map := TDictionary<string, string>.Create;
     SetLength(m_candidate_segment_paths, 0);
     m_pending_commit_segment_path := '';
@@ -613,6 +616,11 @@ begin
         m_lookup_context_bonus_cache.Free;
         m_lookup_context_bonus_cache := nil;
     end;
+    if m_lookup_segment_path_context_bonus_cache <> nil then
+    begin
+        m_lookup_segment_path_context_bonus_cache.Free;
+        m_lookup_segment_path_context_bonus_cache := nil;
+    end;
     if m_current_segment_path_map <> nil then
     begin
         m_current_segment_path_map.Free;
@@ -685,6 +693,10 @@ begin
     if m_lookup_context_bonus_cache <> nil then
     begin
         m_lookup_context_bonus_cache.Clear;
+    end;
+    if m_lookup_segment_path_context_bonus_cache <> nil then
+    begin
+        m_lookup_segment_path_context_bonus_cache.Clear;
     end;
 end;
 
@@ -5430,6 +5442,45 @@ begin
     end;
 end;
 
+procedure TncEngine.get_recent_path_context_seed(out prev_prev_text: string; out prev_text: string);
+var
+    context_value: string;
+    segment_count: Integer;
+begin
+    prev_prev_text := '';
+    prev_text := '';
+
+    context_value := Trim(m_segment_left_context);
+    if context_value = '' then
+    begin
+        context_value := Trim(m_external_left_context);
+    end;
+    if context_value = '' then
+    begin
+        context_value := Trim(m_left_context);
+    end;
+
+    if (m_confirmed_segments <> nil) and (m_confirmed_segments.Count > 0) then
+    begin
+        segment_count := m_confirmed_segments.Count;
+        prev_text := Trim(m_confirmed_segments[segment_count - 1].text);
+        if segment_count >= 2 then
+        begin
+            prev_prev_text := Trim(m_confirmed_segments[segment_count - 2].text);
+        end
+        else if context_value <> '' then
+        begin
+            prev_prev_text := context_value;
+        end;
+        Exit;
+    end;
+
+    if context_value <> '' then
+    begin
+        prev_text := context_value;
+    end;
+end;
+
 function TncEngine.get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
 var
     encoded_path: string;
@@ -5437,8 +5488,258 @@ var
     segment_start: Integer;
     idx: Integer;
     segment_count: Integer;
-    pair_bonus: Integer;
-    trigram_bonus: Integer;
+    seed_prev_prev_text: string;
+    seed_prev_text: string;
+    current_prev_prev_text: string;
+    current_prev_text: string;
+    transition_bonus: Integer;
+
+    function get_exact_context_pair_bonus(const left_text: string; const candidate_text: string): Integer;
+    const
+        c_segment_pair_context_cap = 520;
+        c_segment_pair_bonus_scale = 75;
+    var
+        pair_key: string;
+        local_bonus: Integer;
+        persistent_bonus: Integer;
+        count: Integer;
+        secondary_bonus: Integer;
+    begin
+        Result := 0;
+        if (left_text = '') or (candidate_text = '') then
+        begin
+            Exit;
+        end;
+
+        local_bonus := 0;
+        persistent_bonus := 0;
+        if m_context_pairs <> nil then
+        begin
+            pair_key := left_text + #1 + candidate_text;
+            if m_context_pairs.TryGetValue(pair_key, count) and (count > 0) then
+            begin
+                local_bonus := count * c_context_score_bonus;
+                if local_bonus > c_context_score_bonus_max then
+                begin
+                    local_bonus := c_context_score_bonus_max;
+                end;
+            end;
+        end;
+
+        if m_dictionary <> nil then
+        begin
+            persistent_bonus := m_dictionary.get_context_bonus(left_text, candidate_text);
+        end;
+
+        if local_bonus >= persistent_bonus then
+        begin
+            Result := local_bonus;
+            secondary_bonus := persistent_bonus;
+        end
+        else
+        begin
+            Result := persistent_bonus;
+            secondary_bonus := local_bonus;
+        end;
+
+        if secondary_bonus > 0 then
+        begin
+            Inc(Result, secondary_bonus div 2);
+        end;
+        if Result > c_segment_pair_context_cap then
+        begin
+            Result := c_segment_pair_context_cap;
+        end;
+        Result := (Result * c_segment_pair_bonus_scale) div 100;
+    end;
+
+    function get_phrase_trigram_transition_bonus(const prev_prev_text: string;
+        const prev_text: string; const candidate_text: string): Integer;
+    const
+        c_segment_trigram_step = 96;
+        c_segment_trigram_cap = 300;
+        c_segment_trigram_recent_top = 140;
+        c_segment_trigram_recent_mid = 84;
+        c_segment_trigram_recent_tail = 40;
+    var
+        trigram_key: string;
+        trigram_count: Integer;
+        last_seen_serial: Int64;
+        serial_gap: Int64;
+    begin
+        Result := 0;
+        if (prev_prev_text = '') or (prev_text = '') or (candidate_text = '') or
+            (m_phrase_context_pairs = nil) then
+        begin
+            Exit;
+        end;
+
+        trigram_key := prev_prev_text + #2 + prev_text + #1 + candidate_text;
+        if (not m_phrase_context_pairs.TryGetValue(trigram_key, trigram_count)) or (trigram_count <= 0) then
+        begin
+            Exit;
+        end;
+
+        Result := trigram_count * c_segment_trigram_step;
+        if Result > c_segment_trigram_cap then
+        begin
+            Result := c_segment_trigram_cap;
+        end;
+
+        if (m_phrase_context_last_seen <> nil) and
+            m_phrase_context_last_seen.TryGetValue(trigram_key, last_seen_serial) and
+            (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+        begin
+            serial_gap := m_session_commit_serial - last_seen_serial;
+            if serial_gap <= 1 then
+            begin
+                Inc(Result, c_segment_trigram_recent_top);
+            end
+            else if serial_gap <= 3 then
+            begin
+                Inc(Result, c_segment_trigram_recent_mid);
+            end
+            else if serial_gap <= 6 then
+            begin
+                Inc(Result, c_segment_trigram_recent_tail);
+            end;
+        end;
+    end;
+
+    function get_compound_prev_trigram_bonus(const combined_prev_text: string;
+        const candidate_text: string): Integer;
+    var
+        combined_units: TArray<string>;
+        split_idx: Integer;
+        unit_idx: Integer;
+        left_part: string;
+        right_part: string;
+        local_session_bonus: Integer;
+        local_persistent_bonus: Integer;
+        local_secondary_bonus: Integer;
+        local_bonus: Integer;
+    begin
+        Result := 0;
+        if (combined_prev_text = '') or (candidate_text = '') then
+        begin
+            Exit;
+        end;
+
+        combined_units := split_text_units(combined_prev_text);
+        if Length(combined_units) < 2 then
+        begin
+            Exit;
+        end;
+
+        for split_idx := 1 to High(combined_units) do
+        begin
+            left_part := '';
+            for unit_idx := 0 to split_idx - 1 do
+            begin
+                left_part := left_part + combined_units[unit_idx];
+            end;
+
+            right_part := '';
+            for unit_idx := split_idx to High(combined_units) do
+            begin
+                right_part := right_part + combined_units[unit_idx];
+            end;
+
+            if (left_part = '') or (right_part = '') then
+            begin
+                Continue;
+            end;
+
+            local_session_bonus := get_phrase_trigram_transition_bonus(
+                left_part, right_part, candidate_text);
+            local_persistent_bonus := 0;
+            if m_dictionary <> nil then
+            begin
+                local_persistent_bonus := m_dictionary.get_context_trigram_bonus(
+                    left_part, right_part, candidate_text);
+            end;
+
+            if local_session_bonus >= local_persistent_bonus then
+            begin
+                local_bonus := local_session_bonus;
+                local_secondary_bonus := local_persistent_bonus;
+            end
+            else
+            begin
+                local_bonus := local_persistent_bonus;
+                local_secondary_bonus := local_session_bonus;
+            end;
+
+            if local_secondary_bonus > 0 then
+            begin
+                Inc(local_bonus, local_secondary_bonus div 2);
+            end;
+
+            if local_bonus > Result then
+            begin
+                Result := local_bonus;
+            end;
+        end;
+    end;
+
+    function get_path_transition_bonus(const prev_prev_text: string; const prev_text: string;
+        const candidate_text: string): Integer;
+    var
+        pair_bonus: Integer;
+        trigram_bonus: Integer;
+        persistent_trigram_bonus: Integer;
+        compound_prev_trigram_bonus: Integer;
+        secondary_bonus: Integer;
+    begin
+        Result := 0;
+        if (prev_text = '') or (candidate_text = '') then
+        begin
+            Exit;
+        end;
+
+        pair_bonus := get_exact_context_pair_bonus(prev_text, candidate_text);
+        trigram_bonus := get_phrase_trigram_transition_bonus(prev_prev_text, prev_text, candidate_text);
+        persistent_trigram_bonus := 0;
+        if (prev_prev_text <> '') and (m_dictionary <> nil) then
+        begin
+            persistent_trigram_bonus := m_dictionary.get_context_trigram_bonus(
+                prev_prev_text, prev_text, candidate_text);
+        end;
+        compound_prev_trigram_bonus := 0;
+        if prev_prev_text = '' then
+        begin
+            compound_prev_trigram_bonus := get_compound_prev_trigram_bonus(prev_text, candidate_text);
+        end;
+
+        if trigram_bonus >= persistent_trigram_bonus then
+        begin
+            Result := trigram_bonus;
+            secondary_bonus := persistent_trigram_bonus;
+        end
+        else
+        begin
+            Result := persistent_trigram_bonus;
+            secondary_bonus := trigram_bonus;
+        end;
+
+        if secondary_bonus > 0 then
+        begin
+            Inc(Result, secondary_bonus div 2);
+        end;
+        if compound_prev_trigram_bonus > Result then
+        begin
+            Result := compound_prev_trigram_bonus;
+        end;
+
+        if Result > 0 then
+        begin
+            Inc(Result, pair_bonus div 2);
+        end
+        else
+        begin
+            Result := pair_bonus;
+        end;
+    end;
 begin
     Result := 0;
     if (candidate.comment <> '') or (m_dictionary = nil) then
@@ -5448,6 +5749,12 @@ begin
 
     encoded_path := get_segment_path_for_candidate(candidate);
     if encoded_path = '' then
+    begin
+        Exit;
+    end;
+
+    if (m_lookup_segment_path_context_bonus_cache <> nil) and
+        m_lookup_segment_path_context_bonus_cache.TryGetValue(encoded_path, Result) then
     begin
         Exit;
     end;
@@ -5470,29 +5777,29 @@ begin
         segment_start := idx + 1;
     end;
 
-    if Length(path_segments) <= 1 then
+    if Length(path_segments) <= 0 then
     begin
         Exit;
     end;
 
-    for idx := 1 to High(path_segments) do
-    begin
-        pair_bonus := m_dictionary.get_context_bonus(
-            path_segments[idx - 1], path_segments[idx]);
-        if pair_bonus > 0 then
-        begin
-            Inc(Result, pair_bonus div 2);
-        end;
+    get_recent_path_context_seed(seed_prev_prev_text, seed_prev_text);
+    current_prev_prev_text := seed_prev_prev_text;
+    current_prev_text := seed_prev_text;
 
-        if idx >= 2 then
+    for idx := 0 to High(path_segments) do
+    begin
+        transition_bonus := get_path_transition_bonus(current_prev_prev_text, current_prev_text, path_segments[idx]);
+        if transition_bonus > 0 then
         begin
-            trigram_bonus := m_dictionary.get_context_trigram_bonus(
-                path_segments[idx - 2], path_segments[idx - 1], path_segments[idx]);
-            if trigram_bonus > 0 then
-            begin
-                Inc(Result, trigram_bonus);
-            end;
+            Inc(Result, transition_bonus);
         end;
+        current_prev_prev_text := current_prev_text;
+        current_prev_text := path_segments[idx];
+    end;
+
+    if m_lookup_segment_path_context_bonus_cache <> nil then
+    begin
+        m_lookup_segment_path_context_bonus_cache.AddOrSetValue(encoded_path, Result);
     end;
 end;
 
@@ -7564,8 +7871,7 @@ var
             local_state.score := 0;
             local_state.source := cs_rule;
             local_state.has_multi_segment := False;
-            local_state.prev_text := '';
-            local_state.prev_prev_text := '';
+            get_recent_path_context_seed(local_state.prev_prev_text, local_state.prev_text);
             local_state.path_text := '';
             states[0].Add(local_state);
             state_dedup[0].Add(build_state_key(local_state), 0);
