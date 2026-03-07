@@ -31,6 +31,7 @@ type
         m_user_connection: TncSqliteConnection;
         m_contains_popularity_cache: TDictionary<string, Integer>;
         m_prefix_popularity_cache: TDictionary<string, Integer>;
+        m_stmt_context_bonus: Psqlite3_stmt;
         m_last_lookup_debug_hint: string;
         function ensure_open: Boolean;
         function get_module_dir: string;
@@ -59,6 +60,7 @@ type
         procedure prune_user_entries_existing_in_base;
         procedure prune_suspicious_user_entries;
         procedure prune_bigram_rows_if_needed(const force: Boolean);
+        procedure clear_cached_user_statements;
     public
         constructor create(const base_db_path: string; const user_db_path: string);
         destructor Destroy; override;
@@ -1107,6 +1109,7 @@ begin
     m_limit := 256;
     m_bigram_prune_countdown := 64;
     m_write_batch_depth := 0;
+    m_stmt_context_bonus := nil;
     m_base_connection := nil;
     m_user_connection := nil;
     m_contains_popularity_cache := TDictionary<string, Integer>.Create;
@@ -2345,6 +2348,7 @@ end;
 
 procedure TncSqliteDictionary.close;
 begin
+    clear_cached_user_statements;
     if m_base_connection <> nil then
     begin
         m_base_connection.close;
@@ -2365,6 +2369,15 @@ begin
     if m_prefix_popularity_cache <> nil then
     begin
         m_prefix_popularity_cache.Clear;
+    end;
+end;
+
+procedure TncSqliteDictionary.clear_cached_user_statements;
+begin
+    if (m_stmt_context_bonus <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_context_bonus);
+        m_stmt_context_bonus := nil;
     end;
 end;
 
@@ -4159,7 +4172,8 @@ const
     insert_sql = 'INSERT OR IGNORE INTO dict_user_bigram(left_text, text, commit_count, last_used) ' +
         'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
 var
-    stmt: Psqlite3_stmt;
+    stmt_update: Psqlite3_stmt;
+    stmt_insert: Psqlite3_stmt;
     left_key: string;
     text_key: string;
     context_variants: TArray<string>;
@@ -4178,36 +4192,44 @@ begin
         Exit;
     end;
 
-    for variant_idx := 0 to High(context_variants) do
-    begin
-        stmt := nil;
-        try
-            if m_user_connection.prepare(update_sql, stmt) and
-                m_user_connection.bind_text(stmt, 1, context_variants[variant_idx]) and
-                m_user_connection.bind_text(stmt, 2, text_key) then
-            begin
-                m_user_connection.step(stmt);
-            end;
-        finally
-            if stmt <> nil then
-            begin
-                m_user_connection.finalize(stmt);
-            end;
+    stmt_update := nil;
+    stmt_insert := nil;
+    try
+        if not m_user_connection.prepare(update_sql, stmt_update) then
+        begin
+            Exit;
+        end;
+        if not m_user_connection.prepare(insert_sql, stmt_insert) then
+        begin
+            Exit;
         end;
 
-        stmt := nil;
-        try
-            if m_user_connection.prepare(insert_sql, stmt) and
-                m_user_connection.bind_text(stmt, 1, context_variants[variant_idx]) and
-                m_user_connection.bind_text(stmt, 2, text_key) then
+        for variant_idx := 0 to High(context_variants) do
+        begin
+            if m_user_connection.reset(stmt_update) and
+                m_user_connection.clear_bindings(stmt_update) and
+                m_user_connection.bind_text(stmt_update, 1, context_variants[variant_idx]) and
+                m_user_connection.bind_text(stmt_update, 2, text_key) then
             begin
-                m_user_connection.step(stmt);
+                m_user_connection.step(stmt_update);
             end;
-        finally
-            if stmt <> nil then
+
+            if m_user_connection.reset(stmt_insert) and
+                m_user_connection.clear_bindings(stmt_insert) and
+                m_user_connection.bind_text(stmt_insert, 1, context_variants[variant_idx]) and
+                m_user_connection.bind_text(stmt_insert, 2, text_key) then
             begin
-                m_user_connection.finalize(stmt);
+                m_user_connection.step(stmt_insert);
             end;
+        end;
+    finally
+        if stmt_update <> nil then
+        begin
+            m_user_connection.finalize(stmt_update);
+        end;
+        if stmt_insert <> nil then
+        begin
+            m_user_connection.finalize(stmt_insert);
         end;
     end;
 
@@ -4218,7 +4240,6 @@ function TncSqliteDictionary.get_context_bonus(const left_text: string; const ca
 const
     query_sql = 'SELECT commit_count, last_used FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
 var
-    stmt: Psqlite3_stmt;
     step_result: Integer;
     left_key: string;
     text_key: string;
@@ -4233,36 +4254,41 @@ begin
         Exit;
     end;
 
-    stmt := nil;
     try
-        if not m_user_connection.prepare(query_sql, stmt) then
+        if m_stmt_context_bonus = nil then
         begin
-            Exit;
+            if not m_user_connection.prepare(query_sql, m_stmt_context_bonus) then
+            begin
+                Exit;
+            end;
         end;
-        if (not m_user_connection.bind_text(stmt, 1, left_key)) or
-            (not m_user_connection.bind_text(stmt, 2, text_key)) then
+        if (not m_user_connection.reset(m_stmt_context_bonus)) or
+            (not m_user_connection.clear_bindings(m_stmt_context_bonus)) or
+            (not m_user_connection.bind_text(m_stmt_context_bonus, 1, left_key)) or
+            (not m_user_connection.bind_text(m_stmt_context_bonus, 2, text_key)) then
         begin
             Exit;
         end;
 
-        step_result := m_user_connection.step(stmt);
+        step_result := m_user_connection.step(m_stmt_context_bonus);
         if step_result <> SQLITE_ROW then
         begin
             Exit;
         end;
 
-        commit_count := m_user_connection.column_int(stmt, 0);
+        commit_count := m_user_connection.column_int(m_stmt_context_bonus, 0);
         if commit_count <= 0 then
         begin
             Exit;
         end;
 
-        last_used_unix := m_user_connection.column_int(stmt, 1);
+        last_used_unix := m_user_connection.column_int(m_stmt_context_bonus, 1);
         Result := calc_context_bigram_bonus(commit_count, last_used_unix, get_unix_time_now);
     finally
-        if stmt <> nil then
+        if m_stmt_context_bonus <> nil then
         begin
-            m_user_connection.finalize(stmt);
+            m_user_connection.reset(m_stmt_context_bonus);
+            m_user_connection.clear_bindings(m_stmt_context_bonus);
         end;
     end;
 end;

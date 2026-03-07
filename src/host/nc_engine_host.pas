@@ -63,8 +63,12 @@ type
         m_ai_refresh_thread: TThread;
         m_config_path: string;
         m_last_config_write: TDateTime;
+        m_last_config_check_tick: UInt64;
         m_config: TncEngineConfig;
         function get_config_write_time: TDateTime;
+        procedure reap_ai_refresh_thread_if_stopped;
+        procedure stop_ai_refresh_thread;
+        procedure sync_ai_refresh_thread(const enabled: Boolean);
         procedure persist_engine_config(const config: TncEngineConfig);
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
@@ -112,6 +116,7 @@ type
         procedure Execute; override;
     public
         constructor create(const host: TncEngineHost);
+        procedure detach_host;
     end;
 
 implementation
@@ -528,6 +533,37 @@ begin
     end;
 end;
 
+function wait_for_thread_exit(const thread: TThread; const timeout_ms: DWORD): Boolean;
+var
+    start_tick: UInt64;
+begin
+    if thread = nil then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    start_tick := GetTickCount64;
+    repeat
+        if WaitForSingleObject(thread.Handle, 50) = WAIT_OBJECT_0 then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        if TThread.CurrentThread.ThreadID = MainThreadID then
+        begin
+            CheckSynchronize(0);
+        end;
+    until (GetTickCount64 - start_tick) >= timeout_ms;
+
+    Result := WaitForSingleObject(thread.Handle, 0) = WAIT_OBJECT_0;
+    if (not Result) and (TThread.CurrentThread.ThreadID = MainThreadID) then
+    begin
+        CheckSynchronize(0);
+    end;
+end;
+
 constructor TncEngineHost.create;
 begin
     inherited create;
@@ -539,6 +575,7 @@ begin
     m_ai_refresh_thread := nil;
     m_config_path := get_default_config_path;
     m_last_config_write := 0;
+    m_last_config_check_tick := 0;
     with TncConfigManager.create(m_config_path) do
     try
         m_config := load_engine_config;
@@ -548,17 +585,27 @@ begin
     // Always start a fresh TSF runtime in Chinese mode.
     m_config.input_mode := im_chinese;
     m_last_config_write := get_config_write_time;
-    m_ai_refresh_thread := TncAiRefreshThread.create(Self);
+    m_last_config_check_tick := GetTickCount64;
+    sync_ai_refresh_thread(m_config.enable_ai);
 end;
 
 destructor TncEngineHost.Destroy;
 begin
+    stop_ai_refresh_thread;
     if m_ai_refresh_thread <> nil then
     begin
+        TncAiRefreshThread(m_ai_refresh_thread).detach_host;
         m_ai_refresh_thread.Terminate;
-        WaitForSingleObject(m_ai_refresh_thread.Handle, 1500);
-        m_ai_refresh_thread.Free;
-        m_ai_refresh_thread := nil;
+        if wait_for_thread_exit(m_ai_refresh_thread, 5000) then
+        begin
+            reap_ai_refresh_thread_if_stopped;
+        end
+        else
+        begin
+            host_log('[WARN] AI refresh thread did not exit during destroy; leaving FreeOnTerminate enabled.');
+            m_ai_refresh_thread.FreeOnTerminate := True;
+            m_ai_refresh_thread := nil;
+        end;
     end;
     if m_lock <> nil then
     begin
@@ -586,6 +633,63 @@ begin
         m_shift_toggle_ticks := nil;
     end;
     inherited Destroy;
+end;
+
+procedure TncEngineHost.reap_ai_refresh_thread_if_stopped;
+var
+    refresh_thread: TThread;
+begin
+    refresh_thread := m_ai_refresh_thread;
+    if refresh_thread = nil then
+    begin
+        Exit;
+    end;
+
+    if WaitForSingleObject(refresh_thread.Handle, 0) <> WAIT_OBJECT_0 then
+    begin
+        Exit;
+    end;
+
+    m_ai_refresh_thread := nil;
+    refresh_thread.Free;
+end;
+
+procedure TncEngineHost.stop_ai_refresh_thread;
+var
+    refresh_thread: TThread;
+begin
+    reap_ai_refresh_thread_if_stopped;
+    refresh_thread := m_ai_refresh_thread;
+    if refresh_thread = nil then
+    begin
+        Exit;
+    end;
+
+    TncAiRefreshThread(refresh_thread).detach_host;
+    refresh_thread.Terminate;
+    if not wait_for_thread_exit(refresh_thread, 1500) then
+    begin
+        host_log('[WARN] AI refresh thread stop timed out; will retry cleanup later.');
+        Exit;
+    end;
+
+    m_ai_refresh_thread := nil;
+    refresh_thread.Free;
+end;
+
+procedure TncEngineHost.sync_ai_refresh_thread(const enabled: Boolean);
+begin
+    reap_ai_refresh_thread_if_stopped;
+    if enabled then
+    begin
+        if m_ai_refresh_thread = nil then
+        begin
+            m_ai_refresh_thread := TncAiRefreshThread.create(Self);
+        end;
+        Exit;
+    end;
+
+    stop_ai_refresh_thread;
 end;
 
 procedure TncEngineHost.refresh_ai_candidates;
@@ -663,14 +767,24 @@ begin
         manager.Free;
     end;
     m_last_config_write := get_config_write_time;
+    m_last_config_check_tick := GetTickCount64;
 end;
 
 procedure TncEngineHost.reload_config_if_needed;
 var
+    now_tick: UInt64;
     current_write: TDateTime;
     manager: TncConfigManager;
+    next_config: TncEngineConfig;
     session: TncHostSession;
 begin
+    now_tick := GetTickCount64;
+    if (m_last_config_check_tick <> 0) and (now_tick - m_last_config_check_tick < 1000) then
+    begin
+        Exit;
+    end;
+    m_last_config_check_tick := now_tick;
+
     current_write := get_config_write_time;
     if current_write <= m_last_config_write then
     begin
@@ -679,12 +793,13 @@ begin
 
     manager := TncConfigManager.create(m_config_path);
     try
-        m_config := manager.load_engine_config;
+        next_config := manager.load_engine_config;
     finally
         manager.Free;
     end;
     m_lock.Acquire;
     try
+        m_config := next_config;
         for session in m_sessions.Values do
         begin
             session.update_config(m_config);
@@ -693,6 +808,7 @@ begin
         m_lock.Release;
     end;
 
+    sync_ai_refresh_thread(m_config.enable_ai);
     m_last_config_write := current_write;
 end;
 
@@ -1293,7 +1409,14 @@ begin
     m_host := host;
 end;
 
+procedure TncAiRefreshThread.detach_host;
+begin
+    m_host := nil;
+end;
+
 procedure TncAiRefreshThread.Execute;
+var
+    host: TncEngineHost;
 begin
     while not Terminated do
     begin
@@ -1304,7 +1427,12 @@ begin
         end;
 
         try
-            m_host.refresh_ai_candidates;
+            host := m_host;
+            if host = nil then
+            begin
+                Break;
+            end;
+            host.refresh_ai_candidates;
         except
             on e: Exception do
             begin
