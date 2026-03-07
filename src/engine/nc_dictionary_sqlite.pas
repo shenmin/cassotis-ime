@@ -32,6 +32,9 @@ type
         m_contains_popularity_cache: TDictionary<string, Integer>;
         m_prefix_popularity_cache: TDictionary<string, Integer>;
         m_stmt_context_bonus: Psqlite3_stmt;
+        m_stmt_candidate_penalty: Psqlite3_stmt;
+        m_candidate_penalty_cache: TDictionary<string, Integer>;
+        m_debug_mode: Boolean;
         m_last_lookup_debug_hint: string;
         function ensure_open: Boolean;
         function get_module_dir: string;
@@ -71,6 +74,7 @@ type
         procedure begin_learning_batch; override;
         procedure commit_learning_batch; override;
         procedure rollback_learning_batch; override;
+        procedure set_debug_mode(const enabled: Boolean); override;
         procedure record_commit(const pinyin: string; const text: string); override;
         procedure record_context_pair(const left_text: string; const committed_text: string); override;
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
@@ -286,6 +290,10 @@ const
     c_sec_per_week = 7 * c_sec_per_day;
     c_sec_per_30_days = 30 * c_sec_per_day;
     c_sec_per_90_days = 90 * c_sec_per_day;
+    c_recent_burst_bonus_1d = 88;
+    c_recent_burst_bonus_3d = 52;
+    c_recent_stable_bonus_7d = 46;
+    c_recent_stable_bonus_30d = 28;
 var
     freq_bonus: Integer;
     recency_bonus: Integer;
@@ -375,6 +383,30 @@ begin
         begin
             Inc(recency_bonus, recency_bonus div 5);
         end;
+
+        if commit_count >= 2 then
+        begin
+            if age_seconds <= c_sec_per_day then
+            begin
+                Inc(recency_bonus, c_recent_burst_bonus_1d);
+            end
+            else if age_seconds <= c_sec_per_3_days then
+            begin
+                Inc(recency_bonus, c_recent_burst_bonus_3d);
+            end;
+        end;
+
+        if commit_count >= 6 then
+        begin
+            if age_seconds <= c_sec_per_week then
+            begin
+                Inc(maturity_bonus, c_recent_stable_bonus_7d);
+            end
+            else if age_seconds <= c_sec_per_30_days then
+            begin
+                Inc(maturity_bonus, c_recent_stable_bonus_30d);
+            end;
+        end;
     end;
 
     Result := freq_bonus + quick_bonus + maturity_bonus + recency_bonus;
@@ -420,6 +452,17 @@ begin
         else if age_seconds <= c_sec_per_3_days then
         begin
             Inc(Result, 28);
+        end;
+        if commit_count >= 2 then
+        begin
+            if age_seconds <= c_sec_per_day then
+            begin
+                Inc(Result, 42);
+            end
+            else if age_seconds <= c_sec_per_3_days then
+            begin
+                Inc(Result, 20);
+            end;
         end;
     end;
     if Result > c_text_bonus_max then
@@ -1110,10 +1153,13 @@ begin
     m_bigram_prune_countdown := 64;
     m_write_batch_depth := 0;
     m_stmt_context_bonus := nil;
+    m_stmt_candidate_penalty := nil;
     m_base_connection := nil;
     m_user_connection := nil;
     m_contains_popularity_cache := TDictionary<string, Integer>.Create;
     m_prefix_popularity_cache := TDictionary<string, Integer>.Create;
+    m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
+    m_debug_mode := False;
     m_last_lookup_debug_hint := '';
 end;
 
@@ -1140,6 +1186,11 @@ begin
         m_prefix_popularity_cache.Free;
         m_prefix_popularity_cache := nil;
     end;
+    if m_candidate_penalty_cache <> nil then
+    begin
+        m_candidate_penalty_cache.Free;
+        m_candidate_penalty_cache := nil;
+    end;
 
     inherited Destroy;
 end;
@@ -1147,6 +1198,15 @@ end;
 function TncSqliteDictionary.get_last_lookup_debug_hint: string;
 begin
     Result := m_last_lookup_debug_hint;
+end;
+
+procedure TncSqliteDictionary.set_debug_mode(const enabled: Boolean);
+begin
+    m_debug_mode := enabled;
+    if not m_debug_mode then
+    begin
+        m_last_lookup_debug_hint := '';
+    end;
 end;
 
 function TncSqliteDictionary.ensure_open: Boolean;
@@ -2370,6 +2430,10 @@ begin
     begin
         m_prefix_popularity_cache.Clear;
     end;
+    if m_candidate_penalty_cache <> nil then
+    begin
+        m_candidate_penalty_cache.Clear;
+    end;
 end;
 
 procedure TncSqliteDictionary.clear_cached_user_statements;
@@ -2378,6 +2442,11 @@ begin
     begin
         m_user_connection.finalize(m_stmt_context_bonus);
         m_stmt_context_bonus := nil;
+    end;
+    if (m_stmt_candidate_penalty <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_candidate_penalty);
+        m_stmt_candidate_penalty := nil;
     end;
 end;
 
@@ -3939,14 +4008,21 @@ begin
             end;
         end;
 
-        m_last_lookup_debug_hint := Format(
-            'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d learn=%d text=%d sc_bad=%d noise=%d dup=%d inj=%d n=%d]',
-            [Ord(full_pinyin_query), Ord(mixed_mode), Ord(user_nonfull_lookup), Ord(exact_base_hit),
-            Ord(typo_fallback_used), Ord(full_query_dual_jianpin_mode),
-            Ord(disable_long_full_query_jianpin), applied_learning_bonus_count,
-            applied_text_learning_bonus_count, skipped_single_char_mismatch_count,
-            skipped_noisy_user_count, skipped_base_dup_user_count,
-            injected_learned_base_count, list.Count]);
+        if m_debug_mode then
+        begin
+            m_last_lookup_debug_hint := Format(
+                'dict=[full=%d mixed=%d user_nf=%d exact=%d typo=%d dual_jp=%d long_jp_off=%d learn=%d text=%d sc_bad=%d noise=%d dup=%d inj=%d n=%d]',
+                [Ord(full_pinyin_query), Ord(mixed_mode), Ord(user_nonfull_lookup), Ord(exact_base_hit),
+                Ord(typo_fallback_used), Ord(full_query_dual_jianpin_mode),
+                Ord(disable_long_full_query_jianpin), applied_learning_bonus_count,
+                applied_text_learning_bonus_count, skipped_single_char_mismatch_count,
+                skipped_noisy_user_count, skipped_base_dup_user_count,
+                injected_learned_base_count, list.Count]);
+        end
+        else
+        begin
+            m_last_lookup_debug_hint := '';
+        end;
         Result := list.Count > 0;
     finally
         if mixed_parser <> nil then
@@ -4369,10 +4445,10 @@ function TncSqliteDictionary.get_candidate_penalty(const pinyin: string; const t
 const
     query_penalty_sql = 'SELECT penalty FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
 var
-    stmt: Psqlite3_stmt;
-    step_result: Integer;
     pinyin_key: string;
     text_key: string;
+    cache_key: string;
+    step_result: Integer;
 begin
     Result := 0;
     pinyin_key := LowerCase(Trim(pinyin));
@@ -4382,27 +4458,44 @@ begin
         Exit;
     end;
 
-    stmt := nil;
+    cache_key := pinyin_key + #1 + text_key;
+    if (m_candidate_penalty_cache <> nil) and
+        m_candidate_penalty_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
     try
-        if not m_user_connection.prepare(query_penalty_sql, stmt) then
+        if m_stmt_candidate_penalty = nil then
         begin
-            Exit;
+            if not m_user_connection.prepare(query_penalty_sql, m_stmt_candidate_penalty) then
+            begin
+                Exit;
+            end;
         end;
-        if (not m_user_connection.bind_text(stmt, 1, pinyin_key)) or
-            (not m_user_connection.bind_text(stmt, 2, text_key)) then
+        if (not m_user_connection.reset(m_stmt_candidate_penalty)) or
+            (not m_user_connection.clear_bindings(m_stmt_candidate_penalty)) or
+            (not m_user_connection.bind_text(m_stmt_candidate_penalty, 1, pinyin_key)) or
+            (not m_user_connection.bind_text(m_stmt_candidate_penalty, 2, text_key)) then
         begin
             Exit;
         end;
 
-        step_result := m_user_connection.step(stmt);
+        step_result := m_user_connection.step(m_stmt_candidate_penalty);
         if step_result = SQLITE_ROW then
         begin
-            Result := m_user_connection.column_int(stmt, 0);
+            Result := m_user_connection.column_int(m_stmt_candidate_penalty, 0);
+        end;
+
+        if m_candidate_penalty_cache <> nil then
+        begin
+            m_candidate_penalty_cache.AddOrSetValue(cache_key, Result);
         end;
     finally
-        if stmt <> nil then
+        if m_stmt_candidate_penalty <> nil then
         begin
-            m_user_connection.finalize(stmt);
+            m_user_connection.reset(m_stmt_candidate_penalty);
+            m_user_connection.clear_bindings(m_stmt_candidate_penalty);
         end;
     end;
 end;
@@ -4432,6 +4525,11 @@ begin
     if (text_key = '') or (not m_user_ready) or (m_user_connection = nil) then
     begin
         Exit;
+    end;
+
+    if m_candidate_penalty_cache <> nil then
+    begin
+        m_candidate_penalty_cache.Clear;
     end;
 
     // Prefer exact pinyin+text removal when key is available, but do not require it.

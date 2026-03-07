@@ -546,6 +546,10 @@ begin
         (m_config.ai_llama_model_path <> config.ai_llama_model_path) or
         (m_config.ai_request_timeout_ms <> config.ai_request_timeout_ms);
     m_config := config;
+    if m_dictionary <> nil then
+    begin
+        m_dictionary.set_debug_mode(m_config.debug_mode);
+    end;
     if dictionary_changed then
     begin
         set_dictionary_provider(create_dictionary_from_config);
@@ -569,6 +573,10 @@ begin
     end;
 
     m_dictionary := dictionary;
+    if m_dictionary <> nil then
+    begin
+        m_dictionary.set_debug_mode(m_config.debug_mode);
+    end;
     m_context_db_bonus_cache_key := '';
     if m_context_db_bonus_cache <> nil then
     begin
@@ -699,6 +707,7 @@ begin
         sqlite_dict := TncSqliteDictionary.create(base_path, m_config.user_dictionary_path);
         if sqlite_dict.open then
         begin
+            sqlite_dict.set_debug_mode(m_config.debug_mode);
             Result := sqlite_dict;
             Exit;
         end;
@@ -3303,13 +3312,16 @@ begin
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_non_ai_first(m_candidates);
         finalize_lookup_timing_info;
-        m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
-            [Ord(has_multi_syllable_input), Ord(has_segment_candidates), Ord(has_internal_dangling_initial),
-            Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
-        if Length(m_candidates) > 0 then
+        if m_config.debug_mode then
         begin
-            m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
-                get_candidate_debug_summary(m_candidates[0]);
+            m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
+                [Ord(has_multi_syllable_input), Ord(has_segment_candidates), Ord(has_internal_dangling_initial),
+                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+            if Length(m_candidates) > 0 then
+            begin
+                m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                    get_candidate_debug_summary(m_candidates[0]);
+            end;
         end;
         m_page_index := 0;
         m_selected_index := 0;
@@ -3341,13 +3353,16 @@ begin
         apply_user_penalties(lookup_text, m_candidates);
         sort_candidates_timed(m_candidates);
         finalize_lookup_timing_info;
-        m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
-            [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
-            Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
-        if Length(m_candidates) > 0 then
+        if m_config.debug_mode then
         begin
-            m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
-                get_candidate_debug_summary(m_candidates[0]);
+            m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
+                [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
+                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+            if Length(m_candidates) > 0 then
+            begin
+                m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                    get_candidate_debug_summary(m_candidates[0]);
+            end;
         end;
         m_page_index := 0;
         m_selected_index := 0;
@@ -3362,13 +3377,16 @@ begin
         m_candidates[0].has_dict_weight := False;
         m_candidates[0].dict_weight := 0;
         finalize_lookup_timing_info;
-        m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
-            [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
-            Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
-        if Length(m_candidates) > 0 then
+        if m_config.debug_mode then
         begin
-            m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
-                get_candidate_debug_summary(m_candidates[0]);
+            m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
+                [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+                Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+            if Length(m_candidates) > 0 then
+            begin
+                m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                    get_candidate_debug_summary(m_candidates[0]);
+            end;
         end;
         m_page_index := 0;
         m_selected_index := 0;
@@ -4396,6 +4414,31 @@ begin
         else
         begin
             Dec(Result, 620);
+        end;
+
+        if is_runtime_chain_candidate(candidate) then
+        begin
+            if (context_bonus + session_bonus) <= 0 then
+            begin
+                Dec(Result, 160);
+            end;
+            if m_last_lookup_syllable_count >= 4 then
+            begin
+                Dec(Result, (m_last_lookup_syllable_count - 3) * 90);
+            end;
+        end
+        else if (candidate.source = cs_rule) and (not candidate.has_dict_weight) and
+            (not is_runtime_common_pattern_candidate(candidate)) and
+            (not is_runtime_redup_candidate(candidate)) then
+        begin
+            if (context_bonus + session_bonus) <= 0 then
+            begin
+                Dec(Result, 120);
+            end;
+            if text_units <= 2 then
+            begin
+                Dec(Result, 160);
+            end;
         end;
     end;
 
@@ -7225,6 +7268,12 @@ begin
         else
         begin
             debug_parts.Add(Format('query=[%s]', [m_last_lookup_key]));
+        end;
+
+        if not m_config.debug_mode then
+        begin
+            Result := Trim(StringReplace(debug_parts.DelimitedText, '"', '', [rfReplaceAll]));
+            Exit;
         end;
 
         if m_last_lookup_syllable_count > 0 then
