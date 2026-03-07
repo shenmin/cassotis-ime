@@ -2269,15 +2269,14 @@ var
     terminal_like_context: Boolean;
     terminal_like_foreground: Boolean;
     terminal_like_target: Boolean;
-    chromium_like_context: Boolean;
-    chromium_like_foreground: Boolean;
-    chromium_like_target: Boolean;
     terminal_has_composition: Boolean;
-    gui_caret_delta_x: Integer;
-    gui_caret_delta_y: Integer;
     cursor_point: TPoint;
     cursor_point_valid: Boolean;
-    chromium_snapshot_logged: Boolean;
+    last_sent_point_valid: Boolean;
+    observations: array[0..4] of TncCaretAnchorObservation;
+    observation_count: Integer;
+    anchor_context: TncCaretAnchorContext;
+    chosen_source: TncCaretAnchorSource;
 
     function point_in_virtual_screen(const candidate: TPoint): Boolean;
     const
@@ -2326,53 +2325,6 @@ var
     begin
         Result := (candidate.X >= bounds.Left - margin) and (candidate.X <= bounds.Right + margin) and
             (candidate.Y >= bounds.Top - margin) and (candidate.Y <= bounds.Bottom + margin);
-    end;
-
-    function points_are_close(const left_point: TPoint; const right_point: TPoint; const max_delta: Integer): Boolean;
-    begin
-        Result := nc_caret_anchor_policy.points_are_close(left_point, right_point, max_delta);
-    end;
-
-    function tsf_anchor_looks_like_window_origin(const candidate: TPoint): Boolean;
-    var
-        base_rect: TRect;
-    begin
-        if has_context_rect then
-        begin
-            base_rect := context_rect;
-        end
-        else if has_foreground_rect then
-        begin
-            base_rect := foreground_rect;
-        end
-        else
-        begin
-            Result := False;
-            Exit;
-        end;
-
-        Result := nc_caret_anchor_policy.anchor_looks_like_window_origin(candidate, base_rect, True);
-    end;
-
-    function is_origin_anchor_suspicious(const candidate: TPoint): Boolean;
-    var
-        base_rect: TRect;
-        has_base_rect: Boolean;
-    begin
-        has_base_rect := False;
-        base_rect := System.Types.Rect(0, 0, 0, 0);
-        if has_context_rect then
-        begin
-            base_rect := context_rect;
-            has_base_rect := True;
-        end;
-        if (not has_base_rect) and has_foreground_rect then
-        begin
-            base_rect := foreground_rect;
-            has_base_rect := True;
-        end;
-        Result := nc_caret_anchor_policy.is_origin_anchor_suspicious(candidate, base_rect, has_base_rect,
-            cursor_point, cursor_point_valid, terminal_like_target, m_composition <> nil);
     end;
 
     function try_adjust_terminal_client_point(var candidate: TPoint): Boolean;
@@ -2455,49 +2407,6 @@ var
             (Pos('pseudoconsole', class_lower) > 0);
     end;
 
-    function is_chromium_like_class(const class_name: string): Boolean;
-    var
-        class_lower: string;
-    begin
-        if class_name = '' then
-        begin
-            Result := False;
-            Exit;
-        end;
-
-        class_lower := LowerCase(class_name);
-        Result := (Pos('chrome_widgetwin', class_lower) > 0) or
-            (Pos('chromium', class_lower) > 0);
-    end;
-
-    procedure log_chromium_snapshot_once;
-    var
-        last_valid: Boolean;
-    begin
-        if (not chromium_like_target) or (m_logger = nil) or chromium_snapshot_logged then
-        begin
-            Exit;
-        end;
-        last_valid := m_last_sent_caret_valid and point_in_virtual_screen(m_last_sent_caret_point) and
-            point_in_foreground(m_last_sent_caret_point);
-        m_logger.info(Format(
-            'Chrome caret snapshot tsf=(%d,%d,%d) gui=(%d,%d,%d) caret=(%d,%d,%d) last=(%d,%d,%d) cursor=(%d,%d,%d)',
-            [tsf_point.X, tsf_point.Y, Ord(tsf_point_valid),
-            gui_point.X, gui_point.Y, Ord(gui_point_valid),
-            caret_point.X, caret_point.Y, Ord(caret_point_valid),
-            m_last_sent_caret_point.X, m_last_sent_caret_point.Y, Ord(last_valid),
-            cursor_point.X, cursor_point.Y, Ord(cursor_point_valid)]));
-        chromium_snapshot_logged := True;
-    end;
-
-    procedure log_chromium_choice(const source: string; const chosen: TPoint);
-    begin
-        if chromium_like_target and (m_logger <> nil) then
-        begin
-            m_logger.info(Format('Chrome caret choose=%s point=(%d,%d)', [source, chosen.X, chosen.Y]));
-        end;
-    end;
-
     function try_get_gui_caret_point(const thread_id: DWORD; out candidate: TPoint): Boolean;
     var
         caret_hwnd: Winapi.Windows.HWND;
@@ -2539,6 +2448,18 @@ var
                 foreground_rect.Bottom]));
         end;
     end;
+
+    procedure add_observation(const source: TncCaretAnchorSource; const candidate: TPoint; const valid: Boolean);
+    begin
+        if observation_count >= Length(observations) then
+        begin
+            Exit;
+        end;
+        observations[observation_count].source := source;
+        observations[observation_count].point := candidate;
+        observations[observation_count].valid := valid;
+        Inc(observation_count);
+    end;
 begin
     point := System.Types.Point(0, 0);
     virtual_left := GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -2553,6 +2474,7 @@ begin
     gui_thread_id := 0;
     context_hwnd := 0;
     has_context_rect := False;
+    context_rect := System.Types.Rect(0, 0, 0, 0);
     if (m_context <> nil) and (m_context.GetActiveView(view) = S_OK) and (view <> nil) then
     begin
         if view.GetWnd(context_hwnd) = S_OK then
@@ -2577,6 +2499,7 @@ begin
     end;
 
     has_foreground_rect := False;
+    foreground_rect := System.Types.Rect(0, 0, 0, 0);
     if foreground_hwnd <> 0 then
     begin
         has_foreground_rect := GetWindowRect(foreground_hwnd, foreground_rect);
@@ -2587,14 +2510,10 @@ begin
     terminal_like_context := is_terminal_like_class(context_class_name);
     terminal_like_foreground := is_terminal_like_class(foreground_class_name);
     terminal_like_target := terminal_like_context or terminal_like_foreground;
-    chromium_like_context := is_chromium_like_class(context_class_name);
-    chromium_like_foreground := is_chromium_like_class(foreground_class_name);
-    chromium_like_target := chromium_like_context or chromium_like_foreground;
     terminal_has_composition := m_composition <> nil;
     cursor_point := System.Types.Point(0, 0);
     cursor_point_valid := GetCursorPos(cursor_point) and point_in_virtual_screen(cursor_point) and
         point_in_foreground(cursor_point);
-    chromium_snapshot_logged := False;
     if tsf_point_valid and terminal_like_target then
     begin
         converted_tsf_point := tsf_point;
@@ -2853,285 +2772,53 @@ begin
         end;
     end;
 
-    if tsf_point_valid and point_in_virtual_screen(tsf_point) and point_in_foreground(tsf_point) and
-        (not terminal_like_target) and (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    tsf_point_valid := tsf_point_valid and point_in_foreground(tsf_point);
+    last_sent_point_valid := m_last_sent_caret_valid and point_in_virtual_screen(m_last_sent_caret_point) and
+        point_in_foreground(m_last_sent_caret_point);
+
+    if tsf_point_valid and (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
         m_logger.debug(Format('TSF caret point=(%d,%d) composition=%d', [tsf_point.X, tsf_point.Y,
             Ord(m_composition <> nil)]));
     end;
+    if gui_point_valid and (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        m_logger.debug(Format('GUI caret thread=%d point=(%d,%d)', [gui_thread_id, gui_point.X, gui_point.Y]));
+    end;
+    if caret_point_valid and (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        m_logger.debug(Format('CaretPos point=(%d,%d)', [caret_point.X, caret_point.Y]));
+    end;
+    if last_sent_point_valid and (m_logger <> nil) and (m_logger.level <= ll_debug) then
+    begin
+        m_logger.debug(Format('Last sent caret point=(%d,%d)', [m_last_sent_caret_point.X, m_last_sent_caret_point.Y]));
+    end;
 
-    if gui_point_valid then
+    observation_count := 0;
+    add_observation(casTsf, tsf_point, tsf_point_valid);
+    add_observation(casGui, gui_point, gui_point_valid);
+    add_observation(casCaretPos, caret_point, caret_point_valid);
+    add_observation(casLastSent, m_last_sent_caret_point, last_sent_point_valid);
+    add_observation(casCursor, cursor_point, cursor_point_valid);
+
+    FillChar(anchor_context, SizeOf(anchor_context), 0);
+    anchor_context.has_composition := m_composition <> nil;
+    anchor_context.terminal_like_target := terminal_like_target;
+    anchor_context.has_context_rect := has_context_rect;
+    anchor_context.context_rect := context_rect;
+    anchor_context.has_foreground_rect := has_foreground_rect;
+    anchor_context.foreground_rect := foreground_rect;
+    anchor_context.cursor_point_valid := cursor_point_valid;
+    anchor_context.cursor_point := cursor_point;
+    anchor_context.last_stable_valid := last_sent_point_valid;
+    anchor_context.last_stable_point := m_last_sent_caret_point;
+
+    if try_choose_best_anchor(Slice(observations, observation_count), anchor_context, point, chosen_source) then
     begin
         if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
-            m_logger.debug(Format('GUI caret thread=%d point=(%d,%d)', [gui_thread_id, gui_point.X, gui_point.Y]));
+            m_logger.debug(Format('Caret choose=%s point=(%d,%d)', [anchor_source_name(chosen_source), point.X, point.Y]));
         end;
-        if tsf_point_valid then
-        begin
-            max_delta := 400;
-            if (not terminal_like_target) and (m_composition <> nil) then
-            begin
-                // During active composition in normal desktop apps, TSF text-ext
-                // should be close to GUI/CaretPos. Tighten tolerance to avoid
-                // mixed-DPI converted GUI points overriding TSF anchors.
-                max_delta := 140;
-            end;
-            delta_x := Abs(tsf_point.X - gui_point.X);
-            delta_y := Abs(tsf_point.Y - gui_point.Y);
-            if (delta_x > max_delta) or (delta_y > max_delta) then
-            begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('Caret delta too large tsf=(%d,%d) gui=(%d,%d)',
-                        [tsf_point.X, tsf_point.Y, gui_point.X, gui_point.Y]));
-                end;
-                // In active composition, TSF text-ext is usually the most reliable anchor.
-                // Reject obviously divergent GUI caret points (e.g. Chromium top-window fallbacks).
-                if m_composition <> nil then
-                begin
-                    gui_point_valid := False;
-                    if caret_point_valid then
-                    begin
-                        gui_caret_delta_x := Abs(gui_point.X - caret_point.X);
-                        gui_caret_delta_y := Abs(gui_point.Y - caret_point.Y);
-                        if points_are_close(gui_point, caret_point, 96) then
-                        begin
-                            // GUI caret and CaretPos agree; TSF point is likely stale in mixed-DPI apps.
-                            gui_point_valid := True;
-                            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                            begin
-                                m_logger.debug(Format('Prefer GUI point over TSF: gui/caret agree gui=(%d,%d) caret=(%d,%d) d=(%d,%d)',
-                                    [gui_point.X, gui_point.Y, caret_point.X, caret_point.Y, gui_caret_delta_x,
-                                    gui_caret_delta_y]));
-                            end;
-                        end;
-                    end;
-
-                    if (not gui_point_valid) and tsf_anchor_looks_like_window_origin(tsf_point) then
-                    begin
-                        // TSF anchor near window origin is often a bad TextExt in Afx/legacy controls.
-                        gui_point_valid := True;
-                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                        begin
-                            m_logger.debug(Format('Prefer GUI point over TSF: TSF anchor near window origin tsf=(%d,%d) gui=(%d,%d)',
-                                [tsf_point.X, tsf_point.Y, gui_point.X, gui_point.Y]));
-                        end;
-                    end;
-                end;
-            end;
-        end;
-
-        if caret_point_valid then
-        begin
-            max_delta := 400;
-            delta_x := Abs(gui_point.X - caret_point.X);
-            delta_y := Abs(gui_point.Y - caret_point.Y);
-            if (delta_x > max_delta) or (delta_y > max_delta) then
-            begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('GUI/CaretPos delta too large gui=(%d,%d) caret=(%d,%d)',
-                        [gui_point.X, gui_point.Y, caret_point.X, caret_point.Y]));
-                end;
-                gui_point_valid := False;
-            end;
-        end;
-
-        if nc_caret_anchor_policy.should_reject_chromium_top_band_point(gui_point, gui_point_valid, tsf_point,
-            tsf_point_valid, chromium_like_target, foreground_rect, has_foreground_rect) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Reject Chromium GUI top-band point gui=(%d,%d) tsf=(%d,%d)',
-                    [gui_point.X, gui_point.Y, tsf_point.X, tsf_point.Y]));
-            end;
-            gui_point_valid := False;
-        end;
-
-        if chromium_like_target and gui_point_valid and is_origin_anchor_suspicious(gui_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Reject Chromium GUI caret near window origin gui=(%d,%d) cursor=(%d,%d)',
-                    [gui_point.X, gui_point.Y, cursor_point.X, cursor_point.Y]));
-            end;
-            gui_point_valid := False;
-        end;
-
-        if gui_point_valid then
-        begin
-            log_chromium_snapshot_once;
-            log_chromium_choice('gui', gui_point);
-            point := gui_point;
-            Result := True;
-            Exit;
-        end;
-    end;
-
-    if caret_point_valid then
-    begin
-        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-        begin
-            m_logger.debug(Format('CaretPos point=(%d,%d)', [caret_point.X, caret_point.Y]));
-        end;
-        if tsf_point_valid then
-        begin
-            max_delta := 400;
-            if (not terminal_like_target) and (m_composition <> nil) then
-            begin
-                // Same policy as GUI caret: keep tighter bound while composing
-                // to avoid mixed-DPI CaretPos offsets winning over TSF.
-                max_delta := 140;
-            end;
-            delta_x := Abs(tsf_point.X - caret_point.X);
-            delta_y := Abs(tsf_point.Y - caret_point.Y);
-            if (delta_x > max_delta) or (delta_y > max_delta) then
-            begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('Caret delta too large tsf=(%d,%d) caret=(%d,%d)',
-                        [tsf_point.X, tsf_point.Y, caret_point.X, caret_point.Y]));
-                end;
-                // During active composition, prefer TSF anchor when CaretPos diverges too much.
-                if m_composition <> nil then
-                begin
-                    caret_point_valid := False;
-                    if gui_point_valid and points_are_close(gui_point, caret_point, 96) then
-                    begin
-                        // CaretPos and GUI are consistent; keep CaretPos as fallback.
-                        caret_point_valid := True;
-                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                        begin
-                            m_logger.debug(Format('Prefer CaretPos over TSF: gui/caret agree gui=(%d,%d) caret=(%d,%d)',
-                                [gui_point.X, gui_point.Y, caret_point.X, caret_point.Y]));
-                        end;
-                    end
-                    else if tsf_anchor_looks_like_window_origin(tsf_point) then
-                    begin
-                        caret_point_valid := True;
-                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                        begin
-                            m_logger.debug(Format('Prefer CaretPos over TSF: TSF anchor near window origin tsf=(%d,%d) caret=(%d,%d)',
-                                [tsf_point.X, tsf_point.Y, caret_point.X, caret_point.Y]));
-                        end;
-                    end;
-                end
-                else
-                begin
-                    point := caret_point;
-                    Result := True;
-                    Exit;
-                end;
-            end;
-        end;
-
-        if nc_caret_anchor_policy.should_reject_chromium_top_band_point(caret_point, caret_point_valid, tsf_point,
-            tsf_point_valid, chromium_like_target, foreground_rect, has_foreground_rect) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Reject Chromium CaretPos top-band point caret=(%d,%d) tsf=(%d,%d)',
-                    [caret_point.X, caret_point.Y, tsf_point.X, tsf_point.Y]));
-            end;
-            caret_point_valid := False;
-        end;
-
-        if chromium_like_target and caret_point_valid and is_origin_anchor_suspicious(caret_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Reject Chromium CaretPos near window origin caret=(%d,%d) cursor=(%d,%d)',
-                    [caret_point.X, caret_point.Y, cursor_point.X, cursor_point.Y]));
-            end;
-            caret_point_valid := False;
-        end;
-
-        if caret_point_valid then
-        begin
-            log_chromium_snapshot_once;
-            log_chromium_choice('caret', caret_point);
-            point := caret_point;
-            Result := True;
-            Exit;
-        end;
-    end;
-
-    if tsf_point_valid and point_in_foreground(tsf_point) then
-    begin
-        if chromium_like_target and is_origin_anchor_suspicious(tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Reject Chromium TSF caret near window origin tsf=(%d,%d) cursor=(%d,%d)',
-                    [tsf_point.X, tsf_point.Y, cursor_point.X, cursor_point.Y]));
-            end;
-        end
-        else if is_origin_anchor_suspicious(tsf_point) and
-            (
-                (gui_point_valid and (not is_origin_anchor_suspicious(gui_point))) or
-                (caret_point_valid and (not is_origin_anchor_suspicious(caret_point))) or
-                (
-                    m_last_sent_caret_valid and point_in_virtual_screen(m_last_sent_caret_point) and
-                    point_in_foreground(m_last_sent_caret_point) and
-                    (not is_origin_anchor_suspicious(m_last_sent_caret_point))
-                )
-            ) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Reject TSF caret near window origin tsf=(%d,%d) cursor=(%d,%d)',
-                    [tsf_point.X, tsf_point.Y, cursor_point.X, cursor_point.Y]));
-            end;
-        end
-        else
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('TSF caret point=(%d,%d)', [tsf_point.X, tsf_point.Y]));
-            end;
-            log_chromium_snapshot_once;
-            log_chromium_choice('tsf', tsf_point);
-            point := tsf_point;
-            Result := True;
-            Exit;
-        end;
-    end;
-
-    if m_last_sent_caret_valid and point_in_virtual_screen(m_last_sent_caret_point) and
-        point_in_foreground(m_last_sent_caret_point) then
-    begin
-        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-        begin
-            m_logger.debug(Format('Caret fallback last_sent=(%d,%d)', [m_last_sent_caret_point.X,
-                m_last_sent_caret_point.Y]));
-        end;
-        log_chromium_snapshot_once;
-        log_chromium_choice('last_sent', m_last_sent_caret_point);
-        point := m_last_sent_caret_point;
-        Result := True;
-        Exit;
-    end;
-
-    // During active composition in regular desktop apps, using mouse cursor as
-    // final fallback can place candidate UI at window corners (e.g. Chromium).
-    if (not terminal_like_target) and (m_composition <> nil) then
-    begin
-        if (m_logger <> nil) then
-        begin
-            m_logger.info('Caret fallback skipped cursor during composition');
-        end;
-        Result := False;
-        Exit;
-    end;
-
-    if GetCursorPos(point) then
-    begin
-        if (m_logger <> nil) then
-        begin
-            m_logger.info(Format('Caret fallback cursor=(%d,%d)', [point.X, point.Y]));
-        end;
-        log_chromium_snapshot_once;
-        log_chromium_choice('cursor', point);
         Result := True;
         Exit;
     end;
