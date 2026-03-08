@@ -59,6 +59,7 @@ type
         function get_valid_cjk_codepoint_count(const text: string): Integer;
         function is_valid_learning_text(const text: string): Boolean;
         function is_valid_user_text(const text: string): Boolean;
+        function is_valid_learning_path(const encoded_path: string): Boolean;
         function get_contains_popularity_score(const token: string): Integer;
         function get_prefix_popularity_score(const prefix: string): Integer;
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
@@ -2231,9 +2232,16 @@ begin
 end;
 
 function TncSqliteDictionary.is_valid_learning_text(const text: string): Boolean;
+const
+    c_learning_text_max_codepoints = 10;
+var
+    codepoint_count: Integer;
 begin
-    // Learning stats should include both single-character and phrase commits.
-    Result := get_valid_cjk_codepoint_count(text) >= 1;
+    // Persistent learning should stay on pure CJK text and avoid sentence-like
+    // long tails. Longer committed phrases still participate in immediate
+    // session behavior, but should not be written into the user DB.
+    codepoint_count := get_valid_cjk_codepoint_count(text);
+    Result := (codepoint_count >= 1) and (codepoint_count <= c_learning_text_max_codepoints);
 end;
 
 function TncSqliteDictionary.is_valid_user_text(const text: string): Boolean;
@@ -2242,7 +2250,56 @@ var
 begin
     codepoint_count := get_valid_cjk_codepoint_count(text);
     // User dictionary should store phrase learning only, not single-character commits.
-    Result := codepoint_count >= 2;
+    Result := (codepoint_count >= 2) and (codepoint_count <= 10);
+end;
+
+function TncSqliteDictionary.is_valid_learning_path(const encoded_path: string): Boolean;
+const
+    c_learning_path_separator = #3;
+var
+    idx: Integer;
+    segment_start: Integer;
+    segment_text: string;
+    total_count: Integer;
+    segment_count: Integer;
+begin
+    Result := False;
+    if Trim(encoded_path) = '' then
+    begin
+        Exit;
+    end;
+
+    total_count := 0;
+    segment_count := 0;
+    segment_start := 1;
+    for idx := 1 to Length(encoded_path) + 1 do
+    begin
+        if (idx <= Length(encoded_path)) and (encoded_path[idx] <> c_learning_path_separator) then
+        begin
+            Continue;
+        end;
+
+        segment_text := Trim(Copy(encoded_path, segment_start, idx - segment_start));
+        segment_start := idx + 1;
+        if segment_text = '' then
+        begin
+            Continue;
+        end;
+
+        if not is_valid_learning_text(segment_text) then
+        begin
+            Exit;
+        end;
+
+        Inc(segment_count);
+        Inc(total_count, get_valid_cjk_codepoint_count(segment_text));
+        if total_count > 10 then
+        begin
+            Exit;
+        end;
+    end;
+
+    Result := segment_count > 1;
 end;
 
 function TncSqliteDictionary.exact_base_entry_exists(const pinyin: string; const text: string): Boolean;
@@ -5176,7 +5233,9 @@ var
 begin
     left_key := Trim(left_text);
     text_key := Trim(committed_text);
-    if (left_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
+    if (left_key = '') or (text_key = '') or
+        (not is_valid_learning_text(left_key)) or (not is_valid_learning_text(text_key)) or
+        (not ensure_open) or (not m_user_ready) then
     begin
         Exit;
     end;
@@ -5244,6 +5303,9 @@ begin
     prev_key := Trim(prev_text);
     text_key := Trim(committed_text);
     if (prev_prev_key = '') or (prev_key = '') or (text_key = '') or
+        (not is_valid_learning_text(prev_prev_key)) or
+        (not is_valid_learning_text(prev_key)) or
+        (not is_valid_learning_text(text_key)) or
         (not ensure_open) or (not m_user_ready) then
     begin
         Exit;
@@ -5303,6 +5365,7 @@ begin
     normalized_path := Trim(encoded_path);
     if (normalized_query = '') or (normalized_path = '') or
         (get_encoded_path_segment_count(normalized_path) <= 1) or
+        (not is_valid_learning_path(normalized_path)) or
         (not ensure_open) or (not m_user_ready) then
     begin
         Exit;
@@ -5362,6 +5425,7 @@ begin
     normalized_path := Trim(encoded_path);
     if (normalized_query = '') or (normalized_path = '') or
         (get_encoded_path_segment_count(normalized_path) <= 1) or
+        (not is_valid_learning_path(normalized_path)) or
         (not m_user_ready) or (m_user_connection = nil) then
     begin
         Exit;

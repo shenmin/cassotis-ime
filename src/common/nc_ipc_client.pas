@@ -35,7 +35,8 @@ type
         function set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
-        function set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean): Boolean;
+        function set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
+            const line_height: Integer = 0): Boolean;
         function set_surrounding(const session_id: string; const left_context: string): Boolean;
         function reset_session(const session_id: string): Boolean;
         property last_error: DWORD read m_last_error;
@@ -540,14 +541,15 @@ begin
     Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
 end;
 
-function TncIpcClient.set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean): Boolean;
+function TncIpcClient.set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
+    const line_height: Integer): Boolean;
 var
     request_text: string;
     response_text: string;
     fields: TArray<string>;
 begin
-    request_text := Format('SET_CARET'#9'%s'#9'%d'#9'%d'#9'%d',
-        [session_id, point.X, point.Y, Ord(has_caret)]);
+    request_text := Format('SET_CARET'#9'%s'#9'%d'#9'%d'#9'%d'#9'%d',
+        [session_id, point.X, point.Y, Ord(has_caret), line_height]);
     if not call_pipe(request_text, response_text) then
     begin
         Result := False;

@@ -1677,6 +1677,7 @@ var
     lookup_text: string;
     has_multi_syllable_input: Boolean;
     has_internal_dangling_initial: Boolean;
+    all_initial_compact_query: Boolean;
     head_only_multi_syllable: Boolean;
     input_syllable_count: Integer;
     multi_syllable_cap_limit: Integer;
@@ -1762,6 +1763,43 @@ var
                 Exit;
             end;
         end;
+    end;
+
+    function detect_all_initial_compact_query(const text: string): Boolean;
+    const
+        c_all_initial_compact_query_syllable_min = 5;
+    var
+        parser: TncPinyinParser;
+        parts: TncPinyinParseResult;
+        idx: Integer;
+    begin
+        Result := False;
+        if text = '' then
+        begin
+            Exit;
+        end;
+
+        parser := TncPinyinParser.create;
+        try
+            parts := parser.parse(text);
+        finally
+            parser.Free;
+        end;
+
+        if Length(parts) < c_all_initial_compact_query_syllable_min then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(parts) do
+        begin
+            if not is_single_initial_token_local(parts[idx].text) then
+            begin
+                Exit;
+            end;
+        end;
+
+        Result := True;
     end;
 
     procedure ensure_partial_fallback_visible(var candidates: TncCandidateList; const visible_limit: Integer);
@@ -4183,6 +4221,7 @@ begin
         end;
         has_multi_syllable_input := fallback_comment <> '';
         has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
+        all_initial_compact_query := detect_all_initial_compact_query(m_composition_text);
         if m_last_lookup_normalized_from <> '' then
         begin
             // If lookup key is typo-normalized (e.g. chagn->chang), segmenting by raw input
@@ -4209,7 +4248,7 @@ begin
         head_only_multi_syllable := m_config.enable_segment_candidates and
             has_multi_syllable_input and
             m_config.segment_head_only_multi_syllable and
-            (not has_internal_dangling_initial);
+            ((not has_internal_dangling_initial) or all_initial_compact_query);
         if m_dictionary <> nil then
         begin
             if head_only_multi_syllable and build_segment_candidates_timed(segment_candidates, False) then
@@ -4224,7 +4263,8 @@ begin
                 has_raw_candidates := True;
                 raw_from_dictionary := True;
             end
-            else if m_config.enable_segment_candidates and build_segment_candidates_timed(segment_candidates, True) then
+            else if m_config.enable_segment_candidates and
+                build_segment_candidates_timed(segment_candidates, not all_initial_compact_query) then
             begin
                 has_raw_candidates := True;
                 has_segment_candidates := True;
@@ -4239,7 +4279,11 @@ begin
             phase_start_tick := GetTickCount64;
             merge_runtime_constructed_candidates(raw_candidates, False);
             Inc(runtime_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
-            if (Length(raw_candidates) > 0) and (runtime_phrase_added or runtime_redup_added) then
+            if all_initial_compact_query and (Length(raw_candidates) > 0) then
+            begin
+                has_raw_candidates := True;
+            end
+            else if (Length(raw_candidates) > 0) and (runtime_phrase_added or runtime_redup_added) then
             begin
                 has_raw_candidates := True;
                 raw_candidates_seeded_from_runtime_only := True;
@@ -4365,7 +4409,8 @@ begin
         begin
             m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d',
                 [Ord(has_multi_syllable_input), Ord(has_segment_candidates), Ord(has_internal_dangling_initial),
-                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
+                Format(' allinit=%d', [Ord(all_initial_compact_query)]);
             if Length(m_candidates) > 0 then
             begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
@@ -4408,7 +4453,8 @@ begin
         begin
             m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
                 [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
-                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
+                Format(' allinit=%d', [Ord(all_initial_compact_query)]);
             if Length(m_candidates) > 0 then
             begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
@@ -4434,7 +4480,8 @@ begin
         begin
             m_last_lookup_debug_extra := Format('multi=%d seg=0 dangling=%d head_only=%d runtime=%d redup=%d fallback=1',
                 [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
-                Ord(runtime_phrase_added), Ord(runtime_redup_added)]);
+                Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
+                Format(' allinit=%d', [Ord(all_initial_compact_query)]);
             if Length(m_candidates) > 0 then
             begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +

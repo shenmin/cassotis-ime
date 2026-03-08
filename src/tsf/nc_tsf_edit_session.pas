@@ -29,10 +29,11 @@ type
         m_composition_ref: PITfComposition;
         m_point_ref: PPoint;
         m_point_valid_ref: PBoolean;
+        m_line_height_ref: PInteger;
         function update_text_ext(const ec: TfEditCookie): Boolean;
     public
         constructor create(const context: ITfContext; const composition_ref: PITfComposition; const point_ref: PPoint;
-            const point_valid_ref: PBoolean);
+            const point_valid_ref: PBoolean; const line_height_ref: PInteger = nil);
         function DoEditSession(ec: TfEditCookie): HResult; stdcall;
     end;
 
@@ -59,6 +60,7 @@ type
         m_attr_input_atom: TfGuidAtom;
         m_point_ref: PPoint;
         m_point_valid_ref: PBoolean;
+        m_line_height_ref: PInteger;
         function start_composition(const ec: TfEditCookie): Boolean;
         function update_composition_text(const ec: TfEditCookie): Boolean;
         function end_composition(const ec: TfEditCookie): Boolean;
@@ -67,7 +69,8 @@ type
     public
         constructor create(const context: ITfContext; const sink: ITfCompositionSink;
             const composition_ref: PITfComposition; const text: string; const point_ref: PPoint;
-            const point_valid_ref: PBoolean; const confirmed_length: Integer; const attr_input_atom: TfGuidAtom);
+            const point_valid_ref: PBoolean; const line_height_ref: PInteger; const confirmed_length: Integer;
+            const attr_input_atom: TfGuidAtom);
         function DoEditSession(ec: TfEditCookie): HResult; stdcall;
     end;
 
@@ -76,6 +79,69 @@ implementation
 const
     c_guid_prop_attribute: TGUID = '{34B45670-7526-11D2-A147-00105A2799B5}';
     c_guid_prop_composing: TGUID = '{E12AC060-AF15-11D0-97F0-00C04FD9C1B6}';
+
+type
+    TncLogicalToPhysicalPoint = function(hwnd: HWND; var point: TPoint): BOOL; stdcall;
+
+var
+    g_logical_to_physical: TncLogicalToPhysicalPoint = nil;
+    g_logical_to_physical_ready: Boolean = False;
+
+function try_logical_to_physical(const hwnd: HWND; var point: TPoint): Boolean;
+var
+    module: HMODULE;
+begin
+    if not g_logical_to_physical_ready then
+    begin
+        module := GetModuleHandle('user32.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('user32.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_logical_to_physical := TncLogicalToPhysicalPoint(
+                GetProcAddress(module, 'LogicalToPhysicalPointForPerMonitorDPI'));
+        end;
+        g_logical_to_physical_ready := True;
+    end;
+
+    Result := Assigned(g_logical_to_physical) and (hwnd <> 0) and g_logical_to_physical(hwnd, point);
+end;
+
+function try_client_point_to_screen_physical(const hwnd: HWND; var point: TPoint): Boolean;
+begin
+    if hwnd = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    try_logical_to_physical(hwnd, point);
+    Result := ClientToScreen(hwnd, point);
+end;
+
+function try_client_rect_to_screen_physical(const hwnd: HWND; var rect: Winapi.Windows.TRect): Boolean;
+var
+    top_left: TPoint;
+    bottom_right: TPoint;
+begin
+    top_left := Point(rect.Left, rect.Top);
+    bottom_right := Point(rect.Right, rect.Bottom);
+    if not try_client_point_to_screen_physical(hwnd, top_left) then
+    begin
+        Result := False;
+        Exit;
+    end;
+    if not try_client_point_to_screen_physical(hwnd, bottom_right) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    rect := System.Types.Rect(top_left.X, top_left.Y, bottom_right.X, bottom_right.Y);
+    Result := True;
+end;
 
 function get_window_class_name(const window_handle: Winapi.Windows.HWND): string;
 var
@@ -136,13 +202,14 @@ begin
 end;
 
 constructor TncCaretEditSession.create(const context: ITfContext; const composition_ref: PITfComposition; const point_ref: PPoint;
-    const point_valid_ref: PBoolean);
+    const point_valid_ref: PBoolean; const line_height_ref: PInteger);
 begin
     inherited create;
     m_context := context;
     m_composition_ref := composition_ref;
     m_point_ref := point_ref;
     m_point_valid_ref := point_valid_ref;
+    m_line_height_ref := line_height_ref;
 end;
 
 function TncCaretEditSession.update_text_ext(const ec: TfEditCookie): Boolean;
@@ -178,7 +245,6 @@ var
         view_hwnd: Winapi.Windows.HWND;
         client_rect: Winapi.Windows.TRect;
         window_rect: Winapi.Windows.TRect;
-        origin: TPoint;
         client_like: Boolean;
     begin
         Result := False;
@@ -213,14 +279,7 @@ var
             Exit;
         end;
 
-        origin := Point(0, 0);
-        if not ClientToScreen(view_hwnd, origin) then
-        begin
-            Exit;
-        end;
-
-        OffsetRect(candidate, origin.X, origin.Y);
-        Result := True;
+        Result := try_client_rect_to_screen_physical(view_hwnd, candidate);
     end;
 begin
     Result := False;
@@ -230,6 +289,10 @@ begin
     end;
 
     m_point_valid_ref^ := False;
+    if m_line_height_ref <> nil then
+    begin
+        m_line_height_ref^ := 0;
+    end;
 
     hr := m_context.GetActiveView(view);
     if (hr <> S_OK) or (view = nil) then
@@ -344,6 +407,14 @@ begin
         // Prefer the trailing edge so fallback to non-collapsed ranges still
         // anchors the candidate window at the current input caret.
         m_point_ref^ := Point(rect.Right, rect.Bottom);
+        if m_line_height_ref <> nil then
+        begin
+            m_line_height_ref^ := rect.Bottom - rect.Top;
+            if m_line_height_ref^ < 0 then
+            begin
+                m_line_height_ref^ := 0;
+            end;
+        end;
         m_point_valid_ref^ := True;
         Result := True;
     end;
@@ -525,7 +596,8 @@ end;
 
 constructor TncCompositionEditSession.create(const context: ITfContext; const sink: ITfCompositionSink;
     const composition_ref: PITfComposition; const text: string; const point_ref: PPoint;
-    const point_valid_ref: PBoolean; const confirmed_length: Integer; const attr_input_atom: TfGuidAtom);
+    const point_valid_ref: PBoolean; const line_height_ref: PInteger; const confirmed_length: Integer;
+    const attr_input_atom: TfGuidAtom);
 begin
     inherited create;
     m_context := context;
@@ -536,6 +608,7 @@ begin
     m_attr_input_atom := attr_input_atom;
     m_point_ref := point_ref;
     m_point_valid_ref := point_valid_ref;
+    m_line_height_ref := line_height_ref;
 end;
 
 function TncCompositionEditSession.start_composition(const ec: TfEditCookie): Boolean;
@@ -668,7 +741,6 @@ var
         view_hwnd: Winapi.Windows.HWND;
         client_rect: Winapi.Windows.TRect;
         window_rect: Winapi.Windows.TRect;
-        origin: TPoint;
         client_like: Boolean;
     begin
         Result := False;
@@ -701,14 +773,7 @@ var
             Exit;
         end;
 
-        origin := Point(0, 0);
-        if not ClientToScreen(view_hwnd, origin) then
-        begin
-            Exit;
-        end;
-
-        OffsetRect(candidate, origin.X, origin.Y);
-        Result := True;
+        Result := try_client_rect_to_screen_physical(view_hwnd, candidate);
     end;
 begin
     Result := False;
@@ -718,6 +783,10 @@ begin
     end;
 
     m_point_valid_ref^ := False;
+    if m_line_height_ref <> nil then
+    begin
+        m_line_height_ref^ := 0;
+    end;
     if (m_composition_ref = nil) or (m_composition_ref^ = nil) then
     begin
         Exit;
@@ -788,6 +857,14 @@ begin
         // Prefer the trailing edge so fallback to non-collapsed ranges still
         // anchors the candidate window at the current input caret.
         m_point_ref^ := Point(rect.Right, rect.Bottom);
+        if m_line_height_ref <> nil then
+        begin
+            m_line_height_ref^ := rect.Bottom - rect.Top;
+            if m_line_height_ref^ < 0 then
+            begin
+                m_line_height_ref^ := 0;
+            end;
+        end;
         m_point_valid_ref^ := True;
         Result := True;
     end;

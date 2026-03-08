@@ -63,12 +63,14 @@ type
         m_logger: TncLogger;
         m_last_caret_point: TPoint;
         m_has_caret_point: Boolean;
+        m_last_caret_line_height: Integer;
         m_last_ipc_error: DWORD;
         m_pending_caret_update: Boolean;
         m_session_dirty: Boolean;
         m_last_sent_caret_point: TPoint;
         m_last_sent_has_caret: Boolean;
         m_last_sent_caret_valid: Boolean;
+        m_last_sent_caret_line_height: Integer;
         m_last_sent_caret_tick: DWORD;
         m_last_reported_active: Boolean;
         m_active_state_synced: Boolean;
@@ -83,7 +85,8 @@ type
         procedure mark_session_dirty;
         procedure reset_session_if_needed(const force: Boolean = False);
         procedure invalidate_sent_caret;
-        procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const force: Boolean = False);
+        procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
+            const force: Boolean = False);
         procedure unadvise_thread_mgr_sink;
         procedure advise_thread_mgr_sink;
         procedure unadvise_compartment_sinks;
@@ -254,6 +257,18 @@ begin
     Result := Assigned(g_logical_to_physical) and (hwnd <> 0) and g_logical_to_physical(hwnd, point);
 end;
 
+function try_client_point_to_screen_physical(const hwnd: HWND; var point: TPoint): Boolean;
+begin
+    if hwnd = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    try_logical_to_physical(hwnd, point);
+    Result := ClientToScreen(hwnd, point);
+end;
+
 function is_shift_key(const key_code: Word): Boolean;
 begin
     // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
@@ -347,12 +362,14 @@ begin
     m_logger := nil;
     m_last_caret_point := Point(0, 0);
     m_has_caret_point := False;
+    m_last_caret_line_height := 0;
     m_last_ipc_error := 0;
     m_pending_caret_update := False;
     m_session_dirty := False;
     m_last_sent_caret_point := Point(0, 0);
     m_last_sent_has_caret := False;
     m_last_sent_caret_valid := False;
+    m_last_sent_caret_line_height := 0;
     m_last_sent_caret_tick := 0;
     m_last_reported_active := False;
     m_active_state_synced := False;
@@ -377,6 +394,7 @@ begin
     m_last_sent_caret_point := Point(0, 0);
     m_last_sent_has_caret := False;
     m_last_sent_caret_valid := False;
+    m_last_sent_caret_line_height := 0;
     m_last_sent_caret_tick := 0;
 end;
 
@@ -400,7 +418,8 @@ begin
     end;
 end;
 
-procedure TncTextService.push_caret_to_host(const point: TPoint; const has_caret: Boolean; const force: Boolean = False);
+procedure TncTextService.push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
+    const force: Boolean = False);
 const
     c_caret_resend_ms = 120;
 var
@@ -413,7 +432,8 @@ begin
     end;
 
     same_caret := m_last_sent_caret_valid and (m_last_sent_has_caret = has_caret) and
-        (m_last_sent_caret_point.X = point.X) and (m_last_sent_caret_point.Y = point.Y);
+        (m_last_sent_caret_point.X = point.X) and (m_last_sent_caret_point.Y = point.Y) and
+        (m_last_sent_caret_line_height = line_height);
     if same_caret and (not force) then
     begin
         now_tick := GetTickCount;
@@ -423,11 +443,12 @@ begin
         end;
     end;
 
-    if m_ipc_client.set_caret(m_session_id, point, has_caret) then
+    if m_ipc_client.set_caret(m_session_id, point, has_caret, line_height) then
     begin
         m_last_sent_caret_point := point;
         m_last_sent_has_caret := has_caret;
         m_last_sent_caret_valid := True;
+        m_last_sent_caret_line_height := line_height;
         m_last_sent_caret_tick := GetTickCount;
     end;
 end;
@@ -1170,7 +1191,7 @@ begin
                     begin
                         if get_candidate_point(point) then
                         begin
-                            push_caret_to_host(point, m_has_caret_point, True);
+                            push_caret_to_host(point, m_has_caret_point, m_last_caret_line_height, True);
                             m_pending_caret_update := False;
                             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
                             begin
@@ -1815,7 +1836,7 @@ begin
     if m_pending_caret_update and m_has_caret_point and (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
         point := m_last_caret_point;
-        push_caret_to_host(point, True);
+        push_caret_to_host(point, True, m_last_caret_line_height);
         m_pending_caret_update := False;
         if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
@@ -1999,7 +2020,7 @@ begin
     end;
     if get_candidate_point(point) then
     begin
-        push_caret_to_host(point, m_has_caret_point);
+        push_caret_to_host(point, m_has_caret_point, m_last_caret_line_height);
     end;
 end;
 
@@ -2250,9 +2271,6 @@ var
     tsf_point_valid: Boolean;
     caret_point_valid: Boolean;
     gui_point_valid: Boolean;
-    delta_x: Integer;
-    delta_y: Integer;
-    max_delta: Integer;
     virtual_left: Integer;
     virtual_top: Integer;
     virtual_right: Integer;
@@ -2269,7 +2287,6 @@ var
     terminal_like_context: Boolean;
     terminal_like_foreground: Boolean;
     terminal_like_target: Boolean;
-    terminal_has_composition: Boolean;
     cursor_point: TPoint;
     cursor_point_valid: Boolean;
     last_sent_point_valid: Boolean;
@@ -2332,6 +2349,7 @@ var
         base_rect: TRect;
         adjusted: TPoint;
         has_base_rect: Boolean;
+        base_hwnd: Winapi.Windows.HWND;
     begin
         Result := False;
         if not terminal_like_target then
@@ -2340,15 +2358,18 @@ var
         end;
 
         has_base_rect := False;
+        base_hwnd := 0;
         if has_foreground_rect then
         begin
             base_rect := foreground_rect;
             has_base_rect := True;
+            base_hwnd := foreground_hwnd;
         end
         else if has_context_rect then
         begin
             base_rect := context_rect;
             has_base_rect := True;
+            base_hwnd := context_hwnd;
         end;
         if not has_base_rect then
         begin
@@ -2363,8 +2384,10 @@ var
 
         // Treat as client-relative and map to screen.
         adjusted := candidate;
-        Inc(adjusted.X, base_rect.Left);
-        Inc(adjusted.Y, base_rect.Top);
+        if not try_client_point_to_screen_physical(base_hwnd, adjusted) then
+        begin
+            Exit;
+        end;
         if point_in_rect(adjusted, base_rect, 200) and point_in_virtual_screen(adjusted) then
         begin
             candidate := adjusted;
@@ -2433,13 +2456,11 @@ var
         end;
 
         candidate := System.Types.Point(gui_info.rcCaret.Left, gui_info.rcCaret.Bottom);
-        if not ClientToScreen(caret_hwnd, candidate) then
+        if not try_client_point_to_screen_physical(caret_hwnd, candidate) then
         begin
             Result := False;
             Exit;
         end;
-
-        try_logical_to_physical(caret_hwnd, candidate);
         Result := point_in_virtual_screen(candidate) and point_in_foreground(candidate);
         if (not Result) and (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
@@ -2510,25 +2531,11 @@ begin
     terminal_like_context := is_terminal_like_class(context_class_name);
     terminal_like_foreground := is_terminal_like_class(foreground_class_name);
     terminal_like_target := terminal_like_context or terminal_like_foreground;
-    terminal_has_composition := m_composition <> nil;
     cursor_point := System.Types.Point(0, 0);
     cursor_point_valid := GetCursorPos(cursor_point) and point_in_virtual_screen(cursor_point) and
         point_in_foreground(cursor_point);
     if tsf_point_valid and terminal_like_target then
     begin
-        converted_tsf_point := tsf_point;
-        if ((context_hwnd <> 0) and try_logical_to_physical(context_hwnd, converted_tsf_point)) or
-            ((foreground_hwnd <> 0) and try_logical_to_physical(foreground_hwnd, converted_tsf_point)) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) and
-                ((converted_tsf_point.X <> tsf_point.X) or (converted_tsf_point.Y <> tsf_point.Y)) then
-            begin
-                m_logger.debug(Format('Terminal TSF point dpi-adjust (%d,%d)->(%d,%d)',
-                    [tsf_point.X, tsf_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            tsf_point := converted_tsf_point;
-        end;
-
         converted_tsf_point := tsf_point;
         if try_adjust_terminal_client_point(converted_tsf_point) then
         begin
@@ -2568,171 +2575,12 @@ begin
         end;
     end;
 
-    if terminal_like_target then
-    begin
-        // For terminal hosts, TSF text-ext can be stale right after Enter when
-        // there is no active composition. In that phase prefer GUI caret APIs.
-        if terminal_has_composition and tsf_point_valid and point_in_foreground(tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Terminal caret TSF point=(%d,%d)', [tsf_point.X, tsf_point.Y]));
-            end;
-            point := tsf_point;
-            Result := True;
-            Exit;
-        end;
-
-        gui_point_valid := False;
-        if gui_thread_id <> 0 then
-        begin
-            gui_point_valid := try_get_gui_caret_point(gui_thread_id, gui_point);
-        end;
-        if (not gui_point_valid) then
-        begin
-            gui_point_valid := try_get_gui_caret_point(0, gui_point);
-        end;
-
-        if gui_point_valid then
-        begin
-            if terminal_has_composition and tsf_point_valid then
-            begin
-                max_delta := 400;
-                delta_x := Abs(tsf_point.X - gui_point.X);
-                delta_y := Abs(tsf_point.Y - gui_point.Y);
-                if (delta_x > max_delta) or (delta_y > max_delta) then
-                begin
-                    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                    begin
-                        m_logger.debug(Format('Terminal GUI caret rejected tsf=(%d,%d) gui=(%d,%d)',
-                            [tsf_point.X, tsf_point.Y, gui_point.X, gui_point.Y]));
-                    end;
-                    gui_point_valid := False;
-                end
-                else
-                begin
-                    gui_point_valid := True;
-                end;
-            end;
-            if (not terminal_has_composition) or (not tsf_point_valid) or gui_point_valid then
-            begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('Terminal caret GUI point=(%d,%d)', [gui_point.X, gui_point.Y]));
-                end;
-                point := gui_point;
-                Result := True;
-                Exit;
-            end;
-        end;
-
-        if GetCaretPos(caret_point) then
-        begin
-            if hwnd <> 0 then
-            begin
-                ClientToScreen(hwnd, caret_point);
-                try_logical_to_physical(hwnd, caret_point);
-            end;
-            if terminal_like_target then
-            begin
-                if (hwnd = 0) and (context_hwnd <> 0) then
-                begin
-                    ClientToScreen(context_hwnd, caret_point);
-                    try_logical_to_physical(context_hwnd, caret_point);
-                end
-                else if (hwnd = 0) and (context_hwnd = 0) and (foreground_hwnd <> 0) then
-                begin
-                    ClientToScreen(foreground_hwnd, caret_point);
-                    try_logical_to_physical(foreground_hwnd, caret_point);
-                end;
-                try_adjust_terminal_client_point(caret_point);
-            end;
-            if point_in_virtual_screen(caret_point) and point_in_foreground(caret_point) then
-            begin
-                if terminal_has_composition and tsf_point_valid then
-                begin
-                    max_delta := 400;
-                    delta_x := Abs(tsf_point.X - caret_point.X);
-                    delta_y := Abs(tsf_point.Y - caret_point.Y);
-                    if (delta_x > max_delta) or (delta_y > max_delta) then
-                    begin
-                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                        begin
-                            m_logger.debug(Format('Terminal CaretPos rejected tsf=(%d,%d) caret=(%d,%d)',
-                                [tsf_point.X, tsf_point.Y, caret_point.X, caret_point.Y]));
-                        end;
-                    end
-                    else
-                    begin
-                        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                        begin
-                            m_logger.debug(Format('Terminal caret CaretPos point=(%d,%d)', [caret_point.X, caret_point.Y]));
-                        end;
-                        point := caret_point;
-                        Result := True;
-                        Exit;
-                    end;
-                end
-                else
-                begin
-                    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                    begin
-                        m_logger.debug(Format('Terminal caret CaretPos point=(%d,%d)', [caret_point.X, caret_point.Y]));
-                    end;
-                    point := caret_point;
-                    Result := True;
-                    Exit;
-                end;
-            end;
-        end;
-
-        if tsf_point_valid and point_in_foreground(tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Terminal caret TSF fallback point=(%d,%d)', [tsf_point.X, tsf_point.Y]));
-            end;
-            point := tsf_point;
-            Result := True;
-            Exit;
-        end;
-
-        if m_last_sent_caret_valid then
-        begin
-            caret_point := m_last_sent_caret_point;
-            if terminal_like_target then
-            begin
-                try_adjust_terminal_client_point(caret_point);
-            end;
-            if point_in_virtual_screen(caret_point) and point_in_foreground(caret_point) then
-            begin
-                if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                begin
-                    m_logger.debug(Format('Terminal caret fallback last_sent=(%d,%d)', [caret_point.X, caret_point.Y]));
-                end;
-                point := caret_point;
-                Result := True;
-                Exit;
-            end;
-        end;
-
-        if GetCursorPos(point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('Terminal caret fallback cursor=(%d,%d)', [point.X, point.Y]));
-            end;
-            Result := True;
-            Exit;
-        end;
-    end;
-
     if gui_thread_id <> 0 then
     begin
         gui_point_valid := try_get_gui_caret_point(gui_thread_id, gui_point);
     end;
 
-    if (not gui_point_valid) and (not terminal_like_target) then
+    if not gui_point_valid then
     begin
         if try_get_gui_caret_point(0, gui_point) then
         begin
@@ -2746,20 +2594,17 @@ begin
     begin
         if hwnd <> 0 then
         begin
-            ClientToScreen(hwnd, caret_point);
-            try_logical_to_physical(hwnd, caret_point);
+            try_client_point_to_screen_physical(hwnd, caret_point);
         end;
         if terminal_like_target then
         begin
             if (hwnd = 0) and (context_hwnd <> 0) then
             begin
-                ClientToScreen(context_hwnd, caret_point);
-                try_logical_to_physical(context_hwnd, caret_point);
+                try_client_point_to_screen_physical(context_hwnd, caret_point);
             end
             else if (hwnd = 0) and (context_hwnd = 0) and (foreground_hwnd <> 0) then
             begin
-                ClientToScreen(foreground_hwnd, caret_point);
-                try_logical_to_physical(foreground_hwnd, caret_point);
+                try_client_point_to_screen_physical(foreground_hwnd, caret_point);
             end;
             try_adjust_terminal_client_point(caret_point);
         end;
@@ -2838,7 +2683,8 @@ begin
         Exit;
     end;
 
-    edit_session := TncCaretEditSession.create(context, @m_composition, @m_last_caret_point, @m_has_caret_point);
+    edit_session := TncCaretEditSession.create(context, @m_composition, @m_last_caret_point, @m_has_caret_point,
+        @m_last_caret_line_height);
     hr := context.RequestEditSession(m_client_id, edit_session, TF_ES_READ or TF_ES_ASYNCDONTCARE, session_hr);
     if hr = S_OK then
     begin
@@ -2904,7 +2750,7 @@ begin
     m_composition_context := context;
 
     edit_session := TncCompositionEditSession.create(context, Self as ITfCompositionSink, @m_composition, text,
-        @m_last_caret_point, @m_has_caret_point, confirmed_length, m_attr_input_atom);
+        @m_last_caret_point, @m_has_caret_point, @m_last_caret_line_height, confirmed_length, m_attr_input_atom);
     session_hr := E_FAIL;
     hr := context.RequestEditSession(m_client_id, edit_session, TF_ES_READWRITE or TF_ES_SYNC, session_hr);
     if hr <> S_OK then
@@ -2945,7 +2791,7 @@ begin
 
     m_composition_context := context;
     edit_session := TncCompositionEditSession.create(context, Self as ITfCompositionSink, @m_composition, '',
-        @m_last_caret_point, @m_has_caret_point, 0, m_attr_input_atom);
+        @m_last_caret_point, @m_has_caret_point, @m_last_caret_line_height, 0, m_attr_input_atom);
     session_hr := E_FAIL;
     hr := context.RequestEditSession(m_client_id, edit_session, TF_ES_READWRITE or TF_ES_SYNC, session_hr);
     if hr <> S_OK then

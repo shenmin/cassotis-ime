@@ -28,6 +28,7 @@ type
         m_candidate_window: TncCandidateWindow;
         m_last_caret: TPoint;
         m_has_caret: Boolean;
+        m_caret_line_height: Integer;
         m_candidates: TncCandidateList;
         m_page_index: Integer;
         m_page_count: Integer;
@@ -40,17 +41,18 @@ type
         constructor create(const owner: TncEngineHost; const session_id: string; const config: TncEngineConfig);
         destructor Destroy; override;
         procedure update_config(const config: TncEngineConfig);
-        procedure set_caret(const point: TPoint; const has_caret: Boolean);
-        function needs_candidate_refresh(const point: TPoint; const has_caret: Boolean): Boolean;
+        procedure set_caret(const point: TPoint; const has_caret: Boolean; const line_height: Integer);
+        function needs_candidate_refresh(const point: TPoint; const has_caret: Boolean; const line_height: Integer): Boolean;
         procedure store_candidates(const candidates: TncCandidateList; const page_index: Integer;
             const page_count: Integer; const selected_index: Integer; const preedit_text: string);
         procedure clear_candidates;
         function has_candidates: Boolean;
-        procedure apply_candidate_state(const caret: TPoint; const has_caret: Boolean);
+        procedure apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer);
         procedure hide_candidate_window;
         property engine: TncEngine read m_engine;
         property last_caret: TPoint read m_last_caret;
         property has_caret: Boolean read m_has_caret;
+        property caret_line_height: Integer read m_caret_line_height;
     end;
 
     TncEngineHost = class
@@ -97,7 +99,8 @@ type
             const punctuation_full_width: Boolean): Boolean;
         function get_active(out active: Boolean): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
-        procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean);
+        procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
+            const line_height: Integer);
         procedure update_surrounding(const session_id: string; const left_context: string);
         procedure reset_session(const session_id: string);
     end;
@@ -161,6 +164,80 @@ var
     g_host_log_enabled: Boolean = False;
     g_host_log_inited: Boolean = False;
     g_last_tray_host_start_tick: DWORD = 0;
+
+function get_monitor_dpi(const anchor: TPoint): Integer;
+type
+    TGetDpiForMonitor = function(hmonitor: HMONITOR; dpiType: Integer; out dpiX: UINT;
+        out dpiY: UINT): HRESULT; stdcall;
+const
+    MDT_EFFECTIVE_DPI = 0;
+var
+    monitor: HMONITOR;
+    module: HMODULE;
+    get_dpi: TGetDpiForMonitor;
+    dpi_x: UINT;
+    dpi_y: UINT;
+begin
+    Result := 96;
+    monitor := MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    if monitor = 0 then
+    begin
+        Exit;
+    end;
+
+    module := GetModuleHandle('Shcore.dll');
+    if module = 0 then
+    begin
+        module := LoadLibrary('Shcore.dll');
+    end;
+    if module = 0 then
+    begin
+        Exit;
+    end;
+
+    get_dpi := TGetDpiForMonitor(GetProcAddress(module, 'GetDpiForMonitor'));
+    if Assigned(get_dpi) and (get_dpi(monitor, MDT_EFFECTIVE_DPI, dpi_x, dpi_y) = S_OK) and (dpi_x > 0) then
+    begin
+        Result := dpi_x;
+    end;
+end;
+
+function scale_candidate_offset(const base_offset: Integer; const anchor: TPoint): Integer;
+begin
+    Result := MulDiv(base_offset, get_monitor_dpi(anchor), 96);
+    if Result < base_offset then
+    begin
+        Result := base_offset;
+    end;
+end;
+
+function calculate_candidate_offset(const base_offset: Integer; const anchor: TPoint; const line_height: Integer): Integer;
+var
+    dpi: Integer;
+    line_gap: Integer;
+    max_gap: Integer;
+begin
+    dpi := get_monitor_dpi(anchor);
+    Result := MulDiv(base_offset, dpi, 96);
+    if Result < base_offset then
+    begin
+        Result := base_offset;
+    end;
+
+    if line_height > 0 then
+    begin
+        line_gap := MulDiv(line_height, 2, 3);
+        max_gap := MulDiv(28, dpi, 96);
+        if line_gap > max_gap then
+        begin
+            line_gap := max_gap;
+        end;
+        if line_gap > Result then
+        begin
+            Result := line_gap;
+        end;
+    end;
+end;
 
 function ConvertStringSecurityDescriptorToSecurityDescriptorW(
     StringSecurityDescriptor: LPCWSTR; StringSDRevision: DWORD;
@@ -369,6 +446,7 @@ begin
     m_candidate_window := nil;
     m_last_caret := Point(0, 0);
     m_has_caret := False;
+    m_caret_line_height := 0;
     SetLength(m_candidates, 0);
     m_page_index := 0;
     m_page_count := 0;
@@ -417,13 +495,14 @@ begin
     end;
 end;
 
-procedure TncHostSession.set_caret(const point: TPoint; const has_caret: Boolean);
+procedure TncHostSession.set_caret(const point: TPoint; const has_caret: Boolean; const line_height: Integer);
 begin
     m_last_caret := point;
     m_has_caret := has_caret;
+    m_caret_line_height := line_height;
 end;
 
-function TncHostSession.needs_candidate_refresh(const point: TPoint; const has_caret: Boolean): Boolean;
+function TncHostSession.needs_candidate_refresh(const point: TPoint; const has_caret: Boolean; const line_height: Integer): Boolean;
 begin
     Result := m_candidate_dirty;
     if Result then
@@ -443,7 +522,13 @@ begin
         Exit;
     end;
 
-    Result := m_has_caret <> has_caret;
+    if m_has_caret <> has_caret then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    Result := m_caret_line_height <> line_height;
 end;
 
 procedure TncHostSession.store_candidates(const candidates: TncCandidateList; const page_index: Integer;
@@ -480,7 +565,7 @@ begin
     end;
 end;
 
-procedure TncHostSession.apply_candidate_state(const caret: TPoint; const has_caret: Boolean);
+procedure TncHostSession.apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer);
 var
     y_offset: Integer;
     target_point: TPoint;
@@ -501,11 +586,11 @@ begin
 
     if has_caret then
     begin
-        y_offset := c_text_ext_offset;
+        y_offset := calculate_candidate_offset(c_text_ext_offset, caret, line_height);
     end
     else
     begin
-        y_offset := c_default_offset;
+        y_offset := calculate_candidate_offset(c_default_offset, caret, line_height);
     end;
 
     target_point := caret;
@@ -772,7 +857,7 @@ begin
             run_on_ui_thread(
                 procedure
                 begin
-                    session.apply_candidate_state(caret_point, has_caret);
+                    session.apply_candidate_state(caret_point, has_caret, session.caret_line_height);
                 end);
         end;
         if refresh_sessions.Count > 0 then
@@ -1434,7 +1519,8 @@ begin
     Result := True;
 end;
 
-procedure TncEngineHost.update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean);
+procedure TncEngineHost.update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
+    const line_height: Integer);
 var
     session: TncHostSession;
     should_apply: Boolean;
@@ -1445,8 +1531,8 @@ begin
         begin
             Exit;
         end;
-        should_apply := session.has_candidates and session.needs_candidate_refresh(point, has_caret);
-        session.set_caret(point, has_caret);
+        should_apply := session.has_candidates and session.needs_candidate_refresh(point, has_caret, line_height);
+        session.set_caret(point, has_caret, line_height);
     finally
         m_lock.Release;
     end;
@@ -1456,7 +1542,7 @@ begin
         run_on_ui_thread(
             procedure
             begin
-                session.apply_candidate_state(point, has_caret);
+                session.apply_candidate_state(point, has_caret, line_height);
             end);
     end;
 end;
@@ -1577,7 +1663,7 @@ begin
             end
             else
             begin
-                session.apply_candidate_state(caret_point, has_caret);
+                session.apply_candidate_state(caret_point, has_caret, session.caret_line_height);
             end;
         end);
 end;
@@ -1593,7 +1679,7 @@ begin
             Exit;
         end;
         session.engine.reset;
-        session.set_caret(Point(0, 0), False);
+        session.set_caret(Point(0, 0), False, 0);
         session.clear_candidates;
     finally
         m_lock.Release;
@@ -1718,6 +1804,7 @@ var
     x: Integer;
     y: Integer;
     has_caret: Boolean;
+    line_height: Integer;
     active_flag: Boolean;
 begin
     Result := 'ERROR'#9'bad_request';
@@ -1767,6 +1854,7 @@ begin
             x := 0;
             y := 0;
             has_caret := False;
+            line_height := 0;
             if Length(fields) >= 4 then
             begin
                 x := StrToIntDef(fields[2], 0);
@@ -1776,8 +1864,12 @@ begin
             begin
                 has_caret := flag_to_bool(fields[4]);
             end;
+            if Length(fields) >= 6 then
+            begin
+                line_height := StrToIntDef(fields[5], 0);
+            end;
 
-            m_host.update_caret(session_id, Point(x, y), has_caret);
+            m_host.update_caret(session_id, Point(x, y), has_caret, line_height);
             Result := 'OK';
             Exit;
         end;
