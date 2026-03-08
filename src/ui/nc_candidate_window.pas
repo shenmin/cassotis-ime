@@ -51,7 +51,11 @@ type
         m_current_dpi: Integer;
         m_list_item_height: Integer;
         m_list_rect: TRect;
+        m_preedit_rect: TRect;
+        m_page_rect: TRect;
         m_list_padding: Integer;
+        m_show_page_text: Boolean;
+        m_show_preedit_text: Boolean;
         m_base_remove_button_size: Integer;
         m_base_remove_button_gap: Integer;
         m_remove_button_size: Integer;
@@ -87,6 +91,7 @@ type
         procedure Paint; override;
     public
         constructor create; reintroduce;
+        procedure prepare_for_anchor(const anchor: TPoint);
         destructor Destroy; override;
         procedure update_candidates(const candidates: TncCandidateList; const page_index: Integer; const page_count: Integer;
             const selected_index: Integer; const preedit_text: string; const debug_mode: Boolean);
@@ -100,6 +105,26 @@ implementation
 
 var
     g_vcl_initialized: Boolean = False;
+
+function font_pixel_height_from_point_size(const point_size: Integer; const dpi: Integer): Integer;
+var
+    effective_dpi: Integer;
+    pixel_height: Integer;
+begin
+    effective_dpi := dpi;
+    if effective_dpi <= 0 then
+    begin
+        effective_dpi := 96;
+    end;
+
+    pixel_height := MulDiv(point_size, effective_dpi, 72);
+    if pixel_height < 1 then
+    begin
+        pixel_height := 1;
+    end;
+
+    Result := -pixel_height;
+end;
 
 procedure ensure_vcl_initialized;
 begin
@@ -144,7 +169,11 @@ begin
     m_current_dpi := 0;
     m_list_item_height := m_base_item_height;
     m_list_rect := Rect(0, 0, 0, 0);
+    m_preedit_rect := Rect(0, 0, 0, 0);
+    m_page_rect := Rect(0, 0, 0, 0);
     m_list_padding := m_base_list_padding;
+    m_show_page_text := False;
+    m_show_preedit_text := False;
     m_base_remove_button_size := 11;
     m_base_remove_button_gap := 5;
     m_remove_button_size := m_base_remove_button_size;
@@ -166,11 +195,11 @@ begin
     configure_page_label;
 
     m_list_font.Name := 'Segoe UI';
-    m_list_font.Size := m_base_list_font_size;
+    m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, 96);
     m_list_font.Color := TColor(RGB(24, 24, 24));
 
     m_weight_font.Name := 'Segoe UI';
-    m_weight_font.Size := m_base_weight_font_size;
+    m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, 96);
     m_weight_font.Color := TColor(RGB(112, 122, 134));
 end;
 
@@ -208,6 +237,7 @@ begin
     BorderStyle := bsNone;
     FormStyle := fsStayOnTop;
     Position := poDesigned;
+    Scaled := False;
     Color := TColor(RGB(252, 253, 255));
     Padding.Left := 1;
     Padding.Top := 1;
@@ -468,11 +498,12 @@ begin
     m_preedit_label.Parent := Self;
     m_preedit_label.Align := alNone;
     m_preedit_label.AutoSize := False;
+    m_preedit_label.ParentFont := False;
     m_preedit_label.Height := m_base_preedit_height;
     m_preedit_label.Alignment := taLeftJustify;
     m_preedit_label.Layout := tlCenter;
     m_preedit_label.Font.Name := 'Segoe UI';
-    m_preedit_label.Font.Size := m_base_preedit_font_size;
+    m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, 96);
     m_preedit_label.Font.Color := TColor(RGB(98, 112, 128));
     m_preedit_label.Transparent := False;
     m_preedit_label.Color := Color;
@@ -485,11 +516,12 @@ begin
     m_page_label.Parent := Self;
     m_page_label.Align := alNone;
     m_page_label.AutoSize := False;
+    m_page_label.ParentFont := False;
     m_page_label.Height := m_base_label_height;
     m_page_label.Alignment := taRightJustify;
     m_page_label.Layout := tlCenter;
     m_page_label.Font.Name := 'Segoe UI';
-    m_page_label.Font.Size := m_base_label_font_size;
+    m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, 96);
     m_page_label.Font.Color := clGrayText;
     m_page_label.Transparent := False;
     m_page_label.Color := Color;
@@ -510,6 +542,18 @@ begin
     apply_dpi(dpi);
 end;
 
+procedure TncCandidateWindow.prepare_for_anchor(const anchor: TPoint);
+var
+    dpi: Integer;
+begin
+    HandleNeeded;
+    dpi := get_target_dpi(anchor);
+    if dpi <> m_current_dpi then
+    begin
+        apply_dpi(dpi);
+    end;
+end;
+
 procedure TncCandidateWindow.apply_dpi(const dpi: Integer);
 begin
     if dpi <= 0 then
@@ -518,12 +562,12 @@ begin
     end;
 
     m_current_dpi := dpi;
-    m_list_font.Size := MulDiv(m_base_list_font_size, dpi, 96);
-    m_weight_font.Size := MulDiv(m_base_weight_font_size, dpi, 96);
+    m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, dpi);
+    m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, dpi);
     m_list_item_height := MulDiv(m_base_item_height, dpi, 96);
-    m_page_label.Font.Size := MulDiv(m_base_label_font_size, dpi, 96);
+    m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, dpi);
     m_page_label.Height := MulDiv(m_base_label_height, dpi, 96);
-    m_preedit_label.Font.Size := MulDiv(m_base_preedit_font_size, dpi, 96);
+    m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, dpi);
     m_preedit_label.Height := MulDiv(m_base_preedit_height, dpi, 96);
     m_item_gap := MulDiv(m_base_item_gap, dpi, 96);
     m_list_padding := MulDiv(m_base_list_padding, dpi, 96);
@@ -689,6 +733,9 @@ var
     main_text_height: Integer;
     weight_text_height: Integer;
     dynamic_item_height: Integer;
+    meta_text_height: Integer;
+    meta_vertical_padding: Integer;
+    meta_horizontal_padding: Integer;
 begin
     item_count := m_candidate_lines.Count;
     if item_count = 0 then
@@ -747,29 +794,41 @@ begin
     end;
     edge_padding := m_list_padding;
     max_width := row_width + (edge_padding * 2);
+    meta_vertical_padding := MulDiv(8, m_current_dpi, 96);
+    meta_horizontal_padding := MulDiv(16, m_current_dpi, 96);
+    if meta_vertical_padding < 4 then
+    begin
+        meta_vertical_padding := 4;
+    end;
+    if meta_horizontal_padding < 8 then
+    begin
+        meta_horizontal_padding := 8;
+    end;
 
     label_height := 0;
-    if m_page_label.Visible then
+    if m_show_page_text then
     begin
         Canvas.Font.Assign(m_page_label.Font);
-        text_width := Canvas.TextWidth(m_page_label.Caption) + 16;
+        meta_text_height := Canvas.TextHeight('Hg');
+        text_width := Canvas.TextWidth(m_page_label.Caption) + meta_horizontal_padding;
         if text_width > max_width then
         begin
             max_width := text_width;
         end;
-        label_height := m_page_label.Height;
+        label_height := meta_text_height + meta_vertical_padding;
     end;
 
     preedit_height := 0;
-    if m_preedit_label.Visible then
+    if m_show_preedit_text then
     begin
         Canvas.Font.Assign(m_preedit_label.Font);
-        text_width := Canvas.TextWidth(m_preedit_label.Caption) + 16;
+        meta_text_height := Canvas.TextHeight('Hg');
+        text_width := Canvas.TextWidth(m_preedit_label.Caption) + meta_horizontal_padding;
         if text_width > max_width then
         begin
             max_width := text_width;
         end;
-        preedit_height := m_preedit_label.Height;
+        preedit_height := meta_text_height + meta_vertical_padding;
     end;
 
     list_height := m_list_item_height;
@@ -780,19 +839,21 @@ begin
     inner_top := Padding.Top;
     inner_width := ClientWidth - Padding.Left - Padding.Right;
     current_top := inner_top;
+    m_preedit_rect := Rect(0, 0, 0, 0);
+    m_page_rect := Rect(0, 0, 0, 0);
 
-    if m_preedit_label.Visible then
+    if m_show_preedit_text then
     begin
-        m_preedit_label.SetBounds(inner_left, current_top, inner_width, preedit_height);
+        m_preedit_rect := Rect(inner_left, current_top, inner_left + inner_width, current_top + preedit_height);
         current_top := current_top + preedit_height;
     end;
 
     m_list_rect := Rect(inner_left, current_top, inner_left + inner_width, current_top + list_height);
     current_top := current_top + list_height;
 
-    if m_page_label.Visible then
+    if m_show_page_text then
     begin
-        m_page_label.SetBounds(inner_left, current_top, inner_width, label_height);
+        m_page_rect := Rect(inner_left, current_top, inner_left + inner_width, current_top + label_height);
     end;
 
     recompute_remove_button_rects;
@@ -821,6 +882,8 @@ var
     weight_text_rect: TRect;
     corner_radius: Integer;
     edge_padding: Integer;
+    preedit_rect: TRect;
+    page_rect: TRect;
 begin
     inherited;
     Canvas.Brush.Style := bsSolid;
@@ -830,6 +893,28 @@ begin
     Canvas.Brush.Style := bsClear;
     Canvas.Pen.Color := m_border_color;
     Canvas.Rectangle(0, 0, Width, Height);
+
+    if m_show_preedit_text and (m_preedit_label.Caption <> '') and (not IsRectEmpty(m_preedit_rect)) then
+    begin
+        preedit_rect := m_preedit_rect;
+        InflateRect(preedit_rect, -MulDiv(8, m_current_dpi, 96), 0);
+        Canvas.Font.Assign(m_preedit_label.Font);
+        Canvas.Font.Color := m_preedit_label.Font.Color;
+        SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+        DrawText(Canvas.Handle, PChar(m_preedit_label.Caption), Length(m_preedit_label.Caption), preedit_rect,
+            DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX);
+    end;
+
+    if m_show_page_text and (m_page_label.Caption <> '') and (not IsRectEmpty(m_page_rect)) then
+    begin
+        page_rect := m_page_rect;
+        InflateRect(page_rect, -MulDiv(8, m_current_dpi, 96), 0);
+        Canvas.Font.Assign(m_page_label.Font);
+        Canvas.Font.Color := m_page_label.Font.Color;
+        SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+        DrawText(Canvas.Handle, PChar(m_page_label.Caption), Length(m_page_label.Caption), page_rect,
+            DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX);
+    end;
 
     if (m_candidate_lines = nil) or (m_candidate_lines.Count = 0) then
     begin
@@ -992,24 +1077,26 @@ begin
     if c_show_page_label and (page_count > 1) then
     begin
         m_page_label.Caption := format_page_text(page_index, page_count);
-        m_page_label.Visible := True;
+        m_show_page_text := True;
     end
     else
     begin
         m_page_label.Caption := '';
-        m_page_label.Visible := False;
+        m_show_page_text := False;
     end;
+    m_page_label.Visible := False;
 
     if preedit_text <> '' then
     begin
         m_preedit_label.Caption := preedit_text;
-        m_preedit_label.Visible := True;
+        m_show_preedit_text := True;
     end
     else
     begin
         m_preedit_label.Caption := '';
-        m_preedit_label.Visible := False;
+        m_show_preedit_text := False;
     end;
+    m_preedit_label.Visible := False;
 
     if m_candidate_lines.Count = 0 then
     begin
@@ -1027,7 +1114,10 @@ begin
         m_selected_index := m_candidate_lines.Count - 1;
     end;
 
-    apply_current_dpi;
+    if m_current_dpi <= 0 then
+    begin
+        apply_current_dpi;
+    end;
     update_size;
     Invalidate;
 end;
@@ -1044,11 +1134,12 @@ var
 begin
     HandleNeeded;
     anchor := Point(x, y);
-    dpi := get_target_dpi(anchor);
+    dpi := m_current_dpi;
+    prepare_for_anchor(anchor);
     if dpi <> m_current_dpi then
     begin
-        apply_dpi(dpi);
         update_size;
+        Invalidate;
     end;
 
     target_x := x;

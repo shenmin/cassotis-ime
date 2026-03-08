@@ -121,6 +121,17 @@ begin
     Result := ClientToScreen(hwnd, point);
 end;
 
+function try_screen_point_to_physical(const hwnd: HWND; var point: TPoint): Boolean;
+begin
+    if hwnd = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    Result := try_logical_to_physical(hwnd, point);
+end;
+
 function try_client_rect_to_screen_physical(const hwnd: HWND; var rect: Winapi.Windows.TRect): Boolean;
 var
     top_left: TPoint;
@@ -134,6 +145,28 @@ begin
         Exit;
     end;
     if not try_client_point_to_screen_physical(hwnd, bottom_right) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    rect := System.Types.Rect(top_left.X, top_left.Y, bottom_right.X, bottom_right.Y);
+    Result := True;
+end;
+
+function try_screen_rect_to_physical(const hwnd: HWND; var rect: Winapi.Windows.TRect): Boolean;
+var
+    top_left: TPoint;
+    bottom_right: TPoint;
+begin
+    top_left := Point(rect.Left, rect.Top);
+    bottom_right := Point(rect.Right, rect.Bottom);
+    if not try_screen_point_to_physical(hwnd, top_left) then
+    begin
+        Result := False;
+        Exit;
+    end;
+    if not try_screen_point_to_physical(hwnd, bottom_right) then
     begin
         Result := False;
         Exit;
@@ -158,6 +191,24 @@ begin
     if class_len > 0 then
     begin
         SetString(Result, class_buffer, class_len);
+    end;
+end;
+
+procedure clear_composing_property(const context: ITfContext; const ec: TfEditCookie; const range: ITfRange);
+var
+    prop: ITfProperty;
+    guid: TGUID;
+begin
+    if (context = nil) or (range = nil) then
+    begin
+        Exit;
+    end;
+
+    prop := nil;
+    guid := c_guid_prop_composing;
+    if context.GetProperty(guid, prop) = S_OK then
+    begin
+        prop.Clear(ec, range);
     end;
 end;
 
@@ -246,6 +297,15 @@ var
         client_rect: Winapi.Windows.TRect;
         window_rect: Winapi.Windows.TRect;
         client_like: Boolean;
+        original_window_like: Boolean;
+        converted_window_like: Boolean;
+        origin_distance: Integer;
+        converted_origin_distance: Integer;
+        screen_origin_distance: Integer;
+        screen_window_like: Boolean;
+        origin_suspicious: Boolean;
+        converted_candidate: Winapi.Windows.TRect;
+        screen_candidate: Winapi.Windows.TRect;
     begin
         Result := False;
         view_hwnd := 0;
@@ -259,22 +319,84 @@ var
             Exit;
         end;
 
-        // If the point already looks like absolute screen coordinates around
-        // the window, do not apply client->screen conversion again.
-        if GetWindowRect(view_hwnd, window_rect) then
-        begin
-            if (candidate.Left >= window_rect.Left - 64) and (candidate.Left <= window_rect.Right + 64) and
-                (candidate.Top >= window_rect.Top - 64) and (candidate.Top <= window_rect.Bottom + 64) then
-            begin
-                Exit;
-            end;
-        end;
-
         client_like := (candidate.Left >= client_rect.Left - 32) and
             (candidate.Left <= client_rect.Right + 32) and
             (candidate.Top >= client_rect.Top - 32) and
             (candidate.Top <= client_rect.Bottom + 32);
-        if not client_like then
+        original_window_like := False;
+        converted_window_like := False;
+        screen_window_like := False;
+        origin_suspicious := False;
+        if GetWindowRect(view_hwnd, window_rect) then
+        begin
+            original_window_like := (candidate.Left >= window_rect.Left - 64) and
+                (candidate.Left <= window_rect.Right + 64) and
+                (candidate.Top >= window_rect.Top - 64) and
+                (candidate.Top <= window_rect.Bottom + 64);
+            screen_candidate := candidate;
+            if try_screen_rect_to_physical(view_hwnd, screen_candidate) then
+            begin
+                screen_window_like := (screen_candidate.Left >= window_rect.Left - 64) and
+                    (screen_candidate.Left <= window_rect.Right + 64) and
+                    (screen_candidate.Top >= window_rect.Top - 64) and
+                    (screen_candidate.Top <= window_rect.Bottom + 64);
+                if original_window_like and screen_window_like then
+                begin
+                    origin_distance := Abs(candidate.Left - window_rect.Left) + Abs(candidate.Top - window_rect.Top);
+                    screen_origin_distance := Abs(screen_candidate.Left - window_rect.Left) +
+                        Abs(screen_candidate.Top - window_rect.Top);
+                    origin_suspicious := (origin_distance <= 320) and
+                        (screen_origin_distance > origin_distance + 64);
+                end;
+            end;
+        end;
+
+        if client_like then
+        begin
+            converted_candidate := candidate;
+            if try_client_rect_to_screen_physical(view_hwnd, converted_candidate) then
+            begin
+                if GetWindowRect(view_hwnd, window_rect) then
+                begin
+                    converted_window_like := (converted_candidate.Left >= window_rect.Left - 64) and
+                        (converted_candidate.Left <= window_rect.Right + 64) and
+                        (converted_candidate.Top >= window_rect.Top - 64) and
+                        (converted_candidate.Top <= window_rect.Bottom + 64);
+                end;
+
+                if converted_window_like then
+                begin
+                    if not original_window_like then
+                    begin
+                        candidate := converted_candidate;
+                        Result := True;
+                        Exit;
+                    end;
+
+                    origin_distance := Abs(candidate.Left - window_rect.Left) + Abs(candidate.Top - window_rect.Top);
+                    converted_origin_distance := Abs(converted_candidate.Left - window_rect.Left) +
+                        Abs(converted_candidate.Top - window_rect.Top);
+                    if (origin_distance <= 320) and (converted_origin_distance > origin_distance + 96) then
+                    begin
+                        candidate := converted_candidate;
+                        Result := True;
+                    end;
+                    Exit;
+                end;
+            end;
+        end;
+
+        if screen_window_like then
+        begin
+            if (not original_window_like) or origin_suspicious then
+            begin
+                candidate := screen_candidate;
+                Result := True;
+                Exit;
+            end;
+        end;
+
+        if original_window_like or (not client_like) then
         begin
             Exit;
         end;
@@ -378,7 +500,12 @@ begin
     if hr = S_OK then
     begin
         screen_ok := view.GetScreenExt(screen_rect) = S_OK;
-        if screen_ok then
+        rect_adjusted := rect;
+        if try_adjust_with_view_hwnd(rect_adjusted) then
+        begin
+            rect := rect_adjusted;
+        end
+        else if screen_ok then
         begin
             rect_adjusted := rect;
             OffsetRect(rect_adjusted, screen_rect.Left, screen_rect.Top);
@@ -386,22 +513,17 @@ begin
             begin
                 rect := rect_adjusted;
             end;
+        end;
+        if screen_ok then
+        begin
             if not rect_in_screen(rect, screen_rect) then
             begin
                 rect_adjusted := rect;
-                if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) and
-                    rect_in_screen(rect_adjusted, screen_rect) then
+                OffsetRect(rect_adjusted, screen_rect.Left, screen_rect.Top);
+                if rect_in_screen(rect_adjusted, screen_rect) then
                 begin
                     rect := rect_adjusted;
                 end;
-            end;
-        end
-        else
-        begin
-            rect_adjusted := rect;
-            if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) then
-            begin
-                rect := rect_adjusted;
             end;
         end;
         // Prefer the trailing edge so fallback to non-collapsed ranges still
@@ -559,6 +681,7 @@ begin
         hr := m_composition_ref^.GetRange(range);
         if (hr = S_OK) and (range <> nil) then
         begin
+            clear_composing_property(m_context, ec, range);
             hr := range.SetText(ec, 0, PWideChar(m_text), Length(m_text));
             if hr = S_OK then
             begin
@@ -702,6 +825,7 @@ begin
     hr := m_composition_ref^.GetRange(range);
     if (hr = S_OK) and (range <> nil) then
     begin
+        clear_composing_property(m_context, ec, range);
         range.SetText(ec, 0, PWideChar(''), 0);
     end;
 
@@ -742,6 +866,15 @@ var
         client_rect: Winapi.Windows.TRect;
         window_rect: Winapi.Windows.TRect;
         client_like: Boolean;
+        original_window_like: Boolean;
+        converted_window_like: Boolean;
+        origin_distance: Integer;
+        converted_origin_distance: Integer;
+        screen_origin_distance: Integer;
+        screen_window_like: Boolean;
+        origin_suspicious: Boolean;
+        converted_candidate: Winapi.Windows.TRect;
+        screen_candidate: Winapi.Windows.TRect;
     begin
         Result := False;
         view_hwnd := 0;
@@ -755,20 +888,84 @@ var
             Exit;
         end;
 
-        if GetWindowRect(view_hwnd, window_rect) then
-        begin
-            if (candidate.Left >= window_rect.Left - 64) and (candidate.Left <= window_rect.Right + 64) and
-                (candidate.Top >= window_rect.Top - 64) and (candidate.Top <= window_rect.Bottom + 64) then
-            begin
-                Exit;
-            end;
-        end;
-
         client_like := (candidate.Left >= client_rect.Left - 32) and
             (candidate.Left <= client_rect.Right + 32) and
             (candidate.Top >= client_rect.Top - 32) and
             (candidate.Top <= client_rect.Bottom + 32);
-        if not client_like then
+        original_window_like := False;
+        converted_window_like := False;
+        screen_window_like := False;
+        origin_suspicious := False;
+        if GetWindowRect(view_hwnd, window_rect) then
+        begin
+            original_window_like := (candidate.Left >= window_rect.Left - 64) and
+                (candidate.Left <= window_rect.Right + 64) and
+                (candidate.Top >= window_rect.Top - 64) and
+                (candidate.Top <= window_rect.Bottom + 64);
+            screen_candidate := candidate;
+            if try_screen_rect_to_physical(view_hwnd, screen_candidate) then
+            begin
+                screen_window_like := (screen_candidate.Left >= window_rect.Left - 64) and
+                    (screen_candidate.Left <= window_rect.Right + 64) and
+                    (screen_candidate.Top >= window_rect.Top - 64) and
+                    (screen_candidate.Top <= window_rect.Bottom + 64);
+                if original_window_like and screen_window_like then
+                begin
+                    origin_distance := Abs(candidate.Left - window_rect.Left) + Abs(candidate.Top - window_rect.Top);
+                    screen_origin_distance := Abs(screen_candidate.Left - window_rect.Left) +
+                        Abs(screen_candidate.Top - window_rect.Top);
+                    origin_suspicious := (origin_distance <= 320) and
+                        (screen_origin_distance > origin_distance + 64);
+                end;
+            end;
+        end;
+
+        if client_like then
+        begin
+            converted_candidate := candidate;
+            if try_client_rect_to_screen_physical(view_hwnd, converted_candidate) then
+            begin
+                if GetWindowRect(view_hwnd, window_rect) then
+                begin
+                    converted_window_like := (converted_candidate.Left >= window_rect.Left - 64) and
+                        (converted_candidate.Left <= window_rect.Right + 64) and
+                        (converted_candidate.Top >= window_rect.Top - 64) and
+                        (converted_candidate.Top <= window_rect.Bottom + 64);
+                end;
+
+                if converted_window_like then
+                begin
+                    if not original_window_like then
+                    begin
+                        candidate := converted_candidate;
+                        Result := True;
+                        Exit;
+                    end;
+
+                    origin_distance := Abs(candidate.Left - window_rect.Left) + Abs(candidate.Top - window_rect.Top);
+                    converted_origin_distance := Abs(converted_candidate.Left - window_rect.Left) +
+                        Abs(converted_candidate.Top - window_rect.Top);
+                    if (origin_distance <= 320) and (converted_origin_distance > origin_distance + 96) then
+                    begin
+                        candidate := converted_candidate;
+                        Result := True;
+                    end;
+                    Exit;
+                end;
+            end;
+        end;
+
+        if screen_window_like then
+        begin
+            if (not original_window_like) or origin_suspicious then
+            begin
+                candidate := screen_candidate;
+                Result := True;
+                Exit;
+            end;
+        end;
+
+        if original_window_like or (not client_like) then
         begin
             Exit;
         end;
@@ -828,7 +1025,12 @@ begin
     if hr = S_OK then
     begin
         screen_ok := view.GetScreenExt(screen_rect) = S_OK;
-        if screen_ok then
+        rect_adjusted := rect;
+        if try_adjust_with_view_hwnd(rect_adjusted) then
+        begin
+            rect := rect_adjusted;
+        end
+        else if screen_ok then
         begin
             rect_adjusted := rect;
             OffsetRect(rect_adjusted, screen_rect.Left, screen_rect.Top);
@@ -836,22 +1038,17 @@ begin
             begin
                 rect := rect_adjusted;
             end;
+        end;
+        if screen_ok then
+        begin
             if not rect_in_screen(rect, screen_rect) then
             begin
                 rect_adjusted := rect;
-                if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) and
-                    rect_in_screen(rect_adjusted, screen_rect) then
+                OffsetRect(rect_adjusted, screen_rect.Left, screen_rect.Top);
+                if rect_in_screen(rect_adjusted, screen_rect) then
                 begin
                     rect := rect_adjusted;
                 end;
-            end;
-        end
-        else
-        begin
-            rect_adjusted := rect;
-            if use_full_range_ext and try_adjust_with_view_hwnd(rect_adjusted) then
-            begin
-                rect := rect_adjusted;
             end;
         end;
         // Prefer the trailing edge so fallback to non-collapsed ranges still

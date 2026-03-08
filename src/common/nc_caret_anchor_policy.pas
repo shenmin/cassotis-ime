@@ -319,6 +319,7 @@ var
     function score_observation(const observation: TncCaretAnchorObservation; out candidate_score: Integer): Boolean;
     var
         candidate_suspicious: Boolean;
+        candidate_has_pair_support: Boolean;
     begin
         Result := False;
         candidate_score := 0;
@@ -334,13 +335,26 @@ var
         candidate_score := source_base_score(observation.source);
         candidate_suspicious := is_origin_anchor_suspicious(observation.point, base_rect, has_base_rect,
             context.cursor_point, context.cursor_point_valid, context.terminal_like_target, context.has_composition);
+        candidate_has_pair_support := False;
+        if observation.source = casGui then
+        begin
+            candidate_has_pair_support := caret_valid and points_are_close(observation.point, caret_point, c_pair_agree_delta);
+        end
+        else if observation.source = casCaretPos then
+        begin
+            candidate_has_pair_support := gui_valid and points_are_close(observation.point, gui_point, c_pair_agree_delta);
+        end;
+        if candidate_has_pair_support and (observation.source in [casGui, casCaretPos]) then
+        begin
+            candidate_suspicious := False;
+        end;
 
         if candidate_suspicious then
         begin
             Dec(candidate_score, 220);
         end;
 
-        if find_top_band_reference(observation.source, reference_point) then
+        if (not candidate_has_pair_support) and find_top_band_reference(observation.source, reference_point) then
         begin
             if should_reject_top_band_point(observation.point, True, reference_point, True, base_rect, has_base_rect) then
             begin

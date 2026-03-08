@@ -215,6 +215,7 @@ function calculate_candidate_offset(const base_offset: Integer; const anchor: TP
 var
     dpi: Integer;
     line_gap: Integer;
+    min_gap: Integer;
     max_gap: Integer;
 begin
     dpi := get_monitor_dpi(anchor);
@@ -226,16 +227,22 @@ begin
 
     if line_height > 0 then
     begin
-        line_gap := MulDiv(line_height, 2, 3);
-        max_gap := MulDiv(28, dpi, 96);
+        // Leave enough breathing room for underline/composition decorations
+        // while still tracking the real line box instead of a large fixed
+        // offset. A quarter line proved too tight for inline composition
+        // hosts; use a moderate fraction of the measured line height instead.
+        line_gap := MulDiv(line_height, 2, 5);
+        min_gap := MulDiv(6, dpi, 96);
+        max_gap := MulDiv(18, dpi, 96);
+        if line_gap < min_gap then
+        begin
+            line_gap := min_gap;
+        end;
         if line_gap > max_gap then
         begin
             line_gap := max_gap;
         end;
-        if line_gap > Result then
-        begin
-            Result := line_gap;
-        end;
+        Result := line_gap;
     end;
 end;
 
@@ -581,6 +588,10 @@ begin
     end;
 
     ensure_candidate_window;
+    if (caret.X <> 0) or (caret.Y <> 0) then
+    begin
+        m_candidate_window.prepare_for_anchor(caret);
+    end;
     m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index, m_preedit_text,
         m_engine.config.debug_mode);
 
@@ -615,12 +626,22 @@ begin
                     [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
                     window_rect.Bottom, monitor_info.rcWork.Left, monitor_info.rcWork.Top,
                     monitor_info.rcWork.Right, monitor_info.rcWork.Bottom]));
+                if m_engine.config.debug_mode then
+                begin
+                    host_log(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
+                        [line_height, y_offset]));
+                end;
             end
             else
             begin
                 host_log(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d)',
                     [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
                     window_rect.Bottom]));
+                if m_engine.config.debug_mode then
+                begin
+                    host_log(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
+                        [line_height, y_offset]));
+                end;
             end;
         end;
     end;
