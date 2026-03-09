@@ -80,7 +80,7 @@ end;
 function anchor_looks_like_window_origin(const candidate: TPoint; const base_rect: TRect;
     const has_base_rect: Boolean): Boolean;
 const
-    c_left_range = 220;
+    c_left_range = 96;
     c_top_range = 180;
 begin
     if not has_base_rect then
@@ -200,6 +200,7 @@ var
     pair_far_from_tsf: Boolean;
     pair_lagging_tsf: Boolean;
     pair_backed_by_last_stable: Boolean;
+    gui_pair_origin_suspicious: Boolean;
     last_stable_suspicious: Boolean;
     compose_delta: Integer;
     best_priority: Integer;
@@ -562,6 +563,11 @@ begin
     pair_backed_by_last_stable := False;
     if pair_agrees and tsf_valid then
     begin
+        gui_pair_origin_suspicious :=
+            is_origin_anchor_suspicious(gui_point, base_rect, has_base_rect, context.cursor_point,
+                context.cursor_point_valid, context.terminal_like_target, context.has_composition) and
+            is_origin_anchor_suspicious(caret_point, base_rect, has_base_rect, context.cursor_point,
+                context.cursor_point_valid, context.terminal_like_target, context.has_composition);
         compose_delta := c_compose_tsf_delta;
         pair_far_from_tsf := (not points_are_close(gui_point, tsf_point, compose_delta)) and
             (not points_are_close(caret_point, tsf_point, compose_delta));
@@ -571,7 +577,8 @@ begin
                 points_are_close(context.last_stable_point, gui_point, c_last_stable_delta) or
                 points_are_close(context.last_stable_point, caret_point, c_last_stable_delta);
         end;
-        if pair_far_from_tsf and (not tsf_suspicious) and (not pair_backed_by_last_stable) then
+        if pair_far_from_tsf and (not tsf_suspicious) and (not pair_backed_by_last_stable) and
+            gui_pair_origin_suspicious then
         begin
             pair_lagging_tsf := (Max(gui_point.X, caret_point.X) <= tsf_point.X - c_pair_lag_x) and
                 (Max(gui_point.Y, caret_point.Y) <= tsf_point.Y - c_pair_lag_y);

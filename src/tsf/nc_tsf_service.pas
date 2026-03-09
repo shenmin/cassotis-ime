@@ -86,8 +86,8 @@ type
         procedure reset_session_if_needed(const force: Boolean = False);
         procedure invalidate_sent_caret;
         procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
-            const source: TncCaretAnchorSource = casCursor; const anchor_score: Integer = 0;
-            const force: Boolean = False);
+            const terminal_like_target: Boolean; const source: TncCaretAnchorSource = casCursor;
+            const anchor_score: Integer = 0; const force: Boolean = False);
         procedure unadvise_thread_mgr_sink;
         procedure advise_thread_mgr_sink;
         procedure unadvise_compartment_sinks;
@@ -119,7 +119,8 @@ type
         procedure toggle_dictionary_variant_by_ctrl_shift_t;
         procedure configure_system_input_mode_icon;
         function get_candidate_point(out point: TPoint; out placement_line_height: Integer;
-            out chosen_source: TncCaretAnchorSource; out chosen_score: Integer): Boolean;
+            out terminal_like_target: Boolean; out chosen_source: TncCaretAnchorSource;
+            out chosen_score: Integer): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
         procedure update_surrounding_text(const context: ITfContext);
@@ -421,7 +422,8 @@ begin
 end;
 
 procedure TncTextService.push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
-    const source: TncCaretAnchorSource; const anchor_score: Integer; const force: Boolean);
+    const terminal_like_target: Boolean; const source: TncCaretAnchorSource; const anchor_score: Integer;
+    const force: Boolean);
 const
     c_caret_resend_ms = 120;
 var
@@ -445,7 +447,8 @@ begin
         end;
     end;
 
-    if m_ipc_client.set_caret(m_session_id, point, has_caret, line_height, source, anchor_score) then
+    if m_ipc_client.set_caret(m_session_id, point, has_caret, line_height, source, anchor_score,
+        terminal_like_target) then
     begin
         m_last_sent_caret_point := point;
         m_last_sent_has_caret := has_caret;
@@ -1061,6 +1064,7 @@ var
     punctuation_full_width: Boolean;
     point: TPoint;
     placement_line_height: Integer;
+    terminal_like_target: Boolean;
     chosen_source: TncCaretAnchorSource;
     chosen_score: Integer;
     key_state: TncKeyState;
@@ -1194,10 +1198,11 @@ begin
                 begin
                     if update_composition(context, display_text) then
                     begin
-                        if get_candidate_point(point, placement_line_height, chosen_source, chosen_score) then
+                        if get_candidate_point(point, placement_line_height, terminal_like_target, chosen_source,
+                            chosen_score) then
                         begin
-                            push_caret_to_host(point, m_has_caret_point, placement_line_height, chosen_source,
-                                chosen_score, True);
+                            push_caret_to_host(point, m_has_caret_point, placement_line_height,
+                                terminal_like_target, chosen_source, chosen_score, True);
                             m_pending_caret_update := False;
                             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
                             begin
@@ -1839,19 +1844,22 @@ function TncTextService.OnUpdateComposition(const composition: ITfCompositionVie
 var
     point: TPoint;
     placement_line_height: Integer;
+    terminal_like_target: Boolean;
     chosen_source: TncCaretAnchorSource;
     chosen_score: Integer;
 begin
     if m_pending_caret_update and m_has_caret_point and (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
-        if not get_candidate_point(point, placement_line_height, chosen_source, chosen_score) then
+        if not get_candidate_point(point, placement_line_height, terminal_like_target, chosen_source,
+            chosen_score) then
         begin
             point := m_last_caret_point;
             placement_line_height := m_last_caret_line_height;
+            terminal_like_target := False;
             chosen_source := casLastSent;
             chosen_score := -160;
         end;
-        push_caret_to_host(point, True, placement_line_height, chosen_source, chosen_score);
+        push_caret_to_host(point, True, placement_line_height, terminal_like_target, chosen_source, chosen_score);
         m_pending_caret_update := False;
         if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
@@ -2021,6 +2029,7 @@ function TncTextService.OnLayoutChange(const pic: ITfContext; lcode: TfLayoutCod
 var
     point: TPoint;
     placement_line_height: Integer;
+    terminal_like_target: Boolean;
     chosen_source: TncCaretAnchorSource;
     chosen_score: Integer;
 begin
@@ -2036,9 +2045,10 @@ begin
     begin
         Exit;
     end;
-    if get_candidate_point(point, placement_line_height, chosen_source, chosen_score) then
+    if get_candidate_point(point, placement_line_height, terminal_like_target, chosen_source, chosen_score) then
     begin
-        push_caret_to_host(point, m_has_caret_point, placement_line_height, chosen_source, chosen_score);
+        push_caret_to_host(point, m_has_caret_point, placement_line_height, terminal_like_target, chosen_source,
+            chosen_score);
     end;
 end;
 
@@ -2278,7 +2288,7 @@ begin
 end;
 
 function TncTextService.get_candidate_point(out point: TPoint; out placement_line_height: Integer;
-    out chosen_source: TncCaretAnchorSource; out chosen_score: Integer): Boolean;
+    out terminal_like_target: Boolean; out chosen_source: TncCaretAnchorSource; out chosen_score: Integer): Boolean;
 var
     caret_point: TPoint;
     gui_point: TPoint;
@@ -2305,15 +2315,12 @@ var
     foreground_class_name: string;
     terminal_like_context: Boolean;
     terminal_like_foreground: Boolean;
-    terminal_like_target: Boolean;
     cursor_point: TPoint;
     cursor_point_valid: Boolean;
     last_sent_point_valid: Boolean;
     observations: array[0..4] of TncCaretAnchorObservation;
     observation_count: Integer;
     anchor_context: TncCaretAnchorContext;
-    tsf_support_delta: Integer;
-    tsf_supported: Boolean;
     tsf_suspicious: Boolean;
     gui_suspicious: Boolean;
     caret_suspicious: Boolean;
@@ -2585,6 +2592,7 @@ var
     end;
 begin
     point := System.Types.Point(0, 0);
+    terminal_like_target := False;
     chosen_source := casCursor;
     chosen_score := 0;
     virtual_left := GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -2808,38 +2816,6 @@ begin
     if try_choose_best_anchor_scored(Slice(observations, observation_count), anchor_context, point, chosen_source,
         chosen_score) then
     begin
-        if (placement_line_height > 0) and anchor_context.has_composition and (chosen_source = casTsf) then
-        begin
-            tsf_support_delta := placement_line_height + 24;
-            tsf_supported := False;
-            if gui_point_valid and points_are_close(gui_point, tsf_point, tsf_support_delta) then
-            begin
-                tsf_supported := True;
-            end;
-            if caret_point_valid and points_are_close(caret_point, tsf_point, tsf_support_delta) then
-            begin
-                tsf_supported := True;
-            end;
-            if not tsf_supported then
-            begin
-                if gui_point_valid and caret_point_valid then
-                begin
-                    tsf_support_delta := MulDiv(placement_line_height, 5, 2);
-                end
-                else if gui_point_valid or caret_point_valid then
-                begin
-                    tsf_support_delta := MulDiv(placement_line_height, 2, 1);
-                end
-                else
-                begin
-                    tsf_support_delta := MulDiv(placement_line_height, 3, 2);
-                end;
-                if tsf_support_delta > placement_line_height then
-                begin
-                    placement_line_height := tsf_support_delta;
-                end;
-            end;
-        end;
         if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
             m_logger.debug(Format('Caret choose=%s point=(%d,%d)', [anchor_source_name(chosen_source), point.X, point.Y]));
