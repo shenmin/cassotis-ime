@@ -261,13 +261,13 @@ begin
 
     if line_height > 0 then
     begin
-        // Leave enough breathing room for underline/composition decorations
-        // while still tracking the real line box instead of a large fixed
-        // offset. A quarter line proved too tight for inline composition
-        // hosts; use a moderate fraction of the measured line height instead.
-        line_gap := MulDiv(line_height, 2, 5);
-        min_gap := MulDiv(6, dpi, 96);
-        max_gap := MulDiv(18, dpi, 96);
+        // The TSF caret line height is already reported in screen pixels.
+        // Keep the post-caret gap tied to that real line box instead of
+        // scaling it a second time by monitor DPI, which pushes the
+        // candidate window too far down on higher-DPI monitors.
+        line_gap := MulDiv(line_height, 1, 4);
+        min_gap := 4;
+        max_gap := 12;
         if line_gap < min_gap then
         begin
             line_gap := min_gap;
