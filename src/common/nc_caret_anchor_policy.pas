@@ -34,15 +34,23 @@ function anchor_looks_like_window_origin(const candidate: TPoint; const base_rec
 function is_origin_anchor_suspicious(const candidate: TPoint; const base_rect: TRect; const has_base_rect: Boolean;
     const cursor_point: TPoint; const cursor_point_valid: Boolean; const terminal_like_target: Boolean;
     const has_composition: Boolean): Boolean;
+function should_relax_terminal_tsf_suspicion(const tsf_point: TPoint; const tsf_valid: Boolean;
+    const gui_point: TPoint; const gui_valid: Boolean; const caret_point: TPoint; const caret_valid: Boolean;
+    const base_rect: TRect; const has_base_rect: Boolean; const cursor_point: TPoint;
+    const cursor_point_valid: Boolean; const terminal_like_target: Boolean; const has_composition: Boolean): Boolean;
 function should_reject_top_band_point(const candidate: TPoint; const candidate_valid: Boolean;
     const reference_point: TPoint; const reference_valid: Boolean; const base_rect: TRect;
     const has_base_rect: Boolean): Boolean;
+function try_choose_best_anchor_scored(const observations: array of TncCaretAnchorObservation;
+    const context: TncCaretAnchorContext; out best_point: TPoint; out best_source: TncCaretAnchorSource;
+    out best_score: Integer): Boolean;
 function try_choose_best_anchor(const observations: array of TncCaretAnchorObservation;
     const context: TncCaretAnchorContext; out best_point: TPoint; out best_source: TncCaretAnchorSource): Boolean;
 
 implementation
 
 uses
+    System.Math,
     System.SysUtils;
 
 function anchor_source_name(const source: TncCaretAnchorSource): string;
@@ -94,7 +102,7 @@ const
     c_cursor_close_delta = 180;
 begin
     Result := False;
-    if terminal_like_target or (not has_composition) then
+    if not has_composition then
     begin
         Exit;
     end;
@@ -107,6 +115,50 @@ begin
         Exit;
     end;
     Result := True;
+end;
+
+function should_relax_terminal_tsf_suspicion(const tsf_point: TPoint; const tsf_valid: Boolean;
+    const gui_point: TPoint; const gui_valid: Boolean; const caret_point: TPoint; const caret_valid: Boolean;
+    const base_rect: TRect; const has_base_rect: Boolean; const cursor_point: TPoint;
+    const cursor_point_valid: Boolean; const terminal_like_target: Boolean; const has_composition: Boolean): Boolean;
+const
+    c_pair_agree_delta = 96;
+    c_deeper_x = 120;
+    c_deeper_y = 72;
+var
+    gui_suspicious: Boolean;
+    caret_suspicious: Boolean;
+    pair_max_x: Integer;
+    pair_max_y: Integer;
+begin
+    Result := False;
+    if (not terminal_like_target) or (not has_composition) or (not tsf_valid) then
+    begin
+        Exit;
+    end;
+    if not is_origin_anchor_suspicious(tsf_point, base_rect, has_base_rect, cursor_point,
+        cursor_point_valid, terminal_like_target, has_composition) then
+    begin
+        Exit;
+    end;
+    if (not gui_valid) or (not caret_valid) or (not points_are_close(gui_point, caret_point, c_pair_agree_delta)) then
+    begin
+        Exit;
+    end;
+
+    gui_suspicious := is_origin_anchor_suspicious(gui_point, base_rect, has_base_rect, cursor_point,
+        cursor_point_valid, terminal_like_target, has_composition);
+    caret_suspicious := is_origin_anchor_suspicious(caret_point, base_rect, has_base_rect, cursor_point,
+        cursor_point_valid, terminal_like_target, has_composition);
+    if (not gui_suspicious) or (not caret_suspicious) then
+    begin
+        Exit;
+    end;
+
+    pair_max_x := Max(gui_point.X, caret_point.X);
+    pair_max_y := Max(gui_point.Y, caret_point.Y);
+    Result := (tsf_point.X >= pair_max_x + c_deeper_x) or
+        (tsf_point.Y >= pair_max_y + c_deeper_y);
 end;
 
 function should_reject_top_band_point(const candidate: TPoint; const candidate_valid: Boolean;
@@ -125,12 +177,15 @@ begin
     Result := (candidate.Y <= top_band_limit_y) and (reference_point.Y > top_band_limit_y + 32);
 end;
 
-function try_choose_best_anchor(const observations: array of TncCaretAnchorObservation;
-    const context: TncCaretAnchorContext; out best_point: TPoint; out best_source: TncCaretAnchorSource): Boolean;
+function try_choose_best_anchor_scored(const observations: array of TncCaretAnchorObservation;
+    const context: TncCaretAnchorContext; out best_point: TPoint; out best_source: TncCaretAnchorSource;
+    out best_score: Integer): Boolean;
 const
     c_compose_tsf_delta = 140;
     c_pair_agree_delta = 96;
     c_last_stable_delta = 96;
+    c_pair_lag_x = 160;
+    c_pair_lag_y = 120;
 var
     base_rect: TRect;
     has_base_rect: Boolean;
@@ -143,8 +198,10 @@ var
     tsf_suspicious: Boolean;
     pair_agrees: Boolean;
     pair_far_from_tsf: Boolean;
+    pair_lagging_tsf: Boolean;
+    pair_backed_by_last_stable: Boolean;
+    last_stable_suspicious: Boolean;
     compose_delta: Integer;
-    best_score: Integer;
     best_priority: Integer;
     score: Integer;
     priority: Integer;
@@ -318,8 +375,10 @@ var
 
     function score_observation(const observation: TncCaretAnchorObservation; out candidate_score: Integer): Boolean;
     var
+        raw_candidate_suspicious: Boolean;
         candidate_suspicious: Boolean;
         candidate_has_pair_support: Boolean;
+        candidate_has_last_stable_support: Boolean;
     begin
         Result := False;
         candidate_score := 0;
@@ -333,9 +392,19 @@ var
         end;
 
         candidate_score := source_base_score(observation.source);
-        candidate_suspicious := is_origin_anchor_suspicious(observation.point, base_rect, has_base_rect,
+        raw_candidate_suspicious := is_origin_anchor_suspicious(observation.point, base_rect, has_base_rect,
             context.cursor_point, context.cursor_point_valid, context.terminal_like_target, context.has_composition);
+        candidate_suspicious := raw_candidate_suspicious;
+        if (observation.source = casTsf) and candidate_suspicious and
+            should_relax_terminal_tsf_suspicion(observation.point, True, gui_point, gui_valid,
+            caret_point, caret_valid, base_rect, has_base_rect, context.cursor_point,
+            context.cursor_point_valid, context.terminal_like_target, context.has_composition) then
+        begin
+            candidate_suspicious := False;
+        end;
         candidate_has_pair_support := False;
+        candidate_has_last_stable_support := context.last_stable_valid and (not last_stable_suspicious) and
+            points_are_close(observation.point, context.last_stable_point, c_last_stable_delta);
         if observation.source = casGui then
         begin
             candidate_has_pair_support := caret_valid and points_are_close(observation.point, caret_point, c_pair_agree_delta);
@@ -346,7 +415,10 @@ var
         end;
         if candidate_has_pair_support and (observation.source in [casGui, casCaretPos]) then
         begin
-            candidate_suspicious := False;
+            if (not raw_candidate_suspicious) or candidate_has_last_stable_support then
+            begin
+                candidate_suspicious := False;
+            end;
         end;
 
         if candidate_suspicious then
@@ -354,7 +426,8 @@ var
             Dec(candidate_score, 220);
         end;
 
-        if (not candidate_has_pair_support) and find_top_band_reference(observation.source, reference_point) then
+        if ((not candidate_has_pair_support) or candidate_suspicious) and
+            find_top_band_reference(observation.source, reference_point) then
         begin
             if should_reject_top_band_point(observation.point, True, reference_point, True, base_rect, has_base_rect) then
             begin
@@ -362,7 +435,8 @@ var
             end;
         end;
 
-        if context.last_stable_valid and points_are_close(observation.point, context.last_stable_point, c_last_stable_delta) then
+        if context.last_stable_valid and (not last_stable_suspicious) and
+            points_are_close(observation.point, context.last_stable_point, c_last_stable_delta) then
         begin
             Inc(candidate_score, 30);
         end;
@@ -375,14 +449,22 @@ var
                 begin
                     Inc(candidate_score, 55);
                 end;
-                if pair_agrees and pair_far_from_tsf then
+                if pair_backed_by_last_stable and pair_far_from_tsf and (not context.terminal_like_target) then
+                begin
+                    Dec(candidate_score, 220);
+                end;
+                if pair_lagging_tsf then
+                begin
+                    Inc(candidate_score, 45);
+                end
+                else if pair_agrees and pair_far_from_tsf then
                 begin
                     Dec(candidate_score, 120);
                 end;
             end
             else if observation.source in [casGui, casCaretPos] then
             begin
-                if pair_agrees then
+                if pair_agrees and (not candidate_suspicious) and (not pair_lagging_tsf) then
                 begin
                     Inc(candidate_score, 80);
                     if pair_far_from_tsf then
@@ -405,10 +487,34 @@ var
                         Inc(candidate_score, 45);
                     end;
                 end;
+                if pair_lagging_tsf and tsf_valid and (not tsf_suspicious) then
+                begin
+                    Dec(candidate_score, 160);
+                end;
             end
             else if observation.source = casLastSent then
             begin
                 Dec(candidate_score, 20);
+                if context.terminal_like_target then
+                begin
+                    if raw_candidate_suspicious then
+                    begin
+                        Dec(candidate_score, 80);
+                    end;
+                    if tsf_valid and (not tsf_suspicious) then
+                    begin
+                        if points_are_close(observation.point, tsf_point, c_compose_tsf_delta) then
+                        begin
+                            Dec(candidate_score, 60);
+                        end
+                        else
+                        begin
+                            // In terminal-like hosts, a stale last-sent caret should not outrank
+                            // a deeper, currently valid TSF anchor.
+                            Dec(candidate_score, 220);
+                        end;
+                    end;
+                end;
             end;
         end
         else
@@ -429,6 +535,7 @@ var
 begin
     best_point := System.Types.Point(0, 0);
     best_source := casCursor;
+    best_score := Low(Integer);
     Result := False;
     if Length(observations) = 0 then
     begin
@@ -437,19 +544,40 @@ begin
 
     has_base_rect := choose_base_rect(base_rect);
     remember_points;
+    last_stable_suspicious := context.last_stable_valid and
+        is_origin_anchor_suspicious(context.last_stable_point, base_rect, has_base_rect,
+        context.cursor_point, context.cursor_point_valid, context.terminal_like_target, context.has_composition);
     tsf_suspicious := tsf_valid and is_origin_anchor_suspicious(tsf_point, base_rect, has_base_rect,
         context.cursor_point, context.cursor_point_valid, context.terminal_like_target, context.has_composition);
+    if tsf_suspicious and should_relax_terminal_tsf_suspicion(tsf_point, tsf_valid, gui_point, gui_valid,
+        caret_point, caret_valid, base_rect, has_base_rect, context.cursor_point,
+        context.cursor_point_valid, context.terminal_like_target, context.has_composition) then
+    begin
+        tsf_suspicious := False;
+    end;
 
     pair_agrees := gui_valid and caret_valid and points_are_close(gui_point, caret_point, c_pair_agree_delta);
     pair_far_from_tsf := False;
+    pair_lagging_tsf := False;
+    pair_backed_by_last_stable := False;
     if pair_agrees and tsf_valid then
     begin
         compose_delta := c_compose_tsf_delta;
         pair_far_from_tsf := (not points_are_close(gui_point, tsf_point, compose_delta)) and
             (not points_are_close(caret_point, tsf_point, compose_delta));
+        if context.last_stable_valid and (not last_stable_suspicious) then
+        begin
+            pair_backed_by_last_stable :=
+                points_are_close(context.last_stable_point, gui_point, c_last_stable_delta) or
+                points_are_close(context.last_stable_point, caret_point, c_last_stable_delta);
+        end;
+        if pair_far_from_tsf and (not tsf_suspicious) and (not pair_backed_by_last_stable) then
+        begin
+            pair_lagging_tsf := (Max(gui_point.X, caret_point.X) <= tsf_point.X - c_pair_lag_x) and
+                (Max(gui_point.Y, caret_point.Y) <= tsf_point.Y - c_pair_lag_y);
+        end;
     end;
 
-    best_score := Low(Integer);
     best_priority := Low(Integer);
     for i := Low(observations) to High(observations) do
     begin
@@ -468,6 +596,14 @@ begin
             Result := True;
         end;
     end;
+end;
+
+function try_choose_best_anchor(const observations: array of TncCaretAnchorObservation;
+    const context: TncCaretAnchorContext; out best_point: TPoint; out best_source: TncCaretAnchorSource): Boolean;
+var
+    ignored_score: Integer;
+begin
+    Result := try_choose_best_anchor_scored(observations, context, best_point, best_source, ignored_score);
 end;
 
 end.

@@ -86,6 +86,7 @@ type
         procedure reset_session_if_needed(const force: Boolean = False);
         procedure invalidate_sent_caret;
         procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
+            const source: TncCaretAnchorSource = casCursor; const anchor_score: Integer = 0;
             const force: Boolean = False);
         procedure unadvise_thread_mgr_sink;
         procedure advise_thread_mgr_sink;
@@ -117,7 +118,8 @@ type
         procedure toggle_punctuation_mode_by_ctrl_period;
         procedure toggle_dictionary_variant_by_ctrl_shift_t;
         procedure configure_system_input_mode_icon;
-        function get_candidate_point(out point: TPoint; out placement_line_height: Integer): Boolean;
+        function get_candidate_point(out point: TPoint; out placement_line_height: Integer;
+            out chosen_source: TncCaretAnchorSource; out chosen_score: Integer): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
         procedure update_surrounding_text(const context: ITfContext);
@@ -267,17 +269,6 @@ begin
 
     try_logical_to_physical(hwnd, point);
     Result := ClientToScreen(hwnd, point);
-end;
-
-function try_screen_point_to_physical(const hwnd: HWND; var point: TPoint): Boolean;
-begin
-    if hwnd = 0 then
-    begin
-        Result := False;
-        Exit;
-    end;
-
-    Result := try_logical_to_physical(hwnd, point);
 end;
 
 function is_shift_key(const key_code: Word): Boolean;
@@ -430,7 +421,7 @@ begin
 end;
 
 procedure TncTextService.push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
-    const force: Boolean = False);
+    const source: TncCaretAnchorSource; const anchor_score: Integer; const force: Boolean);
 const
     c_caret_resend_ms = 120;
 var
@@ -454,7 +445,7 @@ begin
         end;
     end;
 
-    if m_ipc_client.set_caret(m_session_id, point, has_caret, line_height) then
+    if m_ipc_client.set_caret(m_session_id, point, has_caret, line_height, source, anchor_score) then
     begin
         m_last_sent_caret_point := point;
         m_last_sent_has_caret := has_caret;
@@ -1070,6 +1061,8 @@ var
     punctuation_full_width: Boolean;
     point: TPoint;
     placement_line_height: Integer;
+    chosen_source: TncCaretAnchorSource;
+    chosen_score: Integer;
     key_state: TncKeyState;
     key_code: Word;
 begin
@@ -1201,9 +1194,10 @@ begin
                 begin
                     if update_composition(context, display_text) then
                     begin
-                        if get_candidate_point(point, placement_line_height) then
+                        if get_candidate_point(point, placement_line_height, chosen_source, chosen_score) then
                         begin
-                            push_caret_to_host(point, m_has_caret_point, placement_line_height, True);
+                            push_caret_to_host(point, m_has_caret_point, placement_line_height, chosen_source,
+                                chosen_score, True);
                             m_pending_caret_update := False;
                             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
                             begin
@@ -1845,15 +1839,19 @@ function TncTextService.OnUpdateComposition(const composition: ITfCompositionVie
 var
     point: TPoint;
     placement_line_height: Integer;
+    chosen_source: TncCaretAnchorSource;
+    chosen_score: Integer;
 begin
     if m_pending_caret_update and m_has_caret_point and (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
-        if not get_candidate_point(point, placement_line_height) then
+        if not get_candidate_point(point, placement_line_height, chosen_source, chosen_score) then
         begin
             point := m_last_caret_point;
             placement_line_height := m_last_caret_line_height;
+            chosen_source := casLastSent;
+            chosen_score := -160;
         end;
-        push_caret_to_host(point, True, placement_line_height);
+        push_caret_to_host(point, True, placement_line_height, chosen_source, chosen_score);
         m_pending_caret_update := False;
         if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
@@ -2023,6 +2021,8 @@ function TncTextService.OnLayoutChange(const pic: ITfContext; lcode: TfLayoutCod
 var
     point: TPoint;
     placement_line_height: Integer;
+    chosen_source: TncCaretAnchorSource;
+    chosen_score: Integer;
 begin
     Result := S_OK;
     if (pic = nil) or (m_ipc_client = nil) or (m_session_id = '') then
@@ -2036,9 +2036,9 @@ begin
     begin
         Exit;
     end;
-    if get_candidate_point(point, placement_line_height) then
+    if get_candidate_point(point, placement_line_height, chosen_source, chosen_score) then
     begin
-        push_caret_to_host(point, m_has_caret_point, placement_line_height);
+        push_caret_to_host(point, m_has_caret_point, placement_line_height, chosen_source, chosen_score);
     end;
 end;
 
@@ -2277,7 +2277,8 @@ begin
     end;
 end;
 
-function TncTextService.get_candidate_point(out point: TPoint; out placement_line_height: Integer): Boolean;
+function TncTextService.get_candidate_point(out point: TPoint; out placement_line_height: Integer;
+    out chosen_source: TncCaretAnchorSource; out chosen_score: Integer): Boolean;
 var
     caret_point: TPoint;
     gui_point: TPoint;
@@ -2311,9 +2312,14 @@ var
     observations: array[0..4] of TncCaretAnchorObservation;
     observation_count: Integer;
     anchor_context: TncCaretAnchorContext;
-    chosen_source: TncCaretAnchorSource;
     tsf_support_delta: Integer;
     tsf_supported: Boolean;
+    tsf_suspicious: Boolean;
+    gui_suspicious: Boolean;
+    caret_suspicious: Boolean;
+    last_suspicious: Boolean;
+    gui_caret_pair: Boolean;
+    gui_far_from_tsf: Boolean;
 
     function point_in_virtual_screen(const candidate: TPoint): Boolean;
     const
@@ -2364,56 +2370,63 @@ var
             (candidate.Y >= bounds.Top - margin) and (candidate.Y <= bounds.Bottom + margin);
     end;
 
-    function point_origin_distance(const candidate: TPoint; const bounds: TRect): Integer;
-    begin
-        Result := Abs(candidate.X - bounds.Left) + Abs(candidate.Y - bounds.Top);
-    end;
-
-    function try_adjust_screen_logical_point(const base_hwnd: Winapi.Windows.HWND; const base_rect: TRect;
-        var candidate: TPoint): Boolean;
+    function try_normalize_anchor_point(const source_hwnd: Winapi.Windows.HWND; var candidate: TPoint): Boolean;
     var
+        client_rect: TRect;
+        window_rect: TRect;
         adjusted: TPoint;
-        original_in_rect: Boolean;
-        adjusted_in_rect: Boolean;
-        original_origin_distance: Integer;
-        adjusted_origin_distance: Integer;
+        has_window_rect: Boolean;
     begin
         Result := False;
-        if base_hwnd = 0 then
+        if source_hwnd = 0 then
         begin
             Exit;
+        end;
+
+        has_window_rect := GetWindowRect(source_hwnd, window_rect);
+        if has_window_rect and point_in_rect(candidate, window_rect, 64) then
+        begin
+            Result := point_in_virtual_screen(candidate);
+            Exit;
+        end;
+
+        if has_context_rect and point_in_rect(candidate, context_rect, 64) then
+        begin
+            Result := point_in_virtual_screen(candidate);
+            Exit;
+        end;
+
+        if has_foreground_rect and point_in_rect(candidate, foreground_rect, 64) then
+        begin
+            Result := point_in_virtual_screen(candidate);
+            Exit;
+        end;
+
+        if not GetClientRect(source_hwnd, client_rect) then
+        begin
+            Exit;
+        end;
+
+        if point_in_rect(candidate, client_rect, 32) then
+        begin
+            adjusted := candidate;
+            if try_client_point_to_screen_physical(source_hwnd, adjusted) then
+            begin
+                candidate := adjusted;
+                Result := point_in_virtual_screen(candidate);
+                Exit;
+            end;
         end;
 
         adjusted := candidate;
-        if not try_screen_point_to_physical(base_hwnd, adjusted) then
+        if try_client_point_to_screen_physical(source_hwnd, adjusted) then
         begin
-            Exit;
-        end;
-        if (adjusted.X = candidate.X) and (adjusted.Y = candidate.Y) then
-        begin
-            Exit;
-        end;
-
-        original_in_rect := point_in_rect(candidate, base_rect, 200);
-        adjusted_in_rect := point_in_rect(adjusted, base_rect, 200);
-        if not adjusted_in_rect then
-        begin
-            Exit;
-        end;
-
-        if not original_in_rect then
-        begin
-            candidate := adjusted;
-            Result := True;
-            Exit;
-        end;
-
-        original_origin_distance := point_origin_distance(candidate, base_rect);
-        adjusted_origin_distance := point_origin_distance(adjusted, base_rect);
-        if (original_origin_distance <= 320) and (adjusted_origin_distance > original_origin_distance + 64) then
-        begin
-            candidate := adjusted;
-            Result := True;
+            if (not has_window_rect) or point_in_rect(adjusted, window_rect, 200) then
+            begin
+                candidate := adjusted;
+                Result := point_in_virtual_screen(candidate);
+                Exit;
+            end;
         end;
     end;
 
@@ -2503,6 +2516,18 @@ var
             (Pos('pseudoconsole', class_lower) > 0);
     end;
 
+    function format_anchor_point(const candidate: TPoint; const valid: Boolean): string;
+    begin
+        if valid then
+        begin
+            Result := Format('(%d,%d)', [candidate.X, candidate.Y]);
+        end
+        else
+        begin
+            Result := 'invalid';
+        end;
+    end;
+
     function try_get_gui_caret_point(const thread_id: DWORD; out candidate: TPoint): Boolean;
     var
         caret_hwnd: Winapi.Windows.HWND;
@@ -2529,10 +2554,14 @@ var
         end;
 
         candidate := System.Types.Point(gui_info.rcCaret.Left, gui_info.rcCaret.Bottom);
+        // GUITHREADINFO.rcCaret is client-relative to hwndCaret/hwndFocus.
         if not try_client_point_to_screen_physical(caret_hwnd, candidate) then
         begin
-            Result := False;
-            Exit;
+            if not try_normalize_anchor_point(caret_hwnd, candidate) then
+            begin
+                Result := False;
+                Exit;
+            end;
         end;
         Result := point_in_virtual_screen(candidate) and point_in_foreground(candidate);
         if (not Result) and (m_logger <> nil) and (m_logger.level <= ll_debug) then
@@ -2556,6 +2585,8 @@ var
     end;
 begin
     point := System.Types.Point(0, 0);
+    chosen_source := casCursor;
+    chosen_score := 0;
     virtual_left := GetSystemMetrics(SM_XVIRTUALSCREEN);
     virtual_top := GetSystemMetrics(SM_YVIRTUALSCREEN);
     virtual_right := virtual_left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -2621,29 +2652,6 @@ begin
             tsf_point := converted_tsf_point;
         end;
     end;
-    if tsf_point_valid then
-    begin
-        converted_tsf_point := tsf_point;
-        if has_context_rect and try_adjust_screen_logical_point(context_hwnd, context_rect, converted_tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('TSF point logical-screen-adjust (%d,%d)->(%d,%d)',
-                    [tsf_point.X, tsf_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            tsf_point := converted_tsf_point;
-        end
-        else if has_foreground_rect and try_adjust_screen_logical_point(foreground_hwnd, foreground_rect,
-            converted_tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('TSF point logical-screen-adjust (%d,%d)->(%d,%d)',
-                    [tsf_point.X, tsf_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            tsf_point := converted_tsf_point;
-        end;
-    end;
     tsf_point_valid := tsf_point_valid and point_in_virtual_screen(tsf_point);
 
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
@@ -2684,68 +2692,33 @@ begin
             gui_thread_id := 0;
         end;
     end;
-    if gui_point_valid then
-    begin
-        converted_tsf_point := gui_point;
-        if has_context_rect and try_adjust_screen_logical_point(context_hwnd, context_rect, converted_tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('GUI point logical-screen-adjust (%d,%d)->(%d,%d)',
-                    [gui_point.X, gui_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            gui_point := converted_tsf_point;
-        end
-        else if has_foreground_rect and try_adjust_screen_logical_point(foreground_hwnd, foreground_rect,
-            converted_tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('GUI point logical-screen-adjust (%d,%d)->(%d,%d)',
-                    [gui_point.X, gui_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            gui_point := converted_tsf_point;
-        end;
-    end;
-
     caret_point_valid := False;
     if GetCaretPos(caret_point) then
     begin
         if hwnd <> 0 then
         begin
-            try_client_point_to_screen_physical(hwnd, caret_point);
+            if not try_client_point_to_screen_physical(hwnd, caret_point) then
+            begin
+                try_normalize_anchor_point(hwnd, caret_point);
+            end;
+        end
+        else if context_hwnd <> 0 then
+        begin
+            if not try_client_point_to_screen_physical(context_hwnd, caret_point) then
+            begin
+                try_normalize_anchor_point(context_hwnd, caret_point);
+            end;
+        end
+        else if foreground_hwnd <> 0 then
+        begin
+            if not try_client_point_to_screen_physical(foreground_hwnd, caret_point) then
+            begin
+                try_normalize_anchor_point(foreground_hwnd, caret_point);
+            end;
         end;
         if terminal_like_target then
         begin
-            if (hwnd = 0) and (context_hwnd <> 0) then
-            begin
-                try_client_point_to_screen_physical(context_hwnd, caret_point);
-            end
-            else if (hwnd = 0) and (context_hwnd = 0) and (foreground_hwnd <> 0) then
-            begin
-                try_client_point_to_screen_physical(foreground_hwnd, caret_point);
-            end;
             try_adjust_terminal_client_point(caret_point);
-        end;
-        converted_tsf_point := caret_point;
-        if has_context_rect and try_adjust_screen_logical_point(context_hwnd, context_rect, converted_tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('CaretPos logical-screen-adjust (%d,%d)->(%d,%d)',
-                    [caret_point.X, caret_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            caret_point := converted_tsf_point;
-        end
-        else if has_foreground_rect and try_adjust_screen_logical_point(foreground_hwnd, foreground_rect,
-            converted_tsf_point) then
-        begin
-            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-            begin
-                m_logger.debug(Format('CaretPos logical-screen-adjust (%d,%d)->(%d,%d)',
-                    [caret_point.X, caret_point.Y, converted_tsf_point.X, converted_tsf_point.Y]));
-            end;
-            caret_point := converted_tsf_point;
         end;
         caret_point_valid := point_in_virtual_screen(caret_point) and point_in_foreground(caret_point);
         if (not caret_point_valid) and (m_logger <> nil) and (m_logger.level <= ll_debug) then
@@ -2796,8 +2769,44 @@ begin
     anchor_context.cursor_point := cursor_point;
     anchor_context.last_stable_valid := last_sent_point_valid;
     anchor_context.last_stable_point := m_last_sent_caret_point;
+    tsf_suspicious := tsf_point_valid and is_origin_anchor_suspicious(tsf_point, foreground_rect, has_foreground_rect,
+        cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
+    if tsf_suspicious and should_relax_terminal_tsf_suspicion(tsf_point, tsf_point_valid, gui_point, gui_point_valid,
+        caret_point, caret_point_valid, foreground_rect, has_foreground_rect, cursor_point,
+        cursor_point_valid, terminal_like_target, anchor_context.has_composition) then
+    begin
+        tsf_suspicious := False;
+    end;
+    gui_suspicious := gui_point_valid and is_origin_anchor_suspicious(gui_point, foreground_rect, has_foreground_rect,
+        cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
+    caret_suspicious := caret_point_valid and is_origin_anchor_suspicious(caret_point, foreground_rect, has_foreground_rect,
+        cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
+    last_suspicious := last_sent_point_valid and is_origin_anchor_suspicious(m_last_sent_caret_point, foreground_rect,
+        has_foreground_rect, cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
+    gui_caret_pair := gui_point_valid and caret_point_valid and points_are_close(gui_point, caret_point, 96);
+    gui_far_from_tsf := gui_caret_pair and tsf_point_valid and
+        (not points_are_close(gui_point, tsf_point, 140)) and (not points_are_close(caret_point, tsf_point, 140));
 
-    if try_choose_best_anchor(Slice(observations, observation_count), anchor_context, point, chosen_source) then
+    if (m_logger <> nil) and (m_logger.level <= ll_info) then
+    begin
+        m_logger.info(Format(
+            'CaretObs term=%d tsf=%s gui=%s caret=%s last=%s cursor=%s line=%d',
+            [Ord(terminal_like_target),
+            format_anchor_point(tsf_point, tsf_point_valid),
+            format_anchor_point(gui_point, gui_point_valid),
+            format_anchor_point(caret_point, caret_point_valid),
+            format_anchor_point(m_last_sent_caret_point, last_sent_point_valid),
+            format_anchor_point(cursor_point, cursor_point_valid),
+            placement_line_height]));
+        m_logger.info(Format(
+            'CaretFlags term=%d tsf_s=%d gui_s=%d caret_s=%d last_s=%d pair=%d far=%d',
+            [Ord(terminal_like_target),
+            Ord(tsf_suspicious), Ord(gui_suspicious), Ord(caret_suspicious), Ord(last_suspicious),
+            Ord(gui_caret_pair), Ord(gui_far_from_tsf)]));
+    end;
+
+    if try_choose_best_anchor_scored(Slice(observations, observation_count), anchor_context, point, chosen_source,
+        chosen_score) then
     begin
         if (placement_line_height > 0) and anchor_context.has_composition and (chosen_source = casTsf) then
         begin
@@ -2840,10 +2849,17 @@ begin
                     [m_last_caret_line_height, placement_line_height, anchor_source_name(chosen_source)]));
             end;
         end;
+        if (m_logger <> nil) and (m_logger.level <= ll_info) then
+        begin
+            m_logger.info(Format('CaretChoose term=%d source=%s score=%d point=(%d,%d) line=%d',
+                [Ord(terminal_like_target), anchor_source_name(chosen_source), chosen_score,
+                point.X, point.Y, placement_line_height]));
+        end;
         Result := True;
         Exit;
     end;
 
+    chosen_score := 0;
     Result := False;
 end;
 

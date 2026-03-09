@@ -15,7 +15,8 @@ uses
     nc_engine_intf,
     nc_candidate_window,
     nc_config,
-    nc_ipc_common;
+    nc_ipc_common,
+    nc_caret_anchor_policy;
 
 type
     TncEngineHost = class;
@@ -35,6 +36,15 @@ type
         m_selected_index: Integer;
         m_preedit_text: string;
         m_candidate_dirty: Boolean;
+        m_pending_candidate_caret: TPoint;
+        m_pending_candidate_has_caret: Boolean;
+        m_pending_candidate_line_height: Integer;
+        m_pending_candidate_source: TncCaretAnchorSource;
+        m_pending_candidate_score: Integer;
+        m_candidate_apply_queued: Boolean;
+        m_last_candidate_source: TncCaretAnchorSource;
+        m_last_candidate_score: Integer;
+        m_last_candidate_apply_tick: DWORD;
         procedure ensure_candidate_window;
         procedure handle_remove_user_candidate(const candidate_index: Integer);
     public
@@ -47,7 +57,12 @@ type
             const page_count: Integer; const selected_index: Integer; const preedit_text: string);
         procedure clear_candidates;
         function has_candidates: Boolean;
-        procedure apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer);
+        procedure apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer;
+            const source: TncCaretAnchorSource; const anchor_score: Integer);
+        procedure stage_candidate_apply(const caret: TPoint; const has_caret: Boolean; const line_height: Integer;
+            const source: TncCaretAnchorSource; const anchor_score: Integer; out should_queue: Boolean);
+        function consume_pending_candidate_apply(out caret: TPoint; out has_caret: Boolean;
+            out line_height: Integer; out source: TncCaretAnchorSource; out anchor_score: Integer): Boolean;
         procedure hide_candidate_window;
         property engine: TncEngine read m_engine;
         property last_caret: TPoint read m_last_caret;
@@ -100,7 +115,7 @@ type
         function get_active(out active: Boolean): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
         procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
-            const line_height: Integer);
+            const line_height: Integer; const source: TncCaretAnchorSource; const anchor_score: Integer);
         procedure update_surrounding(const session_id: string; const left_context: string);
         procedure reset_session(const session_id: string);
     end;
@@ -152,6 +167,7 @@ const
     c_ai_refresh_poll_ms = 120;
     c_maintenance_poll_ms = 1000;
     c_recent_active_ttl_ms = 320;
+    c_candidate_apply_merge_ms = 35;
     c_shift_toggle_dedupe_ms = 90;
     c_user_dict_checkpoint_idle_ms = 5000;
     c_user_dict_checkpoint_retry_ms = 5000;
@@ -164,6 +180,24 @@ var
     g_host_log_enabled: Boolean = False;
     g_host_log_inited: Boolean = False;
     g_last_tray_host_start_tick: DWORD = 0;
+
+function caret_source_priority(const source: TncCaretAnchorSource): Integer;
+begin
+    case source of
+        casTsf:
+            Result := 5;
+        casGui:
+            Result := 4;
+        casCaretPos:
+            Result := 3;
+        casLastSent:
+            Result := 2;
+        casCursor:
+            Result := 1;
+    else
+        Result := 0;
+    end;
+end;
 
 function get_monitor_dpi(const anchor: TPoint): Integer;
 type
@@ -460,6 +494,15 @@ begin
     m_selected_index := 0;
     m_preedit_text := '';
     m_candidate_dirty := True;
+    m_pending_candidate_caret := Point(0, 0);
+    m_pending_candidate_has_caret := False;
+    m_pending_candidate_line_height := 0;
+    m_pending_candidate_source := casCursor;
+    m_pending_candidate_score := Low(Integer);
+    m_candidate_apply_queued := False;
+    m_last_candidate_source := casCursor;
+    m_last_candidate_score := Low(Integer);
+    m_last_candidate_apply_tick := 0;
 end;
 
 destructor TncHostSession.Destroy;
@@ -572,7 +615,8 @@ begin
     end;
 end;
 
-procedure TncHostSession.apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer);
+procedure TncHostSession.apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer;
+    const source: TncCaretAnchorSource; const anchor_score: Integer);
 var
     y_offset: Integer;
     target_point: TPoint;
@@ -628,6 +672,11 @@ begin
                     monitor_info.rcWork.Right, monitor_info.rcWork.Bottom]));
                 if m_engine.config.debug_mode then
                 begin
+                    host_log(Format('[DEBUG] candidate source=%s score=%d',
+                        [anchor_source_name(source), anchor_score]));
+                end;
+                if m_engine.config.debug_mode then
+                begin
                     host_log(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
                         [line_height, y_offset]));
                 end;
@@ -639,13 +688,91 @@ begin
                     window_rect.Bottom]));
                 if m_engine.config.debug_mode then
                 begin
+                    host_log(Format('[DEBUG] candidate source=%s score=%d',
+                        [anchor_source_name(source), anchor_score]));
+                end;
+                if m_engine.config.debug_mode then
+                begin
                     host_log(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
                         [line_height, y_offset]));
                 end;
             end;
         end;
     end;
+    m_last_candidate_source := source;
+    m_last_candidate_score := anchor_score;
+    m_last_candidate_apply_tick := GetTickCount;
     m_candidate_dirty := False;
+end;
+
+procedure TncHostSession.stage_candidate_apply(const caret: TPoint; const has_caret: Boolean;
+    const line_height: Integer; const source: TncCaretAnchorSource; const anchor_score: Integer;
+    out should_queue: Boolean);
+var
+    now_tick: DWORD;
+    replace_pending: Boolean;
+begin
+    should_queue := False;
+
+    if m_candidate_apply_queued then
+    begin
+        replace_pending := (anchor_score > m_pending_candidate_score) or
+            ((anchor_score = m_pending_candidate_score) and
+            (caret_source_priority(source) >= caret_source_priority(m_pending_candidate_source)));
+        if replace_pending then
+        begin
+            m_pending_candidate_caret := caret;
+            m_pending_candidate_has_caret := has_caret;
+            m_pending_candidate_line_height := line_height;
+            m_pending_candidate_source := source;
+            m_pending_candidate_score := anchor_score;
+        end;
+        Exit;
+    end;
+
+    now_tick := GetTickCount;
+    if (m_last_candidate_apply_tick <> 0) and
+        (DWORD(now_tick - m_last_candidate_apply_tick) <= c_candidate_apply_merge_ms) and
+        ((anchor_score < m_last_candidate_score) or
+        ((anchor_score = m_last_candidate_score) and
+        (caret_source_priority(source) < caret_source_priority(m_last_candidate_source)))) then
+    begin
+        Exit;
+    end;
+
+    m_pending_candidate_caret := caret;
+    m_pending_candidate_has_caret := has_caret;
+    m_pending_candidate_line_height := line_height;
+    m_pending_candidate_source := source;
+    m_pending_candidate_score := anchor_score;
+    should_queue := True;
+    if should_queue then
+    begin
+        m_candidate_apply_queued := True;
+    end;
+end;
+
+function TncHostSession.consume_pending_candidate_apply(out caret: TPoint; out has_caret: Boolean;
+    out line_height: Integer; out source: TncCaretAnchorSource; out anchor_score: Integer): Boolean;
+begin
+    if not m_candidate_apply_queued then
+    begin
+        caret := Point(0, 0);
+        has_caret := False;
+        line_height := 0;
+        source := casCursor;
+        anchor_score := 0;
+        Result := False;
+        Exit;
+    end;
+
+    caret := m_pending_candidate_caret;
+    has_caret := m_pending_candidate_has_caret;
+    line_height := m_pending_candidate_line_height;
+    source := m_pending_candidate_source;
+    anchor_score := m_pending_candidate_score;
+    m_candidate_apply_queued := False;
+    Result := True;
 end;
 
 procedure run_on_ui_thread(const action: TThreadProcedure);
@@ -878,7 +1005,8 @@ begin
             run_on_ui_thread(
                 procedure
                 begin
-                    session.apply_candidate_state(caret_point, has_caret, session.caret_line_height);
+                    session.apply_candidate_state(caret_point, has_caret, session.caret_line_height,
+                        session.m_last_candidate_source, session.m_last_candidate_score);
                 end);
         end;
         if refresh_sessions.Count > 0 then
@@ -1541,11 +1669,13 @@ begin
 end;
 
 procedure TncEngineHost.update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
-    const line_height: Integer);
+    const line_height: Integer; const source: TncCaretAnchorSource; const anchor_score: Integer);
 var
     session: TncHostSession;
     should_apply: Boolean;
+    should_queue: Boolean;
 begin
+    should_queue := False;
     m_lock.Acquire;
     try
         if not m_sessions.TryGetValue(session_id, session) then
@@ -1554,16 +1684,42 @@ begin
         end;
         should_apply := session.has_candidates and session.needs_candidate_refresh(point, has_caret, line_height);
         session.set_caret(point, has_caret, line_height);
+        if should_apply then
+        begin
+            session.stage_candidate_apply(point, has_caret, line_height, source, anchor_score, should_queue);
+        end;
     finally
         m_lock.Release;
     end;
 
-    if should_apply then
+    if should_queue then
     begin
-        run_on_ui_thread(
+        TThread.Queue(nil,
             procedure
+            var
+                queued_session: TncHostSession;
+                queued_point: TPoint;
+                queued_has_caret: Boolean;
+                queued_line_height: Integer;
+                queued_source: TncCaretAnchorSource;
+                queued_score: Integer;
             begin
-                session.apply_candidate_state(point, has_caret, line_height);
+                m_lock.Acquire;
+                try
+                    if not m_sessions.TryGetValue(session_id, queued_session) then
+                    begin
+                        Exit;
+                    end;
+                    if not queued_session.consume_pending_candidate_apply(queued_point, queued_has_caret,
+                        queued_line_height, queued_source, queued_score) then
+                    begin
+                        Exit;
+                    end;
+                finally
+                    m_lock.Release;
+                end;
+                queued_session.apply_candidate_state(queued_point, queued_has_caret, queued_line_height,
+                    queued_source, queued_score);
             end);
     end;
 end;
@@ -1684,7 +1840,8 @@ begin
             end
             else
             begin
-                session.apply_candidate_state(caret_point, has_caret, session.caret_line_height);
+                session.apply_candidate_state(caret_point, has_caret, session.caret_line_height,
+                    session.m_last_candidate_source, session.m_last_candidate_score);
             end;
         end);
 end;
@@ -1826,6 +1983,9 @@ var
     y: Integer;
     has_caret: Boolean;
     line_height: Integer;
+    caret_source_value: Integer;
+    caret_source: TncCaretAnchorSource;
+    caret_score: Integer;
     active_flag: Boolean;
 begin
     Result := 'ERROR'#9'bad_request';
@@ -1889,8 +2049,23 @@ begin
             begin
                 line_height := StrToIntDef(fields[5], 0);
             end;
+            caret_source := casCursor;
+            if Length(fields) >= 7 then
+            begin
+                caret_source_value := StrToIntDef(fields[6], Ord(casCursor));
+                if (caret_source_value >= Ord(Low(TncCaretAnchorSource))) and
+                    (caret_source_value <= Ord(High(TncCaretAnchorSource))) then
+                begin
+                    caret_source := TncCaretAnchorSource(caret_source_value);
+                end;
+            end;
+            caret_score := 0;
+            if Length(fields) >= 8 then
+            begin
+                caret_score := StrToIntDef(fields[7], 0);
+            end;
 
-            m_host.update_caret(session_id, Point(x, y), has_caret, line_height);
+            m_host.update_caret(session_id, Point(x, y), has_caret, line_height, caret_source, caret_score);
             Result := 'OK';
             Exit;
         end;
