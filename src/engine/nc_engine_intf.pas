@@ -91,6 +91,8 @@ type
         m_lookup_text_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_bonus_cache: TDictionary<string, Integer>;
         m_lookup_segment_path_context_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_segment_path_preference_cache: TDictionary<string, Integer>;
+        m_lookup_candidate_path_confidence_cache: TDictionary<string, Integer>;
         m_current_segment_path_map: TDictionary<string, string>;
         m_current_segment_path_query_prefix_map: TDictionary<string, string>;
         m_candidate_segment_paths: TArray<string>;
@@ -554,6 +556,8 @@ begin
     m_lookup_text_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_segment_path_context_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_segment_path_preference_cache := TDictionary<string, Integer>.Create;
+    m_lookup_candidate_path_confidence_cache := TDictionary<string, Integer>.Create;
     m_current_segment_path_map := TDictionary<string, string>.Create;
     m_current_segment_path_query_prefix_map := TDictionary<string, string>.Create;
     SetLength(m_candidate_segment_paths, 0);
@@ -734,6 +738,16 @@ begin
         m_lookup_segment_path_context_bonus_cache.Free;
         m_lookup_segment_path_context_bonus_cache := nil;
     end;
+    if m_lookup_segment_path_preference_cache <> nil then
+    begin
+        m_lookup_segment_path_preference_cache.Free;
+        m_lookup_segment_path_preference_cache := nil;
+    end;
+    if m_lookup_candidate_path_confidence_cache <> nil then
+    begin
+        m_lookup_candidate_path_confidence_cache.Free;
+        m_lookup_candidate_path_confidence_cache := nil;
+    end;
     if m_current_segment_path_map <> nil then
     begin
         m_current_segment_path_map.Free;
@@ -829,6 +843,14 @@ begin
     if m_lookup_segment_path_context_bonus_cache <> nil then
     begin
         m_lookup_segment_path_context_bonus_cache.Clear;
+    end;
+    if m_lookup_segment_path_preference_cache <> nil then
+    begin
+        m_lookup_segment_path_preference_cache.Clear;
+    end;
+    if m_lookup_candidate_path_confidence_cache <> nil then
+    begin
+        m_lookup_candidate_path_confidence_cache.Clear;
     end;
 end;
 
@@ -6101,15 +6123,19 @@ end;
 function TncEngine.get_candidate_path_confidence_score(const candidate: TncCandidate): Integer;
 var
     encoded_path: string;
+    text_units: Integer;
+    cache_key: string;
 begin
     Result := 0;
-    if candidate.comment <> '' then
+    encoded_path := get_segment_path_for_candidate(candidate);
+    if get_encoded_path_segment_count_local(encoded_path) <= 1 then
     begin
         Exit;
     end;
 
-    encoded_path := get_segment_path_for_candidate(candidate);
-    if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+    cache_key := build_candidate_identity_key(candidate.text, candidate.comment) + #1 + encoded_path;
+    if (m_lookup_candidate_path_confidence_cache <> nil) and
+        m_lookup_candidate_path_confidence_cache.TryGetValue(cache_key, Result) then
     begin
         Exit;
     end;
@@ -6118,6 +6144,28 @@ begin
     if Result < 0 then
     begin
         Result := 0;
+    end;
+
+    if (Result > 0) and (candidate.comment <> '') then
+    begin
+        text_units := get_candidate_text_unit_count(candidate.text);
+        if is_runtime_chain_candidate(candidate) then
+        begin
+            Result := Result div 4;
+        end
+        else
+        begin
+            Result := (Result * 3) div 5;
+            if (text_units >= 2) and (m_last_lookup_syllable_count >= 3) then
+            begin
+                Inc(Result, Min(88, Result div 6));
+            end;
+        end;
+    end;
+
+    if m_lookup_candidate_path_confidence_cache <> nil then
+    begin
+        m_lookup_candidate_path_confidence_cache.AddOrSetValue(cache_key, Result);
     end;
 end;
 
@@ -6154,7 +6202,12 @@ begin
 
     if candidate.comment <> '' then
     begin
-        if text_units >= 2 then
+        if (text_units >= 2) and (path_confidence_score >= 720) and
+            (not is_runtime_chain_candidate(candidate)) then
+        begin
+            Result := 5;
+        end
+        else if text_units >= 2 then
         begin
             Result := 6;
         end
@@ -6265,6 +6318,15 @@ begin
         if m_last_lookup_syllable_count >= 3 then
         begin
             Dec(Result, 60 + (layer_value * 18));
+        end;
+        if (text_units >= 2) and (path_confidence_score > 0) and
+            (not is_runtime_chain_candidate(candidate)) then
+        begin
+            case path_confidence_tier of
+                1: Inc(Result, 24);
+                2: Inc(Result, 56);
+            end;
+            Inc(Result, Min(84, path_confidence_score div 18));
         end;
         Exit;
     end;
@@ -6613,11 +6675,18 @@ var
     session_path_penalty: Integer;
     prefix_support: Integer;
     session_prefix_support: Integer;
+    cached_result: Integer;
 begin
     normalized_path := Trim(encoded_path);
     if get_encoded_path_segment_count_local(normalized_path) <= 1 then
     begin
         Exit(0);
+    end;
+
+    if (m_lookup_segment_path_preference_cache <> nil) and
+        m_lookup_segment_path_preference_cache.TryGetValue(normalized_path, cached_result) then
+    begin
+        Exit(cached_result);
     end;
 
     Result := -(get_encoded_path_segment_count_local(normalized_path) * 18);
@@ -6658,6 +6727,11 @@ begin
         begin
             Inc(Result, prefix_support);
         end;
+    end;
+
+    if m_lookup_segment_path_preference_cache <> nil then
+    begin
+        m_lookup_segment_path_preference_cache.AddOrSetValue(normalized_path, Result);
     end;
 end;
 
@@ -6797,6 +6871,7 @@ end;
 
 function TncEngine.get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
 var
+    cache_key: string;
     encoded_path: string;
     path_segments: TArray<string>;
     segment_start: Integer;
@@ -7061,19 +7136,29 @@ var
     end;
 begin
     Result := 0;
-    if (candidate.comment <> '') or (m_dictionary = nil) then
+    if m_dictionary = nil then
     begin
         Exit;
     end;
 
     encoded_path := get_segment_path_for_candidate(candidate);
-    if encoded_path = '' then
+    if (encoded_path = '') or (get_encoded_path_segment_count_local(encoded_path) <= 1) then
     begin
         Exit;
     end;
 
+    cache_key := encoded_path;
+    if candidate.comment <> '' then
+    begin
+        cache_key := 'P' + #1 + cache_key;
+        if is_runtime_chain_candidate(candidate) then
+        begin
+            cache_key := cache_key + #1 + 'C';
+        end;
+    end;
+
     if (m_lookup_segment_path_context_bonus_cache <> nil) and
-        m_lookup_segment_path_context_bonus_cache.TryGetValue(encoded_path, Result) then
+        m_lookup_segment_path_context_bonus_cache.TryGetValue(cache_key, Result) then
     begin
         Exit;
     end;
@@ -7158,9 +7243,25 @@ begin
             Inc(Result, prefix_support);
         end;
 
+    if candidate.comment <> '' then
+    begin
+        if is_runtime_chain_candidate(candidate) then
+        begin
+            Result := Result div 4;
+        end
+        else
+        begin
+            Result := (Result * 5) div 8;
+            if get_candidate_text_unit_count(candidate.text) >= 2 then
+            begin
+                Inc(Result, Min(72, Result div 7));
+            end;
+        end;
+    end;
+
     if m_lookup_segment_path_context_bonus_cache <> nil then
     begin
-        m_lookup_segment_path_context_bonus_cache.AddOrSetValue(encoded_path, Result);
+        m_lookup_segment_path_context_bonus_cache.AddOrSetValue(cache_key, Result);
     end;
 end;
 
