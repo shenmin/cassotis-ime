@@ -213,6 +213,8 @@ $lexicon_unihan_sc = Join-Path $lexicon_root 'data\generated\dict_unihan_sc.txt'
 $lexicon_unihan_tc = Join-Path $lexicon_root 'data\generated\dict_unihan_tc.txt'
 $lexicon_clean_sc = Join-Path $lexicon_root 'data\generated\dict_clean_sc.txt'
 $lexicon_clean_tc = Join-Path $lexicon_root 'data\generated\dict_clean_tc.txt'
+$lexicon_query_path_sc = Join-Path $lexicon_root 'data\generated\dict_query_path_prior_sc.txt'
+$lexicon_query_path_tc = Join-Path $lexicon_root 'data\generated\dict_query_path_prior_tc.txt'
 
 require_path $dict_init 'cassotis_ime_dict_init.exe'
 require_path $schema_path 'schema.sql'
@@ -258,6 +260,19 @@ try {
 
         Write-Host ("Importing lexicon broad traditional dict from: " + $lexicon_clean_tc)
         invoke_tool 'cassotis_ime_dict_init (lexicon clean tc)' $dict_init @($base_db_tc_path, $schema_path, $lexicon_clean_tc)
+
+        if ((Test-Path -LiteralPath $lexicon_query_path_sc) -and (Test-Path -LiteralPath $lexicon_query_path_tc)) {
+            Write-Host ("Importing lexicon query-path priors from: " + $lexicon_query_path_sc)
+            invoke_tool 'cassotis_ime_dict_init (lexicon query path sc)' $dict_init @(
+                $base_db_sc_path, $schema_path, $lexicon_query_path_sc, 'query_path')
+
+            Write-Host ("Importing lexicon query-path priors from: " + $lexicon_query_path_tc)
+            invoke_tool 'cassotis_ime_dict_init (lexicon query path tc)' $dict_init @(
+                $base_db_tc_path, $schema_path, $lexicon_query_path_tc, 'query_path')
+        }
+        else {
+            Write-Warning "Query-path prior files not found under lexicon data/generated; skipping base path-prior import."
+        }
     }
 
     Write-Host 'Rebuild completed.'

@@ -9075,6 +9075,7 @@ var
         local_query_path_bonus: Integer;
         local_segment_count: Integer;
         local_segment_quality_bonus: Integer;
+        local_chain_shape_bonus: Integer;
         full_path_budget_start_tick: UInt64;
         full_path_budget_work_counter: Integer;
         full_path_budget_exhausted: Boolean;
@@ -9627,6 +9628,70 @@ var
             end;
         end;
 
+        function get_segment_chain_shape_bonus(const current_state: TncSegmentPathState;
+            const segment_text_units: Integer; const segment_len: Integer;
+            const state_pos: Integer; const next_pos: Integer): Integer;
+        var
+            previous_segment_count: Integer;
+            previous_text_units: Integer;
+            remaining_syllables: Integer;
+        begin
+            Result := 0;
+            if segment_text_units <= 0 then
+            begin
+                Exit;
+            end;
+
+            previous_segment_count := get_encoded_path_segment_count_local(current_state.path_text);
+            if Trim(current_state.path_text) = '' then
+            begin
+                previous_segment_count := 0;
+            end;
+            previous_text_units := get_text_unit_count(Trim(current_state.text));
+            remaining_syllables := Length(syllables) - next_pos;
+
+            if segment_text_units = segment_len then
+            begin
+                if segment_len >= 2 then
+                begin
+                    if previous_segment_count >= 1 then
+                    begin
+                        Inc(Result, 54);
+                    end;
+                    if (segment_len = 2) and (remaining_syllables = 2) then
+                    begin
+                        Inc(Result, 86);
+                    end;
+                    if (state_pos = 0) and (remaining_syllables >= 1) and (remaining_syllables <= 3) then
+                    begin
+                        Inc(Result, 44);
+                    end;
+                    if (remaining_syllables = 0) and (previous_text_units >= 2) then
+                    begin
+                        Inc(Result, 112);
+                    end;
+                end
+                else if (segment_len = 1) and (previous_segment_count >= 1) then
+                begin
+                    if remaining_syllables > 0 then
+                    begin
+                        Dec(Result, 72);
+                    end
+                    else if previous_text_units >= 2 then
+                    begin
+                        Dec(Result, 36);
+                    end;
+                end;
+                Exit;
+            end;
+
+            if (segment_len >= 2) and (Abs(segment_text_units - segment_len) = 1) and
+                (previous_segment_count >= 1) then
+            begin
+                Dec(Result, 24);
+            end;
+        end;
+
         procedure append_state(const position: Integer; const value: TncSegmentPathState);
         begin
             local_key := build_state_key(value);
@@ -10065,6 +10130,12 @@ var
                             local_segment_quality_bonus := get_segment_lexical_quality_bonus(
                                 local_candidate, local_segment_len, state_pos, next_pos);
                             Inc(local_new_state.score, local_segment_quality_bonus);
+                            local_chain_shape_bonus := get_segment_chain_shape_bonus(
+                                local_state, candidate_text_units, local_segment_len, state_pos, next_pos);
+                            if local_chain_shape_bonus <> 0 then
+                            begin
+                                Inc(local_new_state.score, local_chain_shape_bonus);
+                            end;
                             if (state_pos = 0) and (local_segment_len > 1) and
                                 (next_pos < Length(syllables)) then
                             begin
@@ -10167,6 +10238,10 @@ var
                                 if local_segment_quality_bonus <> 0 then
                                 begin
                                     Inc(local_path_preference_score, local_segment_quality_bonus div 2);
+                                end;
+                                if local_chain_shape_bonus <> 0 then
+                                begin
+                                    Inc(local_path_preference_score, local_chain_shape_bonus div 2);
                                 end;
                                 if local_path_transition_bonus > 0 then
                                 begin

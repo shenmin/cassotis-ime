@@ -10,9 +10,15 @@ uses
     nc_pinyin_parser in '..\src\engine\nc_pinyin_parser.pas',
     nc_sqlite in '..\src\common\nc_sqlite.pas';
 
+type
+    TncImportMode = (imBaseDict, imQueryPathPrior);
+
+const
+    c_segment_path_separator = #3;
+
 procedure print_usage;
 begin
-    Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path]');
+    Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path]');
 end;
 
 function load_schema(const schema_path: string; out schema_text: string): Boolean;
@@ -58,10 +64,124 @@ begin
     Result := (pinyin <> '') and (text <> '');
 end;
 
+function split_query_path_line(const line: string; out query_pinyin: string;
+    out path_text: string; out weight: Integer): Boolean;
+var
+    parts: TArray<string>;
+begin
+    Result := False;
+    query_pinyin := '';
+    path_text := '';
+    weight := 0;
+
+    parts := line.Split([#9]);
+    if Length(parts) < 2 then
+    begin
+        Exit;
+    end;
+
+    query_pinyin := Trim(parts[0]);
+    path_text := Trim(parts[1]);
+    if Length(parts) >= 3 then
+    begin
+        weight := StrToIntDef(Trim(parts[2]), 0);
+    end;
+
+    Result := (query_pinyin <> '') and (path_text <> '');
+end;
+
 function normalize_pinyin_key(const value: string): string;
 begin
     Result := LowerCase(Trim(value));
     Result := StringReplace(Result, ' ', '', [rfReplaceAll]);
+end;
+
+function normalize_query_path_text(const value: string): string;
+var
+    idx: Integer;
+    ch: Char;
+    builder: TStringBuilder;
+    last_was_separator: Boolean;
+begin
+    builder := TStringBuilder.Create;
+    try
+        last_was_separator := False;
+        for idx := 1 to Length(value) do
+        begin
+            ch := value[idx];
+            if CharInSet(ch, ['|', '/', #3]) then
+            begin
+                if not last_was_separator then
+                begin
+                    builder.Append(c_segment_path_separator);
+                    last_was_separator := True;
+                end;
+                Continue;
+            end;
+
+            if not CharInSet(ch, [#9, #10, #13, ' ']) then
+            begin
+                builder.Append(ch);
+                last_was_separator := False;
+            end;
+        end;
+
+        Result := builder.ToString;
+        while (Result <> '') and (Result[1] = c_segment_path_separator) do
+        begin
+            Delete(Result, 1, 1);
+        end;
+        while (Result <> '') and (Result[Length(Result)] = c_segment_path_separator) do
+        begin
+            Delete(Result, Length(Result), 1);
+        end;
+    finally
+        builder.Free;
+    end;
+end;
+
+function get_query_path_segment_count(const encoded_path: string): Integer;
+var
+    idx: Integer;
+begin
+    Result := 0;
+    if encoded_path = '' then
+    begin
+        Exit;
+    end;
+
+    Result := 1;
+    for idx := 1 to Length(encoded_path) do
+    begin
+        if encoded_path[idx] = c_segment_path_separator then
+        begin
+            Inc(Result);
+        end;
+    end;
+end;
+
+function parse_import_mode(const value: string; const import_path: string): TncImportMode;
+var
+    normalized: string;
+begin
+    normalized := LowerCase(Trim(value));
+    if normalized = '' then
+    begin
+        normalized := LowerCase(ExtractFileName(import_path));
+        if Pos('query_path', normalized) > 0 then
+        begin
+            Exit(imQueryPathPrior);
+        end;
+        Exit(imBaseDict);
+    end;
+
+    if (normalized = 'query_path') or (normalized = 'query-path') or
+        (normalized = 'path') or (normalized = 'querypath') then
+    begin
+        Exit(imQueryPathPrior);
+    end;
+
+    Result := imBaseDict;
 end;
 
 function is_ascii_lower_text(const value: string): Boolean;
@@ -225,16 +345,20 @@ begin
     Result := Length(variants) > 0;
 end;
 
-function import_data(const conn: TncSqliteConnection; const import_path: string): Boolean;
+function import_data(const conn: TncSqliteConnection; const import_path: string;
+    const import_mode: TncImportMode): Boolean;
 const
     insert_base_sql = 'INSERT INTO dict_base(pinyin, text, weight) VALUES (?1, ?2, ?3);';
     insert_jianpin_sql = 'INSERT OR IGNORE INTO dict_jianpin(word_id, jianpin, weight) VALUES (?1, ?2, ?3);';
     select_last_rowid_sql = 'SELECT last_insert_rowid()';
+    insert_query_path_sql =
+        'INSERT OR REPLACE INTO dict_base_query_path(query_pinyin, path_text, weight) VALUES (?1, ?2, ?3);';
 var
     reader: TStreamReader;
     stmt_base: Psqlite3_stmt;
     stmt_jianpin: Psqlite3_stmt;
     stmt_last_rowid: Psqlite3_stmt;
+    stmt_query_path: Psqlite3_stmt;
     line: string;
     pinyin: string;
     text: string;
@@ -245,6 +369,7 @@ var
     line_count: Integer;
     inserted: Integer;
     inserted_jianpin: Integer;
+    inserted_query_paths: Integer;
     jianpin_variants: TArray<string>;
     jianpin_value: string;
 begin
@@ -263,12 +388,21 @@ begin
     stmt_base := nil;
     stmt_jianpin := nil;
     stmt_last_rowid := nil;
+    stmt_query_path := nil;
     has_error := False;
     line_count := 0;
     inserted := 0;
     inserted_jianpin := 0;
+    inserted_query_paths := 0;
     try
-        if not conn.prepare(insert_base_sql, stmt_base) or
+        if import_mode = imQueryPathPrior then
+        begin
+            if not conn.prepare(insert_query_path_sql, stmt_query_path) then
+            begin
+                Exit;
+            end;
+        end
+        else if not conn.prepare(insert_base_sql, stmt_base) or
             (not conn.prepare(insert_jianpin_sql, stmt_jianpin)) or
             (not conn.prepare(select_last_rowid_sql, stmt_last_rowid)) then
         begin
@@ -286,6 +420,46 @@ begin
 
             if line[1] = '#' then
             begin
+                Continue;
+            end;
+
+            if import_mode = imQueryPathPrior then
+            begin
+                if not split_query_path_line(line, pinyin, text, weight) then
+                begin
+                    Continue;
+                end;
+
+                pinyin := normalize_pinyin_key(pinyin);
+                text := normalize_query_path_text(text);
+                if (pinyin = '') or (text = '') or
+                    (get_query_path_segment_count(text) <= 1) or (weight <= 0) then
+                begin
+                    Continue;
+                end;
+
+                if (not conn.bind_text(stmt_query_path, 1, pinyin)) or
+                    (not conn.bind_text(stmt_query_path, 2, text)) or
+                    (not conn.bind_int(stmt_query_path, 3, weight)) then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+
+                rc := conn.step(stmt_query_path);
+                if rc <> SQLITE_DONE then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+
+                Inc(inserted_query_paths);
+                if (not conn.reset(stmt_query_path)) or
+                    (not conn.clear_bindings(stmt_query_path)) then
+                begin
+                    has_error := True;
+                    Break;
+                end;
                 Continue;
             end;
 
@@ -396,6 +570,10 @@ begin
         begin
             conn.finalize(stmt_last_rowid);
         end;
+        if stmt_query_path <> nil then
+        begin
+            conn.finalize(stmt_query_path);
+        end;
         reader.Free;
     end;
 
@@ -407,8 +585,16 @@ begin
 
     if conn.exec('COMMIT;') then
     begin
-        Writeln(Format('Imported %d entries (%d jianpin rows) from %d lines.',
-            [inserted, inserted_jianpin, line_count]));
+        if import_mode = imQueryPathPrior then
+        begin
+            Writeln(Format('Imported %d query-path prior rows from %d lines.',
+                [inserted_query_paths, line_count]));
+        end
+        else
+        begin
+            Writeln(Format('Imported %d entries (%d jianpin rows) from %d lines.',
+                [inserted, inserted_jianpin, line_count]));
+        end;
         Result := True;
     end
     else
@@ -421,6 +607,7 @@ var
     db_path: string;
     schema_path: string;
     import_path: string;
+    import_mode: TncImportMode;
     schema_text: string;
     conn: TncSqliteConnection;
 begin
@@ -439,6 +626,14 @@ begin
     else
     begin
         import_path := '';
+    end;
+    if ParamCount >= 4 then
+    begin
+        import_mode := parse_import_mode(ParamStr(4), import_path);
+    end
+    else
+    begin
+        import_mode := parse_import_mode('', import_path);
     end;
 
     if not load_schema(schema_path, schema_text) then
@@ -463,7 +658,7 @@ begin
 
         if import_path <> '' then
         begin
-            if not import_data(conn, import_path) then
+            if not import_data(conn, import_path, import_mode) then
             begin
                 Writeln('Import failed: ' + conn.errmsg);
                 Halt(1);
