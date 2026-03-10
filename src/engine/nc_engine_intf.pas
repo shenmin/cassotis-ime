@@ -7446,6 +7446,33 @@ function TncEngine.get_punctuation_char(const key_code: Word; const key_state: T
 begin
     Result := True;
     case key_code of
+        Ord('1'):
+            if key_state.shift_down then
+            begin
+                out_char := '!';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('4'):
+            if key_state.shift_down then
+            begin
+                out_char := '$';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('5'):
+            if key_state.shift_down then
+            begin
+                out_char := '%';
+            end
+            else
+            begin
+                Result := False;
+            end;
         Ord('6'):
             if key_state.shift_down then
             begin
@@ -7607,6 +7634,10 @@ begin
                 Result := Char($FF1F);
             '!':
                 Result := Char($FF01);
+            '$':
+                Result := Char($FFE5);
+            '%':
+                Result := Char($FF05);
             ':':
                 Result := Char($FF1A);
             ';':
