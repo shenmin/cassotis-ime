@@ -278,10 +278,11 @@ begin
         // For normal GUI editors, the TSF anchor is already the caret bottom
         // in screen pixels. Keep only a small post-caret clearance and avoid
         // scaling it linearly with monitor DPI, which makes mixed-DPI editors
-        // look slightly too far away on higher-DPI displays.
-        line_gap := MulDiv(line_height, 1, 5);
-        min_gap := 3;
-        max_gap := 8;
+        // look slightly too far away on higher-DPI displays. A tighter cap
+        // keeps EditPlus and similar editors visually attached to the text.
+        line_gap := MulDiv(line_height, 1, 10);
+        min_gap := 2;
+        max_gap := 5;
         if line_gap < min_gap then
         begin
             line_gap := min_gap;
