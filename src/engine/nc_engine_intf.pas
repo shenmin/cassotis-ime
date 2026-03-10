@@ -11367,6 +11367,12 @@ begin
         m_session_query_path_choice_last_seen.AddOrSetValue(key, current_serial);
     end;
 
+    // Keep immediate follow-up lookups in sync with the just-recorded choice.
+    if m_lookup_query_path_bonus_cache <> nil then
+    begin
+        m_lookup_query_path_bonus_cache.Clear;
+    end;
+
     m_session_query_path_choice_order.Enqueue(key);
     while m_session_query_path_choice_order.Count > c_session_query_path_history_limit do
     begin
