@@ -47,12 +47,14 @@ type
         m_last_candidate_source: TncCaretAnchorSource;
         m_last_candidate_score: Integer;
         m_last_candidate_apply_tick: DWORD;
+        m_last_candidate_debug_mode: Boolean;
         procedure ensure_candidate_window;
         procedure handle_remove_user_candidate(const candidate_index: Integer);
     public
         constructor create(const owner: TncEngineHost; const session_id: string; const config: TncEngineConfig);
         destructor Destroy; override;
         procedure update_config(const config: TncEngineConfig);
+        procedure warm_candidate_window;
         procedure set_caret(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean);
         function needs_candidate_refresh(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
@@ -98,6 +100,7 @@ type
         procedure sync_ai_refresh_thread(const enabled: Boolean);
         procedure maybe_checkpoint_user_dictionary;
         procedure persist_engine_config(const config: TncEngineConfig);
+        function reload_config(const force: Boolean): Boolean;
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
         procedure apply_global_engine_config_locked(const config: TncEngineConfig);
@@ -120,6 +123,7 @@ type
             const punctuation_full_width: Boolean): Boolean;
         function get_active(out active: Boolean): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
+        function reload_config_now: Boolean;
         procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
             const line_height: Integer; const terminal_like_target: Boolean; const source: TncCaretAnchorSource;
             const anchor_score: Integer);
@@ -189,6 +193,8 @@ var
     g_host_log_path: string = '';
     g_host_log_enabled: Boolean = False;
     g_host_log_inited: Boolean = False;
+    g_host_log_level: TncLogLevel = ll_info;
+    g_host_log_max_size_kb: Integer = 0;
     g_last_tray_host_start_tick: DWORD = 0;
 
 function caret_source_priority(const source: TncCaretAnchorSource): Integer;
@@ -357,31 +363,24 @@ begin
     end;
 end;
 
-function get_host_log_path: string;
+procedure reload_host_log_config(const config_path: string);
 var
-    path_buffer: array[0..MAX_PATH - 1] of Char;
-    path_len: DWORD;
-    config_path: string;
     config_manager: TncConfigManager;
     log_config: TncLogConfig;
 begin
-    if g_host_log_inited then
-    begin
-        Result := g_host_log_path;
-        Exit;
-    end;
-
-    g_host_log_inited := True;
     g_host_log_path := '';
     g_host_log_enabled := False;
+    g_host_log_level := ll_info;
+    g_host_log_max_size_kb := 0;
 
-    config_path := get_default_config_path;
     if config_path <> '' then
     begin
         config_manager := TncConfigManager.create(config_path);
         try
             log_config := config_manager.load_log_config;
             g_host_log_enabled := log_config.enabled;
+            g_host_log_level := log_config.level;
+            g_host_log_max_size_kb := log_config.max_size_kb;
             if g_host_log_enabled then
             begin
                 g_host_log_path := Trim(log_config.log_path);
@@ -390,6 +389,23 @@ begin
             config_manager.Free;
         end;
     end;
+end;
+
+function get_host_log_path: string;
+var
+    path_buffer: array[0..MAX_PATH - 1] of Char;
+    path_len: DWORD;
+    config_path: string;
+begin
+    if g_host_log_inited then
+    begin
+        Result := g_host_log_path;
+        Exit;
+    end;
+
+    g_host_log_inited := True;
+    config_path := get_default_config_path;
+    reload_host_log_config(config_path);
 
     if not g_host_log_enabled then
     begin
@@ -413,6 +429,11 @@ begin
     Result := g_host_log_path;
 end;
 
+function host_log_enabled_for(const level: TncLogLevel): Boolean;
+begin
+    Result := g_host_log_enabled and (Ord(level) >= Ord(g_host_log_level)) and (get_host_log_path <> '');
+end;
+
 function sanitize_log_text(const value: string): string;
 var
     text_value: string;
@@ -431,22 +452,61 @@ begin
         (key_code = $10) or (key_code = $A0) or (key_code = $A1);
 end;
 
-procedure host_log(const text: string);
+function candidates_equal(const left_candidates: TncCandidateList; const right_candidates: TncCandidateList): Boolean;
+var
+    i: Integer;
+begin
+    Result := Length(left_candidates) = Length(right_candidates);
+    if not Result then
+    begin
+        Exit;
+    end;
+
+    for i := 0 to High(left_candidates) do
+    begin
+        if (left_candidates[i].text <> right_candidates[i].text) or
+            (left_candidates[i].comment <> right_candidates[i].comment) or
+            (left_candidates[i].score <> right_candidates[i].score) or
+            (left_candidates[i].source <> right_candidates[i].source) or
+            (left_candidates[i].has_dict_weight <> right_candidates[i].has_dict_weight) or
+            (left_candidates[i].dict_weight <> right_candidates[i].dict_weight) then
+        begin
+            Result := False;
+            Exit;
+        end;
+    end;
+end;
+
+procedure host_log_at(const level: TncLogLevel; const text: string);
 var
     line: string;
     log_path: string;
 begin
     try
+        if not host_log_enabled_for(level) then
+        begin
+            Exit;
+        end;
         log_path := get_host_log_path;
         if log_path = '' then
         begin
             Exit;
         end;
         line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' ' + text + sLineBreak;
-        append_log_line_shared(log_path, line);
+        append_log_line_shared(log_path, line, g_host_log_max_size_kb);
     except
         // Logging must never block host-side request processing.
     end;
+end;
+
+procedure host_log(const text: string);
+begin
+    host_log_at(ll_info, text);
+end;
+
+procedure host_log_debug(const text: string);
+begin
+    host_log_at(ll_debug, text);
 end;
 
 function tray_host_mutex_exists: Boolean;
@@ -557,6 +617,7 @@ begin
     m_last_candidate_source := casCursor;
     m_last_candidate_score := Low(Integer);
     m_last_candidate_apply_tick := 0;
+    m_last_candidate_debug_mode := config.debug_mode;
 end;
 
 destructor TncHostSession.Destroy;
@@ -596,6 +657,15 @@ begin
     if m_engine <> nil then
     begin
         m_engine.update_config(config);
+    end;
+end;
+
+procedure TncHostSession.warm_candidate_window;
+begin
+    ensure_candidate_window;
+    if (m_last_caret.X <> 0) or (m_last_caret.Y <> 0) then
+    begin
+        m_candidate_window.prepare_for_anchor(m_last_caret);
     end;
 end;
 
@@ -646,13 +716,23 @@ end;
 
 procedure TncHostSession.store_candidates(const candidates: TncCandidateList; const page_index: Integer;
     const page_count: Integer; const selected_index: Integer; const preedit_text: string);
+var
+    changed: Boolean;
 begin
+    changed := (m_page_index <> page_index) or
+        (m_page_count <> page_count) or
+        (m_selected_index <> selected_index) or
+        (m_preedit_text <> preedit_text) or
+        (not candidates_equal(m_candidates, candidates));
     m_candidates := candidates;
     m_page_index := page_index;
     m_page_count := page_count;
     m_selected_index := selected_index;
     m_preedit_text := preedit_text;
-    m_candidate_dirty := True;
+    if changed then
+    begin
+        m_candidate_dirty := True;
+    end;
 end;
 
 procedure TncHostSession.clear_candidates;
@@ -699,8 +779,12 @@ begin
     begin
         m_candidate_window.prepare_for_anchor(caret);
     end;
-    m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index, m_preedit_text,
-        m_engine.config.debug_mode);
+    if m_candidate_dirty or (m_last_candidate_debug_mode <> m_engine.config.debug_mode) then
+    begin
+        m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index,
+            m_preedit_text, m_engine.config.debug_mode);
+        m_last_candidate_debug_mode := m_engine.config.debug_mode;
+    end;
 
     if has_caret then
     begin
@@ -729,34 +813,40 @@ begin
             monitor_handle := MonitorFromPoint(target_point, MONITOR_DEFAULTTONEAREST);
             if (monitor_handle <> 0) and GetMonitorInfo(monitor_handle, @monitor_info) then
             begin
-                host_log(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d) work=(%d,%d,%d,%d)',
-                    [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
-                    window_rect.Bottom, monitor_info.rcWork.Left, monitor_info.rcWork.Top,
-                    monitor_info.rcWork.Right, monitor_info.rcWork.Bottom]));
                 if m_engine.config.debug_mode then
                 begin
-                    host_log(Format('[DEBUG] candidate source=%s score=%d',
+                    host_log_debug(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d) work=(%d,%d,%d,%d)',
+                        [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
+                        window_rect.Bottom, monitor_info.rcWork.Left, monitor_info.rcWork.Top,
+                        monitor_info.rcWork.Right, monitor_info.rcWork.Bottom]));
+                end;
+                if m_engine.config.debug_mode then
+                begin
+                    host_log_debug(Format('[DEBUG] candidate source=%s score=%d',
                         [anchor_source_name(source), anchor_score]));
                 end;
                 if m_engine.config.debug_mode then
                 begin
-                    host_log(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
+                    host_log_debug(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
                         [line_height, y_offset]));
                 end;
             end
             else
             begin
-                host_log(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d)',
-                    [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
-                    window_rect.Bottom]));
                 if m_engine.config.debug_mode then
                 begin
-                    host_log(Format('[DEBUG] candidate source=%s score=%d',
+                    host_log_debug(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d)',
+                        [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
+                        window_rect.Bottom]));
+                end;
+                if m_engine.config.debug_mode then
+                begin
+                    host_log_debug(Format('[DEBUG] candidate source=%s score=%d',
                         [anchor_source_name(source), anchor_score]));
                 end;
                 if m_engine.config.debug_mode then
                 begin
-                    host_log(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
+                    host_log_debug(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
                         [line_height, y_offset]));
                 end;
             end;
@@ -1081,7 +1171,7 @@ begin
         end;
         if refresh_sessions.Count > 0 then
         begin
-            host_log(Format('[DEBUG] AI refresh applied sessions=%d', [refresh_sessions.Count]));
+            host_log_debug(Format('[DEBUG] AI refresh applied sessions=%d', [refresh_sessions.Count]));
         end;
     finally
         refresh_sessions.Free;
@@ -1116,23 +1206,30 @@ begin
     m_last_config_check_tick := GetTickCount64;
 end;
 
-procedure TncEngineHost.reload_config_if_needed;
+function TncEngineHost.reload_config(const force: Boolean): Boolean;
 var
     now_tick: UInt64;
     current_write: TDateTime;
     manager: TncConfigManager;
     next_config: TncEngineConfig;
+    next_log_config: TncLogConfig;
     session: TncHostSession;
 begin
+    Result := False;
+    if m_config_path = '' then
+    begin
+        Exit;
+    end;
+
     now_tick := GetTickCount64;
-    if (m_last_config_check_tick <> 0) and (now_tick - m_last_config_check_tick < 1000) then
+    if (not force) and (m_last_config_check_tick <> 0) and (now_tick - m_last_config_check_tick < 1000) then
     begin
         Exit;
     end;
     m_last_config_check_tick := now_tick;
 
     current_write := get_config_write_time;
-    if current_write <= m_last_config_write then
+    if (not force) and (current_write <= m_last_config_write) then
     begin
         Exit;
     end;
@@ -1140,6 +1237,7 @@ begin
     manager := TncConfigManager.create(m_config_path);
     try
         next_config := manager.load_engine_config;
+        next_log_config := manager.load_log_config;
     finally
         manager.Free;
     end;
@@ -1155,7 +1253,25 @@ begin
     end;
 
     sync_ai_refresh_thread(m_config.enable_ai);
+    g_host_log_inited := True;
+    g_host_log_enabled := next_log_config.enabled;
+    g_host_log_level := next_log_config.level;
+    g_host_log_max_size_kb := next_log_config.max_size_kb;
+    if g_host_log_enabled then
+    begin
+        g_host_log_path := Trim(next_log_config.log_path);
+    end
+    else
+    begin
+        g_host_log_path := '';
+    end;
     m_last_config_write := current_write;
+    Result := True;
+end;
+
+procedure TncEngineHost.reload_config_if_needed;
+begin
+    reload_config(False);
 end;
 
 procedure TncEngineHost.apply_global_engine_config_locked(const config: TncEngineConfig);
@@ -1169,17 +1285,45 @@ begin
 end;
 
 function TncEngineHost.get_or_create_session(const session_id: string): TncHostSession;
+var
+    config_snapshot: TncEngineConfig;
+    created_session: TncHostSession;
+    added_session: Boolean;
 begin
     m_lock.Acquire;
     try
-        if not m_sessions.TryGetValue(session_id, Result) then
+        if m_sessions.TryGetValue(session_id, Result) then
         begin
-            Result := TncHostSession.create(Self, session_id, m_config);
-            m_sessions.Add(session_id, Result);
+            Exit;
+        end;
+        config_snapshot := m_config;
+    finally
+        m_lock.Release;
+    end;
+
+    created_session := TncHostSession.create(Self, session_id, config_snapshot);
+    added_session := False;
+    try
+        m_lock.Acquire;
+        try
+            if not m_sessions.TryGetValue(session_id, Result) then
+            begin
+                created_session.update_config(m_config);
+                m_sessions.Add(session_id, created_session);
+                Result := created_session;
+                created_session := nil;
+                added_session := True;
+            end;
+        finally
+            m_lock.Release;
+        end;
+
+        if added_session then
+        begin
             host_log('Dictionary ' + Result.engine.get_dictionary_debug_info);
         end;
     finally
-        m_lock.Release;
+        created_session.Free;
     end;
 end;
 
@@ -1451,7 +1595,7 @@ begin
                     m_lock.Release;
                 end;
 
-                host_log(Format('[DEBUG] Shift toggled input mode -> %d source=host(test_key) session=%s',
+                host_log_debug(Format('[DEBUG] Shift toggled input mode -> %d source=host(test_key) session=%s',
                     [Ord(next_input_mode), session_id]));
                 handled := True;
                 Result := True;
@@ -1545,7 +1689,7 @@ begin
 
         if handled and session.engine.commit_text(commit_text) then
         begin
-            host_log(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
+            host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
                 [key_code, Ord(handled), sanitize_log_text(commit_text), session.engine.get_confirmed_length]));
             display_text := '';
             session.clear_candidates;
@@ -1573,7 +1717,7 @@ begin
                 lookup_debug_info := lookup_debug_info + Format('host=[reload=%d proc=%d read=%d total=%d]',
                     [reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms]);
             end;
-            host_log(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
+            host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
                 [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
                 sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates), page_index + 1,
                 page_count, selected_index + 1, sanitize_log_text(lookup_debug_info)]));
@@ -1703,6 +1847,8 @@ begin
 end;
 
 function TncEngineHost.set_active(const session_id: string; const active: Boolean): Boolean;
+var
+    session: TncHostSession;
 begin
     if session_id = '' then
     begin
@@ -1710,13 +1856,34 @@ begin
         Exit;
     end;
 
+    session := nil;
     if active then
     begin
         ensure_tray_host_running;
+        session := get_or_create_session(session_id);
+        m_lock.Acquire;
+        try
+            session.engine.reload_dictionary_if_needed;
+        finally
+            m_lock.Release;
+        end;
     end;
 
     set_session_active(session_id, active);
+    if active and (session <> nil) then
+    begin
+        run_on_ui_thread(
+            procedure
+            begin
+                session.warm_candidate_window;
+            end);
+    end;
     Result := True;
+end;
+
+function TncEngineHost.reload_config_now: Boolean;
+begin
+    Result := reload_config(True);
 end;
 
 procedure TncEngineHost.update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
@@ -1816,7 +1983,7 @@ begin
         Exit;
     end;
 
-    host_log(Format('[DEBUG] remove user candidate session=%s index=%d', [session_id, candidate_index]));
+    host_log_debug(Format('[DEBUG] remove user candidate session=%s index=%d', [session_id, candidate_index]));
 
     should_refresh := False;
     should_hide := False;
@@ -1833,14 +2000,14 @@ begin
 
         if (candidate_index < 0) or (candidate_index >= Length(session.m_candidates)) then
         begin
-            host_log(Format('[DEBUG] remove user candidate skipped: index out of range count=%d',
+            host_log_debug(Format('[DEBUG] remove user candidate skipped: index out of range count=%d',
                 [Length(session.m_candidates)]));
             Exit;
         end;
 
         if session.m_candidates[candidate_index].source <> cs_user then
         begin
-            host_log('[DEBUG] remove user candidate skipped: source is not cs_user');
+            host_log_debug('[DEBUG] remove user candidate skipped: source is not cs_user');
             Exit;
         end;
 
@@ -2070,7 +2237,7 @@ begin
         if not (SameText(cmd, 'GET_ACTIVE') or SameText(cmd, 'GET_STATE') or SameText(cmd, 'PING') or
             SameText(cmd, 'SET_SURROUNDING') or SameText(cmd, 'SET_CARET')) then
         begin
-            host_log(Format('request cmd=%s session=%s', [cmd, session_id]));
+            host_log_debug(Format('request cmd=%s session=%s', [cmd, session_id]));
         end;
 
         if SameText(cmd, 'RESET') then
@@ -2143,6 +2310,19 @@ begin
                 m_host.update_surrounding(session_id, '');
             end;
             Result := 'OK';
+            Exit;
+        end;
+
+        if SameText(cmd, 'RELOAD_CONFIG') then
+        begin
+            if m_host.reload_config_now then
+            begin
+                Result := 'OK';
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
             Exit;
         end;
 
@@ -2237,7 +2417,7 @@ begin
             key_state.ctrl_down := flag_to_bool(fields[4]);
             key_state.alt_down := flag_to_bool(fields[5]);
             key_state.caps_lock := flag_to_bool(fields[6]);
-            host_log(Format('test_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
+            host_log_debug(Format('test_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
                 [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down), Ord(key_state.alt_down),
                 Ord(key_state.caps_lock)]));
             if m_host.test_key(session_id, Word(key_code), key_state, handled) then
@@ -2264,7 +2444,7 @@ begin
             key_state.ctrl_down := flag_to_bool(fields[4]);
             key_state.alt_down := flag_to_bool(fields[5]);
             key_state.caps_lock := flag_to_bool(fields[6]);
-            host_log(Format('process_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
+            host_log_debug(Format('process_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
                 [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down), Ord(key_state.alt_down),
                 Ord(key_state.caps_lock)]));
             if m_host.process_key(session_id, Word(key_code), key_state, handled, commit_text, display_text, input_mode,

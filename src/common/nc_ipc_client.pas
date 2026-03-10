@@ -40,6 +40,7 @@ type
             const line_height: Integer = 0; const source: TncCaretAnchorSource = casCursor;
             const anchor_score: Integer = 0; const terminal_like_target: Boolean = False): Boolean;
         function set_surrounding(const session_id: string; const left_context: string): Boolean;
+        function reload_config(const session_id: string): Boolean;
         function reset_session(const session_id: string): Boolean;
         property last_error: DWORD read m_last_error;
     end;
@@ -578,6 +579,23 @@ begin
     end;
 
     request_text := 'SET_SURROUNDING'#9 + session_id + #9 + encode_ipc_text(left_context);
+    if not call_pipe(request_text, response_text) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
+end;
+
+function TncIpcClient.reload_config(const session_id: string): Boolean;
+var
+    request_text: string;
+    response_text: string;
+    fields: TArray<string>;
+begin
+    request_text := 'RELOAD_CONFIG'#9 + session_id;
     if not call_pipe(request_text, response_text) then
     begin
         Result := False;

@@ -60,6 +60,7 @@ type
         m_display_attribute_provider: ITfDisplayAttributeProvider;
         m_config_path: string;
         m_last_config_write: TDateTime;
+        m_last_config_check_tick: UInt64;
         m_log_config: TncLogConfig;
         m_logger: TncLogger;
         m_last_caret_point: TPoint;
@@ -373,6 +374,7 @@ begin
     m_display_attribute_provider := nil;
     m_config_path := '';
     m_last_config_write := 0;
+    m_last_config_check_tick := 0;
     m_log_config.enabled := False;
     m_log_config.level := ll_info;
     m_log_config.max_size_kb := 1024;
@@ -2371,6 +2373,7 @@ begin
     end;
 
     m_last_config_write := get_config_write_time;
+    m_last_config_check_tick := GetTickCount64;
     apply_log_config;
 end;
 
@@ -2395,14 +2398,25 @@ begin
 end;
 
 procedure TncTextService.reload_config_if_needed;
+const
+    c_config_reload_check_interval_ms = 1000;
 var
     current_write_time: TDateTime;
     engine_config: TncEngineConfig;
+    now_tick: UInt64;
 begin
     if m_config_path = '' then
     begin
         Exit;
     end;
+
+    now_tick := GetTickCount64;
+    if (m_last_config_check_tick <> 0) and
+        ((now_tick - m_last_config_check_tick) < c_config_reload_check_interval_ms) then
+    begin
+        Exit;
+    end;
+    m_last_config_check_tick := now_tick;
 
     current_write_time := get_config_write_time;
     if current_write_time <= m_last_config_write then

@@ -10,7 +10,6 @@ uses
     System.Types,
     System.UITypes,
     Winapi.Windows,
-    Winapi.ShellAPI,
     Vcl.Forms,
     Vcl.Menus,
     Vcl.Controls,
@@ -19,6 +18,7 @@ uses
     Vcl.Graphics,
     nc_config,
     nc_ipc_client,
+    nc_settings_form,
     nc_types;
 
 type
@@ -45,6 +45,7 @@ type
         m_config_path: string;
         m_last_write_time: TDateTime;
         m_engine_config: TncEngineConfig;
+        m_log_config: TncLogConfig;
         m_ipc_client: TncIpcClient;
         m_session_id: string;
         m_icon_chinese_simplified: TIcon;
@@ -67,6 +68,9 @@ type
         m_status_drag_source: TObject;
         m_engine_active: Boolean;
         m_active_sync_fail_count: Integer;
+        m_last_state_poll_tick: UInt64;
+        m_last_config_poll_tick: UInt64;
+        m_last_style_refresh_tick: UInt64;
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
         function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
         procedure handle_status_label_click(const source: TObject);
@@ -86,6 +90,10 @@ type
         procedure refresh_state_from_host;
         procedure load_config;
         procedure save_config;
+        procedure apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;
+            const status_widget_visible: Boolean);
+        function reload_host_config: Boolean;
+        procedure show_settings_dialog;
         procedure update_menu;
         procedure status_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
         procedure status_mouse_move(Sender: TObject; Shift: TShiftState; X: Integer; Y: Integer);
@@ -120,6 +128,12 @@ const
     c_status_widget_default_width = 260;
     c_status_widget_default_height = 38;
     c_active_sync_fail_hide_threshold = 8;
+    c_tray_timer_interval_ms = 120;
+    c_state_poll_interval_ms = 180;
+    c_state_poll_interval_idle_ms = 450;
+    c_config_poll_interval_ms = 1000;
+    c_style_refresh_interval_ms = 1000;
+    c_style_refresh_interval_idle_ms = 2500;
 
 procedure TncStatusForm.CreateParams(var Params: TCreateParams);
 begin
@@ -170,6 +184,9 @@ begin
     m_status_drag_source := nil;
     m_engine_active := False;
     m_active_sync_fail_count := 0;
+    m_last_state_poll_tick := 0;
+    m_last_config_poll_tick := 0;
+    m_last_style_refresh_tick := 0;
     enforce_application_toolwindow_style;
     configure_tray;
     configure_menu;
@@ -422,7 +439,7 @@ begin
     m_menu.Items.Add(separator);
 
     m_item_open_config := TMenuItem.Create(m_menu);
-    m_item_open_config.Caption := '打开配置文件';
+    m_item_open_config.Caption := '设置...';
     m_item_open_config.OnClick := on_open_config_click;
     m_menu.Items.Add(m_item_open_config);
 
@@ -444,7 +461,7 @@ begin
     m_tray_icon.PopupMenu := m_menu;
 
     m_timer := TTimer.Create(Self);
-    m_timer.Interval := 120;
+    m_timer.Interval := c_tray_timer_interval_ms;
     m_timer.OnTimer := on_timer;
     m_timer.Enabled := True;
 end;
@@ -932,6 +949,7 @@ begin
     config_manager := TncConfigManager.create(m_config_path);
     try
         m_engine_config := config_manager.load_engine_config;
+        m_log_config := config_manager.load_log_config;
     finally
         config_manager.Free;
     end;
@@ -949,11 +967,55 @@ begin
     config_manager := TncConfigManager.create(m_config_path);
     try
         config_manager.save_engine_config(m_engine_config);
+        config_manager.save_log_config(m_log_config);
     finally
         config_manager.Free;
     end;
     m_last_write_time := get_config_write_time;
     update_menu;
+end;
+
+procedure TncTrayHost.apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;
+    const status_widget_visible: Boolean);
+begin
+    m_engine_config := config;
+    m_log_config := log_config;
+    save_config;
+    if m_item_status_widget <> nil then
+    begin
+        m_item_status_widget.Checked := status_widget_visible;
+    end;
+    apply_status_widget_visibility;
+    save_status_widget_state;
+    reload_host_config;
+    refresh_state_from_host;
+end;
+
+function TncTrayHost.reload_host_config: Boolean;
+begin
+    Result := False;
+    if (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    Result := m_ipc_client.reload_config(m_session_id);
+end;
+
+procedure TncTrayHost.show_settings_dialog;
+var
+    next_config: TncEngineConfig;
+    next_log_config: TncLogConfig;
+    status_widget_visible: Boolean;
+begin
+    next_config := m_engine_config;
+    next_log_config := m_log_config;
+    status_widget_visible := (m_item_status_widget <> nil) and m_item_status_widget.Checked;
+    TncSettingsForm.ExecuteDialog(Self, next_config, next_log_config, status_widget_visible,
+        procedure(const config: TncEngineConfig; const log_config: TncLogConfig; const next_status_widget_visible: Boolean)
+        begin
+            apply_settings(config, log_config, next_status_widget_visible);
+        end);
 end;
 
 procedure TncTrayHost.update_menu;
@@ -1204,22 +1266,14 @@ end;
 
 procedure TncTrayHost.on_open_config_click(Sender: TObject);
 begin
-    if m_config_path = '' then
-    begin
-        Exit;
-    end;
-
-    if not FileExists(m_config_path) then
-    begin
-        save_config;
-    end;
-
-    ShellExecute(0, 'open', PChar(m_config_path), nil, nil, SW_SHOWNORMAL);
+    show_settings_dialog;
 end;
 
 procedure TncTrayHost.on_reload_click(Sender: TObject);
 begin
     load_config;
+    reload_host_config;
+    refresh_state_from_host;
 end;
 
 procedure TncTrayHost.on_exit_click(Sender: TObject);
@@ -1232,18 +1286,47 @@ end;
 procedure TncTrayHost.on_timer(Sender: TObject);
 var
     current_write_time: TDateTime;
+    now_tick: UInt64;
+    state_poll_interval: UInt64;
+    style_refresh_interval: UInt64;
 begin
-    enforce_application_toolwindow_style;
-    enforce_host_form_toolwindow_style;
-    current_write_time := get_config_write_time;
-    if current_write_time <> m_last_write_time then
+    now_tick := GetTickCount64;
+    if m_engine_active or ((m_status_form <> nil) and m_status_form.Visible) then
     begin
-        load_config;
+        state_poll_interval := c_state_poll_interval_ms;
+        style_refresh_interval := c_style_refresh_interval_ms;
+    end
+    else
+    begin
+        state_poll_interval := c_state_poll_interval_idle_ms;
+        style_refresh_interval := c_style_refresh_interval_idle_ms;
     end;
-    refresh_state_from_host;
-    if (m_status_form <> nil) and m_status_form.Visible then
+
+    if (m_last_style_refresh_tick = 0) or (now_tick - m_last_style_refresh_tick >= style_refresh_interval) then
     begin
-        enforce_status_form_toolwindow_style;
+        enforce_application_toolwindow_style;
+        enforce_host_form_toolwindow_style;
+        if (m_status_form <> nil) and m_status_form.Visible then
+        begin
+            enforce_status_form_toolwindow_style;
+        end;
+        m_last_style_refresh_tick := now_tick;
+    end;
+
+    if (m_last_config_poll_tick = 0) or (now_tick - m_last_config_poll_tick >= c_config_poll_interval_ms) then
+    begin
+        current_write_time := get_config_write_time;
+        if current_write_time <> m_last_write_time then
+        begin
+            load_config;
+        end;
+        m_last_config_poll_tick := now_tick;
+    end;
+
+    if (m_last_state_poll_tick = 0) or (now_tick - m_last_state_poll_tick >= state_poll_interval) then
+    begin
+        refresh_state_from_host;
+        m_last_state_poll_tick := now_tick;
     end;
 end;
 

@@ -252,15 +252,7 @@ begin
     end;
 
     line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' ' + text + sLineBreak;
-    ForceDirectories(ExtractFileDir(log_path));
-    if FileExists(log_path) then
-    begin
-        TFile.AppendAllText(log_path, line, TEncoding.UTF8);
-    end
-    else
-    begin
-        TFile.WriteAllText(log_path, line, TEncoding.UTF8);
-    end;
+    append_log_line_shared(log_path, line);
 end;
 
 procedure try_enable_per_monitor_dpi;
