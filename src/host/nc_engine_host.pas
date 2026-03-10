@@ -2118,14 +2118,6 @@ begin
             begin
                 caret_terminal_like_target := flag_to_bool(fields[8]);
             end;
-            if (Length(fields) < 9) and (caret_source = casTsf) and has_caret and (line_height >= 24) then
-            begin
-                // Backward-compatible fallback for older TSF builds that do not
-                // send the terminal_like_target flag yet. Keep higher inline
-                // rows on the larger line-height path without relying on app
-                // name special cases.
-                caret_terminal_like_target := True;
-            end;
 
             m_host.update_caret(session_id, Point(x, y), has_caret, line_height, caret_terminal_like_target,
                 caret_source, caret_score);

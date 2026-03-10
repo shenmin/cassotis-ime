@@ -123,72 +123,74 @@ begin
         begin
             Exit;
         end;
-
-        if (max_size_kb > 0) and FileExists(log_path) then
-        begin
-            if try_open_log_handle(log_path, handle) then
-            begin
-                try
-                    current_size := 0;
-                    if GetFileSizeEx(handle, current_size) and (current_size > Int64(max_size_kb) * 1024) then
-                    begin
-                        CloseHandle(handle);
-                        handle := INVALID_HANDLE_VALUE;
-                        rotated_path := log_path + '.1';
-                        try
-                            if FileExists(rotated_path) then
-                            begin
-                                TFile.Delete(rotated_path);
-                            end;
-                        except
-                        end;
-                        try
-                            TFile.Move(log_path, rotated_path);
-                        except
-                        end;
-                    end;
-                finally
-                    if handle <> INVALID_HANDLE_VALUE then
-                    begin
-                        CloseHandle(handle);
-                        handle := INVALID_HANDLE_VALUE;
-                    end;
-                end;
-            end;
-        end;
-
-        if not try_open_log_handle(log_path, handle) then
-        begin
-            Exit;
-        end;
         try
-            current_size := 0;
-            if not GetFileSizeEx(handle, current_size) then
+            if (max_size_kb > 0) and FileExists(log_path) then
             begin
-                current_size := 0;
-            end;
-            SetFilePointer(handle, 0, nil, FILE_END);
-            if current_size = 0 then
-            begin
-                preamble := TEncoding.UTF8.GetPreamble;
-                if not write_bytes_to_handle(handle, preamble) then
+                if try_open_log_handle(log_path, handle) then
                 begin
-                    Exit;
+                    try
+                        current_size := 0;
+                        if GetFileSizeEx(handle, current_size) and (current_size > Int64(max_size_kb) * 1024) then
+                        begin
+                            CloseHandle(handle);
+                            handle := INVALID_HANDLE_VALUE;
+                            rotated_path := log_path + '.1';
+                            try
+                                if FileExists(rotated_path) then
+                                begin
+                                    TFile.Delete(rotated_path);
+                                end;
+                            except
+                            end;
+                            try
+                                TFile.Move(log_path, rotated_path);
+                            except
+                            end;
+                        end;
+                    finally
+                        if handle <> INVALID_HANDLE_VALUE then
+                        begin
+                            CloseHandle(handle);
+                            handle := INVALID_HANDLE_VALUE;
+                        end;
+                    end;
                 end;
             end;
-            utf8_bytes := TEncoding.UTF8.GetBytes(line);
-            write_bytes_to_handle(handle, utf8_bytes);
-        finally
-            if handle <> INVALID_HANDLE_VALUE then
+
+            if not try_open_log_handle(log_path, handle) then
             begin
-                CloseHandle(handle);
-                handle := INVALID_HANDLE_VALUE;
+                Exit;
             end;
+            try
+                current_size := 0;
+                if not GetFileSizeEx(handle, current_size) then
+                begin
+                    current_size := 0;
+                end;
+                SetFilePointer(handle, 0, nil, FILE_END);
+                if current_size = 0 then
+                begin
+                    preamble := TEncoding.UTF8.GetPreamble;
+                    if not write_bytes_to_handle(handle, preamble) then
+                    begin
+                        Exit;
+                    end;
+                end;
+                utf8_bytes := TEncoding.UTF8.GetBytes(line);
+                write_bytes_to_handle(handle, utf8_bytes);
+            finally
+                if handle <> INVALID_HANDLE_VALUE then
+                begin
+                    CloseHandle(handle);
+                    handle := INVALID_HANDLE_VALUE;
+                end;
+            end;
+        finally
+            release_log_mutex(mutex_handle);
         end;
     except
         // Logging must never break input processing.
     end;
-    release_log_mutex(mutex_handle);
 end;
 
 function get_module_directory: string;
