@@ -2678,6 +2678,124 @@ var
             end;
         end;
 
+        function pick_best_single_char(
+            const syllable_text: string;
+            out out_single: TncCandidate
+        ): Boolean;
+        var
+            candidate_idx: Integer;
+            pass_idx: Integer;
+            best_idx: Integer;
+            rank_score: Integer;
+            prefer_common_single_char: Boolean;
+        begin
+            Result := False;
+            out_single.text := '';
+            out_single.comment := '';
+            out_single.score := 0;
+            out_single.source := cs_rule;
+            out_single.has_dict_weight := False;
+            out_single.dict_weight := 0;
+
+            if syllable_text = '' then
+            begin
+                Exit;
+            end;
+            if not dictionary_lookup_cached(syllable_text, local_lookup) then
+            begin
+                Exit;
+            end;
+
+            for pass_idx := 0 to 1 do
+            begin
+                prefer_common_single_char := pass_idx = 0;
+                best_idx := -1;
+                best_rank := Low(Integer);
+                for candidate_idx := 0 to High(local_lookup) do
+                begin
+                    if not is_single_text_unit(Trim(local_lookup[candidate_idx].text)) then
+                    begin
+                        Continue;
+                    end;
+                    if prefer_common_single_char and
+                        (not is_preferred_partial_single_char_candidate(local_lookup[candidate_idx])) then
+                    begin
+                        Continue;
+                    end;
+                    if (not prefer_common_single_char) and
+                        (not is_bmp_cjk_single_char_candidate(local_lookup[candidate_idx])) then
+                    begin
+                        Continue;
+                    end;
+
+                    rank_score := local_lookup[candidate_idx].score;
+                    if local_lookup[candidate_idx].source = cs_user then
+                    begin
+                        Inc(rank_score, c_user_score_bonus);
+                    end;
+                    if rank_score > best_rank then
+                    begin
+                        best_rank := rank_score;
+                        best_idx := candidate_idx;
+                    end;
+                end;
+                if best_idx >= 0 then
+                begin
+                    out_single := local_lookup[best_idx];
+                    Exit(True);
+                end;
+            end;
+        end;
+
+        function try_get_modal_particle_expected_text(
+            const syllable_text: string;
+            out out_text: string
+        ): Boolean;
+        begin
+            out_text := '';
+            if syllable_equals(syllable_text, 'ba') then
+            begin
+                out_text := string(Char($5427));
+            end
+            else if syllable_equals(syllable_text, 'ma') then
+            begin
+                out_text := string(Char($5417));
+            end
+            else if syllable_equals(syllable_text, 'ne') then
+            begin
+                out_text := string(Char($5462));
+            end;
+            Result := out_text <> '';
+        end;
+
+        function try_match_modal_particle_units(out out_units: TArray<string>): Boolean;
+        var
+            head_single: TncCandidate;
+            particle_single: TncCandidate;
+            particle_text: string;
+        begin
+            SetLength(out_units, 0);
+            if Length(syllables) <> 2 then
+            begin
+                Exit(False);
+            end;
+            if not try_get_modal_particle_expected_text(syllables[1].text, particle_text) then
+            begin
+                Exit(False);
+            end;
+            if not pick_best_single_char(syllables[0].text, head_single) then
+            begin
+                Exit(False);
+            end;
+            if not pick_expected_single_char(syllables[1].text, particle_text, particle_single) then
+            begin
+                Exit(False);
+            end;
+
+            out_units := TArray<string>.Create(Trim(head_single.text), particle_text);
+            Result := Length(out_units) = Length(syllables);
+        end;
+
         function try_match_expected_units(out out_units: TArray<string>): Boolean;
         begin
             SetLength(out_units, 0);
@@ -2883,7 +3001,10 @@ var
 
         if not try_match_expected_units(expected_units) then
         begin
-            Exit;
+            if not try_match_modal_particle_units(expected_units) then
+            begin
+                Exit;
+            end;
         end;
 
         total_score := 0;
@@ -3862,6 +3983,10 @@ var
         c_partial_with_complete_penalty = 620;
         c_exact_length_bonus = 260;
         c_near_length_bonus = 80;
+        c_exact_dict_complete_bonus = 220;
+        c_near_dict_complete_bonus = 96;
+        c_non_dict_complete_with_exact_dict_penalty = 160;
+        c_partial_with_exact_dict_penalty = 120;
         c_short_complete_gap_penalty = 180;
         c_single_char_complete_penalty = 520;
         c_short_partial_penalty = 180;
@@ -3872,6 +3997,8 @@ var
         text_units: Integer;
         effective_units: Integer;
         has_complete_phrase: Boolean;
+        has_exact_dict_complete: Boolean;
+        has_near_dict_complete: Boolean;
         syllable_gap: Integer;
     begin
         if (not has_multi_syllable_input) or (Length(candidates) = 0) then
@@ -3886,6 +4013,8 @@ var
         end;
 
         has_complete_phrase := False;
+        has_exact_dict_complete := False;
+        has_near_dict_complete := False;
         for idx := 0 to High(candidates) do
         begin
             if candidates[idx].comment <> '' then
@@ -3897,7 +4026,18 @@ var
             if text_units >= 2 then
             begin
                 has_complete_phrase := True;
-                Break;
+                if candidates[idx].has_dict_weight then
+                begin
+                    syllable_gap := input_syllables - text_units;
+                    if syllable_gap = 0 then
+                    begin
+                        has_exact_dict_complete := True;
+                    end
+                    else if (input_syllables >= 4) and (syllable_gap = 1) then
+                    begin
+                        has_near_dict_complete := True;
+                    end;
+                end;
             end;
         end;
 
@@ -3943,6 +4083,38 @@ var
                         Dec(candidates[idx].score, Abs(syllable_gap) * (c_short_complete_gap_penalty div 2));
                     end;
                 end;
+
+                if input_syllables >= 3 then
+                begin
+                    if candidates[idx].has_dict_weight then
+                    begin
+                        if text_units = input_syllables then
+                        begin
+                            Inc(candidates[idx].score, c_exact_dict_complete_bonus);
+                        end
+                        else if (input_syllables >= 4) and (text_units + 1 = input_syllables) then
+                        begin
+                            Inc(candidates[idx].score, c_near_dict_complete_bonus);
+                        end;
+                    end
+                    else if has_exact_dict_complete then
+                    begin
+                        if text_units = input_syllables then
+                        begin
+                            Dec(candidates[idx].score, c_non_dict_complete_with_exact_dict_penalty);
+                        end
+                        else if (input_syllables >= 4) and (text_units + 1 = input_syllables) then
+                        begin
+                            Dec(candidates[idx].score,
+                                c_non_dict_complete_with_exact_dict_penalty div 2);
+                        end;
+                    end
+                    else if has_near_dict_complete and (input_syllables >= 4) and
+                        (text_units + 1 >= input_syllables) then
+                    begin
+                        Dec(candidates[idx].score, c_near_dict_complete_bonus div 2);
+                    end;
+                end;
             end
             else if (candidates[idx].comment = '') and (input_syllables >= 3) and (text_units = 1) then
             begin
@@ -3951,6 +4123,10 @@ var
             else if candidates[idx].comment <> '' then
             begin
                 Dec(candidates[idx].score, c_partial_with_complete_penalty);
+                if has_exact_dict_complete and (input_syllables >= 3) then
+                begin
+                    Dec(candidates[idx].score, c_partial_with_exact_dict_penalty);
+                end;
                 if input_syllables >= 3 then
                 begin
                     if text_units <= 1 then
@@ -4269,8 +4445,8 @@ begin
         raw_candidates_seeded_from_runtime_only := False;
         head_only_multi_syllable := m_config.enable_segment_candidates and
             has_multi_syllable_input and
-            m_config.segment_head_only_multi_syllable and
-            ((not has_internal_dangling_initial) or all_initial_compact_query);
+            (all_initial_compact_query or
+                (m_config.segment_head_only_multi_syllable and (not has_internal_dangling_initial)));
         if m_dictionary <> nil then
         begin
             if head_only_multi_syllable and build_segment_candidates_timed(segment_candidates, False) then
@@ -4320,7 +4496,8 @@ begin
         end;
 
         sort_candidates_timed(raw_candidates);
-        if m_config.enable_segment_candidates and raw_from_dictionary and (not has_internal_dangling_initial) then
+        if m_config.enable_segment_candidates and raw_from_dictionary and
+            (not has_internal_dangling_initial) and (not all_initial_compact_query) then
         begin
             if not has_segment_candidates then
             begin
@@ -8512,6 +8689,8 @@ const
     c_segment_full_non_leading_single_penalty = 72;
     c_segment_full_preferred_single_penalty = 24;
     c_segment_full_leading_multi_penalty = 42;
+    c_segment_full_path_budget_ms = 18;
+    c_segment_full_path_budget_probe_interval = 64;
     c_segment_full_path_non_user_limit = 4;
     c_segment_full_partial_remaining_limit = 2;
     c_segment_full_partial_non_user_limit = 3;
@@ -8785,6 +8964,9 @@ var
         local_path_transition_bonus: Integer;
         local_query_path_bonus: Integer;
         local_segment_count: Integer;
+        full_path_budget_start_tick: UInt64;
+        full_path_budget_work_counter: Integer;
+        full_path_budget_exhausted: Boolean;
 
         function build_state_key(const value: TncSegmentPathState): string;
         begin
@@ -9258,6 +9440,29 @@ var
             state_dedup[position].Add(local_key, states[position].Count - 1);
         end;
 
+        function full_path_budget_reached(const force_tick_check: Boolean = False): Boolean;
+        begin
+            Result := full_path_budget_exhausted;
+            if Result then
+            begin
+                Exit;
+            end;
+
+            if not force_tick_check then
+            begin
+                Inc(full_path_budget_work_counter);
+                if full_path_budget_work_counter < c_segment_full_path_budget_probe_interval then
+                begin
+                    Exit(False);
+                end;
+            end;
+
+            full_path_budget_work_counter := 0;
+            full_path_budget_exhausted :=
+                Int64(GetTickCount64 - full_path_budget_start_tick) >= c_segment_full_path_budget_ms;
+            Result := full_path_budget_exhausted;
+        end;
+
         procedure trim_state(const position: Integer);
         const
             c_segment_full_state_confidence_gap_limit = 320;
@@ -9474,14 +9679,27 @@ var
             SetLength(preferred_phrase_flags, Length(syllables));
             SetLength(preferred_phrase_max_len, Length(syllables));
             SetLength(single_char_rank_maps, Length(syllables));
+            full_path_budget_start_tick := GetTickCount64;
+            full_path_budget_work_counter := 0;
+            full_path_budget_exhausted := False;
             for state_pos := 0 to High(syllables) do
             begin
+                if full_path_budget_reached(True) then
+                begin
+                    Break;
+                end;
+
                 single_char_rank_maps[state_pos] := TDictionary<string, Integer>.Create;
                 if dictionary_lookup_cached(syllables[state_pos].text, local_lookup_results) then
                 begin
                     local_rank := 0;
                     for candidate_index := 0 to High(local_lookup_results) do
                     begin
+                        if full_path_budget_reached(False) then
+                        begin
+                            Break;
+                        end;
+
                         local_candidate_text := Trim(local_lookup_results[candidate_index].text);
                         if (local_candidate_text = '') or
                             (not is_single_text_unit(local_candidate_text)) or
@@ -9506,6 +9724,11 @@ var
 
             for state_pos := 0 to High(syllables) do
             begin
+                if full_path_budget_reached(True) then
+                begin
+                    Break;
+                end;
+
                 if states[state_pos].Count = 0 then
                 begin
                     Continue;
@@ -9513,6 +9736,11 @@ var
 
                 for local_segment_len := 1 to max_word_len do
                 begin
+                    if full_path_budget_exhausted then
+                    begin
+                        Break;
+                    end;
+
                     if state_pos + local_segment_len > Length(syllables) then
                     begin
                         Break;
@@ -9537,9 +9765,19 @@ var
                     next_pos := state_pos + local_segment_len;
                     for state_index := 0 to states[state_pos].Count - 1 do
                     begin
+                        if full_path_budget_reached(False) then
+                        begin
+                            Break;
+                        end;
+
                         local_state := states[state_pos][state_index];
                         for candidate_index := 0 to High(local_lookup_results) do
                         begin
+                            if full_path_budget_reached(False) then
+                            begin
+                                Break;
+                            end;
+
                             // Keep full-path expansion anchored by high-confidence head chunks.
                             // Low-ranked leading chunks (for example rare/unnatural head words)
                             // should not keep expanding into long noisy phrases.
@@ -9796,6 +10034,16 @@ var
                             end;
                             append_state(next_pos, local_new_state);
                         end;
+
+                        if full_path_budget_exhausted then
+                        begin
+                            Break;
+                        end;
+                    end;
+
+                    if full_path_budget_exhausted then
+                    begin
+                        Break;
                     end;
 
                     trim_state(next_pos);
