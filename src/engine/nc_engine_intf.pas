@@ -2197,6 +2197,71 @@ var
         Result := units[0] = units[1];
     end;
 
+    function is_runtime_constructed_tail_friendly(const tail_text: string): Boolean;
+    var
+        tail_codepoint: Integer;
+    begin
+        Result := False;
+        if not try_get_single_text_unit_codepoint(Trim(tail_text), tail_codepoint) then
+        begin
+            Exit;
+        end;
+
+        case tail_codepoint of
+            $4E2A, // 个
+            $4F4D, // 位
+            $6B21, // 次
+            $70B9, // 点
+            $4E9B, // 些
+            $79CD, // 种
+            $5929, // 天
+            $5E74, // 年
+            $6708, // 月
+            $91CC, // 里
+            $4E0B, // 下
+            $56DE, // 回
+            $904D, // 遍
+            $58F0, // 声
+            $9762, // 面
+            $773C, // 眼
+            $8FB9: // 边
+                Result := True;
+        end;
+    end;
+
+    function try_get_runtime_function_head_expected_text(
+        const syllable_text: string;
+        out out_text: string
+    ): Boolean;
+    begin
+        out_text := '';
+        if SameText(syllable_text, 'zhe') then
+        begin
+            out_text := string(Char($8FD9));
+        end
+        else if SameText(syllable_text, 'na') or SameText(syllable_text, 'nei') then
+        begin
+            out_text := string(Char($90A3));
+        end
+        else if SameText(syllable_text, 'yi') then
+        begin
+            out_text := string(Char($4E00));
+        end
+        else if SameText(syllable_text, 'liang') then
+        begin
+            out_text := string(Char($4E24));
+        end
+        else if SameText(syllable_text, 'ji') then
+        begin
+            out_text := string(Char($51E0));
+        end
+        else if SameText(syllable_text, 'mei') then
+        begin
+            out_text := string(Char($6BCF));
+        end;
+        Result := out_text <> '';
+    end;
+
     function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
     var
         units: TArray<string>;
@@ -2210,6 +2275,20 @@ var
         end;
 
         if units[0] = units[1] then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        if is_runtime_constructed_tail_friendly(units[1]) then
+        begin
+            Result := True;
+            Exit;
+        end;
+
+        if (units[1] = string(Char($5427))) or // 吧
+            (units[1] = string(Char($5417))) or // 吗
+            (units[1] = string(Char($5462))) then // 呢
         begin
             Result := True;
             Exit;
@@ -2772,6 +2851,82 @@ var
             end;
         end;
 
+        function pick_best_constructed_phrase_head_single_char(
+            const syllable_text: string;
+            out out_single: TncCandidate
+        ): Boolean;
+        var
+            candidate_idx: Integer;
+            pass_idx: Integer;
+            best_idx: Integer;
+            best_rank: Integer;
+            rank_score: Integer;
+            prefer_common_single_char: Boolean;
+            prefer_non_user: Boolean;
+        begin
+            Result := False;
+            out_single.text := '';
+            out_single.comment := '';
+            out_single.score := 0;
+            out_single.source := cs_rule;
+            out_single.has_dict_weight := False;
+            out_single.dict_weight := 0;
+
+            if syllable_text = '' then
+            begin
+                Exit;
+            end;
+            if not dictionary_lookup_cached(syllable_text, local_lookup) then
+            begin
+                Exit;
+            end;
+
+            for pass_idx := 0 to 3 do
+            begin
+                prefer_non_user := pass_idx < 2;
+                prefer_common_single_char := (pass_idx mod 2) = 0;
+                best_idx := -1;
+                best_rank := Low(Integer);
+                for candidate_idx := 0 to High(local_lookup) do
+                begin
+                    if not is_single_text_unit(Trim(local_lookup[candidate_idx].text)) then
+                    begin
+                        Continue;
+                    end;
+                    if prefer_non_user and (local_lookup[candidate_idx].source = cs_user) then
+                    begin
+                        Continue;
+                    end;
+                    if prefer_common_single_char and
+                        (not is_preferred_partial_single_char_candidate(local_lookup[candidate_idx])) then
+                    begin
+                        Continue;
+                    end;
+                    if (not prefer_common_single_char) and
+                        (not is_bmp_cjk_single_char_candidate(local_lookup[candidate_idx])) then
+                    begin
+                        Continue;
+                    end;
+
+                    rank_score := local_lookup[candidate_idx].score;
+                    if (not prefer_non_user) and (local_lookup[candidate_idx].source = cs_user) then
+                    begin
+                        Inc(rank_score, c_user_score_bonus);
+                    end;
+                    if rank_score > best_rank then
+                    begin
+                        best_rank := rank_score;
+                        best_idx := candidate_idx;
+                    end;
+                end;
+                if best_idx >= 0 then
+                begin
+                    out_single := local_lookup[best_idx];
+                    Exit(True);
+                end;
+            end;
+        end;
+
         function try_get_modal_particle_expected_text(
             const syllable_text: string;
             out out_text: string
@@ -2808,7 +2963,7 @@ var
             begin
                 Exit(False);
             end;
-            if not pick_best_single_char(syllables[0].text, head_single) then
+            if not pick_best_constructed_phrase_head_single_char(syllables[0].text, head_single) then
             begin
                 Exit(False);
             end;
@@ -2821,12 +2976,49 @@ var
             Result := Length(out_units) = Length(syllables);
         end;
 
+        function try_match_function_head_friendly_tail_units(out out_units: TArray<string>): Boolean;
+        var
+            head_text: string;
+            head_single: TncCandidate;
+            tail_single: TncCandidate;
+        begin
+            SetLength(out_units, 0);
+            if Length(syllables) <> 2 then
+            begin
+                Exit(False);
+            end;
+            if not try_get_runtime_function_head_expected_text(syllables[0].text, head_text) then
+            begin
+                Exit(False);
+            end;
+            if not pick_expected_single_char(syllables[0].text, head_text, head_single) then
+            begin
+                Exit(False);
+            end;
+            if not pick_best_single_char(syllables[1].text, tail_single) then
+            begin
+                Exit(False);
+            end;
+            if not is_runtime_constructed_tail_friendly(tail_single.text) then
+            begin
+                Exit(False);
+            end;
+
+            out_units := TArray<string>.Create(head_text, Trim(tail_single.text));
+            Result := Length(out_units) = Length(syllables);
+        end;
+
         function try_match_expected_units(out out_units: TArray<string>): Boolean;
         begin
             SetLength(out_units, 0);
             if (Length(syllables) <> 2) and (Length(syllables) <> 3) then
             begin
                 Exit(False);
+            end;
+
+            if try_match_function_head_friendly_tail_units(out_units) then
+            begin
+                Exit(True);
             end;
 
             if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
