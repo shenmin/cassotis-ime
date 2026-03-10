@@ -273,6 +273,27 @@ begin
     end;
     Result := scaled_base_offset;
 
+    if (line_height > 0) and (source = casTsf) and (not terminal_like_target) then
+    begin
+        // For normal GUI editors, the TSF anchor is already the caret bottom
+        // in screen pixels. Keep only a small post-caret clearance and avoid
+        // scaling it linearly with monitor DPI, which makes mixed-DPI editors
+        // look slightly too far away on higher-DPI displays.
+        line_gap := MulDiv(line_height, 1, 5);
+        min_gap := 3;
+        max_gap := 8;
+        if line_gap < min_gap then
+        begin
+            line_gap := min_gap;
+        end;
+        if line_gap > max_gap then
+        begin
+            line_gap := max_gap;
+        end;
+        Result := line_gap;
+        Exit;
+    end;
+
     if (line_height > 0) and (source = casTsf) and terminal_like_target then
     begin
         // The TSF caret line height is already reported in screen pixels.
