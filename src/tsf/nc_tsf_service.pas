@@ -8,6 +8,7 @@ uses
     Winapi.Msctf,
     Winapi.ShellAPI,
     System.Classes,
+    System.SyncObjs,
     System.SysUtils,
     System.IOUtils,
     System.Types,
@@ -72,6 +73,14 @@ type
         m_last_sent_caret_valid: Boolean;
         m_last_sent_caret_line_height: Integer;
         m_last_sent_caret_tick: DWORD;
+        m_active_state_lock: TCriticalSection;
+        m_active_state_event: TEvent;
+        m_active_state_thread: TThread;
+        m_active_state_shutdown: Boolean;
+        m_active_state_pending: Boolean;
+        m_pending_active_session_id: string;
+        m_pending_active_value: Boolean;
+        m_last_reported_active_session_id: string;
         m_last_reported_active: Boolean;
         m_active_state_synced: Boolean;
         m_shift_key_down: Boolean;
@@ -85,6 +94,9 @@ type
         procedure mark_session_dirty;
         procedure reset_session_if_needed(const force: Boolean = False);
         procedure invalidate_sent_caret;
+        procedure start_active_state_worker;
+        procedure stop_active_state_worker;
+        procedure queue_active_state_update(const active: Boolean);
         procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean; const source: TncCaretAnchorSource = casCursor;
             const anchor_score: Integer = 0; const force: Boolean = False);
@@ -302,6 +314,9 @@ begin
     inherited Initialize;
     m_ipc_client := TncIpcClient.create(True);
     clear_state;
+    m_active_state_lock := TCriticalSection.Create;
+    m_active_state_event := TEvent.Create(nil, False, False, '');
+    start_active_state_worker;
     if CreateGUID(guid) = S_OK then
     begin
         m_session_id := GUIDToString(guid);
@@ -310,6 +325,7 @@ end;
 
 destructor TncTextService.Destroy;
 begin
+    stop_active_state_worker;
     free_logger;
     if m_ipc_client <> nil then
     begin
@@ -353,7 +369,6 @@ begin
     m_context := nil;
     m_composition := nil;
     m_composition_context := nil;
-    m_session_id := '';
     m_attr_input_atom := TF_INVALID_GUIDATOM;
     m_display_attribute_provider := nil;
     m_config_path := '';
@@ -374,6 +389,7 @@ begin
     m_last_sent_caret_valid := False;
     m_last_sent_caret_line_height := 0;
     m_last_sent_caret_tick := 0;
+    m_last_reported_active_session_id := '';
     m_last_reported_active := False;
     m_active_state_synced := False;
     m_shift_key_down := False;
@@ -418,6 +434,175 @@ begin
         m_session_dirty := False;
         m_last_ipc_error := 0;
         invalidate_sent_caret;
+    end;
+end;
+
+procedure TncTextService.start_active_state_worker;
+begin
+    if (m_active_state_thread <> nil) or (m_active_state_lock = nil) or (m_active_state_event = nil) then
+    begin
+        Exit;
+    end;
+
+    m_active_state_shutdown := False;
+    m_active_state_pending := False;
+    m_pending_active_session_id := '';
+    m_pending_active_value := False;
+    m_active_state_thread := TThread.CreateAnonymousThread(
+        procedure
+        var
+            ipc_client: TncIpcClient;
+            session_id: string;
+            active_value: Boolean;
+            has_work: Boolean;
+            request_ok: Boolean;
+        begin
+            ipc_client := TncIpcClient.Create(True);
+            try
+                while True do
+                begin
+                    if m_active_state_event.WaitFor(INFINITE) <> wrSignaled then
+                    begin
+                        Continue;
+                    end;
+
+                    while True do
+                    begin
+                        m_active_state_lock.Acquire;
+                        try
+                            if m_active_state_shutdown then
+                            begin
+                                Exit;
+                            end;
+                            has_work := m_active_state_pending and (m_pending_active_session_id <> '');
+                            session_id := m_pending_active_session_id;
+                            active_value := m_pending_active_value;
+                            m_active_state_pending := False;
+                            m_pending_active_session_id := '';
+                        finally
+                            m_active_state_lock.Release;
+                        end;
+
+                        if not has_work then
+                        begin
+                            Break;
+                        end;
+
+                        if active_value then
+                        begin
+                            request_ok := ipc_client.set_active(session_id, True);
+                        end
+                        else if ipc_client.is_host_running then
+                        begin
+                            request_ok := ipc_client.set_active(session_id, False);
+                        end
+                        else
+                        begin
+                            request_ok := True;
+                        end;
+
+                        m_active_state_lock.Acquire;
+                        try
+                            if m_active_state_shutdown then
+                            begin
+                                Exit;
+                            end;
+
+                            if not m_active_state_pending then
+                            begin
+                                if request_ok then
+                                begin
+                                    m_last_reported_active_session_id := session_id;
+                                    m_last_reported_active := active_value;
+                                    m_active_state_synced := True;
+                                end
+                                else
+                                begin
+                                    m_active_state_synced := False;
+                                end;
+                            end;
+                        finally
+                            m_active_state_lock.Release;
+                        end;
+                    end;
+                end;
+            finally
+                ipc_client.Free;
+            end;
+        end);
+    m_active_state_thread.FreeOnTerminate := False;
+    m_active_state_thread.Start;
+end;
+
+procedure TncTextService.stop_active_state_worker;
+begin
+    if m_active_state_lock <> nil then
+    begin
+        m_active_state_lock.Acquire;
+        try
+            m_active_state_shutdown := True;
+            if m_active_state_event <> nil then
+            begin
+                m_active_state_event.SetEvent;
+            end;
+        finally
+            m_active_state_lock.Release;
+        end;
+    end;
+
+    if m_active_state_thread <> nil then
+    begin
+        m_active_state_thread.WaitFor;
+        m_active_state_thread.Free;
+        m_active_state_thread := nil;
+    end;
+
+    if m_active_state_event <> nil then
+    begin
+        m_active_state_event.Free;
+        m_active_state_event := nil;
+    end;
+
+    if m_active_state_lock <> nil then
+    begin
+        m_active_state_lock.Free;
+        m_active_state_lock := nil;
+    end;
+end;
+
+procedure TncTextService.queue_active_state_update(const active: Boolean);
+begin
+    if (m_active_state_lock = nil) or (m_active_state_event = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    m_active_state_lock.Acquire;
+    try
+        if m_active_state_shutdown then
+        begin
+            Exit;
+        end;
+
+        if m_active_state_synced and SameText(m_last_reported_active_session_id, m_session_id) and
+            (m_last_reported_active = active) and (not m_active_state_pending) then
+        begin
+            Exit;
+        end;
+
+        if m_active_state_pending and SameText(m_pending_active_session_id, m_session_id) and
+            (m_pending_active_value = active) then
+        begin
+            Exit;
+        end;
+
+        m_pending_active_session_id := m_session_id;
+        m_pending_active_value := active;
+        m_active_state_pending := True;
+        m_active_state_synced := False;
+        m_active_state_event.SetEvent;
+    finally
+        m_active_state_lock.Release;
     end;
 end;
 
@@ -2264,27 +2449,7 @@ begin
     begin
         Exit;
     end;
-
-    if m_active_state_synced and (m_last_reported_active = active) then
-    begin
-        Exit;
-    end;
-
-    if m_ipc_client.set_active(m_session_id, active) then
-    begin
-        m_active_state_synced := True;
-        m_last_reported_active := active;
-        Exit;
-    end;
-
-    m_active_state_synced := False;
-    if m_logger <> nil then
-    begin
-        if m_ipc_client.last_error <> 0 then
-        begin
-            m_logger.debug(Format('SET_ACTIVE failed err=%d active=%d', [m_ipc_client.last_error, Ord(active)]));
-        end;
-    end;
+    queue_active_state_update(active);
 end;
 
 function TncTextService.get_candidate_point(out point: TPoint; out placement_line_height: Integer;

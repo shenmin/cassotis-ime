@@ -21,10 +21,10 @@ type
         function start_host: Boolean;
         function wait_for_host_ready(const timeout_ms: DWORD): Boolean;
         function host_mutex_exists: Boolean;
-        function is_host_running: Boolean;
         function get_module_directory: string;
     public
         constructor create(const auto_start: Boolean = True);
+        function is_host_running: Boolean;
         function test_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
             out handled: Boolean): Boolean;
         function process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;

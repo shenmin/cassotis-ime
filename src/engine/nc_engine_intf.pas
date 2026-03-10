@@ -94,6 +94,7 @@ type
         m_lookup_segment_path_preference_cache: TDictionary<string, Integer>;
         m_lookup_candidate_path_confidence_cache: TDictionary<string, Integer>;
         m_current_segment_path_map: TDictionary<string, string>;
+        m_current_segment_path_score_map: TDictionary<string, Integer>;
         m_current_segment_path_query_prefix_map: TDictionary<string, string>;
         m_candidate_segment_paths: TArray<string>;
         m_pending_commit_text: string;
@@ -174,7 +175,7 @@ type
         function build_candidate_identity_key(const candidate_text: string; const comment_text: string): string;
         procedure clear_segment_path_tracking;
         procedure remember_segment_path_for_candidate(const candidate_text: string; const comment_text: string;
-            const encoded_path: string);
+            const encoded_path: string; const path_score_hint: Integer = Low(Integer));
         procedure remember_segment_path_query_prefix(const encoded_path: string; const query_prefix: string);
         function get_query_prefix_for_segment_path(const encoded_path: string): string;
         function get_segment_path_for_candidate(const candidate: TncCandidate;
@@ -559,6 +560,7 @@ begin
     m_lookup_segment_path_preference_cache := TDictionary<string, Integer>.Create;
     m_lookup_candidate_path_confidence_cache := TDictionary<string, Integer>.Create;
     m_current_segment_path_map := TDictionary<string, string>.Create;
+    m_current_segment_path_score_map := TDictionary<string, Integer>.Create;
     m_current_segment_path_query_prefix_map := TDictionary<string, string>.Create;
     SetLength(m_candidate_segment_paths, 0);
     m_pending_commit_segment_path := '';
@@ -753,6 +755,11 @@ begin
         m_current_segment_path_map.Free;
         m_current_segment_path_map := nil;
     end;
+    if m_current_segment_path_score_map <> nil then
+    begin
+        m_current_segment_path_score_map.Free;
+        m_current_segment_path_score_map := nil;
+    end;
     if m_current_segment_path_query_prefix_map <> nil then
     begin
         m_current_segment_path_query_prefix_map.Free;
@@ -867,6 +874,10 @@ begin
     begin
         m_current_segment_path_map.Clear;
     end;
+    if m_current_segment_path_score_map <> nil then
+    begin
+        m_current_segment_path_score_map.Clear;
+    end;
     if m_current_segment_path_query_prefix_map <> nil then
     begin
         m_current_segment_path_query_prefix_map.Clear;
@@ -874,11 +885,12 @@ begin
 end;
 
 procedure TncEngine.remember_segment_path_for_candidate(const candidate_text: string; const comment_text: string;
-    const encoded_path: string);
+    const encoded_path: string; const path_score_hint: Integer = Low(Integer));
 var
     key: string;
     existing_path: string;
     existing_preference: Integer;
+    existing_score_hint: Integer;
     new_preference: Integer;
 begin
     if (encoded_path = '') or (m_current_segment_path_map = nil) then
@@ -902,6 +914,11 @@ begin
         new_preference := get_segment_path_preference_score(encoded_path) +
             get_incremental_path_stability_bonus_for_path(encoded_path);
         if (new_preference > existing_preference + 24) or
+            ((Abs(new_preference - existing_preference) <= 24) and
+            (path_score_hint > Low(Integer)) and
+            (m_current_segment_path_score_map <> nil) and
+            m_current_segment_path_score_map.TryGetValue(key, existing_score_hint) and
+            (path_score_hint > existing_score_hint + 48)) or
             ((new_preference = existing_preference) and
             (get_encoded_path_segment_count_local(encoded_path) < get_encoded_path_segment_count_local(existing_path))) or
             ((new_preference = existing_preference) and
@@ -909,11 +926,19 @@ begin
             (Length(encoded_path) < Length(existing_path))) then
         begin
             m_current_segment_path_map.AddOrSetValue(key, encoded_path);
+            if (m_current_segment_path_score_map <> nil) and (path_score_hint > Low(Integer)) then
+            begin
+                m_current_segment_path_score_map.AddOrSetValue(key, path_score_hint);
+            end;
         end;
         Exit;
     end;
 
     m_current_segment_path_map.Add(key, encoded_path);
+    if (m_current_segment_path_score_map <> nil) and (path_score_hint > Low(Integer)) then
+    begin
+        m_current_segment_path_score_map.AddOrSetValue(key, path_score_hint);
+    end;
 end;
 
 procedure TncEngine.remember_segment_path_query_prefix(const encoded_path: string; const query_prefix: string);
@@ -4000,6 +4025,59 @@ var
         has_exact_dict_complete: Boolean;
         has_near_dict_complete: Boolean;
         syllable_gap: Integer;
+        function get_dict_complete_confidence_bonus(const candidate: TncCandidate): Integer;
+        var
+            dict_weight_value: Integer;
+            candidate_units: Integer;
+        begin
+            Result := 0;
+            if (not candidate.has_dict_weight) or (input_syllables < 3) then
+            begin
+                Exit;
+            end;
+
+            candidate_units := get_text_unit_count(Trim(candidate.text));
+            if candidate_units < 3 then
+            begin
+                Exit;
+            end;
+
+            dict_weight_value := candidate.dict_weight;
+            if candidate_units = input_syllables then
+            begin
+                if dict_weight_value >= 760 then
+                begin
+                    Result := 180;
+                end
+                else if dict_weight_value >= 620 then
+                begin
+                    Result := 128;
+                end
+                else if dict_weight_value >= 480 then
+                begin
+                    Result := 84;
+                end
+                else if dict_weight_value >= 360 then
+                begin
+                    Result := 40;
+                end;
+            end
+            else if (input_syllables >= 4) and (candidate_units + 1 = input_syllables) then
+            begin
+                if dict_weight_value >= 720 then
+                begin
+                    Result := 72;
+                end
+                else if dict_weight_value >= 560 then
+                begin
+                    Result := 48;
+                end
+                else if dict_weight_value >= 420 then
+                begin
+                    Result := 24;
+                end;
+            end;
+        end;
     begin
         if (not has_multi_syllable_input) or (Length(candidates) = 0) then
         begin
@@ -4089,18 +4167,19 @@ var
                     if candidates[idx].has_dict_weight then
                     begin
                         if text_units = input_syllables then
-                        begin
-                            Inc(candidates[idx].score, c_exact_dict_complete_bonus);
-                        end
-                        else if (input_syllables >= 4) and (text_units + 1 = input_syllables) then
-                        begin
-                            Inc(candidates[idx].score, c_near_dict_complete_bonus);
-                        end;
-                    end
-                    else if has_exact_dict_complete then
                     begin
-                        if text_units = input_syllables then
-                        begin
+                        Inc(candidates[idx].score, c_exact_dict_complete_bonus);
+                    end
+                    else if (input_syllables >= 4) and (text_units + 1 = input_syllables) then
+                    begin
+                        Inc(candidates[idx].score, c_near_dict_complete_bonus);
+                    end;
+                    Inc(candidates[idx].score, get_dict_complete_confidence_bonus(candidates[idx]));
+                end
+                else if has_exact_dict_complete then
+                begin
+                    if text_units = input_syllables then
+                    begin
                             Dec(candidates[idx].score, c_non_dict_complete_with_exact_dict_penalty);
                         end
                         else if (input_syllables >= 4) and (text_units + 1 = input_syllables) then
@@ -8995,6 +9074,7 @@ var
         local_path_transition_bonus: Integer;
         local_query_path_bonus: Integer;
         local_segment_count: Integer;
+        local_segment_quality_bonus: Integer;
         full_path_budget_start_tick: UInt64;
         full_path_budget_work_counter: Integer;
         full_path_budget_exhausted: Boolean;
@@ -9449,6 +9529,104 @@ var
             end;
         end;
 
+        function get_segment_lexical_quality_bonus(const candidate: TncCandidate;
+            const segment_len: Integer; const state_pos: Integer; const next_pos: Integer): Integer;
+        var
+            dict_weight_value: Integer;
+            remaining_syllables: Integer;
+            text_units: Integer;
+        begin
+            Result := 0;
+            text_units := get_text_unit_count(Trim(candidate.text));
+            if text_units <= 0 then
+            begin
+                Exit;
+            end;
+
+            remaining_syllables := Length(syllables) - next_pos;
+            if candidate.source = cs_user then
+            begin
+                if (text_units = segment_len) and (segment_len >= 2) then
+                begin
+                    Result := 84 + (segment_len * 12);
+                end;
+                Exit;
+            end;
+
+            if candidate.has_dict_weight then
+            begin
+                dict_weight_value := candidate.dict_weight;
+            end
+            else
+            begin
+                dict_weight_value := candidate.score;
+            end;
+
+            if (text_units = segment_len) and (segment_len >= 2) then
+            begin
+                if dict_weight_value >= 760 then
+                begin
+                    Inc(Result, 180);
+                end
+                else if dict_weight_value >= 620 then
+                begin
+                    Inc(Result, 128);
+                end
+                else if dict_weight_value >= 480 then
+                begin
+                    Inc(Result, 84);
+                end
+                else if dict_weight_value >= 340 then
+                begin
+                    Inc(Result, 40);
+                end;
+
+                if (segment_len >= 3) and (dict_weight_value >= 420) then
+                begin
+                    Inc(Result, 28 + ((segment_len - 3) * 10));
+                end;
+
+                if next_pos = Length(syllables) then
+                begin
+                    if state_pos = 0 then
+                    begin
+                        Inc(Result, 96);
+                    end
+                    else
+                    begin
+                        Inc(Result, 44);
+                    end;
+                end
+                else if remaining_syllables <= 2 then
+                begin
+                    Inc(Result, 20);
+                end;
+                Exit;
+            end;
+
+            if (segment_len = 1) and (remaining_syllables > 0) then
+            begin
+                if dict_weight_value < 260 then
+                begin
+                    Dec(Result, 72);
+                end
+                else if dict_weight_value < 360 then
+                begin
+                    Dec(Result, 44);
+                end
+                else
+                begin
+                    Dec(Result, 18);
+                end;
+                Exit;
+            end;
+
+            if text_units <> segment_len then
+            begin
+                Dec(Result, Abs(text_units - segment_len) * 36);
+            end;
+        end;
+
         procedure append_state(const position: Integer; const value: TncSegmentPathState);
         begin
             local_key := build_state_key(value);
@@ -9884,6 +10062,9 @@ var
                                     local_candidate_text);
                             end;
                             Inc(local_new_state.score, local_path_transition_bonus);
+                            local_segment_quality_bonus := get_segment_lexical_quality_bonus(
+                                local_candidate, local_segment_len, state_pos, next_pos);
+                            Inc(local_new_state.score, local_segment_quality_bonus);
                             if (state_pos = 0) and (local_segment_len > 1) and
                                 (next_pos < Length(syllables)) then
                             begin
@@ -9942,6 +10123,13 @@ var
                                         (candidate_text_units - local_segment_len) * c_segment_text_unit_overflow_penalty);
                                 end;
                             end;
+                            if (Length(syllables) >= 4) and (state_pos = 1) and
+                                (next_pos = Length(syllables)) and
+                                (local_segment_len >= Length(syllables) - 1) and
+                                (get_text_unit_count(local_state.text) = 1) then
+                            begin
+                                Dec(local_new_state.score, 140);
+                            end;
                             if candidate_has_non_ascii and (candidate_text_units = local_segment_len) and
                                 (local_segment_len >= 2) then
                             begin
@@ -9976,6 +10164,10 @@ var
                             begin
                                 local_segment_count := get_encoded_path_segment_count_local(local_new_state.path_text);
                                 local_path_preference_score := -(local_segment_count * 18);
+                                if local_segment_quality_bonus <> 0 then
+                                begin
+                                    Inc(local_path_preference_score, local_segment_quality_bonus div 2);
+                                end;
                                 if local_path_transition_bonus > 0 then
                                 begin
                                     Inc(local_path_preference_score, Min(220, local_path_transition_bonus div 2));
@@ -10103,7 +10295,8 @@ var
                         Continue;
                     end;
                     append_candidate(local_state.text, local_state.score, local_state.source, '');
-                    remember_segment_path_for_candidate(local_state.text, '', local_state.path_text);
+                    remember_segment_path_for_candidate(local_state.text, '', local_state.path_text,
+                        local_state.score);
                     if local_state.source <> cs_user then
                     begin
                         Inc(full_non_user_added);
@@ -10165,7 +10358,8 @@ var
                     Dec(score_value, c_segment_full_partial_quadratic_penalty *
                         remaining_syllables * (remaining_syllables - 1));
                     append_candidate(local_state.text, score_value, local_state.source, remaining_pinyin);
-                    remember_segment_path_for_candidate(local_state.text, remaining_pinyin, local_state.path_text);
+                    remember_segment_path_for_candidate(local_state.text, remaining_pinyin,
+                        local_state.path_text, score_value);
 
                     if local_state.source <> cs_user then
                     begin
