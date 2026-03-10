@@ -7,7 +7,7 @@
   `C:\Program Files (x86)\Embarcadero\Studio\21.0\`
 - An **administrator PowerShell session** for the registration step
 
-The SQLite runtime (`sqlite3_64.dll`) is copied automatically from `third_party/sqlite/win64/` by `rebuild_all.ps1` â€?no separate installation is needed.
+The SQLite runtime (`sqlite3_64.dll`) is copied automatically from `third_party/sqlite/win64/` by `rebuild_all.ps1` - no separate installation is needed.
 
 ---
 
@@ -15,7 +15,7 @@ The SQLite runtime (`sqlite3_64.dll`) is copied automatically from `third_party/
 
 All scripts below are located in and must be run from the `out/` directory.
 
-### Step 1 â€?Build all binaries
+### Step 1 - Build all binaries
 
 ```powershell
 .\rebuild_all.ps1
@@ -37,7 +37,7 @@ $env:CASSOTIS_BUILD_TIMEOUT_SECONDS = '3600'
 .\rebuild_all.ps1
 ```
 
-### Step 2 â€?Register with Windows
+### Step 2 - Register with Windows
 
 > **Requires administrator.** Open PowerShell as Administrator before running this step.
 
@@ -60,14 +60,13 @@ Passing either DLL is sufficient; the script finds and registers its pair automa
 .\register_tsf.ps1 -single
 ```
 
-### Step 3 â€?Build dictionaries
+### Step 3 - Build dictionaries
 
 ```powershell
 .\rebuild_dict.ps1
 ```
 
-This script runs the dictionary pipeline using generated lexicon artifacts from sibling
-`cassotis_lexicon` / `cassotis_lexicon_public` repository:
+This script runs the dictionary pipeline using generated lexicon artifacts from a sibling lexicon repository located at `..\cassotis-lexicon` or `..\cassotis_lexicon`:
 
 1. Locates lexicon root (`..\cassotis-lexicon` first, then `..\cassotis_lexicon`)
 2. Imports Unihan base dictionaries:
@@ -89,7 +88,7 @@ Options:
 .\rebuild_dict.ps1 -NoRestartHost
 ```
 
-### Step 4 â€?Start TSF
+### Step 4 - Start TSF
 
 ```powershell
 .\start_tsf.ps1
@@ -166,8 +165,6 @@ When building in the Delphi IDE instead of using `rebuild_all.ps1`, follow this 
 | 3 | `tools/cassotis_ime_profile_reg.dproj` | Win64 |
 | 4 | `tools/cassotis_ime_tray_host.dproj` | Win64 |
 | 5 | `tools/cassotis_ime_dict_init.dproj` | Win64 |
-| 6 | `tools/cassotis_ime_unihan_import.dproj` | Win64 |
-| 7 | `tools/cassotis_ime_variant_convert.dproj` | Win64 |
 
 Configure IDE output directories to `out/`. The TSF server Win32 build output should be renamed to `cassotis_ime_svr32.dll`.
 
@@ -186,13 +183,13 @@ For the CUDA backend, **CUDA Toolkit 12.x** is also required. The script resolve
 2. Default install path: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\<version>`
 3. The `-cuda_root` parameter
 
-### CPU build (Win64 + Win32)
+### CPU build (Win64)
 
 ```powershell
 .\build_llama_cpp.ps1
 ```
 
-Builds for both Win64 and Win32. Output: `out/llama/win64/` and `out/llama/win32/`.
+Builds for Win64. Output: `out/llama/win64/`.
 
 ### CUDA build (Win64 only)
 
@@ -212,8 +209,8 @@ To specify a non-default CUDA Toolkit path:
 
 | Parameter | Description |
 |-----------|-------------|
-| `-tag <tag>` | llama.cpp git tag to clone (default: `b7951`) |
-| `-arch win64\|win32\|all` | Target architecture (default: `all`; CUDA forces `win64`) |
+| `-tag <tag>` | llama.cpp git tag to clone (default: `b8145`) |
+| `-arch win64\|all` | Target architecture (default: `all`; current builds produce Win64 artifacts) |
 | `-force_clone` | Re-clone the llama.cpp source tree |
 | `-force_reconfigure` | Clean CMake build directory and reconfigure |
 

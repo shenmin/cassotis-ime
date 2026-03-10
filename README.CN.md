@@ -92,13 +92,11 @@ TSF DLL 与 host 进程均须存在，输入法才能正常工作。
 
 ## 词库
 
-基础词库来源于 Unicode Unihan 数据：
+基础词库流程会从同级词库仓导入生成产物（`..\cassotis-lexicon` 或 `..\cassotis_lexicon`）：
 
 - 导入输入文件：`dict_unihan_sc.txt`、`dict_unihan_tc.txt`、`dict_clean_sc.txt`、`dict_clean_tc.txt`
 - 生成数据库：`out/data/dict_sc.db`（简体）、`out/data/dict_tc.db`（繁体）
 - 用户词库：`out/data/user_dict.db`
-
-当前基础词库流程改为从同级 `cassotis_lexicon` / `cassotis_lexicon_public` 仓库导入生成产物。
 
 ## 配置
 

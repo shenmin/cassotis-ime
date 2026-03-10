@@ -92,7 +92,8 @@ For the complete build guide — including incremental updates, manual IDE build
 
 ## Dictionary
 
-The base dictionary pipeline imports generated lexicon artifacts from sibling `cassotis_lexicon` / `cassotis_lexicon_public` repository:
+The base dictionary pipeline imports generated lexicon artifacts from a sibling lexicon repository
+located at `..\cassotis-lexicon` or `..\cassotis_lexicon`:
 
 - Lexicon inputs: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt`
 - Generated databases: `out/data/dict_sc.db` (simplified), `out/data/dict_tc.db` (traditional)
