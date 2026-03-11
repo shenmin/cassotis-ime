@@ -911,6 +911,22 @@ begin
         Exit;
     end;
 
+    if m_candidate_dirty then
+    begin
+        m_pending_candidate_caret := caret;
+        m_pending_candidate_has_caret := has_caret;
+        m_pending_candidate_line_height := line_height;
+        m_pending_candidate_terminal_like_target := terminal_like_target;
+        m_pending_candidate_source := source;
+        m_pending_candidate_score := anchor_score;
+        should_queue := True;
+        if should_queue then
+        begin
+            m_candidate_apply_queued := True;
+        end;
+        Exit;
+    end;
+
     now_tick := GetTickCount;
     if (m_last_candidate_apply_tick <> 0) and
         (DWORD(now_tick - m_last_candidate_apply_tick) <= c_candidate_apply_merge_ms) and
@@ -1437,9 +1453,11 @@ var
     create_start_tick: UInt64;
     create_elapsed_ms: Int64;
     total_elapsed_ms: Int64;
+    should_requeue: Boolean;
 begin
     session_id := '';
     session := nil;
+    should_requeue := False;
 
     m_lock.Acquire;
     try
@@ -1457,7 +1475,14 @@ begin
         session := get_or_create_session(session_id);
         create_elapsed_ms := Int64(GetTickCount64 - create_start_tick);
 
-        m_lock.Acquire;
+        if not m_lock.TryEnter then
+        begin
+            // Prewarm is best-effort. If foreground input currently owns the
+            // host lock, retry on a later maintenance pass instead of blocking
+            // the next key.
+            should_requeue := True;
+            Exit;
+        end;
         try
             if m_sessions.TryGetValue(session_id, session) then
             begin
@@ -1490,7 +1515,14 @@ begin
     finally
         m_lock.Acquire;
         try
-            m_session_prewarm_pending.Remove(session_id);
+            if should_requeue and (session_id <> '') and (m_session_prewarm_queue <> nil) then
+            begin
+                m_session_prewarm_queue.Enqueue(session_id);
+            end
+            else
+            begin
+                m_session_prewarm_pending.Remove(session_id);
+            end;
         finally
             m_lock.Release;
         end;
@@ -1771,13 +1803,13 @@ var
     total_elapsed_ms: Int64;
     debug_logging: Boolean;
     had_candidates_before: Boolean;
-    should_apply_candidates: Boolean;
     caret_point: TPoint;
     has_caret: Boolean;
     caret_line_height: Integer;
     candidate_terminal_like_target: Boolean;
     candidate_source: TncCaretAnchorSource;
     candidate_score: Integer;
+    queue_candidate_apply: Boolean;
 begin
     handled := False;
     commit_text := '';
@@ -1794,18 +1826,13 @@ begin
     reload_config_if_needed;
     session := get_or_create_session(session_id);
     should_hide_candidates := False;
-    should_apply_candidates := False;
     has_result := True;
     debug_logging := host_log_enabled_for(ll_debug);
     total_start_tick := GetTickCount64;
     readback_elapsed_ms := 0;
     total_elapsed_ms := 0;
     caret_point := Point(0, 0);
-    has_caret := False;
-    caret_line_height := 0;
-    candidate_terminal_like_target := False;
-    candidate_source := casCursor;
-    candidate_score := 0;
+    queue_candidate_apply := False;
     m_lock.Acquire;
     try
         touch_session_activity(session_id);
@@ -1896,13 +1923,18 @@ begin
                 session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
                 if had_candidates_before and session.has_caret then
                 begin
-                    should_apply_candidates := True;
                     caret_point := session.last_caret;
                     has_caret := session.has_caret;
                     caret_line_height := session.caret_line_height;
                     candidate_terminal_like_target := session.m_terminal_like_target;
                     candidate_source := session.m_last_candidate_source;
                     candidate_score := session.m_last_candidate_score;
+                    if session.needs_candidate_refresh(caret_point, has_caret, caret_line_height,
+                        candidate_terminal_like_target) then
+                    begin
+                        session.stage_candidate_apply(caret_point, has_caret, caret_line_height,
+                            candidate_terminal_like_target, candidate_source, candidate_score, queue_candidate_apply);
+                    end;
                 end;
             end;
         end;
@@ -1918,13 +1950,35 @@ begin
                 session.hide_candidate_window;
             end);
     end;
-    if should_apply_candidates then
+    if queue_candidate_apply then
     begin
         TThread.Queue(nil,
             procedure
+            var
+                queued_session: TncHostSession;
+                queued_point: TPoint;
+                queued_has_caret: Boolean;
+                queued_line_height: Integer;
+                queued_terminal_like_target: Boolean;
+                queued_source: TncCaretAnchorSource;
+                queued_score: Integer;
             begin
-                session.apply_candidate_state(caret_point, has_caret, caret_line_height,
-                    candidate_terminal_like_target, candidate_source, candidate_score);
+                m_lock.Acquire;
+                try
+                    if not m_sessions.TryGetValue(session_id, queued_session) then
+                    begin
+                        Exit;
+                    end;
+                    if not queued_session.consume_pending_candidate_apply(queued_point, queued_has_caret,
+                        queued_line_height, queued_terminal_like_target, queued_source, queued_score) then
+                    begin
+                        Exit;
+                    end;
+                finally
+                    m_lock.Release;
+                end;
+                queued_session.apply_candidate_state(queued_point, queued_has_caret, queued_line_height,
+                    queued_terminal_like_target, queued_source, queued_score);
             end);
     end;
 
@@ -1938,7 +1992,7 @@ begin
             '[DEBUG] perf process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d',
             [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
             Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
-            Ord(should_apply_candidates)]));
+            Ord(queue_candidate_apply)]));
     end
     else if total_elapsed_ms >= c_slow_host_process_key_ms then
     begin
@@ -1946,7 +2000,7 @@ begin
             '[PERF] process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d',
             [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
             Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
-            Ord(should_apply_candidates)]));
+            Ord(queue_candidate_apply)]));
     end;
 
     if global_state_changed then
