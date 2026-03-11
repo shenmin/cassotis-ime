@@ -87,6 +87,7 @@ type
         m_session_prewarm_queue: TQueue<string>;
         m_session_prewarm_pending: TDictionary<string, Byte>;
         m_lock: TCriticalSection;
+        m_maintenance_wakeup: TEvent;
         m_ai_refresh_thread: TThread;
         m_maintenance_thread: TThread;
         m_config_path: string;
@@ -993,6 +994,7 @@ begin
     m_session_prewarm_queue := TQueue<string>.Create;
     m_session_prewarm_pending := TDictionary<string, Byte>.Create;
     m_lock := TCriticalSection.Create;
+    m_maintenance_wakeup := TEvent.Create(nil, False, False, '');
     m_ai_refresh_thread := nil;
     m_maintenance_thread := nil;
     m_config_path := get_default_config_path;
@@ -1021,6 +1023,10 @@ begin
     begin
         TncMaintenanceThread(m_maintenance_thread).detach_host;
         m_maintenance_thread.Terminate;
+        if m_maintenance_wakeup <> nil then
+        begin
+            m_maintenance_wakeup.SetEvent;
+        end;
         if wait_for_thread_exit(m_maintenance_thread, 3000) then
         begin
             m_maintenance_thread.Free;
@@ -1053,6 +1059,11 @@ begin
     begin
         m_lock.Free;
         m_lock := nil;
+    end;
+    if m_maintenance_wakeup <> nil then
+    begin
+        m_maintenance_wakeup.Free;
+        m_maintenance_wakeup := nil;
     end;
     if m_sessions <> nil then
     begin
@@ -1240,7 +1251,7 @@ begin
     end;
 
     now_tick := GetTickCount64;
-    if (not force) and (m_last_config_check_tick <> 0) and (now_tick - m_last_config_check_tick < 1000) then
+    if (not force) and (m_last_config_check_tick <> 0) and (now_tick - m_last_config_check_tick < 1500) then
     begin
         Exit;
     end;
@@ -1370,6 +1381,11 @@ begin
         end;
     finally
         m_lock.Release;
+    end;
+
+    if m_maintenance_wakeup <> nil then
+    begin
+        m_maintenance_wakeup.SetEvent;
     end;
 end;
 
@@ -2266,10 +2282,23 @@ end;
 procedure TncMaintenanceThread.Execute;
 var
     host: TncEngineHost;
+    wait_result: TWaitResult;
 begin
     while not Terminated do
     begin
-        Sleep(c_maintenance_poll_ms);
+        host := m_host;
+        if (host <> nil) and (host.m_maintenance_wakeup <> nil) then
+        begin
+            wait_result := host.m_maintenance_wakeup.WaitFor(c_maintenance_poll_ms);
+            if wait_result = wrAbandoned then
+            begin
+                Break;
+            end;
+        end
+        else
+        begin
+            Sleep(c_maintenance_poll_ms);
+        end;
         if Terminated then
         begin
             Break;

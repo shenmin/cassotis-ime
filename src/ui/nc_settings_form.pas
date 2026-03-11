@@ -5,7 +5,10 @@ interface
 uses
     System.SysUtils,
     System.Classes,
+    System.IOUtils,
+    System.UITypes,
     Winapi.Windows,
+    Winapi.ShellAPI,
     Vcl.Forms,
     Vcl.Controls,
     Vcl.StdCtrls,
@@ -14,7 +17,8 @@ uses
     Vcl.Graphics,
     Vcl.Dialogs,
     Vcl.FileCtrl,
-    nc_types;
+    nc_types,
+    nc_config;
 
 type
     TncApplySettingsProc = reference to procedure(const engine_config: TncEngineConfig;
@@ -58,6 +62,7 @@ type
         m_edit_log_max_size_kb: TEdit;
         m_edit_log_path: TEdit;
         m_btn_log_path: TButton;
+        m_btn_open_log_folder: TButton;
         m_hint_logging: TLabel;
         m_chk_debug_mode: TCheckBox;
         m_edit_dict_path_sc: TEdit;
@@ -66,6 +71,7 @@ type
         m_btn_dict_path_sc: TButton;
         m_btn_dict_path_tc: TButton;
         m_btn_user_dict_path: TButton;
+        m_btn_open_config_folder: TButton;
         m_hint_advanced: TLabel;
         m_engine_config: TncEngineConfig;
         m_log_config: TncLogConfig;
@@ -102,9 +108,11 @@ type
         procedure on_browse_ai_runtime_dir_cuda(Sender: TObject);
         procedure on_browse_ai_model_path(Sender: TObject);
         procedure on_browse_log_path(Sender: TObject);
+        procedure on_open_log_folder(Sender: TObject);
         procedure on_browse_dict_path_sc(Sender: TObject);
         procedure on_browse_dict_path_tc(Sender: TObject);
         procedure on_browse_user_dict_path(Sender: TObject);
+        procedure on_open_config_folder(Sender: TObject);
         procedure apply_changes;
         procedure on_apply_click(Sender: TObject);
         procedure on_ok_click(Sender: TObject);
@@ -149,6 +157,18 @@ begin
     Result.Top := top - 1;
     Result.Width := c_browse_button_width;
     Result.Caption := 'Browse';
+    Result.OnClick := on_click;
+end;
+
+function create_action_button(const owner: TComponent; const parent: TWinControl; const left: Integer;
+    const top: Integer; const caption: string; const on_click: TNotifyEvent): TButton;
+begin
+    Result := TButton.Create(owner);
+    Result.Parent := parent;
+    Result.Left := left;
+    Result.Top := top;
+    Result.Width := 120;
+    Result.Caption := caption;
     Result.OnClick := on_click;
 end;
 
@@ -503,6 +523,10 @@ begin
     m_edit_log_path.OnChange := mark_dirty;
     m_btn_log_path := create_browse_button(Self, m_tab_logging, top, on_browse_log_path);
 
+    Inc(top, c_row_height + 2);
+    m_btn_open_log_folder := create_action_button(Self, m_tab_logging, c_control_left, top,
+        'Open log folder', on_open_log_folder);
+
     m_hint_logging := TLabel.Create(Self);
     m_hint_logging.Parent := m_tab_logging;
     m_hint_logging.Left := c_label_left;
@@ -557,6 +581,10 @@ begin
     m_edit_user_dict_path.Width := c_path_edit_width;
     m_edit_user_dict_path.OnChange := mark_dirty;
     m_btn_user_dict_path := create_browse_button(Self, m_tab_advanced, top, on_browse_user_dict_path);
+
+    Inc(top, c_row_height + 2);
+    m_btn_open_config_folder := create_action_button(Self, m_tab_advanced, c_control_left, top,
+        'Open config folder', on_open_config_folder);
 
     m_hint_advanced := TLabel.Create(Self);
     m_hint_advanced.Parent := m_tab_advanced;
@@ -1038,6 +1066,24 @@ begin
     end;
 end;
 
+procedure TncSettingsForm.on_open_log_folder(Sender: TObject);
+var
+    folder_path: string;
+begin
+    folder_path := Trim(m_edit_log_path.Text);
+    if folder_path = '' then
+    begin
+        Exit;
+    end;
+    folder_path := ExtractFileDir(folder_path);
+    if (folder_path = '') or (not TDirectory.Exists(folder_path)) then
+    begin
+        MessageDlg('The current log folder does not exist.', mtWarning, [mbOK], 0);
+        Exit;
+    end;
+    ShellExecute(Handle, 'open', PChar(folder_path), nil, nil, SW_SHOWNORMAL);
+end;
+
 procedure TncSettingsForm.on_browse_dict_path_sc(Sender: TObject);
 var
     path: string;
@@ -1069,6 +1115,19 @@ begin
     begin
         assign_path_edit(m_edit_user_dict_path, path);
     end;
+end;
+
+procedure TncSettingsForm.on_open_config_folder(Sender: TObject);
+var
+    folder_path: string;
+begin
+    folder_path := ExtractFileDir(get_default_config_path);
+    if (folder_path = '') or (not TDirectory.Exists(folder_path)) then
+    begin
+        MessageDlg('The config folder does not exist.', mtWarning, [mbOK], 0);
+        Exit;
+    end;
+    ShellExecute(Handle, 'open', PChar(folder_path), nil, nil, SW_SHOWNORMAL);
 end;
 
 procedure TncSettingsForm.apply_changes;

@@ -1650,7 +1650,7 @@ end;
 
 procedure TncEngine.reload_dictionary_if_needed;
 const
-    c_dictionary_reload_check_interval_ms = 1000;
+    c_dictionary_reload_check_interval_ms = 1500;
 var
     current_write_time: TDateTime;
     user_write_time: TDateTime;
