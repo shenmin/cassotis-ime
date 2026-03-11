@@ -74,6 +74,8 @@ type
         m_last_sent_caret_valid: Boolean;
         m_last_sent_caret_line_height: Integer;
         m_last_sent_caret_tick: DWORD;
+        m_last_sent_surrounding_text: string;
+        m_last_sent_surrounding_valid: Boolean;
         m_active_state_lock: TCriticalSection;
         m_active_state_event: TEvent;
         m_active_state_thread: TThread;
@@ -137,7 +139,7 @@ type
             out chosen_score: Integer): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
-        procedure update_surrounding_text(const context: ITfContext);
+        function update_surrounding_text(const context: ITfContext): Boolean;
         function update_composition(const context: ITfContext; const text: string): Boolean;
         function end_composition(const context: ITfContext): Boolean;
         function request_commit(const context: ITfContext; const text: string): Boolean;
@@ -286,6 +288,20 @@ begin
     Result := ClientToScreen(hwnd, point);
 end;
 
+function sanitize_perf_log_text(const value: string): string;
+var
+    normalized: string;
+begin
+    normalized := StringReplace(value, #13, ' ', [rfReplaceAll]);
+    normalized := StringReplace(normalized, #10, ' ', [rfReplaceAll]);
+    normalized := StringReplace(normalized, #9, ' ', [rfReplaceAll]);
+    if Length(normalized) > 32 then
+    begin
+        normalized := Copy(normalized, 1, 32) + '...';
+    end;
+    Result := normalized;
+end;
+
 function is_shift_key(const key_code: Word): Boolean;
 begin
     // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
@@ -392,6 +408,8 @@ begin
     m_last_sent_caret_valid := False;
     m_last_sent_caret_line_height := 0;
     m_last_sent_caret_tick := 0;
+    m_last_sent_surrounding_text := '';
+    m_last_sent_surrounding_valid := False;
     m_last_reported_active_session_id := '';
     m_last_reported_active := False;
     m_active_state_synced := False;
@@ -437,6 +455,8 @@ begin
         m_session_dirty := False;
         m_last_ipc_error := 0;
         invalidate_sent_caret;
+        m_last_sent_surrounding_text := '';
+        m_last_sent_surrounding_valid := False;
     end;
 end;
 
@@ -1119,12 +1139,20 @@ begin
 end;
 
 function TncTextService.OnTestKeyDown(const context: ITfContext; wParam: WPARAM; lParam: LPARAM; out eaten: Integer): HResult;
+const
+    c_slow_test_key_ms = 8;
 var
     handled: Boolean;
     key_state: TncKeyState;
     key_code: Word;
+    total_start_tick: UInt64;
+    total_elapsed_ms: Int64;
+    ipc_start_tick: UInt64;
+    ipc_elapsed_ms: Int64;
 begin
     eaten := 0;
+    total_start_tick := GetTickCount64;
+    ipc_elapsed_ms := 0;
     reload_config_if_needed;
     key_state := build_key_state;
     key_code := Word(wParam);
@@ -1233,8 +1261,10 @@ begin
     handled := False;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
+        ipc_start_tick := GetTickCount64;
         if m_ipc_client.test_key(m_session_id, key_code, key_state, handled) then
         begin
+            ipc_elapsed_ms := Int64(GetTickCount64 - ipc_start_tick);
             if handled then
             begin
                 eaten := 1;
@@ -1247,10 +1277,26 @@ begin
             m_logger.info(Format('IPC test_key failed err=%d', [m_last_ipc_error]));
         end;
     end;
+    total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
+    if (m_logger <> nil) and ((m_logger.level <= ll_debug) or (total_elapsed_ms >= c_slow_test_key_ms)) then
+    begin
+        if m_logger.level <= ll_debug then
+        begin
+            m_logger.debug(Format('Perf TestKeyDown session=%s key=%d ipc=%d total=%d handled=%d',
+                [m_session_id, key_code, ipc_elapsed_ms, total_elapsed_ms, Ord(handled)]));
+        end
+        else
+        begin
+            m_logger.info(Format('[PERF] TestKeyDown session=%s key=%d ipc=%d total=%d handled=%d',
+                [m_session_id, key_code, ipc_elapsed_ms, total_elapsed_ms, Ord(handled)]));
+        end;
+    end;
     Result := S_OK;
 end;
 
 function TncTextService.OnKeyDown(const context: ITfContext; wParam: WPARAM; lParam: LPARAM; out eaten: Integer): HResult;
+const
+    c_slow_keydown_ms = 12;
 var
     handled: Boolean;
     commit_text: string;
@@ -1265,16 +1311,38 @@ var
     chosen_score: Integer;
     key_state: TncKeyState;
     key_code: Word;
+    had_existing_composition: Boolean;
+    total_start_tick: UInt64;
+    total_elapsed_ms: Int64;
+    surrounding_start_tick: UInt64;
+    surrounding_elapsed_ms: Int64;
+    process_start_tick: UInt64;
+    process_elapsed_ms: Int64;
+    composition_start_tick: UInt64;
+    composition_elapsed_ms: Int64;
+    candidate_point_start_tick: UInt64;
+    candidate_point_elapsed_ms: Int64;
+    caret_push_start_tick: UInt64;
+    caret_push_elapsed_ms: Int64;
+    surrounding_sent: Boolean;
 begin
     ensure_active_context(context);
     eaten := 0;
+    total_start_tick := GetTickCount64;
+    process_elapsed_ms := 0;
+    composition_elapsed_ms := 0;
+    candidate_point_elapsed_ms := 0;
+    caret_push_elapsed_ms := 0;
     reload_config_if_needed;
-    update_surrounding_text(context);
+    surrounding_start_tick := GetTickCount64;
+    surrounding_sent := update_surrounding_text(context);
+    surrounding_elapsed_ms := Int64(GetTickCount64 - surrounding_start_tick);
     handled := False;
     commit_text := '';
     display_text := '';
     key_state := build_key_state;
     key_code := Word(wParam);
+    had_existing_composition := m_composition <> nil;
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
         m_logger.debug(Format('KeyDown session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
@@ -1379,9 +1447,11 @@ begin
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
         mark_session_dirty;
+        process_start_tick := GetTickCount64;
         if m_ipc_client.process_key(m_session_id, key_code, key_state, handled, commit_text, display_text,
             input_mode, full_width_mode, punctuation_full_width) then
         begin
+            process_elapsed_ms := Int64(GetTickCount64 - process_start_tick);
             apply_engine_state_to_compartments(input_mode, full_width_mode, punctuation_full_width);
             if handled then
             begin
@@ -1392,13 +1462,19 @@ begin
                 end
                 else if display_text <> '' then
                 begin
+                    composition_start_tick := GetTickCount64;
                     if update_composition(context, display_text) then
                     begin
+                        composition_elapsed_ms := Int64(GetTickCount64 - composition_start_tick);
+                        candidate_point_start_tick := GetTickCount64;
                         if get_candidate_point(point, placement_line_height, terminal_like_target, chosen_source,
                             chosen_score) then
                         begin
+                            candidate_point_elapsed_ms := Int64(GetTickCount64 - candidate_point_start_tick);
+                            caret_push_start_tick := GetTickCount64;
                             push_caret_to_host(point, m_has_caret_point, placement_line_height,
-                                terminal_like_target, chosen_source, chosen_score, True);
+                                terminal_like_target, chosen_source, chosen_score, not had_existing_composition);
+                            caret_push_elapsed_ms := Int64(GetTickCount64 - caret_push_start_tick);
                             m_pending_caret_update := False;
                             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
                             begin
@@ -1408,6 +1484,7 @@ begin
                         end
                         else
                         begin
+                            candidate_point_elapsed_ms := Int64(GetTickCount64 - candidate_point_start_tick);
                             m_pending_caret_update := True;
                             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
                             begin
@@ -1417,6 +1494,7 @@ begin
                     end
                     else
                     begin
+                        composition_elapsed_ms := Int64(GetTickCount64 - composition_start_tick);
                         end_composition(context);
                     end;
                 end
@@ -1431,6 +1509,26 @@ begin
         begin
             m_last_ipc_error := m_ipc_client.last_error;
             m_logger.info(Format('IPC process_key failed err=%d', [m_last_ipc_error]));
+        end;
+    end;
+    total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
+    if (m_logger <> nil) and ((m_logger.level <= ll_debug) or (total_elapsed_ms >= c_slow_keydown_ms)) then
+    begin
+        if m_logger.level <= ll_debug then
+        begin
+            m_logger.debug(Format(
+                'Perf KeyDown session=%s key=%d sur=%d sent=%d ipc=%d comp=%d anchor=%d caret=%d total=%d handled=%d commit=%d display=%d text=[%s]',
+                [m_session_id, key_code, surrounding_elapsed_ms, Ord(surrounding_sent), process_elapsed_ms,
+                composition_elapsed_ms, candidate_point_elapsed_ms, caret_push_elapsed_ms, total_elapsed_ms,
+                Ord(handled), Length(commit_text), Length(display_text), sanitize_perf_log_text(display_text)]));
+        end
+        else
+        begin
+            m_logger.info(Format(
+                '[PERF] KeyDown session=%s key=%d sur=%d sent=%d ipc=%d comp=%d anchor=%d caret=%d total=%d handled=%d commit=%d display=%d text=[%s]',
+                [m_session_id, key_code, surrounding_elapsed_ms, Ord(surrounding_sent), process_elapsed_ms,
+                composition_elapsed_ms, candidate_point_elapsed_ms, caret_push_elapsed_ms, total_elapsed_ms,
+                Ord(handled), Length(commit_text), Length(display_text), sanitize_perf_log_text(display_text)]));
         end;
     end;
 
@@ -3095,10 +3193,11 @@ begin
     Result := (hr = S_OK) and (session_hr = S_OK);
 end;
 
-procedure TncTextService.update_surrounding_text(const context: ITfContext);
+function TncTextService.update_surrounding_text(const context: ITfContext): Boolean;
 var
     left_text: string;
 begin
+    Result := False;
     if (context = nil) or (m_ipc_client = nil) or (m_session_id = '') then
     begin
         Exit;
@@ -3107,9 +3206,17 @@ begin
     left_text := '';
     if request_surrounding_text(context, left_text) then
     begin
+        if m_last_sent_surrounding_valid and (m_last_sent_surrounding_text = left_text) then
+        begin
+            Exit;
+        end;
+
         if m_ipc_client.set_surrounding(m_session_id, left_text) then
         begin
+            m_last_sent_surrounding_text := left_text;
+            m_last_sent_surrounding_valid := True;
             mark_session_dirty;
+            Result := True;
         end;
     end;
 end;

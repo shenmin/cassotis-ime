@@ -39,6 +39,9 @@ type
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
         m_stmt_base_query_path_bonus: Psqlite3_stmt;
+        m_stmt_prefix_popularity: Psqlite3_stmt;
+        m_stmt_pinyin_followup_popularity: Psqlite3_stmt;
+        m_stmt_single_char_exact_weight: Psqlite3_stmt;
         m_stmt_query_path_bonus: Psqlite3_stmt;
         m_stmt_query_path_penalty: Psqlite3_stmt;
         m_stmt_candidate_penalty: Psqlite3_stmt;
@@ -52,6 +55,7 @@ type
         m_candidate_penalty_cache: TDictionary<string, Integer>;
         m_debug_mode: Boolean;
         m_last_lookup_debug_hint: string;
+        m_short_lookup_cache_prewarmed: Boolean;
         function ensure_open: Boolean;
         function get_module_dir: string;
         function find_schema_path: string;
@@ -66,6 +70,10 @@ type
         function get_contains_popularity_score(const token: string): Integer;
         function get_prefix_popularity_score(const prefix: string): Integer;
         function get_pinyin_followup_popularity_score(const pinyin: string): Integer;
+        procedure populate_prefix_popularity_scores(const prefixes: TArray<string>;
+            const target_scores: TDictionary<string, Integer>);
+        procedure populate_pinyin_followup_popularity_scores(const pinyin_keys: TArray<string>;
+            const target_scores: TDictionary<string, Integer>);
         function get_single_char_exact_weight(const pinyin: string; const text_unit: string): Integer;
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
         procedure migrate_user_entries;
@@ -91,6 +99,7 @@ type
         destructor Destroy; override;
         function open: Boolean;
         procedure close;
+        procedure prewarm_short_lookup_caches;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
         procedure begin_learning_batch; override;
@@ -139,6 +148,8 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin ON dict_base(pinyin);' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_weight ON dict_base(pinyin, weight);' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_base_text_weight ON dict_base(text, weight);' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_jianpin (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -150,6 +161,8 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key ON dict_jianpin(jianpin);' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key_weight_word ON dict_jianpin(jianpin, weight DESC, word_id);' +
+        sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_user (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -283,6 +296,16 @@ function is_valid_candidate_syllable(const syllable: string): Boolean; forward;
 function get_unix_time_now: Int64;
 begin
     Result := DateTimeToUnix(Now, False);
+end;
+
+function build_prefix_upper_bound(const prefix: string): string;
+begin
+    if prefix = '' then
+    begin
+        Result := '';
+        Exit;
+    end;
+    Result := prefix + WideChar($FFFF);
 end;
 
 function get_text_unit_count_local(const text: string): Integer;
@@ -1652,6 +1675,72 @@ begin
     end;
 end;
 
+function count_retroflex_pairs_in_compact_key(const value: string): Integer;
+var
+    idx: Integer;
+    pair_value: string;
+begin
+    Result := 0;
+    idx := 1;
+    while idx < Length(value) do
+    begin
+        pair_value := Copy(value, idx, 2);
+        if (pair_value = 'zh') or (pair_value = 'ch') or (pair_value = 'sh') then
+        begin
+            Inc(Result);
+            Inc(idx, 2);
+        end
+        else
+        begin
+            Inc(idx);
+        end;
+    end;
+end;
+
+function collapse_retroflex_pairs_in_compact_key(const value: string): string;
+var
+    idx: Integer;
+    pair_value: string;
+begin
+    Result := '';
+    idx := 1;
+    while idx <= Length(value) do
+    begin
+        if idx < Length(value) then
+        begin
+            pair_value := Copy(value, idx, 2);
+            if (pair_value = 'zh') or (pair_value = 'ch') or (pair_value = 'sh') then
+            begin
+                Result := Result + pair_value[1];
+                Inc(idx, 2);
+                Continue;
+            end;
+        end;
+
+        Result := Result + value[idx];
+        Inc(idx);
+    end;
+end;
+
+function is_retroflex_collapsed_fallback_key(const original_key: string; const variant_key: string): Boolean;
+var
+    collapsed_key: string;
+begin
+    Result := False;
+    if (original_key = '') or (variant_key = '') then
+    begin
+        Exit;
+    end;
+
+    collapsed_key := collapse_retroflex_pairs_in_compact_key(original_key);
+    Result := (collapsed_key <> '') and (not SameText(collapsed_key, original_key)) and SameText(collapsed_key, variant_key);
+end;
+
+function is_bare_retroflex_pair_key(const value: string): Boolean;
+begin
+    Result := (Length(value) = 2) and CharInSet(value[1], ['z', 'c', 's']) and (value[2] = 'h');
+end;
+
 constructor TncSqliteDictionary.create(const base_db_path: string; const user_db_path: string);
 begin
     inherited create;
@@ -1669,6 +1758,9 @@ begin
     m_stmt_context_bonus := nil;
     m_stmt_context_trigram_bonus := nil;
     m_stmt_base_query_path_bonus := nil;
+    m_stmt_prefix_popularity := nil;
+    m_stmt_pinyin_followup_popularity := nil;
+    m_stmt_single_char_exact_weight := nil;
     m_stmt_query_path_bonus := nil;
     m_stmt_query_path_penalty := nil;
     m_stmt_candidate_penalty := nil;
@@ -1688,6 +1780,7 @@ begin
     m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
     m_debug_mode := False;
     m_last_lookup_debug_hint := '';
+    m_short_lookup_cache_prewarmed := False;
 end;
 
 destructor TncSqliteDictionary.Destroy;
@@ -1931,6 +2024,26 @@ begin
     end;
 
     if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key ON dict_jianpin(jianpin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_weight ON dict_base(pinyin, weight);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_base_text_weight ON dict_base(text, weight);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key_weight_word ' +
+        'ON dict_jianpin(jianpin, weight DESC, word_id);') then
     begin
         Result := False;
         Exit;
@@ -2713,10 +2826,10 @@ end;
 
 function TncSqliteDictionary.get_prefix_popularity_score(const prefix: string): Integer;
 const
-    query_sql = 'SELECT COALESCE(SUM(weight), 0) FROM dict_base WHERE text LIKE ?1 || ''%''';
+    query_sql = 'SELECT COALESCE(SUM(weight), 0) FROM dict_base WHERE text >= ?1 AND text < ?2';
 var
-    stmt: Psqlite3_stmt;
     step_result: Integer;
+    upper_bound: string;
 begin
     Result := 0;
     if (prefix = '') or (not ensure_open) or (not m_base_ready) then
@@ -2728,31 +2841,38 @@ begin
     begin
         Exit;
     end;
+    upper_bound := build_prefix_upper_bound(prefix);
 
-    stmt := nil;
     try
-        if not m_base_connection.prepare(query_sql, stmt) then
+        if m_stmt_prefix_popularity = nil then
         begin
-            Exit;
+            if not m_base_connection.prepare(query_sql, m_stmt_prefix_popularity) then
+            begin
+                Exit;
+            end;
         end;
-        if not m_base_connection.bind_text(stmt, 1, prefix) then
+        if (not m_base_connection.reset(m_stmt_prefix_popularity)) or
+            (not m_base_connection.clear_bindings(m_stmt_prefix_popularity)) or
+            (not m_base_connection.bind_text(m_stmt_prefix_popularity, 1, prefix)) or
+            (not m_base_connection.bind_text(m_stmt_prefix_popularity, 2, upper_bound)) then
         begin
             Exit;
         end;
 
-        step_result := m_base_connection.step(stmt);
+        step_result := m_base_connection.step(m_stmt_prefix_popularity);
         if step_result = SQLITE_ROW then
         begin
-            Result := m_base_connection.column_int(stmt, 0);
+            Result := m_base_connection.column_int(m_stmt_prefix_popularity, 0);
             if Result < 0 then
             begin
                 Result := 0;
             end;
         end;
     finally
-        if stmt <> nil then
+        if m_stmt_prefix_popularity <> nil then
         begin
-            m_base_connection.finalize(stmt);
+            m_base_connection.reset(m_stmt_prefix_popularity);
+            m_base_connection.clear_bindings(m_stmt_prefix_popularity);
         end;
     end;
 
@@ -2766,11 +2886,11 @@ function TncSqliteDictionary.get_pinyin_followup_popularity_score(const pinyin: 
 const
     query_sql =
         'SELECT COALESCE(SUM(weight), 0) FROM dict_base ' +
-        'WHERE pinyin LIKE ?1 || ''%'' AND pinyin <> ?1';
+        'WHERE pinyin >= ?1 AND pinyin < ?2 AND pinyin <> ?1';
 var
-    stmt: Psqlite3_stmt;
     step_result: Integer;
     normalized: string;
+    upper_bound: string;
 begin
     Result := 0;
     normalized := normalize_compact_pinyin_key(pinyin);
@@ -2784,31 +2904,38 @@ begin
     begin
         Exit;
     end;
+    upper_bound := build_prefix_upper_bound(normalized);
 
-    stmt := nil;
     try
-        if not m_base_connection.prepare(query_sql, stmt) then
+        if m_stmt_pinyin_followup_popularity = nil then
         begin
-            Exit;
+            if not m_base_connection.prepare(query_sql, m_stmt_pinyin_followup_popularity) then
+            begin
+                Exit;
+            end;
         end;
-        if not m_base_connection.bind_text(stmt, 1, normalized) then
+        if (not m_base_connection.reset(m_stmt_pinyin_followup_popularity)) or
+            (not m_base_connection.clear_bindings(m_stmt_pinyin_followup_popularity)) or
+            (not m_base_connection.bind_text(m_stmt_pinyin_followup_popularity, 1, normalized)) or
+            (not m_base_connection.bind_text(m_stmt_pinyin_followup_popularity, 2, upper_bound)) then
         begin
             Exit;
         end;
 
-        step_result := m_base_connection.step(stmt);
+        step_result := m_base_connection.step(m_stmt_pinyin_followup_popularity);
         if step_result = SQLITE_ROW then
         begin
-            Result := m_base_connection.column_int(stmt, 0);
+            Result := m_base_connection.column_int(m_stmt_pinyin_followup_popularity, 0);
             if Result < 0 then
             begin
                 Result := 0;
             end;
         end;
     finally
-        if stmt <> nil then
+        if m_stmt_pinyin_followup_popularity <> nil then
         begin
-            m_base_connection.finalize(stmt);
+            m_base_connection.reset(m_stmt_pinyin_followup_popularity);
+            m_base_connection.clear_bindings(m_stmt_pinyin_followup_popularity);
         end;
     end;
 
@@ -2818,13 +2945,117 @@ begin
     end;
 end;
 
+procedure TncSqliteDictionary.populate_prefix_popularity_scores(const prefixes: TArray<string>;
+    const target_scores: TDictionary<string, Integer>);
+var
+    pending_keys: TList<string>;
+    prefix_value: string;
+    cached_score: Integer;
+    idx: Integer;
+begin
+    if target_scores = nil then
+    begin
+        Exit;
+    end;
+
+    pending_keys := TList<string>.Create;
+    try
+        for idx := 0 to High(prefixes) do
+        begin
+            prefix_value := Trim(prefixes[idx]);
+            if prefix_value = '' then
+            begin
+                Continue;
+            end;
+
+            if target_scores.ContainsKey(prefix_value) then
+            begin
+                Continue;
+            end;
+            if (m_prefix_popularity_cache <> nil) and
+                m_prefix_popularity_cache.TryGetValue(prefix_value, cached_score) then
+            begin
+                target_scores.AddOrSetValue(prefix_value, cached_score);
+                Continue;
+            end;
+            if pending_keys.IndexOf(prefix_value) < 0 then
+            begin
+                pending_keys.Add(prefix_value);
+            end;
+        end;
+
+        if (pending_keys.Count <= 0) or (not ensure_open) or (not m_base_ready) then
+        begin
+            Exit;
+        end;
+        for idx := 0 to pending_keys.Count - 1 do
+        begin
+            target_scores.AddOrSetValue(pending_keys[idx], get_prefix_popularity_score(pending_keys[idx]));
+        end;
+    finally
+        pending_keys.Free;
+    end;
+end;
+
+procedure TncSqliteDictionary.populate_pinyin_followup_popularity_scores(const pinyin_keys: TArray<string>;
+    const target_scores: TDictionary<string, Integer>);
+var
+    pending_keys: TList<string>;
+    normalized_value: string;
+    cached_score: Integer;
+    idx: Integer;
+begin
+    if target_scores = nil then
+    begin
+        Exit;
+    end;
+
+    pending_keys := TList<string>.Create;
+    try
+        for idx := 0 to High(pinyin_keys) do
+        begin
+            normalized_value := normalize_compact_pinyin_key(pinyin_keys[idx]);
+            if normalized_value = '' then
+            begin
+                Continue;
+            end;
+
+            if target_scores.ContainsKey(normalized_value) then
+            begin
+                Continue;
+            end;
+            if (m_pinyin_followup_popularity_cache <> nil) and
+                m_pinyin_followup_popularity_cache.TryGetValue(normalized_value, cached_score) then
+            begin
+                target_scores.AddOrSetValue(normalized_value, cached_score);
+                Continue;
+            end;
+            if pending_keys.IndexOf(normalized_value) < 0 then
+            begin
+                pending_keys.Add(normalized_value);
+            end;
+        end;
+
+        if (pending_keys.Count <= 0) or (not ensure_open) or (not m_base_ready) then
+        begin
+            Exit;
+        end;
+        for idx := 0 to pending_keys.Count - 1 do
+        begin
+            target_scores.AddOrSetValue(pending_keys[idx],
+                get_pinyin_followup_popularity_score(pending_keys[idx]));
+        end;
+    finally
+        pending_keys.Free;
+    end;
+end;
+
 function TncSqliteDictionary.get_single_char_exact_weight(const pinyin: string; const text_unit: string): Integer;
 const
     query_sql =
         'SELECT COALESCE(MAX(weight), 0) FROM dict_base ' +
         'WHERE pinyin = ?1 AND text = ?2 AND length(text) = 1';
 var
-    stmt: Psqlite3_stmt;
     step_result: Integer;
     normalized_pinyin: string;
     cache_key: string;
@@ -2844,31 +3075,36 @@ begin
         Exit;
     end;
 
-    stmt := nil;
     try
-        if not m_base_connection.prepare(query_sql, stmt) then
+        if m_stmt_single_char_exact_weight = nil then
         begin
-            Exit;
+            if not m_base_connection.prepare(query_sql, m_stmt_single_char_exact_weight) then
+            begin
+                Exit;
+            end;
         end;
-        if (not m_base_connection.bind_text(stmt, 1, normalized_pinyin)) or
-            (not m_base_connection.bind_text(stmt, 2, text_unit)) then
+        if (not m_base_connection.reset(m_stmt_single_char_exact_weight)) or
+            (not m_base_connection.clear_bindings(m_stmt_single_char_exact_weight)) or
+            (not m_base_connection.bind_text(m_stmt_single_char_exact_weight, 1, normalized_pinyin)) or
+            (not m_base_connection.bind_text(m_stmt_single_char_exact_weight, 2, text_unit)) then
         begin
             Exit;
         end;
 
-        step_result := m_base_connection.step(stmt);
+        step_result := m_base_connection.step(m_stmt_single_char_exact_weight);
         if step_result = SQLITE_ROW then
         begin
-            Result := m_base_connection.column_int(stmt, 0);
+            Result := m_base_connection.column_int(m_stmt_single_char_exact_weight, 0);
             if Result < 0 then
             begin
                 Result := 0;
             end;
         end;
     finally
-        if stmt <> nil then
+        if m_stmt_single_char_exact_weight <> nil then
         begin
-            m_base_connection.finalize(stmt);
+            m_base_connection.reset(m_stmt_single_char_exact_weight);
+            m_base_connection.clear_bindings(m_stmt_single_char_exact_weight);
         end;
     end;
 
@@ -3468,6 +3704,21 @@ begin
         m_base_connection.finalize(m_stmt_base_query_path_bonus);
         m_stmt_base_query_path_bonus := nil;
     end;
+    if (m_stmt_prefix_popularity <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_prefix_popularity);
+        m_stmt_prefix_popularity := nil;
+    end;
+    if (m_stmt_pinyin_followup_popularity <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_pinyin_followup_popularity);
+        m_stmt_pinyin_followup_popularity := nil;
+    end;
+    if (m_stmt_single_char_exact_weight <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_single_char_exact_weight);
+        m_stmt_single_char_exact_weight := nil;
+    end;
     if m_base_connection <> nil then
     begin
         m_base_connection.close;
@@ -3481,6 +3732,7 @@ begin
     m_ready := False;
     m_base_ready := False;
     m_user_ready := False;
+    m_short_lookup_cache_prewarmed := False;
     if m_contains_popularity_cache <> nil then
     begin
         m_contains_popularity_cache.Clear;
@@ -3566,6 +3818,84 @@ begin
     end;
 end;
 
+procedure TncSqliteDictionary.prewarm_short_lookup_caches;
+const
+    single_char_sql =
+        'SELECT pinyin, text, MAX(weight) FROM dict_base ' +
+        'WHERE length(text) = 1 GROUP BY pinyin, text';
+    followup_sql =
+        'SELECT COALESCE(SUM(weight), 0) FROM dict_base ' +
+        'WHERE pinyin >= ?1 AND pinyin < ?2 AND pinyin <> ?1';
+    prefix_sql =
+        'SELECT COALESCE(SUM(weight), 0) FROM dict_base WHERE text >= ?1 AND text < ?2';
+    exact_weight_sql =
+        'SELECT COALESCE(MAX(weight), 0) FROM dict_base ' +
+        'WHERE pinyin = ?1 AND text = ?2 AND length(text) = 1';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    pinyin_value: string;
+    text_value: string;
+    cache_key: string;
+    weight_value: Integer;
+begin
+    if m_short_lookup_cache_prewarmed then
+    begin
+        Exit;
+    end;
+    if (not ensure_open) or (not m_base_ready) then
+    begin
+        Exit;
+    end;
+
+    if m_stmt_prefix_popularity = nil then
+    begin
+        m_base_connection.prepare(prefix_sql, m_stmt_prefix_popularity);
+    end;
+    if m_stmt_pinyin_followup_popularity = nil then
+    begin
+        m_base_connection.prepare(followup_sql, m_stmt_pinyin_followup_popularity);
+    end;
+    if m_stmt_single_char_exact_weight = nil then
+    begin
+        m_base_connection.prepare(exact_weight_sql, m_stmt_single_char_exact_weight);
+    end;
+
+    stmt := nil;
+    try
+        if not m_base_connection.prepare(single_char_sql, stmt) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(stmt);
+        while step_result = SQLITE_ROW do
+        begin
+            pinyin_value := normalize_compact_pinyin_key(m_base_connection.column_text(stmt, 0));
+            text_value := Trim(m_base_connection.column_text(stmt, 1));
+            weight_value := m_base_connection.column_int(stmt, 2);
+            if weight_value < 0 then
+            begin
+                weight_value := 0;
+            end;
+
+            if (pinyin_value <> '') and (Length(text_value) = 1) and
+                (m_single_char_weight_cache <> nil) then
+            begin
+                cache_key := pinyin_value + #9 + text_value;
+                m_single_char_weight_cache.AddOrSetValue(cache_key, weight_value);
+            end;
+            step_result := m_base_connection.step(stmt);
+        end;
+        m_short_lookup_cache_prewarmed := True;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+end;
+
 function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandidateList): Boolean;
 const
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
@@ -3580,14 +3910,17 @@ const
         'ORDER BY weight DESC, text ASC LIMIT ?2';
     base_jianpin_sql =
         'SELECT b.pinyin, b.text, b.comment, j.weight ' +
-        'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
-        'WHERE j.jianpin = ?1 ' +
-        'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?2';
+        'FROM (SELECT word_id, weight FROM dict_jianpin WHERE jianpin = ?1 ' +
+        'ORDER BY weight DESC LIMIT ?2) j ' +
+        'INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?3';
     base_jianpin_prefixed_sql =
         'SELECT b.pinyin, b.text, b.comment, j.weight ' +
-        'FROM dict_jianpin j INNER JOIN dict_base b ON b.id = j.word_id ' +
-        'WHERE j.jianpin = ?1 AND b.pinyin LIKE ?2 ' +
-        'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?3';
+        'FROM (SELECT word_id, weight FROM dict_jianpin WHERE jianpin = ?1 ' +
+        'ORDER BY weight DESC LIMIT ?2) j ' +
+        'INNER JOIN dict_base b ON b.id = j.word_id ' +
+        'WHERE b.pinyin LIKE ?3 ' +
+        'ORDER BY j.weight DESC, b.weight DESC, b.text ASC LIMIT ?4';
     base_mixed_pattern_sql =
         'SELECT b.pinyin, b.text, b.comment, b.weight ' +
         'FROM dict_base b WHERE b.pinyin LIKE ?1 ' +
@@ -3656,6 +3989,7 @@ var
     effective_jianpin_key: string;
     full_query_jianpin_key: string;
     jianpin_query_keys: TArray<string>;
+    matching_jianpin_query_keys: TArray<string>;
     mixed_tokens: TncMixedQueryTokenList;
     mixed_mode: Boolean;
     full_pinyin_query: Boolean;
@@ -3691,8 +4025,9 @@ var
 
     function build_mixed_like_pattern(const token_list: TncMixedQueryTokenList): string; forward;
     function is_compact_ascii_query(const value: string): Boolean; forward;
-    procedure add_jianpin_query_key(const key_value: string); forward;
-    procedure append_jianpin_query_key_variants(const key_value: string); forward;
+    procedure add_jianpin_query_key(var target_keys: TArray<string>; const key_value: string); forward;
+    procedure append_jianpin_query_key_variants(var target_keys: TArray<string>; const key_value: string;
+        const allow_short_retroflex_expansion: Boolean); forward;
 
     function mixed_query_has_internal_dangling_initial(const token_list: TncMixedQueryTokenList): Boolean;
     var
@@ -3748,7 +4083,7 @@ var
         end;
     end;
 
-    procedure add_jianpin_query_key(const key_value: string);
+    procedure add_jianpin_query_key(var target_keys: TArray<string>; const key_value: string);
     var
         idx: Integer;
     begin
@@ -3757,34 +4092,190 @@ var
             Exit;
         end;
 
-        for idx := 0 to High(jianpin_query_keys) do
+        for idx := 0 to High(target_keys) do
         begin
-            if SameText(jianpin_query_keys[idx], key_value) then
+            if SameText(target_keys[idx], key_value) then
             begin
                 Exit;
             end;
         end;
 
-        SetLength(jianpin_query_keys, Length(jianpin_query_keys) + 1);
-        jianpin_query_keys[High(jianpin_query_keys)] := key_value;
+        SetLength(target_keys, Length(target_keys) + 1);
+        target_keys[High(target_keys)] := key_value;
     end;
 
-    procedure append_jianpin_query_key_variants(const key_value: string);
+    procedure append_jianpin_query_key_variants(var target_keys: TArray<string>; const key_value: string;
+        const allow_short_retroflex_expansion: Boolean);
+    const
+        c_jianpin_variant_full_expand_pair_limit = 1;
+        c_jianpin_variant_full_expand_len_max = 5;
+        c_jianpin_collapsed_fallback_len_min = 5;
     var
         variants: TArray<string>;
         idx: Integer;
+        retroflex_pair_count: Integer;
+        collapsed_value: string;
     begin
-        variants := build_jianpin_query_variants(key_value);
-        if Length(variants) = 0 then
+        retroflex_pair_count := count_retroflex_pairs_in_compact_key(key_value);
+        if retroflex_pair_count <= 0 then
         begin
-            add_jianpin_query_key(key_value);
+            add_jianpin_query_key(target_keys, key_value);
             Exit;
         end;
 
+        add_jianpin_query_key(target_keys, key_value);
+        if Length(key_value) >= c_jianpin_collapsed_fallback_len_min then
+        begin
+            collapsed_value := collapse_retroflex_pairs_in_compact_key(key_value);
+            if collapsed_value <> '' then
+            begin
+                add_jianpin_query_key(target_keys, collapsed_value);
+            end;
+        end;
+
+        if (not allow_short_retroflex_expansion) and (Length(key_value) <= 4) then
+        begin
+            Exit;
+        end;
+
+        if (retroflex_pair_count > c_jianpin_variant_full_expand_pair_limit) or
+            (Length(key_value) > c_jianpin_variant_full_expand_len_max) then
+        begin
+            Exit;
+        end;
+
+        variants := build_jianpin_query_variants(key_value);
         for idx := 0 to High(variants) do
         begin
-            add_jianpin_query_key(variants[idx]);
+            add_jianpin_query_key(target_keys, variants[idx]);
         end;
+    end;
+
+    function get_jianpin_probe_limit_for_key(const base_key_value: string; const current_key_value: string): Integer;
+    var
+        retroflex_pair_count: Integer;
+    begin
+        Result := base_jianpin_probe_limit;
+        retroflex_pair_count := count_retroflex_pairs_in_compact_key(base_key_value);
+        if SameText(base_key_value, current_key_value) and is_bare_retroflex_pair_key(base_key_value) then
+        begin
+            Result := Min(Result, 128);
+        end
+        else if SameText(base_key_value, current_key_value) and (retroflex_pair_count > 0) and
+            (Length(base_key_value) <= 4) then
+        begin
+            if Length(base_key_value) <= 3 then
+            begin
+                Result := Min(Result, 96);
+            end
+            else
+            begin
+                Result := Min(Result, 128);
+            end;
+        end
+        else if is_retroflex_collapsed_fallback_key(base_key_value, current_key_value) then
+        begin
+            if is_bare_retroflex_pair_key(base_key_value) then
+            begin
+                Result := Min(Result, 64);
+            end
+            else if (retroflex_pair_count > 0) and (Length(base_key_value) <= 4) then
+            begin
+                if Length(base_key_value) <= 3 then
+                begin
+                    Result := Min(Result, 32);
+                end
+                else
+                begin
+                    Result := Min(Result, 48);
+                end;
+            end
+            else if Length(base_key_value) <= 2 then
+            begin
+                Result := Min(Result, 192);
+            end
+            else if Length(base_key_value) = 3 then
+            begin
+                Result := Min(Result, 160);
+            end
+            else
+            begin
+                Result := Min(Result, 128);
+            end;
+        end;
+    end;
+
+    function get_jianpin_inner_probe_limit_for_key(const base_key_value: string;
+        const current_key_value: string; const prefixed_query: Boolean): Integer;
+    var
+        outer_limit: Integer;
+        retroflex_pair_count: Integer;
+    begin
+        outer_limit := get_jianpin_probe_limit_for_key(base_key_value, current_key_value);
+        retroflex_pair_count := count_retroflex_pairs_in_compact_key(base_key_value);
+        if SameText(base_key_value, current_key_value) and (retroflex_pair_count > 0) and
+            (Length(base_key_value) <= 4) then
+        begin
+            if prefixed_query then
+            begin
+                Result := Min(Max(outer_limit * 2, 128), 192);
+            end
+            else
+            begin
+                Result := Min(Max(outer_limit * 2, 128), 160);
+            end;
+        end
+        else if (retroflex_pair_count > 0) and (Length(base_key_value) <= 4) and
+            is_retroflex_collapsed_fallback_key(base_key_value, current_key_value) then
+        begin
+            if prefixed_query then
+            begin
+                Result := Min(Max(outer_limit * 2, 64), 96);
+            end
+            else
+            begin
+                Result := Min(Max(outer_limit * 2, 64), 96);
+            end;
+        end
+        else if prefixed_query then
+        begin
+            Result := Max(outer_limit * 4, 256);
+        end
+        else
+        begin
+            Result := Max(outer_limit * 3, 192);
+        end;
+    end;
+
+    function should_skip_deferred_jianpin_variant(const base_key_value: string;
+        const current_key_value: string; const current_result_count: Integer): Boolean;
+    var
+        retroflex_pair_count: Integer;
+        min_results_before_fallback: Integer;
+    begin
+        Result := False;
+        retroflex_pair_count := count_retroflex_pairs_in_compact_key(base_key_value);
+        if retroflex_pair_count <= 0 then
+        begin
+            Exit;
+        end;
+        if not is_retroflex_collapsed_fallback_key(base_key_value, current_key_value) then
+        begin
+            Exit;
+        end;
+        if is_bare_retroflex_pair_key(base_key_value) then
+        begin
+            min_results_before_fallback := 8;
+        end
+        else if Length(base_key_value) <= 4 then
+        begin
+            min_results_before_fallback := 6;
+        end
+        else
+        begin
+            min_results_before_fallback := 12;
+        end;
+        Result := current_result_count >= min_results_before_fallback;
     end;
 
     procedure rebuild_query_mode_state;
@@ -3855,10 +4346,17 @@ var
         end;
 
         SetLength(jianpin_query_keys, 0);
-        append_jianpin_query_key_variants(effective_jianpin_key);
+        append_jianpin_query_key_variants(jianpin_query_keys, effective_jianpin_key, False);
         if Length(jianpin_query_keys) = 0 then
         begin
-            add_jianpin_query_key(effective_jianpin_key);
+            add_jianpin_query_key(jianpin_query_keys, effective_jianpin_key);
+        end;
+
+        SetLength(matching_jianpin_query_keys, 0);
+        append_jianpin_query_key_variants(matching_jianpin_query_keys, effective_jianpin_key, True);
+        if Length(matching_jianpin_query_keys) = 0 then
+        begin
+            add_jianpin_query_key(matching_jianpin_query_keys, effective_jianpin_key);
         end;
 
         jianpin_score_penalty := c_jianpin_score_penalty;
@@ -3910,6 +4408,19 @@ var
             begin
                 base_jianpin_probe_limit := Max(m_limit * 2, 384);
             end;
+
+            if (count_retroflex_pairs_in_compact_key(effective_jianpin_key) > 0) and
+                (Length(effective_jianpin_key) <= 4) then
+            begin
+                if Length(effective_jianpin_key) <= 3 then
+                begin
+                    base_jianpin_probe_limit := Min(base_jianpin_probe_limit, 96);
+                end
+                else
+                begin
+                    base_jianpin_probe_limit := Min(base_jianpin_probe_limit, 128);
+                end;
+            end;
         end;
     end;
 
@@ -3960,17 +4471,28 @@ var
     procedure apply_short_jianpin_commonness_rerank;
     const
         c_short_jianpin_query_len_max = 3;
-        c_len2_log_weight_factor = 78.0;
+        c_short_jianpin_expensive_rerank_limit = 160;
+        c_short_jianpin_retroflex_expensive_rerank_limit = 24;
+        c_len2_followup_rerank_limit = 40;
+        c_len2_prefix_factor = 18.0;
+        c_len2_prefix_bonus_cap = 220;
+        c_len2_log_weight_factor = 68.0;
         c_len3_log_weight_factor = 88.0;
-        c_len2_followup_factor = 34.0;
+        c_len2_followup_factor = 20.0;
         c_len3_followup_factor = 28.0;
-        c_len2_followup_bonus_cap = 240;
+        c_len2_followup_bonus_cap = 180;
         c_len3_followup_bonus_cap = 200;
         c_exact_syllable_bonus = 18;
-        c_len2_constituent_factor = 0.42;
+        c_len2_constituent_factor = 0.50;
         c_len3_constituent_factor = 0.32;
-        c_len2_constituent_bonus_cap = 360;
+        c_len2_constituent_bonus_cap = 420;
         c_len3_constituent_bonus_cap = 300;
+        c_len2_weak_unit_penalty_floor = 350;
+        c_len2_weak_unit_penalty_factor = 3.0;
+        c_len2_weak_unit_penalty_cap = 200;
+        c_len2_prefix_ratio_penalty_threshold = 2.4;
+        c_len2_prefix_ratio_penalty_factor = 92.0;
+        c_len2_prefix_ratio_penalty_cap = 180;
     var
         candidate_item: TncCandidate;
         candidate_pinyin_key: string;
@@ -3980,14 +4502,26 @@ var
         query_unit_count: Integer;
         idx: Integer;
         followup_score: Integer;
+        prefix_score: Integer;
         reranked_score: Integer;
+        should_run_expensive_rerank: Boolean;
+        len2_followup_indexes: TList<Integer>;
+        len2_followup_texts: TArray<string>;
+        len2_followup_pinyins: TArray<string>;
+        len2_prefix_scores: TDictionary<string, Integer>;
+        len2_followup_scores: TDictionary<string, Integer>;
         weight_factor: Double;
         followup_factor: Double;
         followup_bonus_cap: Integer;
         constituent_factor: Double;
         constituent_bonus_cap: Integer;
         constituent_weight_sum: Integer;
+        min_constituent_weight: Integer;
+        unit_weight_value: Integer;
         unit_idx: Integer;
+        expensive_rerank_limit: Integer;
+        retroflex_pair_count: Integer;
+        prefix_productivity_ratio: Double;
     begin
         if full_pinyin_query or mixed_mode or
             (Length(query_key) < 2) or
@@ -4024,74 +4558,201 @@ var
             constituent_bonus_cap := c_len3_constituent_bonus_cap;
         end;
 
-        for idx := 0 to list.Count - 1 do
+        retroflex_pair_count := count_retroflex_pairs_in_compact_key(query_key);
+        if retroflex_pair_count > 0 then
         begin
-            candidate_item := list[idx];
-            if (candidate_item.source <> cs_rule) or
-                (candidate_item.comment <> '') or
-                (not candidate_item.has_dict_weight) or
-                (candidate_item.dict_weight <= 0) then
-            begin
-                Continue;
-            end;
+            expensive_rerank_limit := c_short_jianpin_retroflex_expensive_rerank_limit;
+        end
+        else
+        begin
+            expensive_rerank_limit := c_short_jianpin_expensive_rerank_limit;
+        end;
 
-            if (candidate_pinyin_map = nil) or
-                (not candidate_pinyin_map.TryGetValue(candidate_item.text, candidate_pinyin_key)) then
+        len2_followup_indexes := nil;
+        if (retroflex_pair_count = 0) and (query_unit_count <= 2) then
+        begin
+            len2_followup_indexes := TList<Integer>.Create;
+        end;
+        try
+            for idx := 0 to list.Count - 1 do
             begin
-                Continue;
-            end;
-            if (candidate_pinyin_key = '') or (not is_full_pinyin_key(candidate_pinyin_key)) then
-            begin
-                Continue;
-            end;
-
-            candidate_unit_count := get_text_unit_count_local(candidate_item.text);
-            if candidate_unit_count < 2 then
-            begin
-                Continue;
-            end;
-
-            candidate_syllables := split_full_pinyin_syllables(candidate_pinyin_key);
-            if Length(candidate_syllables) <= 0 then
-            begin
-                Continue;
-            end;
-
-            reranked_score := Round(Ln(1.0 + candidate_item.dict_weight) * weight_factor);
-            followup_score := get_pinyin_followup_popularity_score(candidate_pinyin_key);
-            if followup_score > 0 then
-            begin
-                Inc(reranked_score, Min(followup_bonus_cap,
-                    Round(Ln(1.0 + followup_score) * followup_factor)));
-            end;
-            if Length(candidate_syllables) = query_unit_count then
-            begin
-                Inc(reranked_score, c_exact_syllable_bonus);
-            end;
-
-            if (candidate_unit_count = query_unit_count) and
-                (Length(candidate_syllables) = candidate_unit_count) then
-            begin
-                candidate_text_units := split_text_units_local(Trim(candidate_item.text));
-                if Length(candidate_text_units) = candidate_unit_count then
+                candidate_item := list[idx];
+                if (candidate_item.source <> cs_rule) or
+                    (candidate_item.comment <> '') or
+                    (not candidate_item.has_dict_weight) or
+                    (candidate_item.dict_weight <= 0) then
                 begin
-                    constituent_weight_sum := 0;
-                    for unit_idx := 0 to candidate_unit_count - 1 do
+                    Continue;
+                end;
+
+                if (candidate_pinyin_map = nil) or
+                    (not candidate_pinyin_map.TryGetValue(candidate_item.text, candidate_pinyin_key)) then
+                begin
+                    Continue;
+                end;
+                if (candidate_pinyin_key = '') or (not is_full_pinyin_key(candidate_pinyin_key)) then
+                begin
+                    Continue;
+                end;
+
+                candidate_unit_count := get_text_unit_count_local(candidate_item.text);
+                if candidate_unit_count < 2 then
+                begin
+                    Continue;
+                end;
+
+                reranked_score := Round(Ln(1.0 + candidate_item.dict_weight) * weight_factor);
+                candidate_syllables := split_full_pinyin_syllables(candidate_pinyin_key);
+                if Length(candidate_syllables) <= 0 then
+                begin
+                    candidate_item.score := reranked_score;
+                    list[idx] := candidate_item;
+                    Continue;
+                end;
+
+                if Length(candidate_syllables) = query_unit_count then
+                begin
+                    Inc(reranked_score, c_exact_syllable_bonus);
+                end;
+
+                if (candidate_unit_count = query_unit_count) and
+                    (Length(candidate_syllables) = candidate_unit_count) then
+                begin
+                    candidate_text_units := split_text_units_local(Trim(candidate_item.text));
+                    if Length(candidate_text_units) = candidate_unit_count then
                     begin
-                        Inc(constituent_weight_sum,
-                            get_single_char_exact_weight(candidate_syllables[unit_idx],
-                                candidate_text_units[unit_idx]));
+                        constituent_weight_sum := 0;
+                        min_constituent_weight := MaxInt;
+                        for unit_idx := 0 to candidate_unit_count - 1 do
+                        begin
+                            unit_weight_value := get_single_char_exact_weight(candidate_syllables[unit_idx],
+                                candidate_text_units[unit_idx]);
+                            Inc(constituent_weight_sum, unit_weight_value);
+                            if unit_weight_value < min_constituent_weight then
+                            begin
+                                min_constituent_weight := unit_weight_value;
+                            end;
+                        end;
+                        if constituent_weight_sum > 0 then
+                        begin
+                            Inc(reranked_score, Min(constituent_bonus_cap,
+                                Round(constituent_weight_sum * constituent_factor)));
+                        end;
+                        if (query_unit_count <= 2) and (min_constituent_weight <> MaxInt) and
+                            (min_constituent_weight < c_len2_weak_unit_penalty_floor) then
+                        begin
+                            Dec(reranked_score, Min(c_len2_weak_unit_penalty_cap,
+                                Round((c_len2_weak_unit_penalty_floor - min_constituent_weight) *
+                                    c_len2_weak_unit_penalty_factor)));
+                        end;
                     end;
-                    if constituent_weight_sum > 0 then
+                end;
+
+                candidate_item.score := reranked_score;
+                list[idx] := candidate_item;
+
+                if len2_followup_indexes <> nil then
+                begin
+                    if Length(candidate_syllables) = query_unit_count then
                     begin
-                        Inc(reranked_score, Min(constituent_bonus_cap,
-                            Round(constituent_weight_sum * constituent_factor)));
+                        len2_followup_indexes.Add(idx);
                     end;
+                    Continue;
+                end;
+
+                should_run_expensive_rerank := idx < expensive_rerank_limit;
+                if not should_run_expensive_rerank then
+                begin
+                    Continue;
+                end;
+
+                followup_score := get_pinyin_followup_popularity_score(candidate_pinyin_key);
+                if followup_score > 0 then
+                begin
+                    Inc(candidate_item.score, Min(followup_bonus_cap,
+                        Round(Ln(1.0 + followup_score) * followup_factor)));
+                    list[idx] := candidate_item;
                 end;
             end;
 
-            candidate_item.score := reranked_score;
-            list[idx] := candidate_item;
+            if (len2_followup_indexes <> nil) and (len2_followup_indexes.Count > 1) then
+            begin
+                len2_followup_indexes.Sort(TComparer<Integer>.Construct(
+                    function(const left, right: Integer): Integer
+                    begin
+                        Result := list[right].score - list[left].score;
+                        if Result <> 0 then
+                        begin
+                            Exit;
+                        end;
+                        Result := left - right;
+                    end));
+            end;
+
+            if len2_followup_indexes <> nil then
+            begin
+                SetLength(len2_followup_texts, Min(c_len2_followup_rerank_limit, len2_followup_indexes.Count));
+                SetLength(len2_followup_pinyins, Length(len2_followup_texts));
+                for idx := 0 to High(len2_followup_texts) do
+                begin
+                    candidate_item := list[len2_followup_indexes[idx]];
+                    len2_followup_texts[idx] := candidate_item.text;
+                    if (candidate_pinyin_map <> nil) and
+                        candidate_pinyin_map.TryGetValue(candidate_item.text, candidate_pinyin_key) then
+                    begin
+                        len2_followup_pinyins[idx] := candidate_pinyin_key;
+                    end
+                    else
+                    begin
+                        len2_followup_pinyins[idx] := '';
+                    end;
+                end;
+
+                len2_prefix_scores := TDictionary<string, Integer>.Create;
+                len2_followup_scores := TDictionary<string, Integer>.Create;
+                try
+                    populate_prefix_popularity_scores(len2_followup_texts, len2_prefix_scores);
+                    populate_pinyin_followup_popularity_scores(len2_followup_pinyins, len2_followup_scores);
+
+                    for idx := 0 to High(len2_followup_texts) do
+                    begin
+                        candidate_item := list[len2_followup_indexes[idx]];
+                        if len2_prefix_scores.TryGetValue(candidate_item.text, prefix_score) and
+                            (prefix_score > 0) then
+                        begin
+                            Inc(candidate_item.score, Min(c_len2_prefix_bonus_cap,
+                                Round(Ln(1.0 + prefix_score) * c_len2_prefix_factor)));
+                            if candidate_item.dict_weight > 0 then
+                            begin
+                                prefix_productivity_ratio := prefix_score / candidate_item.dict_weight;
+                                if prefix_productivity_ratio > c_len2_prefix_ratio_penalty_threshold then
+                                begin
+                                    Dec(candidate_item.score, Min(c_len2_prefix_ratio_penalty_cap,
+                                        Round(Ln(prefix_productivity_ratio /
+                                            c_len2_prefix_ratio_penalty_threshold) *
+                                            c_len2_prefix_ratio_penalty_factor)));
+                                end;
+                            end;
+                        end;
+
+                        if len2_followup_scores.TryGetValue(len2_followup_pinyins[idx], followup_score) and
+                            (followup_score > 0) then
+                        begin
+                            Inc(candidate_item.score, Min(followup_bonus_cap,
+                                Round(Ln(1.0 + followup_score) * followup_factor)));
+                        end;
+                        list[len2_followup_indexes[idx]] := candidate_item;
+                    end;
+                finally
+                    len2_followup_scores.Free;
+                    len2_prefix_scores.Free;
+                end;
+            end;
+        finally
+            if len2_followup_indexes <> nil then
+            begin
+                len2_followup_indexes.Free;
+            end;
         end;
     end;
 
@@ -4856,7 +5517,7 @@ begin
                             end;
                         end
                         else if not candidate_matches_any_jianpin_key(mixed_parser, candidate_pinyin,
-                            jianpin_query_keys) then
+                            matching_jianpin_query_keys) then
                         begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
@@ -5010,12 +5671,22 @@ begin
                     begin
                         Continue;
                     end;
+                    if should_skip_deferred_jianpin_variant(effective_jianpin_key,
+                        jianpin_query_keys[query_key_idx], list.Count) then
+                    begin
+                        Continue;
+                    end;
                     stmt := nil;
                     try
                         if m_base_connection.prepare(base_jianpin_prefixed_sql, stmt) and
                             m_base_connection.bind_text(stmt, 1, jianpin_query_keys[query_key_idx]) and
-                            m_base_connection.bind_text(stmt, 2, mixed_full_prefix + '%') and
-                            m_base_connection.bind_int(stmt, 3, base_jianpin_probe_limit) then
+                            m_base_connection.bind_int(stmt, 2,
+                                get_jianpin_inner_probe_limit_for_key(effective_jianpin_key,
+                                    jianpin_query_keys[query_key_idx], True)) and
+                            m_base_connection.bind_text(stmt, 3, mixed_full_prefix + '%') and
+                            m_base_connection.bind_int(stmt, 4,
+                                get_jianpin_probe_limit_for_key(effective_jianpin_key,
+                                    jianpin_query_keys[query_key_idx])) then
                         begin
                             step_result := m_base_connection.step(stmt);
                             while step_result = SQLITE_ROW do
@@ -5076,11 +5747,21 @@ begin
                     begin
                         Continue;
                     end;
+                    if should_skip_deferred_jianpin_variant(effective_jianpin_key,
+                        jianpin_query_keys[query_key_idx], list.Count) then
+                    begin
+                        Continue;
+                    end;
                     stmt := nil;
                     try
                         if m_base_connection.prepare(base_jianpin_sql, stmt) and
                             m_base_connection.bind_text(stmt, 1, jianpin_query_keys[query_key_idx]) and
-                            m_base_connection.bind_int(stmt, 2, base_jianpin_probe_limit) then
+                            m_base_connection.bind_int(stmt, 2,
+                                get_jianpin_inner_probe_limit_for_key(effective_jianpin_key,
+                                    jianpin_query_keys[query_key_idx], False)) and
+                            m_base_connection.bind_int(stmt, 3,
+                                get_jianpin_probe_limit_for_key(effective_jianpin_key,
+                                    jianpin_query_keys[query_key_idx])) then
                         begin
                             step_result := m_base_connection.step(stmt);
                             while step_result = SQLITE_ROW do

@@ -233,6 +233,7 @@ type
         procedure set_dictionary_provider(const dictionary: TncDictionaryProvider);
         procedure set_dictionary_path(const dictionary_path: string);
         procedure reload_dictionary_if_needed;
+        procedure prewarm_dictionary_caches;
         procedure set_external_left_context(const left_context: string);
         function process_key(const key_code: Word; const key_state: TncKeyState): Boolean;
         function get_candidates: TncCandidateList;
@@ -1693,6 +1694,19 @@ begin
     end;
 
     set_dictionary_provider(create_dictionary_from_config);
+end;
+
+procedure TncEngine.prewarm_dictionary_caches;
+var
+    sqlite_dict: TncSqliteDictionary;
+begin
+    if not (m_dictionary is TncSqliteDictionary) then
+    begin
+        Exit;
+    end;
+
+    sqlite_dict := TncSqliteDictionary(m_dictionary);
+    sqlite_dict.prewarm_short_lookup_caches;
 end;
 
 procedure TncEngine.set_external_left_context(const left_context: string);

@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS dict_base (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin ON dict_base(pinyin);
+CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_weight ON dict_base(pinyin, weight);
+CREATE INDEX IF NOT EXISTS idx_dict_base_text_weight ON dict_base(text, weight);
 
 CREATE TABLE IF NOT EXISTS dict_jianpin (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS dict_jianpin (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key ON dict_jianpin(jianpin);
+CREATE INDEX IF NOT EXISTS idx_dict_jianpin_key_weight_word ON dict_jianpin(jianpin, weight DESC, word_id);
 
 CREATE TABLE IF NOT EXISTS dict_user (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

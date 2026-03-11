@@ -1462,6 +1462,7 @@ begin
             if m_sessions.TryGetValue(session_id, session) then
             begin
                 session.engine.reload_dictionary_if_needed;
+                session.engine.prewarm_dictionary_caches;
             end
             else
             begin
@@ -1745,6 +1746,8 @@ end;
 function TncEngineHost.process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
     out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
     out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
+const
+    c_slow_host_process_key_ms = 12;
 var
     session: TncHostSession;
     candidates: TncCandidateList;
@@ -1767,6 +1770,14 @@ var
     readback_elapsed_ms: Int64;
     total_elapsed_ms: Int64;
     debug_logging: Boolean;
+    had_candidates_before: Boolean;
+    should_apply_candidates: Boolean;
+    caret_point: TPoint;
+    has_caret: Boolean;
+    caret_line_height: Integer;
+    candidate_terminal_like_target: Boolean;
+    candidate_source: TncCaretAnchorSource;
+    candidate_score: Integer;
 begin
     handled := False;
     commit_text := '';
@@ -1783,12 +1794,22 @@ begin
     reload_config_if_needed;
     session := get_or_create_session(session_id);
     should_hide_candidates := False;
+    should_apply_candidates := False;
     has_result := True;
     debug_logging := host_log_enabled_for(ll_debug);
     total_start_tick := GetTickCount64;
+    readback_elapsed_ms := 0;
+    total_elapsed_ms := 0;
+    caret_point := Point(0, 0);
+    has_caret := False;
+    caret_line_height := 0;
+    candidate_terminal_like_target := False;
+    candidate_source := casCursor;
+    candidate_score := 0;
     m_lock.Acquire;
     try
         touch_session_activity(session_id);
+        had_candidates_before := session.has_candidates;
         reload_start_tick := GetTickCount64;
         session.engine.reload_dictionary_if_needed;
         reload_elapsed_ms := Int64(GetTickCount64 - reload_start_tick);
@@ -1873,6 +1894,16 @@ begin
             else
             begin
                 session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
+                if had_candidates_before and session.has_caret then
+                begin
+                    should_apply_candidates := True;
+                    caret_point := session.last_caret;
+                    has_caret := session.has_caret;
+                    caret_line_height := session.caret_line_height;
+                    candidate_terminal_like_target := session.m_terminal_like_target;
+                    candidate_source := session.m_last_candidate_source;
+                    candidate_score := session.m_last_candidate_score;
+                end;
             end;
         end;
     finally
@@ -1881,11 +1912,41 @@ begin
 
     if should_hide_candidates then
     begin
-        run_on_ui_thread(
+        TThread.Queue(nil,
             procedure
             begin
                 session.hide_candidate_window;
             end);
+    end;
+    if should_apply_candidates then
+    begin
+        TThread.Queue(nil,
+            procedure
+            begin
+                session.apply_candidate_state(caret_point, has_caret, caret_line_height,
+                    candidate_terminal_like_target, candidate_source, candidate_score);
+            end);
+    end;
+
+    if total_elapsed_ms = 0 then
+    begin
+        total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
+    end;
+    if debug_logging then
+    begin
+        host_log_debug(Format(
+            '[DEBUG] perf process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d',
+            [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
+            Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
+            Ord(should_apply_candidates)]));
+    end
+    else if total_elapsed_ms >= c_slow_host_process_key_ms then
+    begin
+        host_log(Format(
+            '[PERF] process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d',
+            [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
+            Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
+            Ord(should_apply_candidates)]));
     end;
 
     if global_state_changed then
