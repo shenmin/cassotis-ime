@@ -129,11 +129,11 @@ const
     c_status_widget_default_height = 38;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
-    c_state_poll_interval_ms = 180;
-    c_state_poll_interval_idle_ms = 450;
-    c_config_poll_interval_ms = 1000;
-    c_style_refresh_interval_ms = 1000;
-    c_style_refresh_interval_idle_ms = 2500;
+    c_state_poll_interval_ms = 320;
+    c_state_poll_interval_idle_ms = 900;
+    c_config_poll_interval_ms = 1500;
+    c_style_refresh_interval_ms = 1500;
+    c_style_refresh_interval_idle_ms = 3000;
 
 procedure TncStatusForm.CreateParams(var Params: TCreateParams);
 begin

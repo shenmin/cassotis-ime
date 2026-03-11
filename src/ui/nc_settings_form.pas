@@ -12,6 +12,8 @@ uses
     Vcl.ComCtrls,
     Vcl.ExtCtrls,
     Vcl.Graphics,
+    Vcl.Dialogs,
+    Vcl.FileCtrl,
     nc_types;
 
 type
@@ -48,15 +50,22 @@ type
         m_edit_ai_runtime_dir_cpu: TEdit;
         m_edit_ai_runtime_dir_cuda: TEdit;
         m_edit_ai_model_path: TEdit;
+        m_btn_ai_runtime_dir_cpu: TButton;
+        m_btn_ai_runtime_dir_cuda: TButton;
+        m_btn_ai_model_path: TButton;
         m_chk_log_enabled: TCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
         m_edit_log_path: TEdit;
+        m_btn_log_path: TButton;
         m_hint_logging: TLabel;
         m_chk_debug_mode: TCheckBox;
         m_edit_dict_path_sc: TEdit;
         m_edit_dict_path_tc: TEdit;
         m_edit_user_dict_path: TEdit;
+        m_btn_dict_path_sc: TButton;
+        m_btn_dict_path_tc: TButton;
+        m_btn_user_dict_path: TButton;
         m_hint_advanced: TLabel;
         m_engine_config: TncEngineConfig;
         m_log_config: TncLogConfig;
@@ -79,11 +88,23 @@ type
         procedure update_ai_controls;
         procedure update_logging_controls;
         procedure load_from_config;
+        function browse_for_directory(const title: string; var path: string): Boolean;
+        function browse_for_open_file(const title: string; const filter: string; var path: string): Boolean;
+        function browse_for_save_file(const title: string; const filter: string; const default_ext: string;
+            var path: string): Boolean;
+        procedure assign_path_edit(const edit: TEdit; const path: string);
         function read_integer_setting(const edit: TEdit; const default_value: Integer;
             const min_value: Integer; const max_value: Integer; const setting_name: string;
             out value: Integer; out error_text: string): Boolean;
         function build_config_from_controls(out next_config: TncEngineConfig; out next_log_config: TncLogConfig;
             out next_status_widget_visible: Boolean; out error_text: string): Boolean;
+        procedure on_browse_ai_runtime_dir_cpu(Sender: TObject);
+        procedure on_browse_ai_runtime_dir_cuda(Sender: TObject);
+        procedure on_browse_ai_model_path(Sender: TObject);
+        procedure on_browse_log_path(Sender: TObject);
+        procedure on_browse_dict_path_sc(Sender: TObject);
+        procedure on_browse_dict_path_tc(Sender: TObject);
+        procedure on_browse_user_dict_path(Sender: TObject);
         procedure apply_changes;
         procedure on_apply_click(Sender: TObject);
         procedure on_ok_click(Sender: TObject);
@@ -105,7 +126,9 @@ const
     c_row_gap = 10;
     c_edit_width = 120;
     c_combo_width = 160;
-    c_path_edit_width = 460;
+    c_path_edit_width = 390;
+    c_browse_button_gap = 8;
+    c_browse_button_width = 72;
 
 function create_label(const owner: TComponent; const parent: TWinControl; const caption: string;
     const top: Integer): TLabel;
@@ -115,6 +138,18 @@ begin
     Result.Left := c_label_left;
     Result.Top := top + 4;
     Result.Caption := caption;
+end;
+
+function create_browse_button(const owner: TComponent; const parent: TWinControl; const top: Integer;
+    const on_click: TNotifyEvent): TButton;
+begin
+    Result := TButton.Create(owner);
+    Result.Parent := parent;
+    Result.Left := c_control_left + c_path_edit_width + c_browse_button_gap;
+    Result.Top := top - 1;
+    Result.Width := c_browse_button_width;
+    Result.Caption := 'Browse';
+    Result.OnClick := on_click;
 end;
 
 constructor TncSettingsForm.Create(AOwner: TComponent);
@@ -399,6 +434,7 @@ begin
     m_edit_ai_runtime_dir_cpu.Top := top;
     m_edit_ai_runtime_dir_cpu.Width := c_path_edit_width;
     m_edit_ai_runtime_dir_cpu.OnChange := mark_dirty;
+    m_btn_ai_runtime_dir_cpu := create_browse_button(Self, m_tab_ai, top, on_browse_ai_runtime_dir_cpu);
 
     Inc(top, c_row_height + c_row_gap);
     create_label(Self, m_tab_ai, 'CUDA runtime dir', top);
@@ -408,6 +444,7 @@ begin
     m_edit_ai_runtime_dir_cuda.Top := top;
     m_edit_ai_runtime_dir_cuda.Width := c_path_edit_width;
     m_edit_ai_runtime_dir_cuda.OnChange := mark_dirty;
+    m_btn_ai_runtime_dir_cuda := create_browse_button(Self, m_tab_ai, top, on_browse_ai_runtime_dir_cuda);
 
     Inc(top, c_row_height + c_row_gap);
     create_label(Self, m_tab_ai, 'Model path', top);
@@ -417,6 +454,7 @@ begin
     m_edit_ai_model_path.Top := top;
     m_edit_ai_model_path.Width := c_path_edit_width;
     m_edit_ai_model_path.OnChange := mark_dirty;
+    m_btn_ai_model_path := create_browse_button(Self, m_tab_ai, top, on_browse_ai_model_path);
 end;
 
 procedure TncSettingsForm.add_logging_controls;
@@ -463,6 +501,7 @@ begin
     m_edit_log_path.Top := top;
     m_edit_log_path.Width := c_path_edit_width;
     m_edit_log_path.OnChange := mark_dirty;
+    m_btn_log_path := create_browse_button(Self, m_tab_logging, top, on_browse_log_path);
 
     m_hint_logging := TLabel.Create(Self);
     m_hint_logging.Parent := m_tab_logging;
@@ -497,6 +536,7 @@ begin
     m_edit_dict_path_sc.Top := top;
     m_edit_dict_path_sc.Width := c_path_edit_width;
     m_edit_dict_path_sc.OnChange := mark_dirty;
+    m_btn_dict_path_sc := create_browse_button(Self, m_tab_advanced, top, on_browse_dict_path_sc);
 
     Inc(top, c_row_height + c_row_gap);
     create_label(Self, m_tab_advanced, 'Traditional dictionary', top);
@@ -506,6 +546,7 @@ begin
     m_edit_dict_path_tc.Top := top;
     m_edit_dict_path_tc.Width := c_path_edit_width;
     m_edit_dict_path_tc.OnChange := mark_dirty;
+    m_btn_dict_path_tc := create_browse_button(Self, m_tab_advanced, top, on_browse_dict_path_tc);
 
     Inc(top, c_row_height + c_row_gap);
     create_label(Self, m_tab_advanced, 'User dictionary', top);
@@ -515,6 +556,7 @@ begin
     m_edit_user_dict_path.Top := top;
     m_edit_user_dict_path.Width := c_path_edit_width;
     m_edit_user_dict_path.OnChange := mark_dirty;
+    m_btn_user_dict_path := create_browse_button(Self, m_tab_advanced, top, on_browse_user_dict_path);
 
     m_hint_advanced := TLabel.Create(Self);
     m_hint_advanced.Parent := m_tab_advanced;
@@ -561,13 +603,25 @@ begin
     begin
         m_edit_ai_runtime_dir_cpu.Enabled := enabled;
     end;
+    if m_btn_ai_runtime_dir_cpu <> nil then
+    begin
+        m_btn_ai_runtime_dir_cpu.Enabled := enabled;
+    end;
     if m_edit_ai_runtime_dir_cuda <> nil then
     begin
         m_edit_ai_runtime_dir_cuda.Enabled := enabled;
     end;
+    if m_btn_ai_runtime_dir_cuda <> nil then
+    begin
+        m_btn_ai_runtime_dir_cuda.Enabled := enabled;
+    end;
     if m_edit_ai_model_path <> nil then
     begin
         m_edit_ai_model_path.Enabled := enabled;
+    end;
+    if m_btn_ai_model_path <> nil then
+    begin
+        m_btn_ai_model_path.Enabled := enabled;
     end;
 end;
 
@@ -588,6 +642,82 @@ begin
     begin
         m_edit_log_path.Enabled := enabled;
     end;
+    if m_btn_log_path <> nil then
+    begin
+        m_btn_log_path.Enabled := enabled;
+    end;
+end;
+
+function TncSettingsForm.browse_for_directory(const title: string; var path: string): Boolean;
+var
+    selected_path: string;
+begin
+    selected_path := path;
+    Result := SelectDirectory(title, '', selected_path);
+    if Result then
+    begin
+        path := selected_path;
+    end;
+end;
+
+function TncSettingsForm.browse_for_open_file(const title: string; const filter: string; var path: string): Boolean;
+var
+    dialog: TOpenDialog;
+begin
+    dialog := TOpenDialog.Create(Self);
+    try
+        dialog.Title := title;
+        dialog.Filter := filter;
+        dialog.Options := [ofFileMustExist, ofPathMustExist, ofEnableSizing];
+        if Trim(path) <> '' then
+        begin
+            dialog.FileName := path;
+            dialog.InitialDir := ExtractFileDir(path);
+        end;
+        Result := dialog.Execute;
+        if Result then
+        begin
+            path := dialog.FileName;
+        end;
+    finally
+        dialog.Free;
+    end;
+end;
+
+function TncSettingsForm.browse_for_save_file(const title: string; const filter: string; const default_ext: string;
+    var path: string): Boolean;
+var
+    dialog: TSaveDialog;
+begin
+    dialog := TSaveDialog.Create(Self);
+    try
+        dialog.Title := title;
+        dialog.Filter := filter;
+        dialog.DefaultExt := default_ext;
+        dialog.Options := [ofPathMustExist, ofEnableSizing, ofOverwritePrompt];
+        if Trim(path) <> '' then
+        begin
+            dialog.FileName := path;
+            dialog.InitialDir := ExtractFileDir(path);
+        end;
+        Result := dialog.Execute;
+        if Result then
+        begin
+            path := dialog.FileName;
+        end;
+    finally
+        dialog.Free;
+    end;
+end;
+
+procedure TncSettingsForm.assign_path_edit(const edit: TEdit; const path: string);
+begin
+    if edit = nil then
+    begin
+        Exit;
+    end;
+    edit.Text := path;
+    mark_dirty(edit);
 end;
 
 procedure TncSettingsForm.load_from_config;
@@ -862,6 +992,83 @@ begin
     next_config.debug_mode := m_chk_debug_mode.Checked;
 
     Result := True;
+end;
+
+procedure TncSettingsForm.on_browse_ai_runtime_dir_cpu(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_ai_runtime_dir_cpu.Text);
+    if browse_for_directory('Select CPU runtime directory', path) then
+    begin
+        assign_path_edit(m_edit_ai_runtime_dir_cpu, path);
+    end;
+end;
+
+procedure TncSettingsForm.on_browse_ai_runtime_dir_cuda(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_ai_runtime_dir_cuda.Text);
+    if browse_for_directory('Select CUDA runtime directory', path) then
+    begin
+        assign_path_edit(m_edit_ai_runtime_dir_cuda, path);
+    end;
+end;
+
+procedure TncSettingsForm.on_browse_ai_model_path(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_ai_model_path.Text);
+    if browse_for_open_file('Select model file', 'Model files|*.gguf|All files|*.*', path) then
+    begin
+        assign_path_edit(m_edit_ai_model_path, path);
+    end;
+end;
+
+procedure TncSettingsForm.on_browse_log_path(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_log_path.Text);
+    if browse_for_save_file('Select log file', 'Log files|*.log;*.txt|All files|*.*', 'log', path) then
+    begin
+        assign_path_edit(m_edit_log_path, path);
+    end;
+end;
+
+procedure TncSettingsForm.on_browse_dict_path_sc(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_dict_path_sc.Text);
+    if browse_for_open_file('Select simplified dictionary', 'Dictionary files|*.db;*.sqlite|All files|*.*', path) then
+    begin
+        assign_path_edit(m_edit_dict_path_sc, path);
+    end;
+end;
+
+procedure TncSettingsForm.on_browse_dict_path_tc(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_dict_path_tc.Text);
+    if browse_for_open_file('Select traditional dictionary', 'Dictionary files|*.db;*.sqlite|All files|*.*', path) then
+    begin
+        assign_path_edit(m_edit_dict_path_tc, path);
+    end;
+end;
+
+procedure TncSettingsForm.on_browse_user_dict_path(Sender: TObject);
+var
+    path: string;
+begin
+    path := Trim(m_edit_user_dict_path.Text);
+    if browse_for_save_file('Select user dictionary file', 'Database files|*.db;*.sqlite|All files|*.*', 'db', path) then
+    begin
+        assign_path_edit(m_edit_user_dict_path, path);
+    end;
 end;
 
 procedure TncSettingsForm.apply_changes;

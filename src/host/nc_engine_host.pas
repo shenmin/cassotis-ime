@@ -84,6 +84,8 @@ type
         m_active_sessions: TDictionary<string, Byte>;
         m_recent_active_sessions: TDictionary<string, DWORD>;
         m_shift_toggle_ticks: TDictionary<string, DWORD>;
+        m_session_prewarm_queue: TQueue<string>;
+        m_session_prewarm_pending: TDictionary<string, Byte>;
         m_lock: TCriticalSection;
         m_ai_refresh_thread: TThread;
         m_maintenance_thread: TThread;
@@ -107,6 +109,8 @@ type
         procedure touch_session_activity(const session_id: string);
         procedure set_session_active(const session_id: string; const active: Boolean);
         function has_active_session: Boolean;
+        procedure queue_session_prewarm(const session_id: string);
+        procedure perform_session_prewarm;
         procedure remove_user_candidate(const session_id: string; const candidate_index: Integer);
         procedure refresh_ai_candidates;
     public
@@ -179,7 +183,7 @@ const
     // to the composing row.
     c_text_ext_offset = 6;
     c_ai_refresh_poll_ms = 120;
-    c_maintenance_poll_ms = 1000;
+    c_maintenance_poll_ms = 200;
     c_recent_active_ttl_ms = 320;
     c_candidate_apply_merge_ms = 35;
     c_shift_toggle_dedupe_ms = 90;
@@ -766,6 +770,7 @@ var
     window_rect: TRect;
     monitor_info: TMonitorInfo;
     monitor_handle: HMONITOR;
+    debug_logging: Boolean;
 begin
     if Length(m_candidates) = 0 then
     begin
@@ -807,25 +812,26 @@ begin
 
     if m_candidate_window.HandleAllocated then
     begin
+        debug_logging := m_engine.config.debug_mode and host_log_enabled_for(ll_debug);
         if GetWindowRect(m_candidate_window.Handle, window_rect) then
         begin
             monitor_info.cbSize := SizeOf(monitor_info);
             monitor_handle := MonitorFromPoint(target_point, MONITOR_DEFAULTTONEAREST);
             if (monitor_handle <> 0) and GetMonitorInfo(monitor_handle, @monitor_info) then
             begin
-                if m_engine.config.debug_mode then
+                if debug_logging then
                 begin
                     host_log_debug(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d) work=(%d,%d,%d,%d)',
                         [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
                         window_rect.Bottom, monitor_info.rcWork.Left, monitor_info.rcWork.Top,
                         monitor_info.rcWork.Right, monitor_info.rcWork.Bottom]));
                 end;
-                if m_engine.config.debug_mode then
+                if debug_logging then
                 begin
                     host_log_debug(Format('[DEBUG] candidate source=%s score=%d',
                         [anchor_source_name(source), anchor_score]));
                 end;
-                if m_engine.config.debug_mode then
+                if debug_logging then
                 begin
                     host_log_debug(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
                         [line_height, y_offset]));
@@ -833,18 +839,18 @@ begin
             end
             else
             begin
-                if m_engine.config.debug_mode then
+                if debug_logging then
                 begin
                     host_log_debug(Format('candidate anchor=(%d,%d) rect=(%d,%d,%d,%d)',
                         [target_point.X, target_point.Y, window_rect.Left, window_rect.Top, window_rect.Right,
                         window_rect.Bottom]));
                 end;
-                if m_engine.config.debug_mode then
+                if debug_logging then
                 begin
                     host_log_debug(Format('[DEBUG] candidate source=%s score=%d',
                         [anchor_source_name(source), anchor_score]));
                 end;
-                if m_engine.config.debug_mode then
+                if debug_logging then
                 begin
                     host_log_debug(Format('[DEBUG] candidate metrics line_height=%d y_offset=%d',
                         [line_height, y_offset]));
@@ -984,6 +990,8 @@ begin
     m_active_sessions := TDictionary<string, Byte>.Create;
     m_recent_active_sessions := TDictionary<string, DWORD>.Create;
     m_shift_toggle_ticks := TDictionary<string, DWORD>.Create;
+    m_session_prewarm_queue := TQueue<string>.Create;
+    m_session_prewarm_pending := TDictionary<string, Byte>.Create;
     m_lock := TCriticalSection.Create;
     m_ai_refresh_thread := nil;
     m_maintenance_thread := nil;
@@ -1050,6 +1058,16 @@ begin
     begin
         m_sessions.Free;
         m_sessions := nil;
+    end;
+    if m_session_prewarm_queue <> nil then
+    begin
+        m_session_prewarm_queue.Free;
+        m_session_prewarm_queue := nil;
+    end;
+    if m_session_prewarm_pending <> nil then
+    begin
+        m_session_prewarm_pending.Free;
+        m_session_prewarm_pending := nil;
     end;
     if m_active_sessions <> nil then
     begin
@@ -1368,6 +1386,94 @@ begin
     m_last_user_activity_tick := GetTickCount64;
 end;
 
+procedure TncEngineHost.queue_session_prewarm(const session_id: string);
+begin
+    if session_id = '' then
+    begin
+        Exit;
+    end;
+
+    m_lock.Acquire;
+    try
+        if m_sessions.ContainsKey(session_id) or m_session_prewarm_pending.ContainsKey(session_id) then
+        begin
+            Exit;
+        end;
+        m_session_prewarm_queue.Enqueue(session_id);
+        m_session_prewarm_pending.Add(session_id, 1);
+    finally
+        m_lock.Release;
+    end;
+end;
+
+procedure TncEngineHost.perform_session_prewarm;
+var
+    session_id: string;
+    session: TncHostSession;
+    create_start_tick: UInt64;
+    create_elapsed_ms: Int64;
+    total_elapsed_ms: Int64;
+begin
+    session_id := '';
+    session := nil;
+    create_elapsed_ms := 0;
+    total_elapsed_ms := 0;
+
+    m_lock.Acquire;
+    try
+        if (m_session_prewarm_queue = nil) or (m_session_prewarm_queue.Count <= 0) then
+        begin
+            Exit;
+        end;
+        session_id := m_session_prewarm_queue.Dequeue;
+    finally
+        m_lock.Release;
+    end;
+
+    try
+        create_start_tick := GetTickCount64;
+        session := get_or_create_session(session_id);
+        create_elapsed_ms := Int64(GetTickCount64 - create_start_tick);
+
+        m_lock.Acquire;
+        try
+            if m_sessions.TryGetValue(session_id, session) then
+            begin
+                session.engine.reload_dictionary_if_needed;
+            end
+            else
+            begin
+                session := nil;
+            end;
+        finally
+            m_lock.Release;
+        end;
+
+        total_elapsed_ms := Int64(GetTickCount64 - create_start_tick);
+        if session <> nil then
+        begin
+            TThread.Queue(nil,
+                procedure
+                begin
+                    session.warm_candidate_window;
+                end);
+        end;
+
+        if host_log_enabled_for(ll_debug) then
+        begin
+            host_log_debug(Format('[DEBUG] session prewarm session=%s create=%d total=%d',
+                [session_id, create_elapsed_ms, total_elapsed_ms]));
+        end;
+    finally
+        m_lock.Acquire;
+        try
+            m_session_prewarm_pending.Remove(session_id);
+        finally
+            m_lock.Release;
+        end;
+    end;
+end;
+
 procedure TncEngineHost.maybe_checkpoint_user_dictionary;
 const
     c_user_dict_checkpoint_mutex_name = 'Local\CassotisImeUserDictCheckpoint';
@@ -1638,6 +1744,7 @@ var
     process_elapsed_ms: Int64;
     readback_elapsed_ms: Int64;
     total_elapsed_ms: Int64;
+    debug_logging: Boolean;
 begin
     handled := False;
     commit_text := '';
@@ -1655,6 +1762,7 @@ begin
     session := get_or_create_session(session_id);
     should_hide_candidates := False;
     has_result := True;
+    debug_logging := host_log_enabled_for(ll_debug);
     total_start_tick := GetTickCount64;
     m_lock.Acquire;
     try
@@ -1689,8 +1797,11 @@ begin
 
         if handled and session.engine.commit_text(commit_text) then
         begin
-            host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
-                [key_code, Ord(handled), sanitize_log_text(commit_text), session.engine.get_confirmed_length]));
+            if debug_logging then
+            begin
+                host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
+                    [key_code, Ord(handled), sanitize_log_text(commit_text), session.engine.get_confirmed_length]));
+            end;
             display_text := '';
             session.clear_candidates;
             should_hide_candidates := True;
@@ -1705,10 +1816,17 @@ begin
             page_count := session.engine.get_page_count;
             selected_index := session.engine.get_selected_index;
             preedit_text := session.engine.get_composition_text;
-            lookup_debug_info := session.engine.get_lookup_debug_info;
+            if debug_logging then
+            begin
+                lookup_debug_info := session.engine.get_lookup_debug_info;
+            end
+            else
+            begin
+                lookup_debug_info := '';
+            end;
             readback_elapsed_ms := Int64(GetTickCount64 - readback_start_tick);
             total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
-            if config.debug_mode then
+            if debug_logging and config.debug_mode then
             begin
                 if lookup_debug_info <> '' then
                 begin
@@ -1717,10 +1835,13 @@ begin
                 lookup_debug_info := lookup_debug_info + Format('host=[reload=%d proc=%d read=%d total=%d]',
                     [reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms]);
             end;
-            host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
-                [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
-                sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates), page_index + 1,
-                page_count, selected_index + 1, sanitize_log_text(lookup_debug_info)]));
+            if debug_logging then
+            begin
+                host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
+                    [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
+                    sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates),
+                    page_index + 1, page_count, selected_index + 1, sanitize_log_text(lookup_debug_info)]));
+            end;
 
             if Length(candidates) = 0 then
             begin
@@ -1847,8 +1968,6 @@ begin
 end;
 
 function TncEngineHost.set_active(const session_id: string; const active: Boolean): Boolean;
-var
-    session: TncHostSession;
 begin
     if session_id = '' then
     begin
@@ -1856,28 +1975,13 @@ begin
         Exit;
     end;
 
-    session := nil;
     if active then
     begin
         ensure_tray_host_running;
-        session := get_or_create_session(session_id);
-        m_lock.Acquire;
-        try
-            session.engine.reload_dictionary_if_needed;
-        finally
-            m_lock.Release;
-        end;
+        queue_session_prewarm(session_id);
     end;
 
     set_session_active(session_id, active);
-    if active and (session <> nil) then
-    begin
-        run_on_ui_thread(
-            procedure
-            begin
-                session.warm_candidate_window;
-            end);
-    end;
     Result := True;
 end;
 
@@ -2177,6 +2281,7 @@ begin
             begin
                 Break;
             end;
+            host.perform_session_prewarm;
             host.maybe_checkpoint_user_dictionary;
         except
             on e: Exception do
@@ -2237,7 +2342,10 @@ begin
         if not (SameText(cmd, 'GET_ACTIVE') or SameText(cmd, 'GET_STATE') or SameText(cmd, 'PING') or
             SameText(cmd, 'SET_SURROUNDING') or SameText(cmd, 'SET_CARET')) then
         begin
-            host_log_debug(Format('request cmd=%s session=%s', [cmd, session_id]));
+            if host_log_enabled_for(ll_debug) then
+            begin
+                host_log_debug(Format('request cmd=%s session=%s', [cmd, session_id]));
+            end;
         end;
 
         if SameText(cmd, 'RESET') then
@@ -2417,9 +2525,12 @@ begin
             key_state.ctrl_down := flag_to_bool(fields[4]);
             key_state.alt_down := flag_to_bool(fields[5]);
             key_state.caps_lock := flag_to_bool(fields[6]);
-            host_log_debug(Format('test_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
-                [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down), Ord(key_state.alt_down),
-                Ord(key_state.caps_lock)]));
+            if host_log_enabled_for(ll_debug) then
+            begin
+                host_log_debug(Format('test_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
+                    [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down),
+                    Ord(key_state.alt_down), Ord(key_state.caps_lock)]));
+            end;
             if m_host.test_key(session_id, Word(key_code), key_state, handled) then
             begin
                 Result := 'OK'#9 + bool_to_flag(handled);
@@ -2444,9 +2555,12 @@ begin
             key_state.ctrl_down := flag_to_bool(fields[4]);
             key_state.alt_down := flag_to_bool(fields[5]);
             key_state.caps_lock := flag_to_bool(fields[6]);
-            host_log_debug(Format('process_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
-                [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down), Ord(key_state.alt_down),
-                Ord(key_state.caps_lock)]));
+            if host_log_enabled_for(ll_debug) then
+            begin
+                host_log_debug(Format('process_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
+                    [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down),
+                    Ord(key_state.alt_down), Ord(key_state.caps_lock)]));
+            end;
             if m_host.process_key(session_id, Word(key_code), key_state, handled, commit_text, display_text, input_mode,
                 full_width_mode, punctuation_full_width) then
             begin

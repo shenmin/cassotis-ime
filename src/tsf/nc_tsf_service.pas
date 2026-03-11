@@ -2974,9 +2974,9 @@ begin
     gui_far_from_tsf := gui_caret_pair and tsf_point_valid and
         (not points_are_close(gui_point, tsf_point, 140)) and (not points_are_close(caret_point, tsf_point, 140));
 
-    if (m_logger <> nil) and (m_logger.level <= ll_info) then
+    if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
-        m_logger.info(Format(
+        m_logger.debug(Format(
             'CaretObs term=%d tsf=%s gui=%s caret=%s last=%s cursor=%s line=%d',
             [Ord(terminal_like_target),
             format_anchor_point(tsf_point, tsf_point_valid),
@@ -2985,7 +2985,7 @@ begin
             format_anchor_point(m_last_sent_caret_point, last_sent_point_valid),
             format_anchor_point(cursor_point, cursor_point_valid),
             placement_line_height]));
-        m_logger.info(Format(
+        m_logger.debug(Format(
             'CaretFlags term=%d tsf_s=%d gui_s=%d caret_s=%d last_s=%d pair=%d far=%d',
             [Ord(terminal_like_target),
             Ord(tsf_suspicious), Ord(gui_suspicious), Ord(caret_suspicious), Ord(last_suspicious),
@@ -3004,9 +3004,9 @@ begin
                     [m_last_caret_line_height, placement_line_height, anchor_source_name(chosen_source)]));
             end;
         end;
-        if (m_logger <> nil) and (m_logger.level <= ll_info) then
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
         begin
-            m_logger.info(Format('CaretChoose term=%d source=%s score=%d point=(%d,%d) line=%d',
+            m_logger.debug(Format('CaretChoose term=%d source=%s score=%d point=(%d,%d) line=%d',
                 [Ord(terminal_like_target), anchor_source_name(chosen_source), chosen_score,
                 point.X, point.Y, placement_line_height]));
         end;
