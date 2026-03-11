@@ -53,7 +53,7 @@ uses
 const
     c_pipe_timeout_ms = 220;
     c_start_retry_delay_ms = 1500;
-    c_start_wait_ms = 500;
+    c_start_wait_ms = 1500;
     c_call_retry_max = 3;
     c_call_retry_sleep_ms = 30;
     c_get_module_handle_ex_from_address = $00000004;

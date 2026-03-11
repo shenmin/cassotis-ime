@@ -76,6 +76,9 @@ type
         m_last_sent_caret_tick: DWORD;
         m_last_sent_surrounding_text: string;
         m_last_sent_surrounding_valid: Boolean;
+        m_last_surrounding_request_tick: UInt64;
+        m_last_context_activate_tick: UInt64;
+        m_surrounding_needs_refresh: Boolean;
         m_active_state_lock: TCriticalSection;
         m_active_state_event: TEvent;
         m_active_state_thread: TThread;
@@ -100,6 +103,7 @@ type
         procedure start_active_state_worker;
         procedure stop_active_state_worker;
         procedure queue_active_state_update(const active: Boolean);
+        procedure mark_active_state_synced(const active: Boolean);
         procedure push_caret_to_host(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean; const source: TncCaretAnchorSource = casCursor;
             const anchor_score: Integer = 0; const force: Boolean = False);
@@ -139,6 +143,7 @@ type
             out chosen_score: Integer): Boolean;
         function request_text_ext_update(const context: ITfContext): Boolean;
         function request_surrounding_text(const context: ITfContext; out left_text: string): Boolean;
+        function maybe_update_surrounding_text(const context: ITfContext; const force: Boolean = False): Boolean;
         function update_surrounding_text(const context: ITfContext): Boolean;
         function update_composition(const context: ITfContext; const text: string): Boolean;
         function end_composition(const context: ITfContext): Boolean;
@@ -410,6 +415,9 @@ begin
     m_last_sent_caret_tick := 0;
     m_last_sent_surrounding_text := '';
     m_last_sent_surrounding_valid := False;
+    m_last_surrounding_request_tick := 0;
+    m_last_context_activate_tick := 0;
+    m_surrounding_needs_refresh := True;
     m_last_reported_active_session_id := '';
     m_last_reported_active := False;
     m_active_state_synced := False;
@@ -457,6 +465,9 @@ begin
         invalidate_sent_caret;
         m_last_sent_surrounding_text := '';
         m_last_sent_surrounding_valid := False;
+        m_last_surrounding_request_tick := 0;
+        m_last_context_activate_tick := 0;
+        m_surrounding_needs_refresh := True;
     end;
 end;
 
@@ -624,6 +635,30 @@ begin
         m_active_state_pending := True;
         m_active_state_synced := False;
         m_active_state_event.SetEvent;
+    finally
+        m_active_state_lock.Release;
+    end;
+end;
+
+procedure TncTextService.mark_active_state_synced(const active: Boolean);
+begin
+    if m_active_state_lock = nil then
+    begin
+        Exit;
+    end;
+
+    m_active_state_lock.Acquire;
+    try
+        if m_active_state_shutdown then
+        begin
+            Exit;
+        end;
+
+        m_active_state_pending := False;
+        m_pending_active_session_id := '';
+        m_last_reported_active_session_id := m_session_id;
+        m_last_reported_active := active;
+        m_active_state_synced := True;
     finally
         m_active_state_lock.Release;
     end;
@@ -1018,6 +1053,9 @@ begin
     m_context := context;
     m_has_caret_point := False;
     m_pending_caret_update := False;
+    m_last_surrounding_request_tick := 0;
+    m_last_context_activate_tick := GetTickCount64;
+    m_surrounding_needs_refresh := True;
     advise_context_sinks(context);
 end;
 
@@ -1027,6 +1065,7 @@ var
     hr: HRESULT;
     engine_config: TncEngineConfig;
     guid: TGUID;
+    active_synced: Boolean;
 begin
     m_thread_mgr := thread_mgr;
     m_client_id := client_id;
@@ -1051,6 +1090,9 @@ begin
         m_context := nil;
         if m_doc_mgr.GetTop(m_context) = S_OK then
         begin
+            m_last_surrounding_request_tick := 0;
+            m_last_context_activate_tick := GetTickCount64;
+            m_surrounding_needs_refresh := True;
             advise_context_sinks(m_context);
         end;
     end;
@@ -1067,8 +1109,21 @@ begin
     end;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
-        update_active_state(True);
+        active_synced := False;
+        if m_ipc_client.set_active(m_session_id, True) then
+        begin
+            mark_active_state_synced(True);
+            active_synced := True;
+        end;
+        if not active_synced then
+        begin
+            update_active_state(True);
+        end;
         mark_session_dirty;
+        if m_context <> nil then
+        begin
+            maybe_update_surrounding_text(m_context, True);
+        end;
     end;
     apply_engine_state_to_compartments(engine_config.input_mode, engine_config.full_width_mode,
         engine_config.punctuation_full_width);
@@ -1335,7 +1390,7 @@ begin
     caret_push_elapsed_ms := 0;
     reload_config_if_needed;
     surrounding_start_tick := GetTickCount64;
-    surrounding_sent := update_surrounding_text(context);
+    surrounding_sent := maybe_update_surrounding_text(context);
     surrounding_elapsed_ms := Int64(GetTickCount64 - surrounding_start_tick);
     handled := False;
     commit_text := '';
@@ -2203,6 +2258,10 @@ begin
     // We do not use OnSetFocus callback for active toggles to avoid per-key
     // focus jitter in some apps.
     update_active_state(pdimFocus <> nil);
+    if (pdimFocus <> nil) and (m_context <> nil) then
+    begin
+        maybe_update_surrounding_text(m_context, True);
+    end;
     Result := S_OK;
 end;
 
@@ -3193,6 +3252,46 @@ begin
     Result := (hr = S_OK) and (session_hr = S_OK);
 end;
 
+function TncTextService.maybe_update_surrounding_text(const context: ITfContext; const force: Boolean): Boolean;
+const
+    c_surrounding_retry_interval_ms = 500;
+    c_surrounding_activation_grace_ms = 2000;
+var
+    now_tick: UInt64;
+begin
+    Result := False;
+    if context = nil then
+    begin
+        Exit;
+    end;
+
+    if (not force) and (m_composition <> nil) then
+    begin
+        Exit;
+    end;
+
+    if (not force) and (not m_surrounding_needs_refresh) then
+    begin
+        Exit;
+    end;
+
+    now_tick := GetTickCount64;
+    if (not force) and (m_last_context_activate_tick <> 0) and
+        ((now_tick - m_last_context_activate_tick) < c_surrounding_activation_grace_ms) then
+    begin
+        Exit;
+    end;
+
+    if (not force) and (m_last_surrounding_request_tick <> 0) and
+        ((now_tick - m_last_surrounding_request_tick) < c_surrounding_retry_interval_ms) then
+    begin
+        Exit;
+    end;
+
+    m_last_surrounding_request_tick := now_tick;
+    Result := update_surrounding_text(context);
+end;
+
 function TncTextService.update_surrounding_text(const context: ITfContext): Boolean;
 var
     left_text: string;
@@ -3208,6 +3307,7 @@ begin
     begin
         if m_last_sent_surrounding_valid and (m_last_sent_surrounding_text = left_text) then
         begin
+            m_surrounding_needs_refresh := False;
             Exit;
         end;
 
@@ -3215,6 +3315,7 @@ begin
         begin
             m_last_sent_surrounding_text := left_text;
             m_last_sent_surrounding_valid := True;
+            m_surrounding_needs_refresh := False;
             mark_session_dirty;
             Result := True;
         end;
@@ -3332,6 +3433,8 @@ begin
             m_logger.debug(Format('Commit hr=0x%.8x session=0x%.8x text=%s',
                 [hr, session_hr, text]));
         end;
+        m_surrounding_needs_refresh := True;
+        m_last_surrounding_request_tick := 0;
         Result := session_hr = S_OK;
         Exit;
     end;
@@ -3339,6 +3442,11 @@ begin
     begin
         m_logger.debug(Format('Commit hr=0x%.8x async=%d text=%s',
             [hr, Ord(hr = TF_S_ASYNC), text]));
+    end;
+    if hr = TF_S_ASYNC then
+    begin
+        m_surrounding_needs_refresh := True;
+        m_last_surrounding_request_tick := 0;
     end;
     Result := hr = TF_S_ASYNC;
 end;

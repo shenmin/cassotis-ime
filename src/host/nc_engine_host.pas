@@ -1435,7 +1435,7 @@ begin
 
     m_lock.Acquire;
     try
-        if m_sessions.ContainsKey(session_id) or m_session_prewarm_pending.ContainsKey(session_id) then
+        if m_session_prewarm_pending.ContainsKey(session_id) then
         begin
             Exit;
         end;
@@ -1443,6 +1443,11 @@ begin
         m_session_prewarm_pending.Add(session_id, 1);
     finally
         m_lock.Release;
+    end;
+
+    if m_maintenance_wakeup <> nil then
+    begin
+        m_maintenance_wakeup.SetEvent;
     end;
 end;
 
@@ -1765,6 +1770,23 @@ begin
         end;
     end;
 
+    if key_state.ctrl_down or key_state.alt_down then
+    begin
+        if key_state.ctrl_down and (key_code = VK_SPACE) and m_config.enable_ctrl_space_toggle then
+        begin
+            // fall through
+        end
+        else if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and m_config.enable_ctrl_period_punct_toggle then
+        begin
+            // fall through
+        end
+        else
+        begin
+            Result := True;
+            Exit;
+        end;
+    end;
+
     session := get_or_create_session(session_id);
     m_lock.Acquire;
     try
@@ -1824,6 +1846,25 @@ begin
     end;
 
     reload_config_if_needed;
+    // Do not create a cold session/dictionary just to reject modifier combos.
+    // The engine only handles Ctrl/Alt when they are bound to explicit toggles.
+    if key_state.ctrl_down or key_state.alt_down then
+    begin
+        if key_state.ctrl_down and (key_code = VK_SPACE) and m_config.enable_ctrl_space_toggle then
+        begin
+            // fall through
+        end
+        else if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and m_config.enable_ctrl_period_punct_toggle then
+        begin
+            // fall through
+        end
+        else
+        begin
+            Result := True;
+            Exit;
+        end;
+    end;
+
     session := get_or_create_session(session_id);
     should_hide_candidates := False;
     has_result := True;
@@ -2105,6 +2146,8 @@ begin
 end;
 
 function TncEngineHost.set_active(const session_id: string; const active: Boolean): Boolean;
+var
+    session: TncHostSession;
 begin
     if session_id = '' then
     begin
@@ -2115,6 +2158,20 @@ begin
     if active then
     begin
         ensure_tray_host_running;
+        // Shift cold session creation off the first real key. SET_ACTIVE is
+        // issued by the TSF active-state worker, so doing the one-time engine
+        // bootstrap here avoids a visible first-key stall in the foreground
+        // input path.
+        session := get_or_create_session(session_id);
+        m_lock.Acquire;
+        try
+            if m_sessions.TryGetValue(session_id, session) then
+            begin
+                session.engine.reload_dictionary_if_needed;
+            end;
+        finally
+            m_lock.Release;
+        end;
         queue_session_prewarm(session_id);
     end;
 
