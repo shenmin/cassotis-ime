@@ -368,6 +368,31 @@ begin
     end;
 end;
 
+function resolve_host_log_path_value(const configured_path: string): string;
+begin
+    Result := Trim(configured_path);
+    if Result = '' then
+    begin
+        Result := get_default_log_path;
+    end;
+end;
+
+procedure apply_host_log_config(const log_config: TncLogConfig);
+begin
+    g_host_log_inited := True;
+    g_host_log_enabled := log_config.enabled;
+    g_host_log_level := log_config.level;
+    g_host_log_max_size_kb := log_config.max_size_kb;
+    if g_host_log_enabled then
+    begin
+        g_host_log_path := resolve_host_log_path_value(log_config.log_path);
+    end
+    else
+    begin
+        g_host_log_path := '';
+    end;
+end;
+
 procedure reload_host_log_config(const config_path: string);
 var
     config_manager: TncConfigManager;
@@ -383,13 +408,7 @@ begin
         config_manager := TncConfigManager.create(config_path);
         try
             log_config := config_manager.load_log_config;
-            g_host_log_enabled := log_config.enabled;
-            g_host_log_level := log_config.level;
-            g_host_log_max_size_kb := log_config.max_size_kb;
-            if g_host_log_enabled then
-            begin
-                g_host_log_path := Trim(log_config.log_path);
-            end;
+            apply_host_log_config(log_config);
         finally
             config_manager.Free;
         end;
@@ -1282,18 +1301,7 @@ begin
     end;
 
     sync_ai_refresh_thread(m_config.enable_ai);
-    g_host_log_inited := True;
-    g_host_log_enabled := next_log_config.enabled;
-    g_host_log_level := next_log_config.level;
-    g_host_log_max_size_kb := next_log_config.max_size_kb;
-    if g_host_log_enabled then
-    begin
-        g_host_log_path := Trim(next_log_config.log_path);
-    end
-    else
-    begin
-        g_host_log_path := '';
-    end;
+    apply_host_log_config(next_log_config);
     m_last_config_write := current_write;
     Result := True;
 end;
@@ -1432,8 +1440,6 @@ var
 begin
     session_id := '';
     session := nil;
-    create_elapsed_ms := 0;
-    total_elapsed_ms := 0;
 
     m_lock.Acquire;
     try

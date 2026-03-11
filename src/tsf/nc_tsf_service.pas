@@ -118,6 +118,7 @@ type
         procedure init_display_attribute_atom;
         procedure free_logger;
         function build_key_state: TncKeyState;
+        function is_safe_composition_fast_key(const key_code: Word; const key_state: TncKeyState): Boolean;
         function get_config_write_time: TDateTime;
         procedure load_engine_config(out config: TncEngineConfig);
         procedure apply_log_config;
@@ -1221,6 +1222,14 @@ begin
                 end;
         end;
     end;
+
+    if is_safe_composition_fast_key(key_code, key_state) then
+    begin
+        eaten := 1;
+        Result := S_OK;
+        Exit;
+    end;
+
     handled := False;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
@@ -2351,6 +2360,23 @@ begin
     Result.caps_lock := (GetKeyState(VK_CAPITAL) and 1) <> 0;
 end;
 
+function TncTextService.is_safe_composition_fast_key(const key_code: Word;
+    const key_state: TncKeyState): Boolean;
+begin
+    Result := False;
+    if (m_composition = nil) or key_state.shift_down or key_state.ctrl_down or key_state.alt_down then
+    begin
+        Exit;
+    end;
+
+    Result := ((key_code >= Ord('A')) and (key_code <= Ord('Z'))) or
+        ((key_code >= Ord('0')) and (key_code <= Ord('9'))) or
+        (key_code = VK_OEM_7) or
+        (key_code = VK_BACK) or
+        (key_code = VK_SPACE) or
+        (key_code = VK_RETURN);
+end;
+
 function TncTextService.get_config_write_time: TDateTime;
 begin
     Result := 0;
@@ -2378,6 +2404,8 @@ begin
 end;
 
 procedure TncTextService.apply_log_config;
+var
+    resolved_log_path: string;
 begin
     if not m_log_config.enabled then
     begin
@@ -2385,14 +2413,20 @@ begin
         Exit;
     end;
 
-    if (m_logger <> nil) and (m_logger.log_path <> m_log_config.log_path) then
+    resolved_log_path := Trim(m_log_config.log_path);
+    if resolved_log_path = '' then
+    begin
+        resolved_log_path := get_default_log_path;
+    end;
+
+    if (m_logger <> nil) and (m_logger.log_path <> resolved_log_path) then
     begin
         free_logger;
     end;
 
     if m_logger = nil then
     begin
-        m_logger := TncLogger.create(m_log_config.log_path, m_log_config.max_size_kb);
+        m_logger := TncLogger.create(resolved_log_path, m_log_config.max_size_kb);
     end;
     m_logger.set_level(m_log_config.level);
 end;

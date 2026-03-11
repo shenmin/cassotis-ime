@@ -29,6 +29,9 @@ function get_default_config_path: string;
 function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
 function get_default_user_dictionary_path: string;
+function get_default_ai_llama_runtime_dir_cpu: string;
+function get_default_ai_llama_runtime_dir_cuda: string;
+function get_default_ai_llama_model_path: string;
 
 implementation
 

@@ -18,7 +18,8 @@ uses
     Vcl.Dialogs,
     Vcl.FileCtrl,
     nc_types,
-    nc_config;
+    nc_config,
+    nc_log;
 
 type
     TncApplySettingsProc = reference to procedure(const engine_config: TncEngineConfig;
@@ -170,6 +171,15 @@ begin
     Result.Width := 120;
     Result.Caption := caption;
     Result.OnClick := on_click;
+end;
+
+function normalize_path_override(const edit_text: string; const default_path: string): string;
+begin
+    Result := Trim(edit_text);
+    if Result = '' then
+    begin
+        Result := default_path;
+    end;
 end;
 
 constructor TncSettingsForm.Create(AOwner: TComponent);
@@ -979,22 +989,13 @@ begin
         next_config.ai_llama_backend := lb_auto;
     end;
     next_log_config.enabled := m_chk_log_enabled.Checked;
-    if Trim(m_edit_ai_runtime_dir_cpu.Text) <> '' then
-    begin
-        next_config.ai_llama_runtime_dir_cpu := Trim(m_edit_ai_runtime_dir_cpu.Text);
-    end;
-    if Trim(m_edit_ai_runtime_dir_cuda.Text) <> '' then
-    begin
-        next_config.ai_llama_runtime_dir_cuda := Trim(m_edit_ai_runtime_dir_cuda.Text);
-    end;
-    if Trim(m_edit_ai_model_path.Text) <> '' then
-    begin
-        next_config.ai_llama_model_path := Trim(m_edit_ai_model_path.Text);
-    end;
-    if Trim(m_edit_log_path.Text) <> '' then
-    begin
-        next_log_config.log_path := Trim(m_edit_log_path.Text);
-    end;
+    next_config.ai_llama_runtime_dir_cpu := normalize_path_override(
+        m_edit_ai_runtime_dir_cpu.Text, get_default_ai_llama_runtime_dir_cpu);
+    next_config.ai_llama_runtime_dir_cuda := normalize_path_override(
+        m_edit_ai_runtime_dir_cuda.Text, get_default_ai_llama_runtime_dir_cuda);
+    next_config.ai_llama_model_path := normalize_path_override(
+        m_edit_ai_model_path.Text, get_default_ai_llama_model_path);
+    next_log_config.log_path := normalize_path_override(m_edit_log_path.Text, get_default_log_path);
     case m_combo_log_level.ItemIndex of
         0:
             next_log_config.level := ll_debug;
@@ -1005,18 +1006,12 @@ begin
     else
         next_log_config.level := ll_info;
     end;
-    if Trim(m_edit_dict_path_sc.Text) <> '' then
-    begin
-        next_config.dictionary_path_simplified := Trim(m_edit_dict_path_sc.Text);
-    end;
-    if Trim(m_edit_dict_path_tc.Text) <> '' then
-    begin
-        next_config.dictionary_path_traditional := Trim(m_edit_dict_path_tc.Text);
-    end;
-    if Trim(m_edit_user_dict_path.Text) <> '' then
-    begin
-        next_config.user_dictionary_path := Trim(m_edit_user_dict_path.Text);
-    end;
+    next_config.dictionary_path_simplified := normalize_path_override(
+        m_edit_dict_path_sc.Text, get_default_dictionary_path_simplified);
+    next_config.dictionary_path_traditional := normalize_path_override(
+        m_edit_dict_path_tc.Text, get_default_dictionary_path_traditional);
+    next_config.user_dictionary_path := normalize_path_override(
+        m_edit_user_dict_path.Text, get_default_user_dictionary_path);
     next_config.debug_mode := m_chk_debug_mode.Checked;
 
     Result := True;
