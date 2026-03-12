@@ -1,4 +1,4 @@
-unit nc_settings_form;
+﻿unit nc_settings_form;
 
 interface
 
@@ -158,6 +158,95 @@ const
     c_browse_button_gap = 8;
     c_browse_button_width = 72;
 
+resourcestring
+    SSettingsTitle = 'Cassotis 设置';
+    STabGeneral = '常规';
+    STabCandidates = '候选';
+    STabHotkeys = '快捷键';
+    STabAppearance = '外观';
+    STabAI = 'AI';
+    STabLogging = '日志';
+    STabAdvanced = '高级';
+    SButtonBrowse = '浏览';
+    SButtonDefaults = '恢复默认';
+    SButtonApply = '应用';
+    SButtonOK = '确定';
+    SButtonCancel = '取消';
+    SLabelInputMode = '默认输入状态';
+    SOptionChinese = '中文输入';
+    SOptionEnglish = '英文输入';
+    SHintInputMode = '控制输入法激活时默认进入中文态还是英文态，不是界面语言。';
+    SLabelMaxCandidates = '最大候选数';
+    SLabelDictionaryVariant = '词库类型';
+    SOptionSimplifiedChinese = '简体中文';
+    SOptionTraditionalChinese = '繁体中文';
+    SCheckFullWidthMode = '使用全角字符';
+    SCheckPunctuationFullWidth = '使用全角标点';
+    SCheckEnableSegmentCandidates = '启用分段候选';
+    SCheckSegmentHeadOnly = '多音节分段时优先只取首段';
+    SCheckEnableCtrlSpace = '启用 Ctrl+Space 切换中英文';
+    SCheckEnableShiftSpace = '启用 Shift+Space 切换全角';
+    SCheckEnableCtrlPeriod = '启用 Ctrl+. 切换标点宽度';
+    SCheckShowStatusWidget = 'Cassotis 激活时显示状态浮窗';
+    SCheckEnableAI = '启用 AI 候选增强';
+    SLabelAIBackend = 'AI 后端';
+    SOptionAuto = '自动';
+    SOptionCPU = 'CPU';
+    SOptionCUDA = 'CUDA';
+    SLabelAIRequestTimeout = '请求超时（毫秒）';
+    SLabelAIRuntimeDirCPU = 'CPU 运行库目录';
+    SLabelAIRuntimeDirCUDA = 'CUDA 运行库目录';
+    SLabelAIModelPath = '模型路径';
+    SButtonUseDefaultAIPaths = '恢复默认 AI 路径';
+    SButtonOpenAIFolder = '打开 AI 目录';
+    SCheckEnableLogging = '启用日志';
+    SLabelLogLevel = '日志级别';
+    SOptionLogDebug = '调试';
+    SOptionLogInfo = '信息';
+    SOptionLogWarn = '警告';
+    SOptionLogError = '错误';
+    SLabelMaxLogSize = '日志大小上限（KB）';
+    SLabelLogPath = '日志路径';
+    SButtonOpenLogFolder = '打开日志目录';
+    SButtonUseDefaultLogging = '恢复默认日志';
+    SHintLogging =
+        '修改会立即写回 ini 文件。Host 侧日志会立刻热重载；TSF 侧日志沿用现有配置重载路径。';
+    SCheckEnableDebugMode = '启用调试模式';
+    SLabelSimplifiedDictionary = '简体词库';
+    SLabelTraditionalDictionary = '繁体词库';
+    SLabelUserDictionary = '用户词库';
+    SButtonUseDefaultDictionaries = '恢复默认词库路径';
+    SButtonOpenDictionaryFolder = '打开词库目录';
+    SButtonOpenConfigFolder = '打开配置目录';
+    SButtonOpenConfigFile = '打开配置文件';
+    SHintAdvanced =
+        '词库和模型路径会写回 ini 文件并立即重载。请使用有效路径，避免运行时资源失效。';
+    SPathEditHint = '留空表示使用内置默认路径。';
+    SPathEmpty = '%s为空。';
+    SPathMissing = '%s不存在。';
+    SConfigFolderMissing = '配置目录不存在。';
+    SConfigFileMissing = '配置文件尚不存在。';
+    SConfirmRestoreDefaults = '要恢复默认设置吗？';
+    SSettingMaxCandidates = '最大候选数';
+    SSettingAIRequestTimeout = 'AI 请求超时';
+    SSettingMaxLogSize = '日志大小上限';
+    SErrorValueTooSmall = '%s不能小于 %d。';
+    SErrorValueTooLarge = '%s不能大于 %d。';
+    SDialogSelectCpuRuntimeDir = '选择 CPU 运行库目录';
+    SDialogSelectCudaRuntimeDir = '选择 CUDA 运行库目录';
+    SDialogSelectModelFile = '选择模型文件';
+    SDialogSelectLogFile = '选择日志文件';
+    SDialogSelectSimplifiedDictionary = '选择简体词库';
+    SDialogSelectTraditionalDictionary = '选择繁体词库';
+    SDialogSelectUserDictionary = '选择用户词库文件';
+    SFilterModelFiles = '模型文件|*.gguf|所有文件|*.*';
+    SFilterLogFiles = '日志文件|*.log;*.txt|所有文件|*.*';
+    SFilterDictionaryFiles = '词库文件|*.db;*.sqlite|所有文件|*.*';
+    SFilterDatabaseFiles = '数据库文件|*.db;*.sqlite|所有文件|*.*';
+    SCurrentAIModelPath = '当前 AI 模型路径';
+    SCurrentLogFolder = '当前日志目录';
+    SCurrentDictionaryPath = '当前词库路径';
+
 function create_label(const owner: TComponent; const parent: TWinControl; const caption: string;
     const top: Integer): TLabel;
 begin
@@ -168,6 +257,56 @@ begin
     Result.Caption := caption;
 end;
 
+function measure_wrapped_label_height(const font: TFont; const text: string; const width: Integer): Integer;
+var
+    dc: HDC;
+    old_font: HGDIOBJ;
+    calc_rect: TRect;
+begin
+    Result := 20;
+    if (font = nil) or (width <= 0) or (text = '') then
+    begin
+        Exit;
+    end;
+
+    dc := GetDC(0);
+    if dc = 0 then
+    begin
+        Exit;
+    end;
+    try
+        old_font := SelectObject(dc, font.Handle);
+        try
+            calc_rect := Rect(0, 0, width, 0);
+            DrawText(dc, PChar(text), Length(text), calc_rect, DT_CALCRECT or DT_WORDBREAK or DT_NOPREFIX);
+            Result := calc_rect.Bottom - calc_rect.Top + 4;
+            if Result < 20 then
+            begin
+                Result := 20;
+            end;
+        finally
+            SelectObject(dc, old_font);
+        end;
+    finally
+        ReleaseDC(0, dc);
+    end;
+end;
+
+function create_hint_label(const owner: TComponent; const parent: TWinControl; const caption: string;
+    const left: Integer; const top: Integer; const width: Integer): TLabel;
+begin
+    Result := TLabel.Create(owner);
+    Result.Parent := parent;
+    Result.Left := left;
+    Result.Top := top;
+    Result.AutoSize := False;
+    Result.WordWrap := True;
+    Result.Width := width;
+    Result.Height := measure_wrapped_label_height(Result.Font, caption, width);
+    Result.Caption := caption;
+    Result.Font.Color := clGrayText;
+end;
+
 function create_browse_button(const owner: TComponent; const parent: TWinControl; const top: Integer;
     const on_click: TNotifyEvent): TButton;
 begin
@@ -176,7 +315,7 @@ begin
     Result.Left := c_control_left + c_path_edit_width + c_browse_button_gap;
     Result.Top := top - 1;
     Result.Width := c_browse_button_width;
-    Result.Caption := 'Browse';
+    Result.Caption := SButtonBrowse;
     Result.OnClick := on_click;
 end;
 
@@ -277,7 +416,7 @@ procedure TncSettingsForm.configure_form;
 begin
     BorderStyle := bsDialog;
     BorderIcons := [biSystemMenu];
-    Caption := 'Cassotis Settings';
+    Caption := SSettingsTitle;
     ClientWidth := c_dialog_width;
     ClientHeight := c_dialog_height;
     Position := poScreenCenter;
@@ -294,31 +433,31 @@ begin
 
     m_tab_general := TTabSheet.Create(m_page_control);
     m_tab_general.PageControl := m_page_control;
-    m_tab_general.Caption := 'General';
+    m_tab_general.Caption := STabGeneral;
 
     m_tab_candidate := TTabSheet.Create(m_page_control);
     m_tab_candidate.PageControl := m_page_control;
-    m_tab_candidate.Caption := 'Candidates';
+    m_tab_candidate.Caption := STabCandidates;
 
     m_tab_hotkeys := TTabSheet.Create(m_page_control);
     m_tab_hotkeys.PageControl := m_page_control;
-    m_tab_hotkeys.Caption := 'Hotkeys';
+    m_tab_hotkeys.Caption := STabHotkeys;
 
     m_tab_appearance := TTabSheet.Create(m_page_control);
     m_tab_appearance.PageControl := m_page_control;
-    m_tab_appearance.Caption := 'Appearance';
+    m_tab_appearance.Caption := STabAppearance;
 
     m_tab_ai := TTabSheet.Create(m_page_control);
     m_tab_ai.PageControl := m_page_control;
-    m_tab_ai.Caption := 'AI';
+    m_tab_ai.Caption := STabAI;
 
     m_tab_logging := TTabSheet.Create(m_page_control);
     m_tab_logging.PageControl := m_page_control;
-    m_tab_logging.Caption := 'Logging';
+    m_tab_logging.Caption := STabLogging;
 
     m_tab_advanced := TTabSheet.Create(m_page_control);
     m_tab_advanced.PageControl := m_page_control;
-    m_tab_advanced.Caption := 'Advanced';
+    m_tab_advanced.Caption := STabAdvanced;
 end;
 
 procedure TncSettingsForm.configure_buttons;
@@ -328,7 +467,7 @@ begin
     m_btn_reset.Left := 16;
     m_btn_reset.Top := 436;
     m_btn_reset.Width := 96;
-    m_btn_reset.Caption := 'Defaults';
+    m_btn_reset.Caption := SButtonDefaults;
     m_btn_reset.OnClick := on_reset_click;
 
     m_btn_apply := TButton.Create(Self);
@@ -336,7 +475,7 @@ begin
     m_btn_apply.Left := ClientWidth - 270;
     m_btn_apply.Top := 436;
     m_btn_apply.Width := 80;
-    m_btn_apply.Caption := 'Apply';
+    m_btn_apply.Caption := SButtonApply;
     m_btn_apply.OnClick := on_apply_click;
 
     m_btn_ok := TButton.Create(Self);
@@ -344,7 +483,7 @@ begin
     m_btn_ok.Left := ClientWidth - 180;
     m_btn_ok.Top := 436;
     m_btn_ok.Width := 80;
-    m_btn_ok.Caption := 'OK';
+    m_btn_ok.Caption := SButtonOK;
     m_btn_ok.Default := True;
     m_btn_ok.OnClick := on_ok_click;
 
@@ -353,7 +492,7 @@ begin
     m_btn_cancel.Left := ClientWidth - 90;
     m_btn_cancel.Top := 436;
     m_btn_cancel.Width := 80;
-    m_btn_cancel.Caption := 'Cancel';
+    m_btn_cancel.Caption := SButtonCancel;
     m_btn_cancel.Cancel := True;
     m_btn_cancel.OnClick := on_cancel_click;
 end;
@@ -361,21 +500,24 @@ end;
 procedure TncSettingsForm.add_general_controls;
 var
     top: Integer;
+    hint_label: TLabel;
 begin
     top := 24;
-    create_label(Self, m_tab_general, 'Input mode', top);
+    create_label(Self, m_tab_general, SLabelInputMode, top);
     m_combo_input_mode := TComboBox.Create(Self);
     m_combo_input_mode.Parent := m_tab_general;
     m_combo_input_mode.Left := c_control_left;
     m_combo_input_mode.Top := top;
     m_combo_input_mode.Width := c_combo_width;
     m_combo_input_mode.Style := csDropDownList;
-    m_combo_input_mode.Items.Add('Chinese');
-    m_combo_input_mode.Items.Add('English');
+    m_combo_input_mode.Items.Add(SOptionChinese);
+    m_combo_input_mode.Items.Add(SOptionEnglish);
     m_combo_input_mode.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_general, 'Max candidates', top);
+    hint_label := create_hint_label(Self, m_tab_general, SHintInputMode, c_control_left, top + c_row_height - 2, 420);
+
+    Inc(top, c_row_height + c_row_gap + hint_label.Height - 2);
+    create_label(Self, m_tab_general, SLabelMaxCandidates, top);
     m_edit_max_candidates := TEdit.Create(Self);
     m_edit_max_candidates.Parent := m_tab_general;
     m_edit_max_candidates.Left := c_control_left;
@@ -385,15 +527,15 @@ begin
     m_edit_max_candidates.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_general, 'Dictionary variant', top);
+    create_label(Self, m_tab_general, SLabelDictionaryVariant, top);
     m_combo_variant := TComboBox.Create(Self);
     m_combo_variant.Parent := m_tab_general;
     m_combo_variant.Left := c_control_left;
     m_combo_variant.Top := top;
     m_combo_variant.Width := c_combo_width;
     m_combo_variant.Style := csDropDownList;
-    m_combo_variant.Items.Add('Simplified Chinese');
-    m_combo_variant.Items.Add('Traditional Chinese');
+    m_combo_variant.Items.Add(SOptionSimplifiedChinese);
+    m_combo_variant.Items.Add(SOptionTraditionalChinese);
     m_combo_variant.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
@@ -402,7 +544,7 @@ begin
     m_chk_full_width_mode.Left := c_label_left;
     m_chk_full_width_mode.Top := top;
     m_chk_full_width_mode.Width := 420;
-    m_chk_full_width_mode.Caption := 'Use full-width characters';
+    m_chk_full_width_mode.Caption := SCheckFullWidthMode;
     m_chk_full_width_mode.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
@@ -411,7 +553,7 @@ begin
     m_chk_punctuation_full_width.Left := c_label_left;
     m_chk_punctuation_full_width.Top := top;
     m_chk_punctuation_full_width.Width := 420;
-    m_chk_punctuation_full_width.Caption := 'Use full-width punctuation';
+    m_chk_punctuation_full_width.Caption := SCheckPunctuationFullWidth;
     m_chk_punctuation_full_width.OnClick := mark_dirty;
 end;
 
@@ -425,7 +567,7 @@ begin
     m_chk_enable_segment_candidates.Left := c_label_left;
     m_chk_enable_segment_candidates.Top := top;
     m_chk_enable_segment_candidates.Width := 420;
-    m_chk_enable_segment_candidates.Caption := 'Enable segmented candidates';
+    m_chk_enable_segment_candidates.Caption := SCheckEnableSegmentCandidates;
     m_chk_enable_segment_candidates.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
@@ -434,7 +576,7 @@ begin
     m_chk_segment_head_only.Left := c_label_left;
     m_chk_segment_head_only.Top := top;
     m_chk_segment_head_only.Width := 460;
-    m_chk_segment_head_only.Caption := 'Prefer only the head segment for multi-syllable splitting';
+    m_chk_segment_head_only.Caption := SCheckSegmentHeadOnly;
     m_chk_segment_head_only.OnClick := mark_dirty;
 end;
 
@@ -448,7 +590,7 @@ begin
     m_chk_enable_ctrl_space_toggle.Left := c_label_left;
     m_chk_enable_ctrl_space_toggle.Top := top;
     m_chk_enable_ctrl_space_toggle.Width := 420;
-    m_chk_enable_ctrl_space_toggle.Caption := 'Enable Ctrl+Space to toggle Chinese/English';
+    m_chk_enable_ctrl_space_toggle.Caption := SCheckEnableCtrlSpace;
     m_chk_enable_ctrl_space_toggle.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
@@ -457,7 +599,7 @@ begin
     m_chk_enable_shift_space_toggle.Left := c_label_left;
     m_chk_enable_shift_space_toggle.Top := top;
     m_chk_enable_shift_space_toggle.Width := 420;
-    m_chk_enable_shift_space_toggle.Caption := 'Enable Shift+Space to toggle full-width';
+    m_chk_enable_shift_space_toggle.Caption := SCheckEnableShiftSpace;
     m_chk_enable_shift_space_toggle.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
@@ -466,7 +608,7 @@ begin
     m_chk_enable_ctrl_period_toggle.Left := c_label_left;
     m_chk_enable_ctrl_period_toggle.Top := top;
     m_chk_enable_ctrl_period_toggle.Width := 420;
-    m_chk_enable_ctrl_period_toggle.Caption := 'Enable Ctrl+. to toggle punctuation width';
+    m_chk_enable_ctrl_period_toggle.Caption := SCheckEnableCtrlPeriod;
     m_chk_enable_ctrl_period_toggle.OnClick := mark_dirty;
 end;
 
@@ -477,7 +619,7 @@ begin
     m_chk_show_status_widget.Left := c_label_left;
     m_chk_show_status_widget.Top := 24;
     m_chk_show_status_widget.Width := 420;
-    m_chk_show_status_widget.Caption := 'Show the status floating window when Cassotis is active';
+    m_chk_show_status_widget.Caption := SCheckShowStatusWidget;
     m_chk_show_status_widget.OnClick := mark_dirty;
 end;
 
@@ -491,24 +633,24 @@ begin
     m_chk_enable_ai.Left := c_label_left;
     m_chk_enable_ai.Top := top;
     m_chk_enable_ai.Width := 420;
-    m_chk_enable_ai.Caption := 'Enable AI candidate enhancement';
+    m_chk_enable_ai.Caption := SCheckEnableAI;
     m_chk_enable_ai.OnClick := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, 'AI backend', top);
+    create_label(Self, m_tab_ai, SLabelAIBackend, top);
     m_combo_ai_backend := TComboBox.Create(Self);
     m_combo_ai_backend.Parent := m_tab_ai;
     m_combo_ai_backend.Left := c_control_left;
     m_combo_ai_backend.Top := top;
     m_combo_ai_backend.Width := c_combo_width;
     m_combo_ai_backend.Style := csDropDownList;
-    m_combo_ai_backend.Items.Add('Auto');
-    m_combo_ai_backend.Items.Add('CPU');
-    m_combo_ai_backend.Items.Add('CUDA');
+    m_combo_ai_backend.Items.Add(SOptionAuto);
+    m_combo_ai_backend.Items.Add(SOptionCPU);
+    m_combo_ai_backend.Items.Add(SOptionCUDA);
     m_combo_ai_backend.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, 'Request timeout (ms)', top);
+    create_label(Self, m_tab_ai, SLabelAIRequestTimeout, top);
     m_edit_ai_timeout_ms := TEdit.Create(Self);
     m_edit_ai_timeout_ms.Parent := m_tab_ai;
     m_edit_ai_timeout_ms.Left := c_control_left;
@@ -518,7 +660,7 @@ begin
     m_edit_ai_timeout_ms.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, 'CPU runtime dir', top);
+    create_label(Self, m_tab_ai, SLabelAIRuntimeDirCPU, top);
     m_edit_ai_runtime_dir_cpu := TEdit.Create(Self);
     m_edit_ai_runtime_dir_cpu.Parent := m_tab_ai;
     m_edit_ai_runtime_dir_cpu.Left := c_control_left;
@@ -529,7 +671,7 @@ begin
     m_btn_ai_runtime_dir_cpu := create_browse_button(Self, m_tab_ai, top, on_browse_ai_runtime_dir_cpu);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, 'CUDA runtime dir', top);
+    create_label(Self, m_tab_ai, SLabelAIRuntimeDirCUDA, top);
     m_edit_ai_runtime_dir_cuda := TEdit.Create(Self);
     m_edit_ai_runtime_dir_cuda.Parent := m_tab_ai;
     m_edit_ai_runtime_dir_cuda.Left := c_control_left;
@@ -540,7 +682,7 @@ begin
     m_btn_ai_runtime_dir_cuda := create_browse_button(Self, m_tab_ai, top, on_browse_ai_runtime_dir_cuda);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, 'Model path', top);
+    create_label(Self, m_tab_ai, SLabelAIModelPath, top);
     m_edit_ai_model_path := TEdit.Create(Self);
     m_edit_ai_model_path.Parent := m_tab_ai;
     m_edit_ai_model_path.Left := c_control_left;
@@ -552,9 +694,9 @@ begin
 
     Inc(top, c_row_height + 2);
     m_btn_ai_defaults := create_action_button(Self, m_tab_ai, c_control_left, top,
-        'Use default AI paths', on_ai_defaults_click);
+        SButtonUseDefaultAIPaths, on_ai_defaults_click);
     m_btn_ai_open_model_folder := create_action_button(Self, m_tab_ai, c_control_left + 140, top,
-        'Open AI folder', on_open_ai_model_folder);
+        SButtonOpenAIFolder, on_open_ai_model_folder);
 end;
 
 procedure TncSettingsForm.add_logging_controls;
@@ -567,25 +709,25 @@ begin
     m_chk_log_enabled.Left := c_label_left;
     m_chk_log_enabled.Top := top;
     m_chk_log_enabled.Width := 420;
-    m_chk_log_enabled.Caption := 'Enable logging';
+    m_chk_log_enabled.Caption := SCheckEnableLogging;
     m_chk_log_enabled.OnClick := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_logging, 'Log level', top);
+    create_label(Self, m_tab_logging, SLabelLogLevel, top);
     m_combo_log_level := TComboBox.Create(Self);
     m_combo_log_level.Parent := m_tab_logging;
     m_combo_log_level.Left := c_control_left;
     m_combo_log_level.Top := top;
     m_combo_log_level.Width := c_combo_width;
     m_combo_log_level.Style := csDropDownList;
-    m_combo_log_level.Items.Add('Debug');
-    m_combo_log_level.Items.Add('Info');
-    m_combo_log_level.Items.Add('Warn');
-    m_combo_log_level.Items.Add('Error');
+    m_combo_log_level.Items.Add(SOptionLogDebug);
+    m_combo_log_level.Items.Add(SOptionLogInfo);
+    m_combo_log_level.Items.Add(SOptionLogWarn);
+    m_combo_log_level.Items.Add(SOptionLogError);
     m_combo_log_level.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_logging, 'Max log size (KB)', top);
+    create_label(Self, m_tab_logging, SLabelMaxLogSize, top);
     m_edit_log_max_size_kb := TEdit.Create(Self);
     m_edit_log_max_size_kb.Parent := m_tab_logging;
     m_edit_log_max_size_kb.Left := c_control_left;
@@ -595,7 +737,7 @@ begin
     m_edit_log_max_size_kb.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_logging, 'Log path', top);
+    create_label(Self, m_tab_logging, SLabelLogPath, top);
     m_edit_log_path := TEdit.Create(Self);
     m_edit_log_path.Parent := m_tab_logging;
     m_edit_log_path.Left := c_control_left;
@@ -607,20 +749,11 @@ begin
 
     Inc(top, c_row_height + 2);
     m_btn_open_log_folder := create_action_button(Self, m_tab_logging, c_control_left, top,
-        'Open log folder', on_open_log_folder);
+        SButtonOpenLogFolder, on_open_log_folder);
     m_btn_log_defaults := create_action_button(Self, m_tab_logging, c_control_left + 140, top,
-        'Use default logging', on_log_defaults_click);
+        SButtonUseDefaultLogging, on_log_defaults_click);
 
-    m_hint_logging := TLabel.Create(Self);
-    m_hint_logging.Parent := m_tab_logging;
-    m_hint_logging.Left := c_label_left;
-    m_hint_logging.Top := top + c_row_height + 8;
-    m_hint_logging.Width := 620;
-    m_hint_logging.WordWrap := True;
-    m_hint_logging.Caption :=
-        'Changes are written back to the ini file immediately. Host-side logging ' +
-        'reloads at once; TSF-side logging follows the existing config reload path.';
-    m_hint_logging.Font.Color := clGrayText;
+    m_hint_logging := create_hint_label(Self, m_tab_logging, SHintLogging, c_label_left, top + c_row_height + 8, 620);
 end;
 
 procedure TncSettingsForm.add_advanced_controls;
@@ -633,11 +766,11 @@ begin
     m_chk_debug_mode.Left := c_label_left;
     m_chk_debug_mode.Top := top;
     m_chk_debug_mode.Width := 420;
-    m_chk_debug_mode.Caption := 'Enable debug mode';
+    m_chk_debug_mode.Caption := SCheckEnableDebugMode;
     m_chk_debug_mode.OnClick := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap + 4);
-    create_label(Self, m_tab_advanced, 'Simplified dictionary', top);
+    create_label(Self, m_tab_advanced, SLabelSimplifiedDictionary, top);
     m_edit_dict_path_sc := TEdit.Create(Self);
     m_edit_dict_path_sc.Parent := m_tab_advanced;
     m_edit_dict_path_sc.Left := c_control_left;
@@ -648,7 +781,7 @@ begin
     m_btn_dict_path_sc := create_browse_button(Self, m_tab_advanced, top, on_browse_dict_path_sc);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_advanced, 'Traditional dictionary', top);
+    create_label(Self, m_tab_advanced, SLabelTraditionalDictionary, top);
     m_edit_dict_path_tc := TEdit.Create(Self);
     m_edit_dict_path_tc.Parent := m_tab_advanced;
     m_edit_dict_path_tc.Left := c_control_left;
@@ -659,7 +792,7 @@ begin
     m_btn_dict_path_tc := create_browse_button(Self, m_tab_advanced, top, on_browse_dict_path_tc);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_advanced, 'User dictionary', top);
+    create_label(Self, m_tab_advanced, SLabelUserDictionary, top);
     m_edit_user_dict_path := TEdit.Create(Self);
     m_edit_user_dict_path.Parent := m_tab_advanced;
     m_edit_user_dict_path.Left := c_control_left;
@@ -671,25 +804,16 @@ begin
 
     Inc(top, c_row_height + 2);
     m_btn_dict_defaults := create_action_button(Self, m_tab_advanced, c_control_left, top,
-        'Use default dictionaries', on_dictionary_defaults_click);
+        SButtonUseDefaultDictionaries, on_dictionary_defaults_click);
     m_btn_open_dictionary_folder := create_action_button(Self, m_tab_advanced, c_control_left + 140, top,
-        'Open dict folder', on_open_dictionary_folder);
+        SButtonOpenDictionaryFolder, on_open_dictionary_folder);
     m_btn_open_config_folder := create_action_button(Self, m_tab_advanced, c_control_left + 280, top,
-        'Open config folder', on_open_config_folder);
+        SButtonOpenConfigFolder, on_open_config_folder);
     Inc(top, c_row_height + 2);
     m_btn_open_config_file := create_action_button(Self, m_tab_advanced, c_control_left, top,
-        'Open config file', on_open_config_file);
+        SButtonOpenConfigFile, on_open_config_file);
 
-    m_hint_advanced := TLabel.Create(Self);
-    m_hint_advanced.Parent := m_tab_advanced;
-    m_hint_advanced.Left := c_label_left;
-    m_hint_advanced.Top := top + c_row_height + 8;
-    m_hint_advanced.Width := 620;
-    m_hint_advanced.WordWrap := True;
-    m_hint_advanced.Caption :=
-        'Dictionary and model paths are written back to the ini file and reloaded immediately. ' +
-        'Use existing valid paths to avoid breaking runtime assets.';
-    m_hint_advanced.Font.Color := clGrayText;
+    m_hint_advanced := create_hint_label(Self, m_tab_advanced, SHintAdvanced, c_label_left, top + c_row_height + 8, 620);
 end;
 
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
@@ -901,7 +1025,7 @@ begin
     edit.TextHint := hint;
     edit.ParentShowHint := False;
     edit.ShowHint := True;
-    edit.Hint := 'Leave blank to use the built-in default path.';
+    edit.Hint := SPathEditHint;
 end;
 
 function TncSettingsForm.open_folder_for_path(const path_text: string; const caption: string): Boolean;
@@ -913,7 +1037,7 @@ begin
     resolved_path := Trim(path_text);
     if resolved_path = '' then
     begin
-        MessageDlg(caption + ' is empty.', mtWarning, [mbOK], 0);
+        MessageDlg(Format(SPathEmpty, [caption]), mtWarning, [mbOK], 0);
         Exit;
     end;
 
@@ -928,7 +1052,7 @@ begin
 
     if (folder_path = '') or (not TDirectory.Exists(folder_path)) then
     begin
-        MessageDlg(caption + ' does not exist.', mtWarning, [mbOK], 0);
+        MessageDlg(Format(SPathMissing, [caption]), mtWarning, [mbOK], 0);
         Exit;
     end;
 
@@ -1084,13 +1208,13 @@ begin
     value := StrToIntDef(Trim(edit.Text), default_value);
     if value < min_value then
     begin
-        error_text := Format('%s must be at least %d.', [setting_name, min_value]);
+        error_text := Format(SErrorValueTooSmall, [setting_name, min_value]);
         Result := False;
         Exit;
     end;
     if value > max_value then
     begin
-        error_text := Format('%s must be at most %d.', [setting_name, max_value]);
+        error_text := Format(SErrorValueTooLarge, [setting_name, max_value]);
         Result := False;
         Exit;
     end;
@@ -1110,7 +1234,7 @@ begin
     error_text := '';
 
     if not read_integer_setting(m_edit_max_candidates, m_engine_config.max_candidates, 1, 20,
-        'Max candidates', max_candidates, error_text) then
+        SSettingMaxCandidates, max_candidates, error_text) then
     begin
         Result := False;
         Exit;
@@ -1118,7 +1242,7 @@ begin
     next_config.max_candidates := max_candidates;
 
     if not read_integer_setting(m_edit_ai_timeout_ms, m_engine_config.ai_request_timeout_ms, 100, 10000,
-        'AI request timeout', timeout_ms, error_text) then
+        SSettingAIRequestTimeout, timeout_ms, error_text) then
     begin
         Result := False;
         Exit;
@@ -1126,7 +1250,7 @@ begin
     next_config.ai_request_timeout_ms := timeout_ms;
 
     if not read_integer_setting(m_edit_log_max_size_kb, m_log_config.max_size_kb, 64, 1024 * 1024,
-        'Max log size', log_max_size_kb, error_text) then
+        SSettingMaxLogSize, log_max_size_kb, error_text) then
     begin
         Result := False;
         Exit;
@@ -1201,7 +1325,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_ai_runtime_dir_cpu.Text);
-    if browse_for_directory('Select CPU runtime directory', path) then
+    if browse_for_directory(SDialogSelectCpuRuntimeDir, path) then
     begin
         assign_path_edit(m_edit_ai_runtime_dir_cpu, path);
     end;
@@ -1212,7 +1336,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_ai_runtime_dir_cuda.Text);
-    if browse_for_directory('Select CUDA runtime directory', path) then
+    if browse_for_directory(SDialogSelectCudaRuntimeDir, path) then
     begin
         assign_path_edit(m_edit_ai_runtime_dir_cuda, path);
     end;
@@ -1223,7 +1347,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_ai_model_path.Text);
-    if browse_for_open_file('Select model file', 'Model files|*.gguf|All files|*.*', path) then
+    if browse_for_open_file(SDialogSelectModelFile, SFilterModelFiles, path) then
     begin
         assign_path_edit(m_edit_ai_model_path, path);
     end;
@@ -1245,7 +1369,7 @@ begin
     begin
         path := get_default_ai_llama_model_path;
     end;
-    open_folder_for_path(path, 'The current AI model path');
+    open_folder_for_path(path, SCurrentAIModelPath);
 end;
 
 procedure TncSettingsForm.on_browse_log_path(Sender: TObject);
@@ -1253,7 +1377,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_log_path.Text);
-    if browse_for_save_file('Select log file', 'Log files|*.log;*.txt|All files|*.*', 'log', path) then
+    if browse_for_save_file(SDialogSelectLogFile, SFilterLogFiles, 'log', path) then
     begin
         assign_path_edit(m_edit_log_path, path);
     end;
@@ -1268,7 +1392,7 @@ begin
     begin
         path := get_default_log_path;
     end;
-    open_folder_for_path(path, 'The current log folder');
+    open_folder_for_path(path, SCurrentLogFolder);
 end;
 
 procedure TncSettingsForm.on_log_defaults_click(Sender: TObject);
@@ -1293,7 +1417,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_dict_path_sc.Text);
-    if browse_for_open_file('Select simplified dictionary', 'Dictionary files|*.db;*.sqlite|All files|*.*', path) then
+    if browse_for_open_file(SDialogSelectSimplifiedDictionary, SFilterDictionaryFiles, path) then
     begin
         assign_path_edit(m_edit_dict_path_sc, path);
     end;
@@ -1304,7 +1428,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_dict_path_tc.Text);
-    if browse_for_open_file('Select traditional dictionary', 'Dictionary files|*.db;*.sqlite|All files|*.*', path) then
+    if browse_for_open_file(SDialogSelectTraditionalDictionary, SFilterDictionaryFiles, path) then
     begin
         assign_path_edit(m_edit_dict_path_tc, path);
     end;
@@ -1315,7 +1439,7 @@ var
     path: string;
 begin
     path := Trim(m_edit_user_dict_path.Text);
-    if browse_for_save_file('Select user dictionary file', 'Database files|*.db;*.sqlite|All files|*.*', 'db', path) then
+    if browse_for_save_file(SDialogSelectUserDictionary, SFilterDatabaseFiles, 'db', path) then
     begin
         assign_path_edit(m_edit_user_dict_path, path);
     end;
@@ -1348,7 +1472,7 @@ begin
             path := get_default_dictionary_path_simplified;
         end;
     end;
-    open_folder_for_path(path, 'The current dictionary path');
+    open_folder_for_path(path, SCurrentDictionaryPath);
 end;
 
 procedure TncSettingsForm.on_open_config_folder(Sender: TObject);
@@ -1358,7 +1482,7 @@ begin
     folder_path := ExtractFileDir(get_default_config_path);
     if (folder_path = '') or (not TDirectory.Exists(folder_path)) then
     begin
-        MessageDlg('The config folder does not exist.', mtWarning, [mbOK], 0);
+        MessageDlg(SConfigFolderMissing, mtWarning, [mbOK], 0);
         Exit;
     end;
     ShellExecute(Handle, 'open', PChar(folder_path), nil, nil, SW_SHOWNORMAL);
@@ -1371,7 +1495,7 @@ begin
     config_path := get_default_config_path;
     if (config_path = '') or (not FileExists(config_path)) then
     begin
-        MessageDlg('The config file does not exist yet.', mtWarning, [mbOK], 0);
+        MessageDlg(SConfigFileMissing, mtWarning, [mbOK], 0);
         Exit;
     end;
     ShellExecute(Handle, 'open', PChar(config_path), nil, nil, SW_SHOWNORMAL);
@@ -1379,7 +1503,7 @@ end;
 
 procedure TncSettingsForm.on_reset_click(Sender: TObject);
 begin
-    if Application.MessageBox(PChar('Restore default settings?'), PChar('Cassotis Settings'),
+    if Application.MessageBox(PChar(SConfirmRestoreDefaults), PChar(SSettingsTitle),
         MB_YESNO or MB_ICONQUESTION) = IDYES then
     begin
         load_defaults;
@@ -1395,7 +1519,7 @@ var
 begin
     if not build_config_from_controls(next_config, next_log_config, next_status_widget_visible, error_text) then
     begin
-        Application.MessageBox(PChar(error_text), PChar('Cassotis Settings'), MB_OK or MB_ICONWARNING);
+        Application.MessageBox(PChar(error_text), PChar(SSettingsTitle), MB_OK or MB_ICONWARNING);
         Exit;
     end;
 

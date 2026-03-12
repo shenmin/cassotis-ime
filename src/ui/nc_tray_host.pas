@@ -92,6 +92,7 @@ type
         procedure save_config;
         procedure apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;
             const status_widget_visible: Boolean);
+        function apply_runtime_state_to_host: Boolean;
         function reload_host_config: Boolean;
         procedure show_settings_dialog;
         procedure update_menu;
@@ -988,7 +989,20 @@ begin
     apply_status_widget_visibility;
     save_status_widget_state;
     reload_host_config;
+    apply_runtime_state_to_host;
     refresh_state_from_host;
+end;
+
+function TncTrayHost.apply_runtime_state_to_host: Boolean;
+begin
+    Result := False;
+    if (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    Result := m_ipc_client.set_state(m_session_id, m_engine_config.input_mode, m_engine_config.full_width_mode,
+        m_engine_config.punctuation_full_width);
 end;
 
 function TncTrayHost.reload_host_config: Boolean;
@@ -1237,6 +1251,8 @@ begin
         m_engine_config.input_mode := im_chinese;
     end;
     save_config;
+    apply_runtime_state_to_host;
+    refresh_state_from_host;
 end;
 
 procedure TncTrayHost.on_dictionary_variant_click(Sender: TObject);
@@ -1250,18 +1266,25 @@ begin
         m_engine_config.dictionary_variant := dv_traditional;
     end;
     save_config;
+    reload_host_config;
+    apply_runtime_state_to_host;
+    refresh_state_from_host;
 end;
 
 procedure TncTrayHost.on_full_width_click(Sender: TObject);
 begin
     m_engine_config.full_width_mode := not m_engine_config.full_width_mode;
     save_config;
+    apply_runtime_state_to_host;
+    refresh_state_from_host;
 end;
 
 procedure TncTrayHost.on_punct_click(Sender: TObject);
 begin
     m_engine_config.punctuation_full_width := not m_engine_config.punctuation_full_width;
     save_config;
+    apply_runtime_state_to_host;
+    refresh_state_from_host;
 end;
 
 procedure TncTrayHost.on_open_config_click(Sender: TObject);
@@ -1273,6 +1296,7 @@ procedure TncTrayHost.on_reload_click(Sender: TObject);
 begin
     load_config;
     reload_host_config;
+    apply_runtime_state_to_host;
     refresh_state_from_host;
 end;
 
