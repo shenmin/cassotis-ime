@@ -22,7 +22,8 @@ uses
     nc_tsf_display_attr,
     nc_tsf_edit_session,
     nc_caret_anchor_policy,
-    nc_ipc_client;
+    nc_ipc_client,
+    nc_ipc_common;
 
 type
     TncTextService = class(TComObject, ITfTextInputProcessor, ITfTextInputProcessorEx,
@@ -183,6 +184,8 @@ type
     end;
 
 implementation
+
+procedure signal_tray_profile_event(const active: Boolean); forward;
 
 type
     TncGuiThreadInfo = record
@@ -1083,6 +1086,7 @@ begin
     end;
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
+        signal_tray_profile_event(True);
         update_active_state(True);
         mark_session_dirty;
         m_last_surrounding_request_tick := 0;
@@ -1120,6 +1124,7 @@ begin
 
     if (m_ipc_client <> nil) and (m_session_id <> '') then
     begin
+        signal_tray_profile_event(False);
         update_active_state(False);
         mark_session_dirty;
     end;
@@ -2612,12 +2617,93 @@ begin
     end;
 end;
 
+procedure signal_tray_profile_event(const active: Boolean);
+var
+    event_handle: THandle;
+    event_name: string;
+begin
+    if active then
+    begin
+        event_name := get_nc_active_event;
+    end
+    else
+    begin
+        event_name := get_nc_inactive_event;
+    end;
+
+    event_handle := CreateEvent(nil, False, False, PChar(event_name));
+    if event_handle <> 0 then
+    begin
+        try
+            SetEvent(event_handle);
+        finally
+            CloseHandle(event_handle);
+        end;
+    end;
+end;
+
 procedure TncTextService.update_active_state(const active: Boolean);
+var
+    request_ok: Boolean;
 begin
     if (m_ipc_client = nil) or (m_session_id = '') then
     begin
         Exit;
     end;
+
+    request_ok := False;
+
+    if m_active_state_lock <> nil then
+    begin
+        m_active_state_lock.Acquire;
+        try
+            if m_active_state_shutdown then
+            begin
+                Exit;
+            end;
+            m_active_state_pending := False;
+            m_pending_active_session_id := '';
+            m_pending_active_value := False;
+            m_active_state_synced := False;
+        finally
+            m_active_state_lock.Release;
+        end;
+    end;
+
+    if m_ipc_client.is_host_running then
+    begin
+        request_ok := m_ipc_client.set_active(m_session_id, active);
+    end
+    else if not active then
+    begin
+        request_ok := True;
+    end;
+
+    if m_active_state_lock <> nil then
+    begin
+        m_active_state_lock.Acquire;
+        try
+            m_last_reported_active_session_id := m_session_id;
+            m_last_reported_active := active;
+            m_active_state_synced := request_ok;
+        finally
+            m_active_state_lock.Release;
+        end;
+    end;
+
+    if request_ok then
+    begin
+        Exit;
+    end;
+
+    if not active then
+    begin
+        if not m_ipc_client.is_host_running then
+        begin
+            Exit;
+        end;
+    end;
+
     queue_active_state_update(active);
 end;
 
@@ -3219,6 +3305,7 @@ end;
 function TncTextService.maybe_update_surrounding_text(const context: ITfContext; const force: Boolean): Boolean;
 const
     c_surrounding_retry_interval_ms = 120;
+    c_surrounding_activation_grace_ms = 2000;
 var
     now_tick: UInt64;
 begin
@@ -3239,6 +3326,12 @@ begin
     end;
 
     now_tick := GetTickCount64;
+    if (not force) and (m_last_context_activate_tick <> 0) and
+        ((now_tick - m_last_context_activate_tick) < c_surrounding_activation_grace_ms) then
+    begin
+        Exit;
+    end;
+
     if (not force) and (m_last_surrounding_request_tick <> 0) and
         ((now_tick - m_last_surrounding_request_tick) < c_surrounding_retry_interval_ms) then
     begin

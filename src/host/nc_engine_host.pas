@@ -88,6 +88,8 @@ type
         m_session_prewarm_pending: TDictionary<string, Byte>;
         m_lock: TCriticalSection;
         m_maintenance_wakeup: TEvent;
+        m_active_state_event: TEvent;
+        m_inactive_state_event: TEvent;
         m_ai_refresh_thread: TThread;
         m_maintenance_thread: TThread;
         m_config_path: string;
@@ -1030,6 +1032,8 @@ begin
     m_session_prewarm_pending := TDictionary<string, Byte>.Create;
     m_lock := TCriticalSection.Create;
     m_maintenance_wakeup := TEvent.Create(nil, False, False, '');
+    m_active_state_event := TEvent.Create(nil, False, False, get_nc_active_event);
+    m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
     m_ai_refresh_thread := nil;
     m_maintenance_thread := nil;
     m_config_path := get_default_config_path;
@@ -1099,6 +1103,16 @@ begin
     begin
         m_maintenance_wakeup.Free;
         m_maintenance_wakeup := nil;
+    end;
+    if m_active_state_event <> nil then
+    begin
+        m_active_state_event.Free;
+        m_active_state_event := nil;
+    end;
+    if m_inactive_state_event <> nil then
+    begin
+        m_inactive_state_event.Free;
+        m_inactive_state_event := nil;
     end;
     if m_sessions <> nil then
     begin
@@ -1391,17 +1405,19 @@ begin
     try
         if active then
         begin
-            if not m_active_sessions.ContainsKey(session_id) then
-            begin
-                m_active_sessions.Add(session_id, 1);
-            end;
+            // The IME is globally single-active: stale active sessions should
+            // never keep the status widget alive after focus/input-method
+            // switches. Keep only the latest active session.
+            m_active_sessions.Clear;
+            m_recent_active_sessions.Clear;
+            m_active_sessions.AddOrSetValue(session_id, 1);
             m_recent_active_sessions.AddOrSetValue(session_id, GetTickCount);
         end
         else
         begin
-            m_active_sessions.Remove(session_id);
-            m_recent_active_sessions.Remove(session_id);
-            m_shift_toggle_ticks.Remove(session_id);
+            m_active_sessions.Clear;
+            m_recent_active_sessions.Clear;
+            m_shift_toggle_ticks.Clear;
         end;
     finally
         m_lock.Release;
@@ -1410,6 +1426,14 @@ begin
     if m_maintenance_wakeup <> nil then
     begin
         m_maintenance_wakeup.SetEvent;
+    end;
+    if m_active_state_event <> nil then
+    begin
+        m_active_state_event.SetEvent;
+    end;
+    if (not active) and (m_inactive_state_event <> nil) then
+    begin
+        m_inactive_state_event.SetEvent;
     end;
 end;
 
@@ -2080,10 +2104,13 @@ function TncEngineHost.set_state(const session_id: string; const input_mode: Tnc
     const punctuation_full_width: Boolean): Boolean;
 var
     session: TncHostSession;
+    iter_session: TncHostSession;
     next_config: TncEngineConfig;
     input_mode_changed: Boolean;
     global_state_changed: Boolean;
+    global_input_mode_changed: Boolean;
     config_to_save: TncEngineConfig;
+    sessions_to_hide: TList<TncHostSession>;
 begin
     Result := False;
     if session_id = '' then
@@ -2091,49 +2118,71 @@ begin
         Exit;
     end;
 
-    reload_config_if_needed;
-    session := get_or_create_session(session_id);
-    m_lock.Acquire;
+    sessions_to_hide := nil;
     try
-        next_config := session.engine.config;
-        input_mode_changed := next_config.input_mode <> input_mode;
-        next_config.input_mode := input_mode;
-        next_config.full_width_mode := full_width_mode;
-        next_config.punctuation_full_width := punctuation_full_width;
-        session.engine.update_config(next_config);
+        sessions_to_hide := TList<TncHostSession>.Create;
+        reload_config_if_needed;
+        session := get_or_create_session(session_id);
+        m_lock.Acquire;
+        try
+            next_config := session.engine.config;
+            input_mode_changed := next_config.input_mode <> input_mode;
+            global_input_mode_changed := m_config.input_mode <> input_mode;
+            next_config.input_mode := input_mode;
+            next_config.full_width_mode := full_width_mode;
+            next_config.punctuation_full_width := punctuation_full_width;
+            session.engine.update_config(next_config);
 
-        if input_mode_changed then
-        begin
-            session.engine.reset;
-            session.clear_candidates;
+            if input_mode_changed and (not global_input_mode_changed) then
+            begin
+                session.engine.reset;
+                session.clear_candidates;
+                sessions_to_hide.Add(session);
+            end;
+
+            global_state_changed := (m_config.input_mode <> input_mode) or (m_config.full_width_mode <> full_width_mode) or
+                (m_config.punctuation_full_width <> punctuation_full_width);
+            if global_state_changed then
+            begin
+                m_config.input_mode := input_mode;
+                m_config.full_width_mode := full_width_mode;
+                m_config.punctuation_full_width := punctuation_full_width;
+                apply_global_engine_config_locked(m_config);
+                if global_input_mode_changed then
+                begin
+                    for iter_session in m_sessions.Values do
+                    begin
+                        iter_session.engine.reset;
+                        iter_session.clear_candidates;
+                        sessions_to_hide.Add(iter_session);
+                    end;
+                end;
+                config_to_save := m_config;
+            end;
+        finally
+            m_lock.Release;
         end;
 
-        global_state_changed := (m_config.input_mode <> input_mode) or (m_config.full_width_mode <> full_width_mode) or
-            (m_config.punctuation_full_width <> punctuation_full_width);
         if global_state_changed then
         begin
-            m_config.input_mode := input_mode;
-            m_config.full_width_mode := full_width_mode;
-            m_config.punctuation_full_width := punctuation_full_width;
-            apply_global_engine_config_locked(m_config);
-            config_to_save := m_config;
+            persist_engine_config(config_to_save);
+        end;
+
+        if sessions_to_hide.Count > 0 then
+        begin
+            run_on_ui_thread(
+                procedure
+                var
+                    hide_session: TncHostSession;
+                begin
+                    for hide_session in sessions_to_hide do
+                    begin
+                        hide_session.hide_candidate_window;
+                    end;
+                end);
         end;
     finally
-        m_lock.Release;
-    end;
-
-    if global_state_changed then
-    begin
-        persist_engine_config(config_to_save);
-    end;
-
-    if input_mode_changed then
-    begin
-        run_on_ui_thread(
-            procedure
-            begin
-                session.hide_candidate_window;
-            end);
+        sessions_to_hide.Free;
     end;
 
     Result := True;

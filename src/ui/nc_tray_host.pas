@@ -7,9 +7,11 @@ uses
     System.Classes,
     System.IOUtils,
     System.IniFiles,
+    System.SyncObjs,
     System.Types,
     System.UITypes,
     Winapi.Windows,
+    Winapi.Messages,
     Vcl.Forms,
     Vcl.Menus,
     Vcl.Controls,
@@ -17,9 +19,14 @@ uses
     Vcl.ExtCtrls,
     Vcl.Graphics,
     nc_config,
+    nc_ipc_common,
     nc_ipc_client,
     nc_settings_form,
     nc_types;
+
+const
+    WM_NC_ACTIVE_STATE_CHANGED = WM_APP + 101;
+    WM_NC_INACTIVE_STATE_CHANGED = WM_APP + 102;
 
 type
     TncTrayHost = class;
@@ -67,10 +74,17 @@ type
         m_status_drag_form_origin: TPoint;
         m_status_drag_source: TObject;
         m_engine_active: Boolean;
+        m_profile_active: Boolean;
+        m_profile_active_pending: Boolean;
         m_active_sync_fail_count: Integer;
         m_last_state_poll_tick: UInt64;
         m_last_config_poll_tick: UInt64;
         m_last_style_refresh_tick: UInt64;
+        m_last_profile_activate_tick: UInt64;
+        m_active_state_event: TEvent;
+        m_inactive_state_event: TEvent;
+        m_active_state_thread: TThread;
+        m_active_state_shutdown: Boolean;
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
         function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
         procedure handle_status_label_click(const source: TObject);
@@ -88,6 +102,8 @@ type
         procedure enforce_status_form_toolwindow_style;
         procedure apply_status_widget_visibility;
         procedure refresh_state_from_host;
+        procedure start_active_state_thread;
+        procedure stop_active_state_thread;
         procedure load_config;
         procedure save_config;
         procedure apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;
@@ -112,6 +128,8 @@ type
         procedure on_reload_click(Sender: TObject);
         procedure on_exit_click(Sender: TObject);
         procedure on_timer(Sender: TObject);
+        procedure WMNcActiveStateChanged(var Message: TMessage); message WM_NC_ACTIVE_STATE_CHANGED;
+        procedure WMNcInactiveStateChanged(var Message: TMessage); message WM_NC_INACTIVE_STATE_CHANGED;
     protected
         procedure CreateParams(var Params: TCreateParams); override;
     public
@@ -135,6 +153,7 @@ const
     c_config_poll_interval_ms = 1500;
     c_style_refresh_interval_ms = 1500;
     c_style_refresh_interval_idle_ms = 3000;
+    c_profile_activate_debounce_ms = 180;
 
 procedure TncStatusForm.CreateParams(var Params: TCreateParams);
 begin
@@ -184,20 +203,29 @@ begin
     m_status_drag_form_origin := Point(0, 0);
     m_status_drag_source := nil;
     m_engine_active := False;
+    m_profile_active := False;
+    m_profile_active_pending := False;
     m_active_sync_fail_count := 0;
     m_last_state_poll_tick := 0;
     m_last_config_poll_tick := 0;
     m_last_style_refresh_tick := 0;
+    m_last_profile_activate_tick := 0;
+    m_active_state_event := TEvent.Create(nil, False, False, get_nc_active_event);
+    m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
+    m_active_state_thread := nil;
+    m_active_state_shutdown := False;
     enforce_application_toolwindow_style;
     configure_tray;
     configure_menu;
     configure_status_widget;
     load_config;
     load_status_widget_state;
+    start_active_state_thread;
 end;
 
 destructor TncTrayHost.Destroy;
 begin
+    stop_active_state_thread;
     if m_status_form <> nil then
     begin
         m_status_form.Free;
@@ -215,6 +243,16 @@ begin
     begin
         m_status_hint_window.Free;
         m_status_hint_window := nil;
+    end;
+    if m_active_state_event <> nil then
+    begin
+        m_active_state_event.Free;
+        m_active_state_event := nil;
+    end;
+    if m_inactive_state_event <> nil then
+    begin
+        m_inactive_state_event.Free;
+        m_inactive_state_event := nil;
     end;
     inherited Destroy;
 end;
@@ -845,7 +883,7 @@ begin
         end;
     end;
 
-    should_show := m_item_status_widget.Checked and m_engine_active;
+    should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active;
     if m_status_dragging and m_item_status_widget.Checked then
     begin
         // Do not hide during drag on transient active-state flips.
@@ -882,6 +920,63 @@ begin
     end;
 end;
 
+procedure TncTrayHost.start_active_state_thread;
+begin
+    if (m_active_state_thread <> nil) or (m_active_state_event = nil) or (m_inactive_state_event = nil) then
+    begin
+        Exit;
+    end;
+
+    m_active_state_shutdown := False;
+    m_active_state_thread := TThread.CreateAnonymousThread(
+        procedure
+        var
+            wait_handles: array[0..1] of THandle;
+            wait_result: DWORD;
+        begin
+            wait_handles[0] := m_active_state_event.Handle;
+            wait_handles[1] := m_inactive_state_event.Handle;
+            while True do
+            begin
+                wait_result := WaitForMultipleObjects(Length(wait_handles), @wait_handles[0], False, INFINITE);
+                if m_active_state_shutdown then
+                begin
+                    Exit;
+                end;
+                if HandleAllocated then
+                begin
+                    case wait_result of
+                        WAIT_OBJECT_0:
+                            PostMessage(Handle, WM_NC_ACTIVE_STATE_CHANGED, 0, 0);
+                        WAIT_OBJECT_0 + 1:
+                            PostMessage(Handle, WM_NC_INACTIVE_STATE_CHANGED, 0, 0);
+                    end;
+                end;
+            end;
+        end);
+    m_active_state_thread.FreeOnTerminate := False;
+    m_active_state_thread.Start;
+end;
+
+procedure TncTrayHost.stop_active_state_thread;
+begin
+    m_active_state_shutdown := True;
+    if m_active_state_event <> nil then
+    begin
+        m_active_state_event.SetEvent;
+    end;
+    if m_inactive_state_event <> nil then
+    begin
+        m_inactive_state_event.SetEvent;
+    end;
+    if m_active_state_thread <> nil then
+    begin
+        m_active_state_thread.WaitFor;
+        m_active_state_thread.Free;
+        m_active_state_thread := nil;
+    end;
+end;
+
 procedure TncTrayHost.refresh_state_from_host;
 var
     input_mode: TncInputMode;
@@ -892,6 +987,16 @@ var
 begin
     if (m_ipc_client = nil) or (m_session_id = '') then
     begin
+        Exit;
+    end;
+
+    if not m_profile_active then
+    begin
+        if m_engine_active then
+        begin
+            m_engine_active := False;
+            apply_status_widget_visibility;
+        end;
         Exit;
     end;
 
@@ -941,6 +1046,27 @@ begin
     m_engine_config.full_width_mode := full_width_mode;
     m_engine_config.punctuation_full_width := punctuation_full_width;
     update_menu;
+end;
+
+procedure TncTrayHost.WMNcActiveStateChanged(var Message: TMessage);
+begin
+    m_profile_active_pending := True;
+    m_last_profile_activate_tick := GetTickCount64;
+    Message.Result := 0;
+end;
+
+procedure TncTrayHost.WMNcInactiveStateChanged(var Message: TMessage);
+begin
+    m_profile_active_pending := False;
+    m_last_profile_activate_tick := 0;
+    m_profile_active := False;
+    if m_engine_active then
+    begin
+        m_engine_active := False;
+        apply_status_widget_visibility;
+    end;
+    m_last_state_poll_tick := 0;
+    Message.Result := 0;
 end;
 
 procedure TncTrayHost.load_config;
@@ -1315,7 +1441,22 @@ var
     style_refresh_interval: UInt64;
 begin
     now_tick := GetTickCount64;
-    if m_engine_active or ((m_status_form <> nil) and m_status_form.Visible) then
+
+    if m_profile_active_pending and (m_last_profile_activate_tick <> 0) and
+        (now_tick - m_last_profile_activate_tick >= c_profile_activate_debounce_ms) then
+    begin
+        m_profile_active_pending := False;
+        m_profile_active := True;
+        m_last_state_poll_tick := 0;
+        refresh_state_from_host;
+    end;
+
+    if (m_status_form <> nil) and m_status_form.Visible then
+    begin
+        state_poll_interval := c_tray_timer_interval_ms;
+        style_refresh_interval := c_style_refresh_interval_ms;
+    end
+    else if m_engine_active then
     begin
         state_poll_interval := c_state_poll_interval_ms;
         style_refresh_interval := c_style_refresh_interval_ms;

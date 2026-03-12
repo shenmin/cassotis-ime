@@ -5,6 +5,8 @@ interface
 const
     c_nc_pipe_base = '\\.\pipe\cassotis_ime_engine_v2';
     c_nc_host_mutex_base = 'Local\cassotis_ime_engine_host_v2';
+    c_nc_active_event_base = 'Local\cassotis_ime_engine_active_v1';
+    c_nc_inactive_event_base = 'Local\cassotis_ime_engine_inactive_v1';
 
 function encode_ipc_text(const value: string): string;
 function decode_ipc_text(const value: string): string;
@@ -12,6 +14,8 @@ function bool_to_flag(const value: Boolean): string;
 function flag_to_bool(const value: string): Boolean;
 function get_nc_pipe_name: string;
 function get_nc_host_mutex: string;
+function get_nc_active_event: string;
+function get_nc_inactive_event: string;
 
 implementation
 
@@ -53,6 +57,16 @@ end;
 function get_nc_host_mutex: string;
 begin
     Result := c_nc_host_mutex_base + get_process_scope_suffix;
+end;
+
+function get_nc_active_event: string;
+begin
+    Result := c_nc_active_event_base + get_process_scope_suffix;
+end;
+
+function get_nc_inactive_event: string;
+begin
+    Result := c_nc_inactive_event_base + get_process_scope_suffix;
 end;
 
 function encode_ipc_text(const value: string): string;
