@@ -173,7 +173,10 @@ type
             const unit_text: string; out out_preferred: Boolean): Boolean;
         function is_weak_single_char_chain_candidate_for_query(const query_key: string;
             const candidate: TncCandidate): Boolean;
+        function is_problematic_single_char_chain_candidate_for_query(const query_key: string;
+            const candidate: TncCandidate): Boolean;
         function has_competing_exact_phrase_candidate(const selected_text: string): Boolean;
+        function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
         function get_rank_score(const candidate: TncCandidate): Integer;
         procedure sort_candidates(var candidates: TncCandidateList);
         procedure clear_lookup_bonus_caches;
@@ -3309,6 +3312,52 @@ var
             end;
         end;
 
+        function has_weighted_complete_phrase_candidate(const source_candidates: TncCandidateList): Boolean;
+        var
+            candidate_idx: Integer;
+            units: TArray<string>;
+            unit_idx: Integer;
+            codepoint: Integer;
+            valid_phrase: Boolean;
+        begin
+            Result := False;
+            for candidate_idx := 0 to High(source_candidates) do
+            begin
+                if (source_candidates[candidate_idx].comment <> '') or
+                    (not source_candidates[candidate_idx].has_dict_weight) then
+                begin
+                    Continue;
+                end;
+
+                units := split_text_units(Trim(source_candidates[candidate_idx].text));
+                if Length(units) <> input_syllable_count then
+                begin
+                    Continue;
+                end;
+                if Length(units) < 2 then
+                begin
+                    Continue;
+                end;
+
+                valid_phrase := True;
+                for unit_idx := 0 to High(units) do
+                begin
+                    if (not try_get_single_text_unit_codepoint(units[unit_idx], codepoint)) or
+                        (codepoint < $4E00) or (codepoint > $9FFF) then
+                    begin
+                        valid_phrase := False;
+                        Break;
+                    end;
+                end;
+
+                if valid_phrase then
+                begin
+                    Result := True;
+                    Exit;
+                end;
+            end;
+        end;
+
     var
         runtime_candidates: TncCandidateList;
         runtime_item: TncCandidate;
@@ -3339,7 +3388,8 @@ var
             m_runtime_chain_text := runtime_item.text;
         end;
 
-        if try_build_runtime_common_pattern_candidate(runtime_item) then
+        if (not has_weighted_complete_phrase_candidate(candidates)) and
+            try_build_runtime_common_pattern_candidate(runtime_item) then
         begin
             SetLength(runtime_candidates, runtime_count + 1);
             runtime_candidates[runtime_count] := runtime_item;
@@ -6587,6 +6637,55 @@ begin
     end;
 end;
 
+function TncEngine.is_runtime_constructed_phrase_friendly(const text: string): Boolean;
+var
+    units: TArray<string>;
+    tail_text: string;
+begin
+    Result := False;
+    units := split_text_units(Trim(text));
+    if Length(units) <> 2 then
+    begin
+        Exit;
+    end;
+
+    if units[0] = units[1] then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    tail_text := units[1];
+    if tail_text = '' then
+    begin
+        Exit;
+    end;
+
+    case Ord(tail_text[1]) of
+        $5427, // 吧
+        $5417, // 吗
+        $5462, // 呢
+        $4E2A, // 个
+        $4F4D, // 位
+        $6B21, // 次
+        $70B9, // 点
+        $4E9B, // 些
+        $79CD, // 种
+        $5929, // 天
+        $5E74, // 年
+        $6708, // 月
+        $91CC, // 里
+        $4E0B, // 下
+        $56DE, // 回
+        $904D, // 遍
+        $58F0, // 声
+        $9762, // 面
+        $773C, // 眼
+        $8FB9: // 边
+            Result := True;
+    end;
+end;
+
 function TncEngine.get_candidate_path_confidence_score(const candidate: TncCandidate): Integer;
 var
     encoded_path: string;
@@ -8154,6 +8253,9 @@ begin
         Dec(Result, c_partial_candidate_score_penalty);
     end;
 
+    // Generic runtime chains with productive/friendly tails (e.g. ...吗/个/点) are
+    // useful fallback phrases, but when an exact lexicon phrase already competes for
+    // the same query they should stop behaving like the default top result.
     Inc(Result, get_front_row_confidence_bonus(candidate));
 
     case candidate.source of
@@ -8297,6 +8399,90 @@ begin
     Result := has_weak_unit;
 end;
 
+function TncEngine.is_problematic_single_char_chain_candidate_for_query(const query_key: string;
+    const candidate: TncCandidate): Boolean;
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    text_units: TArray<string>;
+    normalized_query: string;
+    idx: Integer;
+    is_preferred: Boolean;
+begin
+    Result := False;
+    if candidate.comment <> '' then
+    begin
+        Exit;
+    end;
+
+    // Only suppress low-evidence user chains and runtime-composed single-char
+    // chains. Exact lexicon phrases like "好吧/有点" must not be treated as
+    // problematic just because they also align with per-syllable single chars.
+    if (not is_runtime_chain_candidate(candidate)) and
+        (candidate.source <> cs_user) then
+    begin
+        Exit;
+    end;
+
+    normalized_query := normalize_pinyin_text(query_key);
+    if normalized_query = '' then
+    begin
+        normalized_query := normalize_pinyin_text(m_composition_text);
+    end;
+    if normalized_query = '' then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.Create;
+    try
+        syllables := parser.parse(normalized_query);
+    finally
+        parser.Free;
+    end;
+
+    if Length(syllables) < 2 then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(syllables) do
+    begin
+        // Skip all-initial / dangling-initial queries; weak-chain heuristics are
+        // only meaningful for fully specified multi-syllable input.
+        if Length(Trim(syllables[idx].text)) <= 1 then
+        begin
+            Exit(False);
+        end;
+    end;
+
+    if is_weak_single_char_chain_candidate_for_query(normalized_query, candidate) then
+    begin
+        Exit(True);
+    end;
+
+    if not is_runtime_chain_candidate(candidate) then
+    begin
+        Exit(False);
+    end;
+
+    text_units := split_text_units(Trim(candidate.text));
+    if Length(text_units) <> Length(syllables) then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(text_units) do
+    begin
+        if not match_single_char_candidate_for_syllable(syllables[idx].text, text_units[idx], is_preferred) then
+        begin
+            Exit(False);
+        end;
+    end;
+
+    Result := is_runtime_constructed_phrase_friendly(candidate.text);
+end;
+
 function TncEngine.has_competing_exact_phrase_candidate(const selected_text: string): Boolean;
 var
     idx: Integer;
@@ -8385,6 +8571,9 @@ type
         is_latest_context_query_choice: Boolean;
         is_latest_query_choice: Boolean;
         is_weak_single_char_chain: Boolean;
+        is_problematic_single_char_chain: Boolean;
+        is_weighted_complete_phrase: Boolean;
+        is_runtime_constructed_complete_phrase: Boolean;
     end;
 var
     list: TList<TncCandidateSortItem>;
@@ -8393,6 +8582,7 @@ var
     use_intent_layers: Boolean;
     has_strong_complete_phrase: Boolean;
     has_competing_exact_phrase: Boolean;
+    has_weighted_complete_phrase: Boolean;
     weak_chain_query_syllables: TncPinyinParseResult;
     weak_chain_preference_maps: TArray<TDictionary<string, Byte>>;
     weak_chain_query_prepared: Boolean;
@@ -8488,6 +8678,7 @@ var
     procedure prepare_weak_chain_query_cache;
     var
         parser: TncPinyinParser;
+        idx: Integer;
     begin
         if weak_chain_query_prepared then
         begin
@@ -8518,7 +8709,28 @@ var
             Exit;
         end;
 
+        for idx := 0 to High(weak_chain_query_syllables) do
+        begin
+            if Length(Trim(weak_chain_query_syllables[idx].text)) <= 1 then
+            begin
+                SetLength(weak_chain_query_syllables, 0);
+                Exit;
+            end;
+        end;
+
         SetLength(weak_chain_preference_maps, Length(weak_chain_query_syllables));
+    end;
+    function is_weighted_complete_phrase_candidate(const candidate: TncCandidate): Boolean;
+    begin
+        Result := (candidate.comment = '') and candidate.has_dict_weight and
+            (get_candidate_text_unit_count(candidate.text) >= 2);
+    end;
+    function is_runtime_constructed_complete_phrase_candidate(const candidate: TncCandidate): Boolean;
+    begin
+        Result := (candidate.comment = '') and (get_candidate_text_unit_count(candidate.text) >= 2) and
+            (is_runtime_chain_candidate(candidate) or
+            is_runtime_common_pattern_candidate(candidate) or
+            is_runtime_redup_candidate(candidate));
     end;
     function is_weak_single_char_chain_candidate_cached(const candidate: TncCandidate): Boolean;
     var
@@ -8561,6 +8773,58 @@ var
         end;
 
         Result := has_weak_unit;
+    end;
+    function is_problematic_single_char_chain_candidate_cached(const candidate: TncCandidate): Boolean;
+    var
+        text_units: TArray<string>;
+        idx: Integer;
+        is_preferred: Boolean;
+        is_matched: Boolean;
+    begin
+        Result := False;
+        if candidate.comment <> '' then
+        begin
+            Exit;
+        end;
+
+        if (not is_runtime_chain_candidate(candidate)) and
+            (candidate.source <> cs_user) then
+        begin
+            Exit;
+        end;
+
+        prepare_weak_chain_query_cache;
+        if Length(weak_chain_query_syllables) < 2 then
+        begin
+            Exit;
+        end;
+
+        if is_weak_single_char_chain_candidate_cached(candidate) then
+        begin
+            Exit(True);
+        end;
+
+        if not is_runtime_chain_candidate(candidate) then
+        begin
+            Exit(False);
+        end;
+
+        text_units := split_text_units(Trim(candidate.text));
+        if Length(text_units) <> Length(weak_chain_query_syllables) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(text_units) do
+        begin
+            is_preferred := get_cached_single_char_preference(idx, text_units[idx], is_matched);
+            if not is_matched then
+            begin
+                Exit(False);
+            end;
+        end;
+
+        Result := is_runtime_constructed_phrase_friendly(candidate.text);
     end;
     procedure swap_items(const left_index: Integer; const right_index: Integer);
     var
@@ -8637,6 +8901,7 @@ begin
     use_intent_layers := m_last_lookup_syllable_count >= 3;
     has_strong_complete_phrase := False;
     has_competing_exact_phrase := False;
+    has_weighted_complete_phrase := False;
     weak_chain_query_prepared := False;
     SetLength(weak_chain_query_syllables, 0);
     SetLength(weak_chain_preference_maps, 0);
@@ -8683,6 +8948,11 @@ begin
             item.is_latest_context_query_choice := get_context_query_latest_bonus(candidates[i].text) > 0;
             item.is_latest_query_choice := is_latest_session_query_choice(candidates[i].text);
             item.is_weak_single_char_chain := is_weak_single_char_chain_candidate_cached(candidates[i]);
+            item.is_problematic_single_char_chain :=
+                is_problematic_single_char_chain_candidate_cached(candidates[i]);
+            item.is_weighted_complete_phrase := is_weighted_complete_phrase_candidate(candidates[i]);
+            item.is_runtime_constructed_complete_phrase :=
+                is_runtime_constructed_complete_phrase_candidate(candidates[i]);
             if use_intent_layers and (item.candidate.comment = '') and
                 (item.layer <= 1) and (get_candidate_text_unit_count(item.candidate.text) >= 2) and
                 (item.candidate.has_dict_weight or (item.candidate.source = cs_user) or
@@ -8701,6 +8971,10 @@ begin
                 (not is_runtime_redup_candidate(item.candidate)))) then
             begin
                 has_competing_exact_phrase := True;
+            end;
+            if item.is_weighted_complete_phrase then
+            begin
+                has_weighted_complete_phrase := True;
             end;
             list.Add(item);
         end;
@@ -8746,6 +9020,11 @@ begin
                         Dec(item.rank_score, 360);
                     end;
                     item.path_confidence_score := 0;
+                end
+                else if item.is_problematic_single_char_chain then
+                begin
+                    Dec(item.rank_score, 680);
+                    item.path_confidence_score := 0;
                 end;
                 list[i] := item;
             end;
@@ -8784,14 +9063,29 @@ begin
                 // candidates when both are complete commit candidates.
                 if (left.candidate.comment = '') and (right.candidate.comment = '') then
                 begin
-                    if (left.candidate.source = cs_user) and (right.candidate.source <> cs_user) and
-                        (not (has_competing_exact_phrase and left.is_weak_single_char_chain)) then
+                if (left.candidate.source = cs_user) and (right.candidate.source <> cs_user) and
+                    (not (has_competing_exact_phrase and left.is_problematic_single_char_chain)) then
+                begin
+                    Result := -1;
+                    Exit;
+                end;
+                if (right.candidate.source = cs_user) and (left.candidate.source <> cs_user) and
+                    (not (has_competing_exact_phrase and right.is_problematic_single_char_chain)) then
+                begin
+                    Result := 1;
+                    Exit;
+                end;
+            end;
+
+                if has_weighted_complete_phrase and
+                    (left.candidate.comment = '') and (right.candidate.comment = '') then
+                begin
+                    if left.is_weighted_complete_phrase and right.is_problematic_single_char_chain then
                     begin
                         Result := -1;
                         Exit;
                     end;
-                    if (right.candidate.source = cs_user) and (left.candidate.source <> cs_user) and
-                        (not (has_competing_exact_phrase and right.is_weak_single_char_chain)) then
+                    if right.is_weighted_complete_phrase and left.is_problematic_single_char_chain then
                     begin
                         Result := 1;
                         Exit;
@@ -12520,10 +12814,10 @@ var
         end;
 
         allow_learning := not is_nonlearnable_runtime_chain_selection(selected);
-        if (segment_path <> '') and is_generic_runtime_chain_selection(selected) then
+        if allow_learning and has_competing_exact_phrase_candidate(selected.text) and
+            is_problematic_single_char_chain_candidate_for_query(m_last_lookup_key, selected) then
         begin
-            allow_learning := not (is_weak_single_char_chain_candidate_for_query(m_last_lookup_key, selected) and
-                has_competing_exact_phrase_candidate(selected.text));
+            allow_learning := False;
         end;
 
         if (m_last_lookup_key <> '') and (selected_candidate_index > 0) and
