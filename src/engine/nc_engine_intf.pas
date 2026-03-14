@@ -1950,6 +1950,7 @@ var
     allow_relaxed_missing_apostrophe: Boolean;
     compact_runtime_candidate: TncCandidate;
     compact_runtime_candidates: TncCandidateList;
+    has_explicit_apostrophe_input: Boolean;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -1959,6 +1960,68 @@ var
         begin
             candidates[idx].comment := '';
         end;
+    end;
+
+    function has_multi_char_dictionary_anchor(const candidates: TncCandidateList): Boolean;
+    var
+        idx: Integer;
+    begin
+        Result := False;
+        for idx := 0 to High(candidates) do
+        begin
+            if Length(candidates[idx].text) > 1 then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+
+    procedure filter_short_dictionary_hits_for_explicit_apostrophe(var candidates: TncCandidateList;
+        const min_char_count: Integer);
+    var
+        idx: Integer;
+        out_idx: Integer;
+    begin
+        if min_char_count <= 1 then
+        begin
+            Exit;
+        end;
+
+        out_idx := 0;
+        for idx := 0 to High(candidates) do
+        begin
+            if Length(candidates[idx].text) >= min_char_count then
+            begin
+                if out_idx <> idx then
+                begin
+                    candidates[out_idx] := candidates[idx];
+                end;
+                Inc(out_idx);
+            end;
+        end;
+        SetLength(candidates, out_idx);
+    end;
+
+    procedure filter_explicit_apostrophe_single_char_complete_candidates(var candidates: TncCandidateList);
+    var
+        idx: Integer;
+        out_idx: Integer;
+    begin
+        out_idx := 0;
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].comment = '') and (Length(Trim(candidates[idx].text)) = 1) then
+            begin
+                Continue;
+            end;
+
+            if out_idx <> idx then
+            begin
+                candidates[out_idx] := candidates[idx];
+            end;
+            Inc(out_idx);
+        end;
+        SetLength(candidates, out_idx);
     end;
 
     function is_single_initial_token_local(const token_text: string): Boolean;
@@ -5115,6 +5178,7 @@ begin
             end;
         end;
         m_last_lookup_key := lookup_text;
+        has_explicit_apostrophe_input := Pos('''', m_composition_text) > 0;
         fallback_comment := build_pinyin_comment(m_composition_text);
         if fallback_comment = '' then
         begin
@@ -5258,13 +5322,28 @@ begin
 
         if has_raw_candidates then
         begin
+            if raw_from_dictionary and has_explicit_apostrophe_input and (input_syllable_count > 1) then
+            begin
+                filter_short_dictionary_hits_for_explicit_apostrophe(raw_candidates,
+                    input_syllable_count);
+                has_raw_candidates := Length(raw_candidates) > 0;
+            end;
+
+            if not has_raw_candidates then
+            begin
+                raw_from_dictionary := False;
+            end;
+
+        if has_raw_candidates then
+        begin
             if raw_from_dictionary then
             begin
                 clear_candidate_comments(raw_candidates);
             end;
 
             sort_candidates_timed(raw_candidates);
-            if raw_from_dictionary and has_relaxed_missing_apostrophe_partial then
+            if raw_from_dictionary and has_relaxed_missing_apostrophe_partial and
+                has_multi_char_dictionary_anchor(raw_candidates) then
             begin
                 allow_relaxed_missing_apostrophe := True;
                 ensure_forced_single_char_partial(raw_candidates);
@@ -5292,6 +5371,7 @@ begin
                     single_char_partial_min_count);
             end;
         end;
+        end;
 
         // Even when segment candidates are disabled or fail to build, multi-syllable input
         // must keep a single-char partial fallback (e.g. "hai" + "budaxing").
@@ -5308,6 +5388,11 @@ begin
             ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
                 single_char_partial_min_count);
+        end;
+
+        if has_explicit_apostrophe_input and (input_syllable_count > 1) then
+        begin
+            filter_explicit_apostrophe_single_char_complete_candidates(raw_candidates);
         end;
 
         limit := get_total_candidate_limit;
