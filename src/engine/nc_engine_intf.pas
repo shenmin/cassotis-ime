@@ -204,8 +204,10 @@ type
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
         function build_segment_candidates(out out_candidates: TncCandidateList;
-            const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64): Boolean;
-        function build_pinyin_comment(const input_text: string): string;
+            const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64;
+            const allow_relaxed_missing_apostrophe: Boolean = False): Boolean;
+        function build_pinyin_comment(const input_text: string;
+            const allow_relaxed_missing_apostrophe: Boolean = False): string;
         procedure update_segment_left_context;
         procedure push_confirmed_segment(const text: string; const pinyin: string);
         function pop_confirmed_segment(out out_segment: TncConfirmedSegment): Boolean;
@@ -1729,6 +1731,124 @@ begin
     m_external_left_context := next_context;
 end;
 
+function is_relaxed_no_initial_syllable_text(const token_text: string): Boolean;
+begin
+    Result :=
+        SameText(token_text, 'ang') or
+        SameText(token_text, 'eng') or
+        SameText(token_text, 'ai') or
+        SameText(token_text, 'an') or
+        SameText(token_text, 'ao') or
+        SameText(token_text, 'ei') or
+        SameText(token_text, 'en') or
+        SameText(token_text, 'er') or
+        SameText(token_text, 'ou') or
+        SameText(token_text, 'a') or
+        SameText(token_text, 'e') or
+        SameText(token_text, 'o');
+end;
+
+function try_split_relaxed_missing_apostrophe_token(const parser: TncPinyinParser; const token_text: string;
+    out out_left: string; out out_right: string): Boolean;
+var
+    split_idx: Integer;
+    left_text: string;
+    right_text: string;
+    left_parts: TncPinyinParseResult;
+    right_parts: TncPinyinParseResult;
+begin
+    Result := False;
+    out_left := '';
+    out_right := '';
+    if (parser = nil) or (token_text = '') or (Length(token_text) < 4) or
+        (Pos('''', token_text) > 0) then
+    begin
+        Exit;
+    end;
+
+    for split_idx := 2 to Length(token_text) - 2 do
+    begin
+        left_text := Copy(token_text, 1, split_idx);
+        right_text := Copy(token_text, split_idx + 1, MaxInt);
+        if not is_relaxed_no_initial_syllable_text(right_text) then
+        begin
+            Continue;
+        end;
+
+        left_parts := parser.parse(left_text);
+        right_parts := parser.parse(right_text);
+        if (Length(left_parts) = 1) and (Length(right_parts) = 1) and
+            SameText(left_parts[0].text, left_text) and
+            SameText(right_parts[0].text, right_text) then
+        begin
+            out_left := left_text;
+            out_right := right_text;
+            Result := True;
+            Exit;
+        end;
+    end;
+end;
+
+function parse_pinyin_with_relaxed_missing_apostrophe(const input_text: string): TncPinyinParseResult;
+var
+    parser: TncPinyinParser;
+    primary_parts: TncPinyinParseResult;
+    expanded_parts: TncPinyinParseResult;
+    part_idx: Integer;
+    out_idx: Integer;
+    left_text: string;
+    right_text: string;
+
+    procedure append_part(const text: string; const start_index: Integer);
+    begin
+        if text = '' then
+        begin
+            Exit;
+        end;
+        SetLength(expanded_parts, out_idx + 1);
+        expanded_parts[out_idx].text := text;
+        expanded_parts[out_idx].start_index := start_index;
+        expanded_parts[out_idx].length := Length(text);
+        Inc(out_idx);
+    end;
+begin
+    parser := TncPinyinParser.Create;
+    try
+        primary_parts := parser.parse(input_text);
+        if (Length(primary_parts) = 0) or (Pos('''', input_text) > 0) then
+        begin
+            Result := primary_parts;
+            Exit;
+        end;
+
+        SetLength(expanded_parts, 0);
+        out_idx := 0;
+        for part_idx := 0 to High(primary_parts) do
+        begin
+            if try_split_relaxed_missing_apostrophe_token(parser, primary_parts[part_idx].text, left_text, right_text) then
+            begin
+                append_part(left_text, primary_parts[part_idx].start_index);
+                append_part(right_text, primary_parts[part_idx].start_index + Length(left_text));
+            end
+            else
+            begin
+                append_part(primary_parts[part_idx].text, primary_parts[part_idx].start_index);
+            end;
+        end;
+
+        if Length(expanded_parts) > Length(primary_parts) then
+        begin
+            Result := expanded_parts;
+        end
+        else
+        begin
+            Result := primary_parts;
+        end;
+    finally
+        parser.Free;
+    end;
+end;
+
 procedure TncEngine.build_candidates;
 var
     raw_candidates: TncCandidateList;
@@ -1767,6 +1887,7 @@ var
     path_search_elapsed_ms: Int64;
     total_start_tick: UInt64;
     phase_start_tick: UInt64;
+    allow_relaxed_missing_apostrophe: Boolean;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -1974,14 +2095,16 @@ var
     end;
 
     function build_segment_candidates_timed(out out_candidates: TncCandidateList;
-        const include_full_path: Boolean = True): Boolean;
+        const include_full_path: Boolean = True;
+        const allow_relaxed_split: Boolean = False): Boolean;
     var
         phase_start_tick: UInt64;
         local_path_search_elapsed_ms: Int64;
     begin
         phase_start_tick := GetTickCount64;
         local_path_search_elapsed_ms := 0;
-        Result := build_segment_candidates(out_candidates, include_full_path, local_path_search_elapsed_ms);
+        Result := build_segment_candidates(out_candidates, include_full_path, local_path_search_elapsed_ms,
+            allow_relaxed_split);
         Inc(segment_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
         Inc(path_search_elapsed_ms, local_path_search_elapsed_ms);
     end;
@@ -2528,7 +2651,14 @@ var
 
         parser := TncPinyinParser.create;
         try
-            syllables := parser.parse(m_composition_text);
+            if allow_relaxed_missing_apostrophe then
+            begin
+                syllables := parse_pinyin_with_relaxed_missing_apostrophe(m_composition_text);
+            end
+            else
+            begin
+                syllables := parser.parse(m_composition_text);
+            end;
         finally
             parser.Free;
         end;
@@ -3622,7 +3752,14 @@ var
 
         parser := TncPinyinParser.create;
         try
-            syllables := parser.parse(m_composition_text);
+            if allow_relaxed_missing_apostrophe then
+            begin
+                syllables := parse_pinyin_with_relaxed_missing_apostrophe(m_composition_text);
+            end
+            else
+            begin
+                syllables := parser.parse(m_composition_text);
+            end;
         finally
             parser.Free;
         end;
@@ -4757,6 +4894,7 @@ begin
         begin
             fallback_comment := build_pinyin_comment(lookup_text);
         end;
+        allow_relaxed_missing_apostrophe := False;
         has_multi_syllable_input := fallback_comment <> '';
         has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
         all_initial_compact_query := detect_all_initial_compact_query(m_composition_text);
@@ -4801,12 +4939,40 @@ begin
                 has_raw_candidates := True;
                 raw_from_dictionary := True;
             end
-            else if m_config.enable_segment_candidates and
-                build_segment_candidates_timed(segment_candidates, not all_initial_compact_query) then
+            else
             begin
-                has_raw_candidates := True;
-                has_segment_candidates := True;
-                raw_candidates := segment_candidates;
+                if not has_multi_syllable_input then
+                begin
+                    fallback_comment := build_pinyin_comment(m_composition_text, True);
+                    if fallback_comment = '' then
+                    begin
+                        fallback_comment := build_pinyin_comment(lookup_text, True);
+                    end;
+                    if fallback_comment <> '' then
+                    begin
+                        has_multi_syllable_input := True;
+                        allow_relaxed_missing_apostrophe := True;
+                        input_syllable_count := get_input_syllable_count_for_text(m_composition_text);
+                        if input_syllable_count <= 1 then
+                        begin
+                            input_syllable_count := get_input_syllable_count_for_text(lookup_text);
+                        end;
+                        if input_syllable_count <= 1 then
+                        begin
+                            input_syllable_count := 2;
+                        end;
+                        m_last_lookup_syllable_count := input_syllable_count;
+                    end;
+                end;
+
+                if m_config.enable_segment_candidates and
+                    build_segment_candidates_timed(segment_candidates, not all_initial_compact_query,
+                        allow_relaxed_missing_apostrophe) then
+                begin
+                    has_raw_candidates := True;
+                    has_segment_candidates := True;
+                    raw_candidates := segment_candidates;
+                end;
             end;
         end;
 
@@ -4817,9 +4983,13 @@ begin
             phase_start_tick := GetTickCount64;
             merge_runtime_constructed_candidates(raw_candidates, False);
             Inc(runtime_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
-            if all_initial_compact_query and (Length(raw_candidates) > 0) then
+            if Length(raw_candidates) > 0 then
             begin
                 has_raw_candidates := True;
+            end;
+            if all_initial_compact_query and (Length(raw_candidates) > 0) then
+            begin
+                // All-initial queries already prefer lightweight prefix fallbacks.
             end
             else if (Length(raw_candidates) > 0) and (runtime_phrase_added or runtime_redup_added) then
             begin
@@ -9666,7 +9836,8 @@ begin
 end;
 
 function TncEngine.build_segment_candidates(out out_candidates: TncCandidateList;
-    const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64): Boolean;
+    const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64;
+    const allow_relaxed_missing_apostrophe: Boolean): Boolean;
 const
     c_segment_max_per_segment = 256;
     c_segment_max_syllables = 24;
@@ -11364,7 +11535,14 @@ begin
     lookup_cache := TDictionary<string, TncCandidateList>.Create;
     parser := TncPinyinParser.create;
     try
-        syllables := parser.parse(m_composition_text);
+        if allow_relaxed_missing_apostrophe then
+        begin
+            syllables := parse_pinyin_with_relaxed_missing_apostrophe(m_composition_text);
+        end
+        else
+        begin
+            syllables := parser.parse(m_composition_text);
+        end;
         if Length(syllables) <= 1 then
         begin
             Exit;
@@ -11562,7 +11740,8 @@ begin
     end;
 end;
 
-function TncEngine.build_pinyin_comment(const input_text: string): string;
+function TncEngine.build_pinyin_comment(const input_text: string;
+    const allow_relaxed_missing_apostrophe: Boolean): string;
 var
     parser: TncPinyinParser;
     parts: TncPinyinParseResult;
@@ -11576,7 +11755,14 @@ begin
 
     parser := TncPinyinParser.create;
     try
-        parts := parser.parse(input_text);
+        if allow_relaxed_missing_apostrophe then
+        begin
+            parts := parse_pinyin_with_relaxed_missing_apostrophe(input_text);
+        end
+        else
+        begin
+            parts := parser.parse(input_text);
+        end;
         if Length(parts) <= 1 then
         begin
             Exit;
