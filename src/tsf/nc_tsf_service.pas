@@ -3305,7 +3305,6 @@ end;
 function TncTextService.maybe_update_surrounding_text(const context: ITfContext; const force: Boolean): Boolean;
 const
     c_surrounding_retry_interval_ms = 120;
-    c_surrounding_activation_grace_ms = 2000;
 var
     now_tick: UInt64;
 begin
@@ -3326,12 +3325,6 @@ begin
     end;
 
     now_tick := GetTickCount64;
-    if (not force) and (m_last_context_activate_tick <> 0) and
-        ((now_tick - m_last_context_activate_tick) < c_surrounding_activation_grace_ms) then
-    begin
-        Exit;
-    end;
-
     if (not force) and (m_last_surrounding_request_tick <> 0) and
         ((now_tick - m_last_surrounding_request_tick) < c_surrounding_retry_interval_ms) then
     begin

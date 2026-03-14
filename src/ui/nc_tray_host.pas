@@ -76,6 +76,7 @@ type
         m_engine_active: Boolean;
         m_profile_active: Boolean;
         m_profile_active_pending: Boolean;
+        m_profile_event_seen: Boolean;
         m_active_sync_fail_count: Integer;
         m_last_state_poll_tick: UInt64;
         m_last_config_poll_tick: UInt64;
@@ -205,6 +206,7 @@ begin
     m_engine_active := False;
     m_profile_active := False;
     m_profile_active_pending := False;
+    m_profile_event_seen := False;
     m_active_sync_fail_count := 0;
     m_last_state_poll_tick := 0;
     m_last_config_poll_tick := 0;
@@ -992,12 +994,22 @@ begin
 
     if not m_profile_active then
     begin
-        if m_engine_active then
+        if (not m_profile_event_seen) and m_ipc_client.get_active(m_session_id, active_now) and active_now then
         begin
-            m_engine_active := False;
-            apply_status_widget_visibility;
+            m_active_sync_fail_count := 0;
+            m_profile_active := True;
+            m_profile_active_pending := False;
+            m_last_profile_activate_tick := 0;
+        end
+        else
+        begin
+            if m_engine_active then
+            begin
+                m_engine_active := False;
+                apply_status_widget_visibility;
+            end;
+            Exit;
         end;
-        Exit;
     end;
 
     active_now := False;
@@ -1050,6 +1062,7 @@ end;
 
 procedure TncTrayHost.WMNcActiveStateChanged(var Message: TMessage);
 begin
+    m_profile_event_seen := True;
     m_profile_active_pending := True;
     m_last_profile_activate_tick := GetTickCount64;
     Message.Result := 0;
@@ -1057,6 +1070,7 @@ end;
 
 procedure TncTrayHost.WMNcInactiveStateChanged(var Message: TMessage);
 begin
+    m_profile_event_seen := True;
     m_profile_active_pending := False;
     m_last_profile_activate_tick := 0;
     m_profile_active := False;

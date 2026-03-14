@@ -8778,7 +8778,6 @@ var
     var
         text_units: TArray<string>;
         idx: Integer;
-        is_preferred: Boolean;
         is_matched: Boolean;
     begin
         Result := False;
@@ -8817,7 +8816,7 @@ var
 
         for idx := 0 to High(text_units) do
         begin
-            is_preferred := get_cached_single_char_preference(idx, text_units[idx], is_matched);
+            get_cached_single_char_preference(idx, text_units[idx], is_matched);
             if not is_matched then
             begin
                 Exit(False);

@@ -83,6 +83,7 @@ type
         m_sessions: TObjectDictionary<string, TncHostSession>;
         m_active_sessions: TDictionary<string, Byte>;
         m_recent_active_sessions: TDictionary<string, DWORD>;
+        m_active_owner_session_id: string;
         m_shift_toggle_ticks: TDictionary<string, DWORD>;
         m_session_prewarm_queue: TQueue<string>;
         m_session_prewarm_pending: TDictionary<string, Byte>;
@@ -1028,6 +1029,7 @@ begin
     m_active_sessions := TDictionary<string, Byte>.Create;
     m_recent_active_sessions := TDictionary<string, DWORD>.Create;
     m_shift_toggle_ticks := TDictionary<string, DWORD>.Create;
+    m_active_owner_session_id := '';
     m_session_prewarm_queue := TQueue<string>.Create;
     m_session_prewarm_pending := TDictionary<string, Byte>.Create;
     m_lock := TCriticalSection.Create;
@@ -1408,6 +1410,7 @@ begin
             // The IME is globally single-active: stale active sessions should
             // never keep the status widget alive after focus/input-method
             // switches. Keep only the latest active session.
+            m_active_owner_session_id := session_id;
             m_active_sessions.Clear;
             m_recent_active_sessions.Clear;
             m_active_sessions.AddOrSetValue(session_id, 1);
@@ -1415,9 +1418,19 @@ begin
         end
         else
         begin
-            m_active_sessions.Clear;
-            m_recent_active_sessions.Clear;
-            m_shift_toggle_ticks.Clear;
+            if SameText(m_active_owner_session_id, session_id) then
+            begin
+                m_active_owner_session_id := '';
+                m_active_sessions.Clear;
+                m_recent_active_sessions.Clear;
+                m_shift_toggle_ticks.Clear;
+            end
+            else
+            begin
+                m_active_sessions.Remove(session_id);
+                m_recent_active_sessions.Remove(session_id);
+                m_shift_toggle_ticks.Remove(session_id);
+            end;
         end;
     finally
         m_lock.Release;
