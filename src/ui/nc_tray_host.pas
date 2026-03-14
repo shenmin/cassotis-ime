@@ -27,6 +27,7 @@ uses
 const
     WM_NC_ACTIVE_STATE_CHANGED = WM_APP + 101;
     WM_NC_INACTIVE_STATE_CHANGED = WM_APP + 102;
+    WM_NC_OPEN_SETTINGS = WM_APP + 103;
 
 type
     TncTrayHost = class;
@@ -73,6 +74,7 @@ type
         m_status_drag_cursor_origin: TPoint;
         m_status_drag_form_origin: TPoint;
         m_status_drag_source: TObject;
+        m_settings_dialog_open: Boolean;
         m_engine_active: Boolean;
         m_profile_active: Boolean;
         m_profile_active_pending: Boolean;
@@ -120,7 +122,8 @@ type
         procedure status_label_mouse_enter(Sender: TObject);
         procedure status_label_mouse_leave(Sender: TObject);
         procedure on_status_widget_click(Sender: TObject);
-        procedure on_status_settings_click(Sender: TObject);
+        procedure on_status_settings_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
+            Y: Integer);
         procedure on_input_mode_click(Sender: TObject);
         procedure on_dictionary_variant_click(Sender: TObject);
         procedure on_full_width_click(Sender: TObject);
@@ -131,6 +134,7 @@ type
         procedure on_timer(Sender: TObject);
         procedure WMNcActiveStateChanged(var Message: TMessage); message WM_NC_ACTIVE_STATE_CHANGED;
         procedure WMNcInactiveStateChanged(var Message: TMessage); message WM_NC_INACTIVE_STATE_CHANGED;
+        procedure WMNcOpenSettings(var Message: TMessage); message WM_NC_OPEN_SETTINGS;
     protected
         procedure CreateParams(var Params: TCreateParams); override;
     public
@@ -203,6 +207,7 @@ begin
     m_status_drag_cursor_origin := Point(0, 0);
     m_status_drag_form_origin := Point(0, 0);
     m_status_drag_source := nil;
+    m_settings_dialog_open := False;
     m_engine_active := False;
     m_profile_active := False;
     m_profile_active_pending := False;
@@ -587,7 +592,7 @@ begin
     m_status_btn_settings.Width := 40;
     m_status_btn_settings.Height := 24;
     m_status_btn_settings.Caption := '设置';
-    m_status_btn_settings.OnClick := on_status_settings_click;
+    m_status_btn_settings.OnMouseDown := on_status_settings_mouse_down;
     m_status_btn_settings.TabStop := False;
 
     m_status_form.OnMouseDown := status_mouse_down;
@@ -1083,6 +1088,25 @@ begin
     Message.Result := 0;
 end;
 
+procedure TncTrayHost.WMNcOpenSettings(var Message: TMessage);
+begin
+    if m_settings_dialog_open then
+    begin
+        Message.Result := 0;
+        Exit;
+    end;
+
+    m_settings_dialog_open := True;
+    try
+        show_settings_dialog;
+    finally
+        m_settings_dialog_open := False;
+        m_last_state_poll_tick := 0;
+        refresh_state_from_host;
+    end;
+    Message.Result := 0;
+end;
+
 procedure TncTrayHost.load_config;
 var
     config_manager: TncConfigManager;
@@ -1375,9 +1399,16 @@ begin
     save_status_widget_state;
 end;
 
-procedure TncTrayHost.on_status_settings_click(Sender: TObject);
+procedure TncTrayHost.on_status_settings_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
+    Y: Integer);
 begin
-    on_open_config_click(Sender);
+    if Button <> mbLeft then
+    begin
+        Exit;
+    end;
+
+    hide_status_hint;
+    PostMessage(Handle, WM_NC_OPEN_SETTINGS, 0, 0);
 end;
 
 procedure TncTrayHost.on_input_mode_click(Sender: TObject);

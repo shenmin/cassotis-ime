@@ -6,8 +6,10 @@ uses
     System.SysUtils,
     System.Classes,
     System.IOUtils,
+    System.Types,
     System.UITypes,
     Winapi.Windows,
+    Winapi.Messages,
     Winapi.ShellAPI,
     Vcl.Forms,
     Vcl.Controls,
@@ -22,12 +24,65 @@ uses
     nc_log;
 
 type
+    TncModernButtonKind = (
+        mbkPrimary,
+        mbkSecondary,
+        mbkSubtle
+    );
+
+    TncModernButton = class(TCustomControl)
+    private
+        m_kind: TncModernButtonKind;
+        m_caption: string;
+        m_hot: Boolean;
+        m_pressed: Boolean;
+        m_default_button: Boolean;
+        m_cancel_button: Boolean;
+        procedure set_caption(const value: string);
+        procedure set_kind(const value: TncModernButtonKind);
+        procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
+        procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
+        procedure CMEnabledChanged(var Message: TMessage); message CM_ENABLEDCHANGED;
+    protected
+        procedure Paint; override;
+        procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer); override;
+        procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer); override;
+        procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+        procedure KeyUp(var Key: Word; Shift: TShiftState); override;
+        procedure DoEnter; override;
+        procedure DoExit; override;
+    public
+        constructor Create(AOwner: TComponent); override;
+    published
+        property Caption: string read m_caption write set_caption;
+        property Default: Boolean read m_default_button write m_default_button default False;
+        property Cancel: Boolean read m_cancel_button write m_cancel_button default False;
+        property VisualKind: TncModernButtonKind read m_kind write set_kind;
+        property Align;
+        property Anchors;
+        property Enabled;
+        property Font;
+        property ParentFont;
+        property ParentShowHint;
+        property ShowHint;
+        property Hint;
+        property TabOrder;
+        property TabStop;
+        property Visible;
+        property OnClick;
+    end;
+
+    TncFlatPageControl = class(TPageControl)
+    protected
+        procedure CreateParams(var Params: TCreateParams); override;
+    end;
+
     TncApplySettingsProc = reference to procedure(const engine_config: TncEngineConfig;
         const log_config: TncLogConfig; const status_widget_visible: Boolean);
 
     TncSettingsForm = class(TForm)
     private
-        m_page_control: TPageControl;
+        m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
         m_tab_candidate: TTabSheet;
         m_tab_hotkeys: TTabSheet;
@@ -35,10 +90,10 @@ type
         m_tab_ai: TTabSheet;
         m_tab_logging: TTabSheet;
         m_tab_advanced: TTabSheet;
-        m_btn_reset: TButton;
-        m_btn_apply: TButton;
-        m_btn_ok: TButton;
-        m_btn_cancel: TButton;
+        m_btn_reset: TncModernButton;
+        m_btn_apply: TncModernButton;
+        m_btn_ok: TncModernButton;
+        m_btn_cancel: TncModernButton;
         m_combo_input_mode: TComboBox;
         m_edit_max_candidates: TEdit;
         m_combo_variant: TComboBox;
@@ -56,30 +111,30 @@ type
         m_edit_ai_runtime_dir_cpu: TEdit;
         m_edit_ai_runtime_dir_cuda: TEdit;
         m_edit_ai_model_path: TEdit;
-        m_btn_ai_runtime_dir_cpu: TButton;
-        m_btn_ai_runtime_dir_cuda: TButton;
-        m_btn_ai_model_path: TButton;
-        m_btn_ai_defaults: TButton;
-        m_btn_ai_open_model_folder: TButton;
+        m_btn_ai_runtime_dir_cpu: TncModernButton;
+        m_btn_ai_runtime_dir_cuda: TncModernButton;
+        m_btn_ai_model_path: TncModernButton;
+        m_btn_ai_defaults: TncModernButton;
+        m_btn_ai_open_model_folder: TncModernButton;
         m_chk_log_enabled: TCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
         m_edit_log_path: TEdit;
-        m_btn_log_path: TButton;
-        m_btn_open_log_folder: TButton;
-        m_btn_log_defaults: TButton;
+        m_btn_log_path: TncModernButton;
+        m_btn_open_log_folder: TncModernButton;
+        m_btn_log_defaults: TncModernButton;
         m_hint_logging: TLabel;
         m_chk_debug_mode: TCheckBox;
         m_edit_dict_path_sc: TEdit;
         m_edit_dict_path_tc: TEdit;
         m_edit_user_dict_path: TEdit;
-        m_btn_dict_path_sc: TButton;
-        m_btn_dict_path_tc: TButton;
-        m_btn_user_dict_path: TButton;
-        m_btn_dict_defaults: TButton;
-        m_btn_open_dictionary_folder: TButton;
-        m_btn_open_config_folder: TButton;
-        m_btn_open_config_file: TButton;
+        m_btn_dict_path_sc: TncModernButton;
+        m_btn_dict_path_tc: TncModernButton;
+        m_btn_user_dict_path: TncModernButton;
+        m_btn_dict_defaults: TncModernButton;
+        m_btn_open_dictionary_folder: TncModernButton;
+        m_btn_open_config_folder: TncModernButton;
+        m_btn_open_config_file: TncModernButton;
         m_hint_advanced: TLabel;
         m_engine_config: TncEngineConfig;
         m_log_config: TncLogConfig;
@@ -137,6 +192,7 @@ type
         procedure on_apply_click(Sender: TObject);
         procedure on_ok_click(Sender: TObject);
         procedure on_cancel_click(Sender: TObject);
+        procedure CMDialogKey(var Message: TCMDialogKey); message CM_DIALOGKEY;
     public
         constructor Create(AOwner: TComponent); override;
         class function ExecuteDialog(const owner: TComponent; var config: TncEngineConfig; var log_config: TncLogConfig;
@@ -146,17 +202,26 @@ type
 implementation
 
 const
-    c_dialog_width = 700;
-    c_dialog_height = 500;
-    c_label_left = 20;
-    c_control_left = 190;
-    c_row_height = 32;
+    c_dialog_width = 744;
+    c_dialog_height = 540;
+    c_page_margin = 10;
+    c_footer_height = 50;
+    c_section_left = 12;
+    c_section_width = 682;
+    c_section_gap = 12;
+    c_section_inner_top = 34;
+    c_label_left = 18;
+    c_control_left = 208;
+    c_row_height = 30;
     c_row_gap = 10;
-    c_edit_width = 120;
-    c_combo_width = 160;
-    c_path_edit_width = 390;
+    c_edit_width = 132;
+    c_combo_width = 186;
+    c_path_edit_width = 348;
     c_browse_button_gap = 8;
-    c_browse_button_width = 72;
+    c_browse_button_width = 60;
+    c_action_button_width = 104;
+    c_button_height = 26;
+    c_footer_button_height = 30;
 
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
@@ -172,10 +237,25 @@ resourcestring
     SButtonApply = '应用';
     SButtonOK = '确定';
     SButtonCancel = '取消';
+    SGroupDefaultBehavior = '默认行为';
+    SGroupCandidateStrategy = '候选策略';
+    SGroupAppearance = '显示与字符';
+    SGroupHotkeys = '快捷切换';
+    SGroupAiBehavior = 'AI 候选';
+    SGroupAiResources = '模型与运行库';
+    SGroupLogging = '记录策略';
+    SGroupLogFiles = '文件位置';
+    SGroupDebug = '调试';
+    SGroupDictionaryPaths = '词库路径';
+    SGroupConfigTools = '配置工具';
     SLabelInputMode = '默认输入状态';
     SOptionChinese = '中文输入';
     SOptionEnglish = '英文输入';
     SHintInputMode = '控制输入法激活时默认进入中文态还是英文态，不是界面语言。';
+    SHintCandidateStrategy = '长拼音更适合启用分段候选；“优先只取首段”更保守，候选会更稳定但不够激进。';
+    SHintAppearance = '这里的选项影响激活后的显示和输出风格，不会改变设置界面语言。';
+    SHintHotkeys = '关闭后，对应组合键会回到应用程序自身处理。';
+    SHintAiBehavior = 'AI 候选只在适合的完整拼音场景里触发，不会替代基础词库。';
     SLabelMaxCandidates = '最大候选数';
     SLabelDictionaryVariant = '词库类型';
     SOptionSimplifiedChinese = '简体中文';
@@ -247,6 +327,252 @@ resourcestring
     SCurrentLogFolder = '当前日志目录';
     SCurrentDictionaryPath = '当前词库路径';
 
+constructor TncModernButton.Create(AOwner: TComponent);
+begin
+    inherited Create(AOwner);
+    m_kind := mbkSecondary;
+    m_caption := '';
+    ParentFont := True;
+    Font.Name := 'Microsoft YaHei UI';
+    Font.Size := 9;
+    Height := c_button_height;
+    Width := 80;
+    TabStop := True;
+    DoubleBuffered := True;
+end;
+
+procedure TncModernButton.set_caption(const value: string);
+begin
+    if m_caption = value then
+    begin
+        Exit;
+    end;
+    m_caption := value;
+    Invalidate;
+end;
+
+procedure TncModernButton.set_kind(const value: TncModernButtonKind);
+begin
+    if m_kind = value then
+    begin
+        Exit;
+    end;
+    m_kind := value;
+    Invalidate;
+end;
+
+procedure TncModernButton.CMMouseEnter(var Message: TMessage);
+begin
+    inherited;
+    m_hot := True;
+    Invalidate;
+end;
+
+procedure TncModernButton.CMMouseLeave(var Message: TMessage);
+begin
+    inherited;
+    m_hot := False;
+    Invalidate;
+end;
+
+procedure TncModernButton.CMEnabledChanged(var Message: TMessage);
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncModernButton.MouseDown(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
+begin
+    inherited;
+    if Button = mbLeft then
+    begin
+        SetFocus;
+        m_pressed := True;
+    end;
+    Invalidate;
+end;
+
+procedure TncModernButton.MouseUp(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
+begin
+    inherited;
+    if Button = mbLeft then
+    begin
+        m_pressed := False;
+        if PtInRect(ClientRect, Point(X, Y)) and Enabled then
+        begin
+            Click;
+        end;
+    end;
+    Invalidate;
+end;
+
+procedure TncModernButton.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+    inherited;
+    if (Key = VK_SPACE) or (Key = VK_RETURN) then
+    begin
+        m_pressed := True;
+        Invalidate;
+    end;
+end;
+
+procedure TncModernButton.KeyUp(var Key: Word; Shift: TShiftState);
+begin
+    inherited;
+    if ((Key = VK_SPACE) or (Key = VK_RETURN)) and Enabled then
+    begin
+        m_pressed := False;
+        Invalidate;
+        Click;
+    end;
+end;
+
+procedure TncModernButton.DoEnter;
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncModernButton.DoExit;
+begin
+    inherited;
+    m_pressed := False;
+    Invalidate;
+end;
+
+procedure TncModernButton.Paint;
+var
+    draw_rect: TRect;
+    text_rect: TRect;
+    background_color: TColor;
+    border_color: TColor;
+    text_color: TColor;
+    border_width: Integer;
+    is_disabled: Boolean;
+    corner_size: Integer;
+begin
+    is_disabled := not Enabled;
+
+    case m_kind of
+        mbkPrimary:
+            begin
+                background_color := RGB(50, 118, 255);
+                border_color := RGB(50, 118, 255);
+                text_color := clWhite;
+                if m_hot then
+                begin
+                    background_color := RGB(35, 104, 245);
+                    border_color := background_color;
+                end;
+                if m_pressed then
+                begin
+                    background_color := RGB(28, 93, 224);
+                    border_color := background_color;
+                end;
+                if is_disabled then
+                begin
+                    background_color := RGB(202, 216, 241);
+                    border_color := RGB(202, 216, 241);
+                    text_color := RGB(244, 247, 253);
+                end;
+            end;
+        mbkSubtle:
+            begin
+                background_color := RGB(245, 247, 250);
+                border_color := RGB(220, 225, 232);
+                text_color := RGB(70, 78, 90);
+                if m_hot then
+                begin
+                    background_color := RGB(236, 241, 249);
+                    border_color := RGB(200, 210, 224);
+                end;
+                if m_pressed then
+                begin
+                    background_color := RGB(226, 232, 242);
+                    border_color := RGB(184, 195, 211);
+                end;
+                if is_disabled then
+                begin
+                    background_color := RGB(248, 249, 251);
+                    border_color := RGB(230, 234, 239);
+                    text_color := RGB(180, 186, 194);
+                end;
+            end;
+    else
+        begin
+            background_color := clWhite;
+            border_color := RGB(208, 215, 226);
+            text_color := RGB(48, 55, 66);
+            if m_hot then
+            begin
+                background_color := RGB(244, 248, 255);
+                border_color := RGB(120, 159, 232);
+                text_color := RGB(32, 80, 168);
+            end;
+            if m_pressed then
+            begin
+                background_color := RGB(232, 240, 254);
+                border_color := RGB(92, 136, 219);
+                text_color := RGB(24, 72, 156);
+            end;
+            if is_disabled then
+            begin
+                background_color := RGB(250, 251, 252);
+                border_color := RGB(228, 232, 238);
+                text_color := RGB(186, 191, 198);
+            end;
+        end;
+    end;
+
+    border_width := 1;
+    corner_size := 10;
+    if m_default_button and (not is_disabled) then
+    begin
+        border_width := 2;
+    end;
+
+    draw_rect := ClientRect;
+    Canvas.Brush.Style := bsSolid;
+    Canvas.Brush.Color := background_color;
+    Canvas.Pen.Style := psSolid;
+    Canvas.Pen.Color := border_color;
+    Canvas.Pen.Width := border_width;
+    Canvas.RoundRect(draw_rect.Left, draw_rect.Top, draw_rect.Right, draw_rect.Bottom, corner_size, corner_size);
+
+    text_rect := draw_rect;
+    if m_pressed then
+    begin
+        OffsetRect(text_rect, 0, 1);
+    end;
+
+    Canvas.Brush.Style := bsClear;
+    Canvas.Font.Assign(Font);
+    Canvas.Font.Color := text_color;
+    DrawText(
+        Canvas.Handle,
+        PChar(m_caption),
+        Length(m_caption),
+        text_rect,
+        DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX
+    );
+
+    if Focused and (not is_disabled) then
+    begin
+        InflateRect(draw_rect, -4, -4);
+        Canvas.Brush.Style := bsClear;
+        Canvas.Pen.Style := psDot;
+        Canvas.Pen.Width := 1;
+        Canvas.Pen.Color := RGB(132, 146, 166);
+        Canvas.RoundRect(draw_rect.Left, draw_rect.Top, draw_rect.Right, draw_rect.Bottom, 6, 6);
+    end;
+end;
+
+procedure TncFlatPageControl.CreateParams(var Params: TCreateParams);
+begin
+    inherited CreateParams(Params);
+    Params.ExStyle := Params.ExStyle and (not WS_EX_CLIENTEDGE);
+end;
+
 function create_label(const owner: TComponent; const parent: TWinControl; const caption: string;
     const top: Integer): TLabel;
 begin
@@ -255,6 +581,40 @@ begin
     Result.Left := c_label_left;
     Result.Top := top + 4;
     Result.Caption := caption;
+end;
+
+function create_section_group(const owner: TComponent; const parent: TWinControl; const caption: string;
+    const top: Integer; const height: Integer): TPanel;
+var
+    accent: TPanel;
+    title_label: TLabel;
+begin
+    Result := TPanel.Create(owner);
+    Result.Parent := parent;
+    Result.Left := c_section_left;
+    Result.Top := top;
+    Result.Width := c_section_width;
+    Result.Height := height;
+    Result.BevelOuter := bvNone;
+    Result.ParentBackground := False;
+    Result.Color := clWhite;
+    Result.ParentFont := True;
+
+    accent := TPanel.Create(Result);
+    accent.Parent := Result;
+    accent.Align := alTop;
+    accent.Height := 3;
+    accent.BevelOuter := bvNone;
+    accent.ParentBackground := False;
+    accent.Color := RGB(50, 118, 255);
+
+    title_label := TLabel.Create(Result);
+    title_label.Parent := Result;
+    title_label.Left := c_label_left;
+    title_label.Top := 10;
+    title_label.Caption := caption;
+    title_label.Font.Style := [fsBold];
+    title_label.Font.Color := RGB(34, 39, 46);
 end;
 
 function measure_wrapped_label_height(const font: TFont; const text: string; const width: Integer): Integer;
@@ -308,27 +668,31 @@ begin
 end;
 
 function create_browse_button(const owner: TComponent; const parent: TWinControl; const top: Integer;
-    const on_click: TNotifyEvent): TButton;
+    const on_click: TNotifyEvent): TncModernButton;
 begin
-    Result := TButton.Create(owner);
+    Result := TncModernButton.Create(owner);
     Result.Parent := parent;
     Result.Left := c_control_left + c_path_edit_width + c_browse_button_gap;
     Result.Top := top - 1;
     Result.Width := c_browse_button_width;
+    Result.Height := c_button_height;
     Result.Caption := SButtonBrowse;
     Result.OnClick := on_click;
+    Result.VisualKind := mbkSecondary;
 end;
 
 function create_action_button(const owner: TComponent; const parent: TWinControl; const left: Integer;
-    const top: Integer; const caption: string; const on_click: TNotifyEvent): TButton;
+    const top: Integer; const caption: string; const on_click: TNotifyEvent): TncModernButton;
 begin
-    Result := TButton.Create(owner);
+    Result := TncModernButton.Create(owner);
     Result.Parent := parent;
     Result.Left := left;
     Result.Top := top;
-    Result.Width := 120;
+    Result.Width := c_action_button_width;
+    Result.Height := c_button_height;
     Result.Caption := caption;
     Result.OnClick := on_click;
+    Result.VisualKind := mbkSubtle;
 end;
 
 function normalize_path_override(const edit_text: string; const default_path: string): string;
@@ -422,14 +786,46 @@ begin
     Position := poScreenCenter;
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
+    Color := RGB(245, 247, 250);
+end;
+
+procedure TncSettingsForm.CMDialogKey(var Message: TCMDialogKey);
+begin
+    if (Message.CharCode = VK_RETURN) and (GetKeyState(VK_CONTROL) >= 0) and (GetKeyState(VK_MENU) >= 0) then
+    begin
+        if (m_btn_ok <> nil) and m_btn_ok.Enabled then
+        begin
+            m_btn_ok.Click;
+            Message.Result := 1;
+            Exit;
+        end;
+    end;
+
+    if Message.CharCode = VK_ESCAPE then
+    begin
+        if (m_btn_cancel <> nil) and m_btn_cancel.Enabled then
+        begin
+            m_btn_cancel.Click;
+            Message.Result := 1;
+            Exit;
+        end;
+    end;
+
+    inherited;
 end;
 
 procedure TncSettingsForm.configure_tabs;
 begin
-    m_page_control := TPageControl.Create(Self);
+    m_page_control := TncFlatPageControl.Create(Self);
     m_page_control.Parent := Self;
-    m_page_control.Align := alTop;
-    m_page_control.Height := 410;
+    m_page_control.Align := alClient;
+    m_page_control.AlignWithMargins := True;
+    m_page_control.Margins.Left := c_page_margin;
+    m_page_control.Margins.Top := c_page_margin;
+    m_page_control.Margins.Right := c_page_margin;
+    m_page_control.Margins.Bottom := 0;
+    m_page_control.Style := tsFlatButtons;
+    m_page_control.HotTrack := True;
 
     m_tab_general := TTabSheet.Create(m_page_control);
     m_tab_general.PageControl := m_page_control;
@@ -461,51 +857,81 @@ begin
 end;
 
 procedure TncSettingsForm.configure_buttons;
+var
+    footer_panel: TPanel;
+    footer_line: TBevel;
 begin
-    m_btn_reset := TButton.Create(Self);
-    m_btn_reset.Parent := Self;
-    m_btn_reset.Left := 16;
-    m_btn_reset.Top := 436;
+    footer_panel := TPanel.Create(Self);
+    footer_panel.Parent := Self;
+    footer_panel.Align := alBottom;
+    footer_panel.Height := c_footer_height;
+    footer_panel.BevelOuter := bvNone;
+    footer_panel.ParentBackground := False;
+    footer_panel.Color := RGB(250, 251, 252);
+
+    footer_line := TBevel.Create(footer_panel);
+    footer_line.Parent := footer_panel;
+    footer_line.Align := alTop;
+    footer_line.Shape := bsTopLine;
+    footer_line.Height := 2;
+
+    m_btn_reset := TncModernButton.Create(Self);
+    m_btn_reset.Parent := footer_panel;
+    m_btn_reset.Left := 18;
+    m_btn_reset.Top := 10;
     m_btn_reset.Width := 96;
+    m_btn_reset.Height := c_footer_button_height;
     m_btn_reset.Caption := SButtonDefaults;
     m_btn_reset.OnClick := on_reset_click;
+    m_btn_reset.VisualKind := mbkSubtle;
 
-    m_btn_apply := TButton.Create(Self);
-    m_btn_apply.Parent := Self;
-    m_btn_apply.Left := ClientWidth - 270;
-    m_btn_apply.Top := 436;
-    m_btn_apply.Width := 80;
+    m_btn_apply := TncModernButton.Create(Self);
+    m_btn_apply.Parent := footer_panel;
+    m_btn_apply.Left := ClientWidth - 272;
+    m_btn_apply.Top := 10;
+    m_btn_apply.Width := 78;
+    m_btn_apply.Height := c_footer_button_height;
     m_btn_apply.Caption := SButtonApply;
     m_btn_apply.OnClick := on_apply_click;
+    m_btn_apply.VisualKind := mbkSecondary;
 
-    m_btn_ok := TButton.Create(Self);
-    m_btn_ok.Parent := Self;
-    m_btn_ok.Left := ClientWidth - 180;
-    m_btn_ok.Top := 436;
-    m_btn_ok.Width := 80;
+    m_btn_ok := TncModernButton.Create(Self);
+    m_btn_ok.Parent := footer_panel;
+    m_btn_ok.Left := ClientWidth - 184;
+    m_btn_ok.Top := 10;
+    m_btn_ok.Width := 78;
+    m_btn_ok.Height := c_footer_button_height;
     m_btn_ok.Caption := SButtonOK;
     m_btn_ok.Default := True;
     m_btn_ok.OnClick := on_ok_click;
+    m_btn_ok.VisualKind := mbkPrimary;
 
-    m_btn_cancel := TButton.Create(Self);
-    m_btn_cancel.Parent := Self;
-    m_btn_cancel.Left := ClientWidth - 90;
-    m_btn_cancel.Top := 436;
-    m_btn_cancel.Width := 80;
+    m_btn_cancel := TncModernButton.Create(Self);
+    m_btn_cancel.Parent := footer_panel;
+    m_btn_cancel.Left := ClientWidth - 96;
+    m_btn_cancel.Top := 10;
+    m_btn_cancel.Width := 78;
+    m_btn_cancel.Height := c_footer_button_height;
     m_btn_cancel.Caption := SButtonCancel;
     m_btn_cancel.Cancel := True;
     m_btn_cancel.OnClick := on_cancel_click;
+    m_btn_cancel.VisualKind := mbkSecondary;
 end;
 
 procedure TncSettingsForm.add_general_controls;
 var
     top: Integer;
+    section_top: Integer;
+    defaults_group: TPanel;
     hint_label: TLabel;
 begin
-    top := 24;
-    create_label(Self, m_tab_general, SLabelInputMode, top);
+    section_top := 18;
+    defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 188);
+
+    top := c_section_inner_top;
+    create_label(Self, defaults_group, SLabelInputMode, top);
     m_combo_input_mode := TComboBox.Create(Self);
-    m_combo_input_mode.Parent := m_tab_general;
+    m_combo_input_mode.Parent := defaults_group;
     m_combo_input_mode.Left := c_control_left;
     m_combo_input_mode.Top := top;
     m_combo_input_mode.Width := c_combo_width;
@@ -514,22 +940,12 @@ begin
     m_combo_input_mode.Items.Add(SOptionEnglish);
     m_combo_input_mode.OnChange := mark_dirty;
 
-    hint_label := create_hint_label(Self, m_tab_general, SHintInputMode, c_control_left, top + c_row_height - 2, 420);
+    hint_label := create_hint_label(Self, defaults_group, SHintInputMode, c_control_left, top + c_row_height - 2, 470);
 
     Inc(top, c_row_height + c_row_gap + hint_label.Height - 2);
-    create_label(Self, m_tab_general, SLabelMaxCandidates, top);
-    m_edit_max_candidates := TEdit.Create(Self);
-    m_edit_max_candidates.Parent := m_tab_general;
-    m_edit_max_candidates.Left := c_control_left;
-    m_edit_max_candidates.Top := top;
-    m_edit_max_candidates.Width := c_edit_width;
-    configure_numeric_edit(m_edit_max_candidates, '1..20');
-    m_edit_max_candidates.OnChange := mark_dirty;
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_general, SLabelDictionaryVariant, top);
+    create_label(Self, defaults_group, SLabelDictionaryVariant, top);
     m_combo_variant := TComboBox.Create(Self);
-    m_combo_variant.Parent := m_tab_general;
+    m_combo_variant.Parent := defaults_group;
     m_combo_variant.Left := c_control_left;
     m_combo_variant.Top := top;
     m_combo_variant.Width := c_combo_width;
@@ -537,109 +953,149 @@ begin
     m_combo_variant.Items.Add(SOptionSimplifiedChinese);
     m_combo_variant.Items.Add(SOptionTraditionalChinese);
     m_combo_variant.OnChange := mark_dirty;
-
-    Inc(top, c_row_height + c_row_gap);
-    m_chk_full_width_mode := TCheckBox.Create(Self);
-    m_chk_full_width_mode.Parent := m_tab_general;
-    m_chk_full_width_mode.Left := c_label_left;
-    m_chk_full_width_mode.Top := top;
-    m_chk_full_width_mode.Width := 420;
-    m_chk_full_width_mode.Caption := SCheckFullWidthMode;
-    m_chk_full_width_mode.OnClick := mark_dirty;
-
-    Inc(top, c_row_height);
-    m_chk_punctuation_full_width := TCheckBox.Create(Self);
-    m_chk_punctuation_full_width.Parent := m_tab_general;
-    m_chk_punctuation_full_width.Left := c_label_left;
-    m_chk_punctuation_full_width.Top := top;
-    m_chk_punctuation_full_width.Width := 420;
-    m_chk_punctuation_full_width.Caption := SCheckPunctuationFullWidth;
-    m_chk_punctuation_full_width.OnClick := mark_dirty;
 end;
 
 procedure TncSettingsForm.add_candidate_controls;
 var
     top: Integer;
+    section_top: Integer;
+    strategy_group: TPanel;
 begin
-    top := 24;
+    section_top := 18;
+    strategy_group := create_section_group(Self, m_tab_candidate, SGroupCandidateStrategy, section_top, 178);
+
+    top := c_section_inner_top;
+    create_label(Self, strategy_group, SLabelMaxCandidates, top);
+    m_edit_max_candidates := TEdit.Create(Self);
+    m_edit_max_candidates.Parent := strategy_group;
+    m_edit_max_candidates.Left := c_control_left;
+    m_edit_max_candidates.Top := top;
+    m_edit_max_candidates.Width := c_edit_width;
+    configure_numeric_edit(m_edit_max_candidates, '1..20');
+    m_edit_max_candidates.OnChange := mark_dirty;
+
+    Inc(top, c_row_height + c_row_gap);
     m_chk_enable_segment_candidates := TCheckBox.Create(Self);
-    m_chk_enable_segment_candidates.Parent := m_tab_candidate;
+    m_chk_enable_segment_candidates.Parent := strategy_group;
     m_chk_enable_segment_candidates.Left := c_label_left;
     m_chk_enable_segment_candidates.Top := top;
-    m_chk_enable_segment_candidates.Width := 420;
+    m_chk_enable_segment_candidates.Width := 520;
     m_chk_enable_segment_candidates.Caption := SCheckEnableSegmentCandidates;
     m_chk_enable_segment_candidates.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
     m_chk_segment_head_only := TCheckBox.Create(Self);
-    m_chk_segment_head_only.Parent := m_tab_candidate;
+    m_chk_segment_head_only.Parent := strategy_group;
     m_chk_segment_head_only.Left := c_label_left;
     m_chk_segment_head_only.Top := top;
-    m_chk_segment_head_only.Width := 460;
+    m_chk_segment_head_only.Width := 560;
     m_chk_segment_head_only.Caption := SCheckSegmentHeadOnly;
     m_chk_segment_head_only.OnClick := mark_dirty;
+
+    create_hint_label(Self, strategy_group, SHintCandidateStrategy, c_label_left, top + c_row_height + 4, 690);
 end;
 
 procedure TncSettingsForm.add_hotkey_controls;
 var
     top: Integer;
+    section_top: Integer;
+    hotkey_group: TPanel;
 begin
-    top := 24;
+    section_top := 18;
+    hotkey_group := create_section_group(Self, m_tab_hotkeys, SGroupHotkeys, section_top, 164);
+
+    top := c_section_inner_top;
     m_chk_enable_ctrl_space_toggle := TCheckBox.Create(Self);
-    m_chk_enable_ctrl_space_toggle.Parent := m_tab_hotkeys;
+    m_chk_enable_ctrl_space_toggle.Parent := hotkey_group;
     m_chk_enable_ctrl_space_toggle.Left := c_label_left;
     m_chk_enable_ctrl_space_toggle.Top := top;
-    m_chk_enable_ctrl_space_toggle.Width := 420;
+    m_chk_enable_ctrl_space_toggle.Width := 520;
     m_chk_enable_ctrl_space_toggle.Caption := SCheckEnableCtrlSpace;
     m_chk_enable_ctrl_space_toggle.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
     m_chk_enable_shift_space_toggle := TCheckBox.Create(Self);
-    m_chk_enable_shift_space_toggle.Parent := m_tab_hotkeys;
+    m_chk_enable_shift_space_toggle.Parent := hotkey_group;
     m_chk_enable_shift_space_toggle.Left := c_label_left;
     m_chk_enable_shift_space_toggle.Top := top;
-    m_chk_enable_shift_space_toggle.Width := 420;
+    m_chk_enable_shift_space_toggle.Width := 520;
     m_chk_enable_shift_space_toggle.Caption := SCheckEnableShiftSpace;
     m_chk_enable_shift_space_toggle.OnClick := mark_dirty;
 
     Inc(top, c_row_height);
     m_chk_enable_ctrl_period_toggle := TCheckBox.Create(Self);
-    m_chk_enable_ctrl_period_toggle.Parent := m_tab_hotkeys;
+    m_chk_enable_ctrl_period_toggle.Parent := hotkey_group;
     m_chk_enable_ctrl_period_toggle.Left := c_label_left;
     m_chk_enable_ctrl_period_toggle.Top := top;
-    m_chk_enable_ctrl_period_toggle.Width := 420;
+    m_chk_enable_ctrl_period_toggle.Width := 520;
     m_chk_enable_ctrl_period_toggle.Caption := SCheckEnableCtrlPeriod;
     m_chk_enable_ctrl_period_toggle.OnClick := mark_dirty;
+
+    create_hint_label(Self, hotkey_group, SHintHotkeys, c_label_left, top + c_row_height + 4, 690);
 end;
 
 procedure TncSettingsForm.add_appearance_controls;
+var
+    top: Integer;
+    section_top: Integer;
+    appearance_group: TPanel;
 begin
+    section_top := 18;
+    appearance_group := create_section_group(Self, m_tab_appearance, SGroupAppearance, section_top, 176);
+
+    top := c_section_inner_top;
+    m_chk_full_width_mode := TCheckBox.Create(Self);
+    m_chk_full_width_mode.Parent := appearance_group;
+    m_chk_full_width_mode.Left := c_label_left;
+    m_chk_full_width_mode.Top := top;
+    m_chk_full_width_mode.Width := 520;
+    m_chk_full_width_mode.Caption := SCheckFullWidthMode;
+    m_chk_full_width_mode.OnClick := mark_dirty;
+
+    Inc(top, c_row_height);
+    m_chk_punctuation_full_width := TCheckBox.Create(Self);
+    m_chk_punctuation_full_width.Parent := appearance_group;
+    m_chk_punctuation_full_width.Left := c_label_left;
+    m_chk_punctuation_full_width.Top := top;
+    m_chk_punctuation_full_width.Width := 520;
+    m_chk_punctuation_full_width.Caption := SCheckPunctuationFullWidth;
+    m_chk_punctuation_full_width.OnClick := mark_dirty;
+
+    Inc(top, c_row_height);
     m_chk_show_status_widget := TCheckBox.Create(Self);
-    m_chk_show_status_widget.Parent := m_tab_appearance;
+    m_chk_show_status_widget.Parent := appearance_group;
     m_chk_show_status_widget.Left := c_label_left;
-    m_chk_show_status_widget.Top := 24;
-    m_chk_show_status_widget.Width := 420;
+    m_chk_show_status_widget.Top := top;
+    m_chk_show_status_widget.Width := 520;
     m_chk_show_status_widget.Caption := SCheckShowStatusWidget;
     m_chk_show_status_widget.OnClick := mark_dirty;
+
+    create_hint_label(Self, appearance_group, SHintAppearance, c_label_left, top + c_row_height + 4, 690);
 end;
 
 procedure TncSettingsForm.add_ai_controls;
 var
     top: Integer;
+    section_top: Integer;
+    behavior_group: TPanel;
+    resources_group: TPanel;
 begin
-    top := 24;
+    section_top := 18;
+    behavior_group := create_section_group(Self, m_tab_ai, SGroupAiBehavior, section_top, 170);
+
+    top := c_section_inner_top;
     m_chk_enable_ai := TCheckBox.Create(Self);
-    m_chk_enable_ai.Parent := m_tab_ai;
+    m_chk_enable_ai.Parent := behavior_group;
     m_chk_enable_ai.Left := c_label_left;
     m_chk_enable_ai.Top := top;
-    m_chk_enable_ai.Width := 420;
+    m_chk_enable_ai.Width := 520;
     m_chk_enable_ai.Caption := SCheckEnableAI;
     m_chk_enable_ai.OnClick := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, SLabelAIBackend, top);
+    create_label(Self, behavior_group, SLabelAIBackend, top);
     m_combo_ai_backend := TComboBox.Create(Self);
-    m_combo_ai_backend.Parent := m_tab_ai;
+    m_combo_ai_backend.Parent := behavior_group;
     m_combo_ai_backend.Left := c_control_left;
     m_combo_ai_backend.Top := top;
     m_combo_ai_backend.Width := c_combo_width;
@@ -650,72 +1106,83 @@ begin
     m_combo_ai_backend.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, SLabelAIRequestTimeout, top);
+    create_label(Self, behavior_group, SLabelAIRequestTimeout, top);
     m_edit_ai_timeout_ms := TEdit.Create(Self);
-    m_edit_ai_timeout_ms.Parent := m_tab_ai;
+    m_edit_ai_timeout_ms.Parent := behavior_group;
     m_edit_ai_timeout_ms.Left := c_control_left;
     m_edit_ai_timeout_ms.Top := top;
     m_edit_ai_timeout_ms.Width := c_edit_width;
     configure_numeric_edit(m_edit_ai_timeout_ms, '100..10000');
     m_edit_ai_timeout_ms.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, SLabelAIRuntimeDirCPU, top);
+    create_hint_label(Self, behavior_group, SHintAiBehavior, c_label_left, top + c_row_height + 4, 690);
+
+    section_top := behavior_group.Top + behavior_group.Height + c_section_gap;
+    resources_group := create_section_group(Self, m_tab_ai, SGroupAiResources, section_top, 222);
+
+    top := c_section_inner_top;
+    create_label(Self, resources_group, SLabelAIRuntimeDirCPU, top);
     m_edit_ai_runtime_dir_cpu := TEdit.Create(Self);
-    m_edit_ai_runtime_dir_cpu.Parent := m_tab_ai;
+    m_edit_ai_runtime_dir_cpu.Parent := resources_group;
     m_edit_ai_runtime_dir_cpu.Left := c_control_left;
     m_edit_ai_runtime_dir_cpu.Top := top;
     m_edit_ai_runtime_dir_cpu.Width := c_path_edit_width;
     configure_path_edit(m_edit_ai_runtime_dir_cpu, get_default_ai_llama_runtime_dir_cpu);
     m_edit_ai_runtime_dir_cpu.OnChange := mark_dirty;
-    m_btn_ai_runtime_dir_cpu := create_browse_button(Self, m_tab_ai, top, on_browse_ai_runtime_dir_cpu);
+    m_btn_ai_runtime_dir_cpu := create_browse_button(Self, resources_group, top, on_browse_ai_runtime_dir_cpu);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, SLabelAIRuntimeDirCUDA, top);
+    create_label(Self, resources_group, SLabelAIRuntimeDirCUDA, top);
     m_edit_ai_runtime_dir_cuda := TEdit.Create(Self);
-    m_edit_ai_runtime_dir_cuda.Parent := m_tab_ai;
+    m_edit_ai_runtime_dir_cuda.Parent := resources_group;
     m_edit_ai_runtime_dir_cuda.Left := c_control_left;
     m_edit_ai_runtime_dir_cuda.Top := top;
     m_edit_ai_runtime_dir_cuda.Width := c_path_edit_width;
     configure_path_edit(m_edit_ai_runtime_dir_cuda, get_default_ai_llama_runtime_dir_cuda);
     m_edit_ai_runtime_dir_cuda.OnChange := mark_dirty;
-    m_btn_ai_runtime_dir_cuda := create_browse_button(Self, m_tab_ai, top, on_browse_ai_runtime_dir_cuda);
+    m_btn_ai_runtime_dir_cuda := create_browse_button(Self, resources_group, top, on_browse_ai_runtime_dir_cuda);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_ai, SLabelAIModelPath, top);
+    create_label(Self, resources_group, SLabelAIModelPath, top);
     m_edit_ai_model_path := TEdit.Create(Self);
-    m_edit_ai_model_path.Parent := m_tab_ai;
+    m_edit_ai_model_path.Parent := resources_group;
     m_edit_ai_model_path.Left := c_control_left;
     m_edit_ai_model_path.Top := top;
     m_edit_ai_model_path.Width := c_path_edit_width;
     configure_path_edit(m_edit_ai_model_path, get_default_ai_llama_model_path);
     m_edit_ai_model_path.OnChange := mark_dirty;
-    m_btn_ai_model_path := create_browse_button(Self, m_tab_ai, top, on_browse_ai_model_path);
+    m_btn_ai_model_path := create_browse_button(Self, resources_group, top, on_browse_ai_model_path);
 
     Inc(top, c_row_height + 2);
-    m_btn_ai_defaults := create_action_button(Self, m_tab_ai, c_control_left, top,
+    m_btn_ai_defaults := create_action_button(Self, resources_group, c_control_left, top,
         SButtonUseDefaultAIPaths, on_ai_defaults_click);
-    m_btn_ai_open_model_folder := create_action_button(Self, m_tab_ai, c_control_left + 140, top,
+    m_btn_ai_open_model_folder := create_action_button(Self, resources_group, c_control_left + c_action_button_width + 12, top,
         SButtonOpenAIFolder, on_open_ai_model_folder);
 end;
 
 procedure TncSettingsForm.add_logging_controls;
 var
     top: Integer;
+    section_top: Integer;
+    logging_group: TPanel;
+    files_group: TPanel;
 begin
-    top := 24;
+    section_top := 18;
+    logging_group := create_section_group(Self, m_tab_logging, SGroupLogging, section_top, 162);
+
+    top := c_section_inner_top;
     m_chk_log_enabled := TCheckBox.Create(Self);
-    m_chk_log_enabled.Parent := m_tab_logging;
+    m_chk_log_enabled.Parent := logging_group;
     m_chk_log_enabled.Left := c_label_left;
     m_chk_log_enabled.Top := top;
-    m_chk_log_enabled.Width := 420;
+    m_chk_log_enabled.Width := 520;
     m_chk_log_enabled.Caption := SCheckEnableLogging;
     m_chk_log_enabled.OnClick := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_logging, SLabelLogLevel, top);
+    create_label(Self, logging_group, SLabelLogLevel, top);
     m_combo_log_level := TComboBox.Create(Self);
-    m_combo_log_level.Parent := m_tab_logging;
+    m_combo_log_level.Parent := logging_group;
     m_combo_log_level.Left := c_control_left;
     m_combo_log_level.Top := top;
     m_combo_log_level.Width := c_combo_width;
@@ -727,93 +1194,109 @@ begin
     m_combo_log_level.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_logging, SLabelMaxLogSize, top);
+    create_label(Self, logging_group, SLabelMaxLogSize, top);
     m_edit_log_max_size_kb := TEdit.Create(Self);
-    m_edit_log_max_size_kb.Parent := m_tab_logging;
+    m_edit_log_max_size_kb.Parent := logging_group;
     m_edit_log_max_size_kb.Left := c_control_left;
     m_edit_log_max_size_kb.Top := top;
     m_edit_log_max_size_kb.Width := c_edit_width;
     configure_numeric_edit(m_edit_log_max_size_kb, '64..1048576');
     m_edit_log_max_size_kb.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_logging, SLabelLogPath, top);
+    section_top := logging_group.Top + logging_group.Height + c_section_gap;
+    files_group := create_section_group(Self, m_tab_logging, SGroupLogFiles, section_top, 148);
+
+    top := c_section_inner_top;
+    create_label(Self, files_group, SLabelLogPath, top);
     m_edit_log_path := TEdit.Create(Self);
-    m_edit_log_path.Parent := m_tab_logging;
+    m_edit_log_path.Parent := files_group;
     m_edit_log_path.Left := c_control_left;
     m_edit_log_path.Top := top;
     m_edit_log_path.Width := c_path_edit_width;
     configure_path_edit(m_edit_log_path, get_default_log_path);
     m_edit_log_path.OnChange := mark_dirty;
-    m_btn_log_path := create_browse_button(Self, m_tab_logging, top, on_browse_log_path);
+    m_btn_log_path := create_browse_button(Self, files_group, top, on_browse_log_path);
 
     Inc(top, c_row_height + 2);
-    m_btn_open_log_folder := create_action_button(Self, m_tab_logging, c_control_left, top,
+    m_btn_open_log_folder := create_action_button(Self, files_group, c_control_left, top,
         SButtonOpenLogFolder, on_open_log_folder);
-    m_btn_log_defaults := create_action_button(Self, m_tab_logging, c_control_left + 140, top,
+    m_btn_log_defaults := create_action_button(Self, files_group, c_control_left + c_action_button_width + 12, top,
         SButtonUseDefaultLogging, on_log_defaults_click);
 
-    m_hint_logging := create_hint_label(Self, m_tab_logging, SHintLogging, c_label_left, top + c_row_height + 8, 620);
+    m_hint_logging := create_hint_label(Self, files_group, SHintLogging, c_label_left, top + c_row_height + 4, 690);
 end;
 
 procedure TncSettingsForm.add_advanced_controls;
 var
     top: Integer;
+    section_top: Integer;
+    debug_group: TPanel;
+    dictionaries_group: TPanel;
+    tools_group: TPanel;
 begin
-    top := 24;
+    section_top := 18;
+    debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 84);
+
+    top := c_section_inner_top;
     m_chk_debug_mode := TCheckBox.Create(Self);
-    m_chk_debug_mode.Parent := m_tab_advanced;
+    m_chk_debug_mode.Parent := debug_group;
     m_chk_debug_mode.Left := c_label_left;
     m_chk_debug_mode.Top := top;
-    m_chk_debug_mode.Width := 420;
+    m_chk_debug_mode.Width := 520;
     m_chk_debug_mode.Caption := SCheckEnableDebugMode;
     m_chk_debug_mode.OnClick := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap + 4);
-    create_label(Self, m_tab_advanced, SLabelSimplifiedDictionary, top);
+    section_top := debug_group.Top + debug_group.Height + c_section_gap;
+    dictionaries_group := create_section_group(Self, m_tab_advanced, SGroupDictionaryPaths, section_top, 212);
+
+    top := c_section_inner_top;
+    create_label(Self, dictionaries_group, SLabelSimplifiedDictionary, top);
     m_edit_dict_path_sc := TEdit.Create(Self);
-    m_edit_dict_path_sc.Parent := m_tab_advanced;
+    m_edit_dict_path_sc.Parent := dictionaries_group;
     m_edit_dict_path_sc.Left := c_control_left;
     m_edit_dict_path_sc.Top := top;
     m_edit_dict_path_sc.Width := c_path_edit_width;
     configure_path_edit(m_edit_dict_path_sc, get_default_dictionary_path_simplified);
     m_edit_dict_path_sc.OnChange := mark_dirty;
-    m_btn_dict_path_sc := create_browse_button(Self, m_tab_advanced, top, on_browse_dict_path_sc);
+    m_btn_dict_path_sc := create_browse_button(Self, dictionaries_group, top, on_browse_dict_path_sc);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_advanced, SLabelTraditionalDictionary, top);
+    create_label(Self, dictionaries_group, SLabelTraditionalDictionary, top);
     m_edit_dict_path_tc := TEdit.Create(Self);
-    m_edit_dict_path_tc.Parent := m_tab_advanced;
+    m_edit_dict_path_tc.Parent := dictionaries_group;
     m_edit_dict_path_tc.Left := c_control_left;
     m_edit_dict_path_tc.Top := top;
     m_edit_dict_path_tc.Width := c_path_edit_width;
     configure_path_edit(m_edit_dict_path_tc, get_default_dictionary_path_traditional);
     m_edit_dict_path_tc.OnChange := mark_dirty;
-    m_btn_dict_path_tc := create_browse_button(Self, m_tab_advanced, top, on_browse_dict_path_tc);
+    m_btn_dict_path_tc := create_browse_button(Self, dictionaries_group, top, on_browse_dict_path_tc);
 
     Inc(top, c_row_height + c_row_gap);
-    create_label(Self, m_tab_advanced, SLabelUserDictionary, top);
+    create_label(Self, dictionaries_group, SLabelUserDictionary, top);
     m_edit_user_dict_path := TEdit.Create(Self);
-    m_edit_user_dict_path.Parent := m_tab_advanced;
+    m_edit_user_dict_path.Parent := dictionaries_group;
     m_edit_user_dict_path.Left := c_control_left;
     m_edit_user_dict_path.Top := top;
     m_edit_user_dict_path.Width := c_path_edit_width;
     configure_path_edit(m_edit_user_dict_path, get_default_user_dictionary_path);
     m_edit_user_dict_path.OnChange := mark_dirty;
-    m_btn_user_dict_path := create_browse_button(Self, m_tab_advanced, top, on_browse_user_dict_path);
+    m_btn_user_dict_path := create_browse_button(Self, dictionaries_group, top, on_browse_user_dict_path);
 
     Inc(top, c_row_height + 2);
-    m_btn_dict_defaults := create_action_button(Self, m_tab_advanced, c_control_left, top,
+    m_btn_dict_defaults := create_action_button(Self, dictionaries_group, c_control_left, top,
         SButtonUseDefaultDictionaries, on_dictionary_defaults_click);
-    m_btn_open_dictionary_folder := create_action_button(Self, m_tab_advanced, c_control_left + 140, top,
+    m_btn_open_dictionary_folder := create_action_button(Self, dictionaries_group, c_control_left + c_action_button_width + 12, top,
         SButtonOpenDictionaryFolder, on_open_dictionary_folder);
-    m_btn_open_config_folder := create_action_button(Self, m_tab_advanced, c_control_left + 280, top,
+    section_top := dictionaries_group.Top + dictionaries_group.Height + c_section_gap;
+    tools_group := create_section_group(Self, m_tab_advanced, SGroupConfigTools, section_top, 134);
+
+    top := c_section_inner_top;
+    m_btn_open_config_folder := create_action_button(Self, tools_group, c_label_left, top,
         SButtonOpenConfigFolder, on_open_config_folder);
-    Inc(top, c_row_height + 2);
-    m_btn_open_config_file := create_action_button(Self, m_tab_advanced, c_control_left, top,
+    m_btn_open_config_file := create_action_button(Self, tools_group, c_label_left + c_action_button_width + 12, top,
         SButtonOpenConfigFile, on_open_config_file);
 
-    m_hint_advanced := create_hint_label(Self, m_tab_advanced, SHintAdvanced, c_label_left, top + c_row_height + 8, 620);
+    m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, c_label_left, top + c_row_height + 8, 690);
 end;
 
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
