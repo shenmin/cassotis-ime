@@ -1789,6 +1789,43 @@ begin
     end;
 end;
 
+function detect_relaxed_missing_apostrophe_boundary_shift(const input_text: string): Boolean;
+var
+    parser: TncPinyinParser;
+    primary_parts: TncPinyinParseResult;
+    part_idx: Integer;
+    left_text: string;
+    right_text: string;
+    combined_text: string;
+begin
+    Result := False;
+    if (input_text = '') or (Pos('''', input_text) > 0) then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.Create;
+    try
+        primary_parts := parser.parse(input_text);
+        if Length(primary_parts) < 2 then
+        begin
+            Exit;
+        end;
+
+        for part_idx := 0 to High(primary_parts) - 1 do
+        begin
+            combined_text := primary_parts[part_idx].text + primary_parts[part_idx + 1].text;
+            if try_split_relaxed_missing_apostrophe_token(parser, combined_text, left_text, right_text) and
+                (Length(left_text) > Length(primary_parts[part_idx].text)) then
+            begin
+                Exit(True);
+            end;
+        end;
+    finally
+        parser.Free;
+    end;
+end;
+
 function parse_pinyin_with_relaxed_missing_apostrophe(const input_text: string): TncPinyinParseResult;
 var
     parser: TncPinyinParser;
@@ -1798,6 +1835,8 @@ var
     out_idx: Integer;
     left_text: string;
     right_text: string;
+    combined_text: string;
+    changed: Boolean;
 
     procedure append_part(const text: string; const start_index: Integer);
     begin
@@ -1823,20 +1862,38 @@ begin
 
         SetLength(expanded_parts, 0);
         out_idx := 0;
-        for part_idx := 0 to High(primary_parts) do
+        changed := False;
+        part_idx := 0;
+        while part_idx <= High(primary_parts) do
         begin
             if try_split_relaxed_missing_apostrophe_token(parser, primary_parts[part_idx].text, left_text, right_text) then
             begin
                 append_part(left_text, primary_parts[part_idx].start_index);
                 append_part(right_text, primary_parts[part_idx].start_index + Length(left_text));
-            end
-            else
-            begin
-                append_part(primary_parts[part_idx].text, primary_parts[part_idx].start_index);
+                changed := True;
+                Inc(part_idx);
+                Continue;
             end;
+
+            if part_idx < High(primary_parts) then
+            begin
+                combined_text := primary_parts[part_idx].text + primary_parts[part_idx + 1].text;
+                if try_split_relaxed_missing_apostrophe_token(parser, combined_text, left_text, right_text) and
+                    (Length(left_text) > Length(primary_parts[part_idx].text)) then
+                begin
+                    append_part(left_text, primary_parts[part_idx].start_index);
+                    append_part(right_text, primary_parts[part_idx].start_index + Length(left_text));
+                    changed := True;
+                    Inc(part_idx, 2);
+                    Continue;
+                end;
+            end;
+
+            append_part(primary_parts[part_idx].text, primary_parts[part_idx].start_index);
+            Inc(part_idx);
         end;
 
-        if Length(expanded_parts) > Length(primary_parts) then
+        if changed or (Length(expanded_parts) > Length(primary_parts)) then
         begin
             Result := expanded_parts;
         end
@@ -1876,6 +1933,9 @@ var
     runtime_phrase_added: Boolean;
     runtime_redup_added: Boolean;
     raw_candidates_seeded_from_runtime_only: Boolean;
+    relaxed_missing_apostrophe_comment: string;
+    has_relaxed_missing_apostrophe_partial: Boolean;
+    has_relaxed_missing_apostrophe_boundary_shift: Boolean;
     lookup_cache_hits: Integer;
     lookup_cache_misses: Integer;
     lookup_elapsed_ms: Int64;
@@ -1888,6 +1948,8 @@ var
     total_start_tick: UInt64;
     phase_start_tick: UInt64;
     allow_relaxed_missing_apostrophe: Boolean;
+    compact_runtime_candidate: TncCandidate;
+    compact_runtime_candidates: TncCandidateList;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -2258,7 +2320,8 @@ var
         end;
     end;
 
-    function get_input_syllable_count_for_text(const pinyin_text: string): Integer;
+    function get_input_syllable_count_for_text(const pinyin_text: string;
+        const allow_relaxed_split: Boolean = False): Integer;
     var
         parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
@@ -2271,7 +2334,14 @@ var
 
         parser := TncPinyinParser.create;
         try
-            syllables := parser.parse(pinyin_text);
+            if allow_relaxed_split then
+            begin
+                syllables := parse_pinyin_with_relaxed_missing_apostrophe(pinyin_text);
+            end
+            else
+            begin
+                syllables := parser.parse(pinyin_text);
+            end;
             Result := Length(syllables);
         finally
             parser.Free;
@@ -2374,10 +2444,10 @@ var
         end;
     end;
 
-    function try_get_runtime_function_head_expected_text(
-        const syllable_text: string;
-        out out_text: string
-    ): Boolean;
+        function try_get_runtime_function_head_expected_text(
+            const syllable_text: string;
+            out out_text: string
+        ): Boolean;
     begin
         out_text := '';
         if SameText(syllable_text, 'zhe') then
@@ -2407,10 +2477,27 @@ var
         Result := out_text <> '';
     end;
 
-    function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
-    var
-        units: TArray<string>;
-        tail_codepoint: Integer;
+        function try_get_interrogative_location_tail_expected_text(
+            const syllable_text: string;
+            out out_text: string
+        ): Boolean;
+        begin
+            out_text := '';
+            if SameText(syllable_text, 'li') then
+            begin
+                out_text := string(Char($91CC));
+            end
+            else if SameText(syllable_text, 'er') then
+            begin
+                out_text := string(Char($513F));
+            end;
+            Result := out_text <> '';
+        end;
+
+        function is_runtime_constructed_phrase_friendly(const text: string): Boolean;
+        var
+            units: TArray<string>;
+            tail_codepoint: Integer;
     begin
         Result := False;
         units := split_text_units(Trim(text));
@@ -3161,6 +3248,8 @@ var
         end;
 
         function try_match_expected_units(out out_units: TArray<string>): Boolean;
+        var
+            location_tail_text: string;
         begin
             SetLength(out_units, 0);
             if (Length(syllables) <> 2) and (Length(syllables) <> 3) then
@@ -3173,7 +3262,20 @@ var
                 Exit(True);
             end;
 
-            if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
+            if (Length(syllables) = 2) and
+                (syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
+                try_get_interrogative_location_tail_expected_text(syllables[1].text, location_tail_text) then
+            begin
+                out_units := TArray<string>.Create(string(Char($54EA)), location_tail_text);
+            end
+            else if (Length(syllables) = 3) and syllable_equals(syllables[0].text, 'qu') and
+                (syllable_equals(syllables[1].text, 'na') or syllable_equals(syllables[1].text, 'nei')) and
+                try_get_interrogative_location_tail_expected_text(syllables[2].text, location_tail_text) then
+            begin
+                out_units := TArray<string>.Create(
+                    string(Char($53BB)), string(Char($54EA)), location_tail_text);
+            end
+            else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
                 out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E2A)));
@@ -3385,6 +3487,130 @@ var
             end;
 
             out_candidate.text := out_candidate.text + expected_units[unit_idx];
+            Inc(total_score, chosen.score);
+        end;
+
+        out_candidate.score := (total_score * 2) + c_runtime_common_pattern_bonus +
+            (Length(expected_units) * c_runtime_common_pattern_step);
+        out_candidate.comment := '';
+        out_candidate.source := cs_rule;
+        Result := True;
+    end;
+
+    function try_build_compact_interrogative_location_candidate(out out_candidate: TncCandidate): Boolean;
+    const
+        c_runtime_common_pattern_bonus = 560;
+        c_runtime_common_pattern_step = 40;
+    var
+        expected_units: TArray<string>;
+        expected_syllables: TArray<string>;
+        local_lookup: TncCandidateList;
+        chosen: TncCandidate;
+        compact_unit_idx: Integer;
+        best_rank_local: Integer;
+        total_score: Integer;
+        normalized_query: string;
+
+        function try_pick_expected_single_char(const syllable_text: string;
+            const expected_text: string; out out_single: TncCandidate): Boolean;
+        var
+            local_candidate_idx: Integer;
+            local_rank_score: Integer;
+        begin
+            Result := False;
+            out_single.text := '';
+            out_single.comment := '';
+            out_single.score := 0;
+            out_single.source := cs_rule;
+            out_single.has_dict_weight := False;
+            out_single.dict_weight := 0;
+
+            if (syllable_text = '') or (expected_text = '') then
+            begin
+                Exit;
+            end;
+            if not dictionary_lookup_cached(syllable_text, local_lookup) then
+            begin
+                Exit;
+            end;
+
+            best_rank_local := Low(Integer);
+            for local_candidate_idx := 0 to High(local_lookup) do
+            begin
+                if Trim(local_lookup[local_candidate_idx].text) <> expected_text then
+                begin
+                    Continue;
+                end;
+                if not is_single_text_unit(expected_text) then
+                begin
+                    Continue;
+                end;
+
+                local_rank_score := local_lookup[local_candidate_idx].score;
+                if local_lookup[local_candidate_idx].source = cs_user then
+                begin
+                    Inc(local_rank_score, c_user_score_bonus);
+                end;
+                if local_rank_score > best_rank_local then
+                begin
+                    best_rank_local := local_rank_score;
+                    out_single := local_lookup[local_candidate_idx];
+                    Result := True;
+                end;
+            end;
+        end;
+
+    begin
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
+
+        if m_dictionary = nil then
+        begin
+            Exit;
+        end;
+
+        normalized_query := LowerCase(Trim(lookup_text));
+        if normalized_query = 'ner' then
+        begin
+            expected_syllables := TArray<string>.Create('na', 'er');
+            expected_units := TArray<string>.Create(string(Char($54EA)), string(Char($513F)));
+        end
+        else if normalized_query = 'qner' then
+        begin
+            expected_syllables := TArray<string>.Create('qu', 'na', 'er');
+            expected_units := TArray<string>.Create(
+                string(Char($53BB)), string(Char($54EA)), string(Char($513F)));
+        end
+        else if normalized_query = 'nli' then
+        begin
+            expected_syllables := TArray<string>.Create('na', 'li');
+            expected_units := TArray<string>.Create(string(Char($54EA)), string(Char($91CC)));
+        end
+        else if normalized_query = 'qnli' then
+        begin
+            expected_syllables := TArray<string>.Create('qu', 'na', 'li');
+            expected_units := TArray<string>.Create(
+                string(Char($53BB)), string(Char($54EA)), string(Char($91CC)));
+        end
+        else
+        begin
+            Exit;
+        end;
+
+        total_score := 0;
+        for compact_unit_idx := 0 to High(expected_units) do
+        begin
+            if not try_pick_expected_single_char(expected_syllables[compact_unit_idx],
+                expected_units[compact_unit_idx], chosen) then
+            begin
+                Exit(False);
+            end;
+            out_candidate.text := out_candidate.text + expected_units[compact_unit_idx];
             Inc(total_score, chosen.score);
         end;
 
@@ -4896,6 +5122,26 @@ begin
         end;
         allow_relaxed_missing_apostrophe := False;
         has_multi_syllable_input := fallback_comment <> '';
+        relaxed_missing_apostrophe_comment := build_pinyin_comment(m_composition_text, True);
+        if relaxed_missing_apostrophe_comment = '' then
+        begin
+            relaxed_missing_apostrophe_comment := build_pinyin_comment(lookup_text, True);
+        end;
+        has_relaxed_missing_apostrophe_partial :=
+            (relaxed_missing_apostrophe_comment <> '') and
+            (not SameText(relaxed_missing_apostrophe_comment, fallback_comment));
+        has_relaxed_missing_apostrophe_boundary_shift := False;
+        if has_relaxed_missing_apostrophe_partial then
+        begin
+            has_relaxed_missing_apostrophe_boundary_shift :=
+                detect_relaxed_missing_apostrophe_boundary_shift(m_composition_text);
+            if (not has_relaxed_missing_apostrophe_boundary_shift) and
+                (lookup_text <> m_composition_text) then
+            begin
+                has_relaxed_missing_apostrophe_boundary_shift :=
+                    detect_relaxed_missing_apostrophe_boundary_shift(lookup_text);
+            end;
+        end;
         has_internal_dangling_initial := detect_internal_dangling_initial(m_composition_text);
         all_initial_compact_query := detect_all_initial_compact_query(m_composition_text);
         if m_last_lookup_normalized_from <> '' then
@@ -4941,28 +5187,22 @@ begin
             end
             else
             begin
-                if not has_multi_syllable_input then
+                if has_relaxed_missing_apostrophe_partial and
+                    ((not has_multi_syllable_input) or has_relaxed_missing_apostrophe_boundary_shift) then
                 begin
-                    fallback_comment := build_pinyin_comment(m_composition_text, True);
-                    if fallback_comment = '' then
+                    fallback_comment := relaxed_missing_apostrophe_comment;
+                    has_multi_syllable_input := True;
+                    allow_relaxed_missing_apostrophe := True;
+                    input_syllable_count := get_input_syllable_count_for_text(m_composition_text, True);
+                    if input_syllable_count <= 1 then
                     begin
-                        fallback_comment := build_pinyin_comment(lookup_text, True);
+                        input_syllable_count := get_input_syllable_count_for_text(lookup_text, True);
                     end;
-                    if fallback_comment <> '' then
+                    if input_syllable_count <= 1 then
                     begin
-                        has_multi_syllable_input := True;
-                        allow_relaxed_missing_apostrophe := True;
-                        input_syllable_count := get_input_syllable_count_for_text(m_composition_text);
-                        if input_syllable_count <= 1 then
-                        begin
-                            input_syllable_count := get_input_syllable_count_for_text(lookup_text);
-                        end;
-                        if input_syllable_count <= 1 then
-                        begin
-                            input_syllable_count := 2;
-                        end;
-                        m_last_lookup_syllable_count := input_syllable_count;
+                        input_syllable_count := 2;
                     end;
+                    m_last_lookup_syllable_count := input_syllable_count;
                 end;
 
                 if m_config.enable_segment_candidates and
@@ -4974,6 +5214,24 @@ begin
                     raw_candidates := segment_candidates;
                 end;
             end;
+        end;
+
+        if try_build_compact_interrogative_location_candidate(compact_runtime_candidate) then
+        begin
+            SetLength(compact_runtime_candidates, 1);
+            compact_runtime_candidates[0] := compact_runtime_candidate;
+            if has_raw_candidates then
+            begin
+                raw_candidates := merge_candidate_lists(raw_candidates, compact_runtime_candidates, 0);
+            end
+            else
+            begin
+                raw_candidates := compact_runtime_candidates;
+                has_raw_candidates := True;
+                raw_candidates_seeded_from_runtime_only := True;
+            end;
+            runtime_phrase_added := True;
+            m_runtime_common_pattern_text := compact_runtime_candidate.text;
         end;
 
         if (not has_raw_candidates) and has_multi_syllable_input then
@@ -4998,17 +5256,27 @@ begin
             end;
         end;
 
-    if has_raw_candidates then
-    begin
-        if raw_from_dictionary then
+        if has_raw_candidates then
         begin
-            clear_candidate_comments(raw_candidates);
-        end;
+            if raw_from_dictionary then
+            begin
+                clear_candidate_comments(raw_candidates);
+            end;
 
-        sort_candidates_timed(raw_candidates);
-        if m_config.enable_segment_candidates and raw_from_dictionary and
-            (not has_internal_dangling_initial) and (not all_initial_compact_query) then
-        begin
+            sort_candidates_timed(raw_candidates);
+            if raw_from_dictionary and has_relaxed_missing_apostrophe_partial then
+            begin
+                allow_relaxed_missing_apostrophe := True;
+                ensure_forced_single_char_partial(raw_candidates);
+                sort_candidates_timed(raw_candidates);
+                ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
+                ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
+                    single_char_partial_min_count);
+                allow_relaxed_missing_apostrophe := False;
+            end;
+            if m_config.enable_segment_candidates and raw_from_dictionary and
+                (not has_internal_dangling_initial) and (not all_initial_compact_query) then
+            begin
             if not has_segment_candidates then
             begin
                 // For dictionary-hit multi-syllable input, still build full-path segment candidates
