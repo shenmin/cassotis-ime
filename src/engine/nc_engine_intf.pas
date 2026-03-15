@@ -4084,11 +4084,11 @@ var
         end;
 
         trailing_count := Length(syllables) - 1;
+        SetLength(forced_list, 0);
+        forced_count := 0;
         for pass_idx := 0 to 1 do
         begin
             prefer_common_single_char := pass_idx = 0;
-            SetLength(forced_list, 0);
-            forced_count := 0;
             for idx := 0 to High(fallback_lookup) do
             begin
                 source_item := fallback_lookup[idx];
@@ -4096,8 +4096,14 @@ var
                 begin
                     Continue;
                 end;
-                if prefer_common_single_char and
-                    (not is_preferred_partial_single_char_candidate(source_item)) then
+                if prefer_common_single_char then
+                begin
+                    if not is_preferred_partial_single_char_candidate(source_item) then
+                    begin
+                        Continue;
+                    end;
+                end
+                else if is_preferred_partial_single_char_candidate(source_item) then
                 begin
                     Continue;
                 end;
@@ -4116,7 +4122,7 @@ var
                 end;
             end;
 
-            if forced_count > 0 then
+            if forced_count >= c_forced_partial_max_candidates then
             begin
                 Break;
             end;
