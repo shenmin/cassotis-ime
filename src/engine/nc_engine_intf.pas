@@ -1981,6 +1981,7 @@ var
     var
         idx: Integer;
         out_idx: Integer;
+        text_units: TArray<string>;
     begin
         if min_char_count <= 1 then
         begin
@@ -1990,7 +1991,8 @@ var
         out_idx := 0;
         for idx := 0 to High(candidates) do
         begin
-            if Length(candidates[idx].text) >= min_char_count then
+            text_units := split_text_units(Trim(candidates[idx].text));
+            if Length(text_units) >= min_char_count then
             begin
                 if out_idx <> idx then
                 begin
@@ -2006,11 +2008,13 @@ var
     var
         idx: Integer;
         out_idx: Integer;
+        text_units: TArray<string>;
     begin
         out_idx := 0;
         for idx := 0 to High(candidates) do
         begin
-            if (candidates[idx].comment = '') and (Length(Trim(candidates[idx].text)) = 1) then
+            text_units := split_text_units(Trim(candidates[idx].text));
+            if (candidates[idx].comment = '') and (Length(text_units) = 1) then
             begin
                 Continue;
             end;
