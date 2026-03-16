@@ -4022,7 +4022,7 @@ var
         c_forced_partial_prefix_bonus = 80;
         // Keep a broader single-char fallback pool so medium-rank common chars
         // (e.g. "鐠? under "shi") are not dropped too early.
-        c_forced_partial_max_candidates = 64;
+        c_forced_partial_max_candidates = c_candidate_total_limit_max;
     var
         parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
@@ -4096,6 +4096,10 @@ var
                 begin
                     Continue;
                 end;
+                if not is_bmp_cjk_single_char_candidate(source_item) then
+                begin
+                    Continue;
+                end;
                 if prefer_common_single_char then
                 begin
                     if not is_preferred_partial_single_char_candidate(source_item) then
@@ -4134,6 +4138,46 @@ var
         end;
 
         candidates := merge_candidate_lists(candidates, forced_list, 0);
+    end;
+
+    function count_single_char_partial_candidates(const candidates: TncCandidateList): Integer;
+    var
+        idx: Integer;
+    begin
+        Result := 0;
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].comment <> '') and is_bmp_cjk_single_char_candidate(candidates[idx]) then
+            begin
+                Inc(Result);
+            end;
+        end;
+    end;
+
+    procedure filter_non_bmp_single_char_candidates(var candidates: TncCandidateList);
+    var
+        idx: Integer;
+        out_idx: Integer;
+        trimmed_text: string;
+    begin
+        out_idx := 0;
+        for idx := 0 to High(candidates) do
+        begin
+            trimmed_text := Trim(candidates[idx].text);
+            if (Length(trimmed_text) = 2) and
+                (Ord(trimmed_text[1]) >= $D800) and (Ord(trimmed_text[1]) <= $DBFF) and
+                (Ord(trimmed_text[2]) >= $DC00) and (Ord(trimmed_text[2]) <= $DFFF) then
+            begin
+                Continue;
+            end;
+
+            if out_idx <> idx then
+            begin
+                candidates[out_idx] := candidates[idx];
+            end;
+            Inc(out_idx);
+        end;
+        SetLength(candidates, out_idx);
     end;
 
     function try_build_primary_single_char_partial(out out_candidate: TncCandidate): Boolean;
@@ -4210,6 +4254,10 @@ var
             begin
                 source_item := fallback_lookup[idx];
                 if not is_single_text_unit(Trim(source_item.text)) then
+                begin
+                    Continue;
+                end;
+                if not is_bmp_cjk_single_char_candidate(source_item) then
                 begin
                     Continue;
                 end;
@@ -4382,6 +4430,10 @@ var
                     begin
                         Continue;
                     end;
+                    if not is_bmp_cjk_single_char_candidate(fallback_item) then
+                    begin
+                        Continue;
+                    end;
                     anchor_rank := source_item.score;
                     if source_item.source = cs_user then
                     begin
@@ -4486,7 +4538,7 @@ var
         best_score := Low(Integer);
         for i := 0 to High(candidates) do
         begin
-            if (candidates[i].comment <> '') and is_single_text_unit(Trim(candidates[i].text)) then
+            if (candidates[i].comment <> '') and is_bmp_cjk_single_char_candidate(candidates[i]) then
             begin
                 if (best_index < 0) or (candidates[i].score > best_score) then
                 begin
@@ -5404,6 +5456,7 @@ begin
         begin
             filter_explicit_apostrophe_single_char_complete_candidates(raw_candidates);
         end;
+        filter_non_bmp_single_char_candidates(raw_candidates);
 
         limit := get_total_candidate_limit;
         if m_config.enable_segment_candidates then
@@ -5420,6 +5473,16 @@ begin
         if raw_from_dictionary and has_multi_syllable_input then
         begin
             multi_syllable_cap_limit := get_candidate_limit * 3;
+            if count_single_char_partial_candidates(raw_candidates) + get_candidate_limit >
+                multi_syllable_cap_limit then
+            begin
+                multi_syllable_cap_limit :=
+                    count_single_char_partial_candidates(raw_candidates) + get_candidate_limit;
+            end;
+            if multi_syllable_cap_limit > c_candidate_total_limit_max then
+            begin
+                multi_syllable_cap_limit := c_candidate_total_limit_max;
+            end;
             if (multi_syllable_cap_limit > 0) and (limit > multi_syllable_cap_limit) then
             begin
                 limit := multi_syllable_cap_limit;
@@ -5437,6 +5500,7 @@ begin
             finally
                 fusion.Free;
             end;
+            filter_non_bmp_single_char_candidates(m_candidates);
             sort_candidates_timed(m_candidates);
             ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
@@ -5499,6 +5563,7 @@ begin
     if m_config.enable_ai and get_ai_candidates_timed(ai_candidates) then
     begin
         clear_candidate_comments(ai_candidates);
+        filter_non_bmp_single_char_candidates(ai_candidates);
         sort_candidates_timed(ai_candidates);
         limit := get_total_candidate_limit;
         if m_config.enable_segment_candidates then
