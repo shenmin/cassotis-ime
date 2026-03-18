@@ -17,6 +17,10 @@ third_party/llama.cpp/
 out_test/
 tools/__pycache__/
 *.pyc
+cassotis_ime.ini
+debug_query_engine.exe
+data/*.db
+tools/debug_query_engine.dpr
 # Public export guards
 DEVPROGRESS.md
 DEVPLAN.md
