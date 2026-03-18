@@ -36,7 +36,7 @@ function get_default_ai_llama_model_path: string;
 implementation
 
 const
-    c_config_version = 6;
+    c_config_version = 7;
     c_default_ai_request_timeout_ms = 1200;
 
 function get_module_directory: string; forward;
@@ -240,6 +240,7 @@ begin
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := False;
+    Result.suppress_nonlexicon_complete_long_candidates := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
@@ -286,6 +287,8 @@ begin
         Result.enable_segment_candidates := ini.ReadBool('engine', 'enable_segment_candidates', True);
         Result.segment_head_only_multi_syllable := ini.ReadBool('engine',
             'segment_head_only_multi_syllable', False);
+        Result.suppress_nonlexicon_complete_long_candidates := ini.ReadBool('engine',
+            'suppress_nonlexicon_complete_long_candidates', True);
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
         variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
@@ -321,6 +324,7 @@ begin
             not ini.ValueExists('engine', 'max_candidates') or
             not ini.ValueExists('engine', 'enable_ai') or
             not ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
+            not ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
             not ini.ValueExists('engine', 'debug') or
             not ini.ValueExists('dictionary', 'variant') or
             not ini.ValueExists('dictionary', 'db_path_sc') or
@@ -398,6 +402,8 @@ begin
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteBool('engine', 'enable_segment_candidates', config.enable_segment_candidates);
         ini.WriteBool('engine', 'segment_head_only_multi_syllable', config.segment_head_only_multi_syllable);
+        ini.WriteBool('engine', 'suppress_nonlexicon_complete_long_candidates',
+            config.suppress_nonlexicon_complete_long_candidates);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
         ini.WriteString('dictionary', 'db_path_sc', config.dictionary_path_simplified);
