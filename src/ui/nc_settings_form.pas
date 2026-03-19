@@ -86,7 +86,6 @@ type
         m_tab_general: TTabSheet;
         m_tab_candidate: TTabSheet;
         m_tab_hotkeys: TTabSheet;
-        m_tab_appearance: TTabSheet;
         m_tab_ai: TTabSheet;
         m_tab_logging: TTabSheet;
         m_tab_advanced: TTabSheet;
@@ -96,9 +95,8 @@ type
         m_btn_cancel: TncModernButton;
         m_combo_input_mode: TComboBox;
         m_edit_max_candidates: TEdit;
-        m_combo_variant: TComboBox;
+        m_combo_punctuation_mode: TComboBox;
         m_chk_full_width_mode: TCheckBox;
-        m_chk_punctuation_full_width: TCheckBox;
         m_chk_enable_segment_candidates: TCheckBox;
         m_chk_segment_head_only: TCheckBox;
         m_chk_enable_ctrl_space_toggle: TCheckBox;
@@ -148,7 +146,6 @@ type
         procedure add_general_controls;
         procedure add_candidate_controls;
         procedure add_hotkey_controls;
-        procedure add_appearance_controls;
         procedure add_ai_controls;
         procedure add_logging_controls;
         procedure add_advanced_controls;
@@ -204,33 +201,34 @@ type
 implementation
 
 const
-    c_dialog_width = 744;
+    c_dialog_width = 596;
     c_dialog_height = 540;
     c_page_margin = 10;
     c_footer_height = 50;
     c_section_left = 12;
-    c_section_width = 682;
+    c_section_width = c_dialog_width - 62;
     c_section_gap = 12;
     c_section_inner_top = 34;
     c_label_left = 18;
-    c_control_left = 208;
+    c_control_left = 148;
     c_row_height = 30;
     c_row_gap = 10;
-    c_edit_width = 132;
-    c_combo_width = 186;
-    c_path_edit_width = 348;
+    c_edit_width = 120;
+    c_combo_width = 172;
+    c_path_edit_width = 248;
     c_browse_button_gap = 8;
     c_browse_button_width = 60;
     c_action_button_width = 104;
     c_button_height = 26;
     c_footer_button_height = 30;
+    c_check_width = c_section_width - c_label_left - 20;
+    c_hint_width = c_section_width - (c_label_left * 2);
 
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
     STabGeneral = '常规';
     STabCandidates = '候选';
     STabHotkeys = '快捷键';
-    STabAppearance = '外观';
     STabAI = 'AI';
     STabLogging = '日志';
     STabAdvanced = '高级';
@@ -239,9 +237,9 @@ resourcestring
     SButtonApply = '应用';
     SButtonOK = '确定';
     SButtonCancel = '取消';
-    SGroupDefaultBehavior = '基础设置';
+    SGroupDefaultBehavior = '输入';
     SGroupCandidateStrategy = '候选策略';
-    SGroupAppearance = '显示与字符';
+    SGroupAppearance = '外观';
     SGroupHotkeys = '快捷切换';
     SGroupAiBehavior = 'AI 候选';
     SGroupAiResources = '模型与运行库';
@@ -250,26 +248,24 @@ resourcestring
     SGroupDebug = '调试';
     SGroupDictionaryPaths = '词库路径';
     SGroupConfigTools = '配置工具';
-    SLabelInputMode = '初始状态';
+    SLabelInputMode = '语言';
     SOptionChinese = '中文';
     SOptionEnglish = '英文';
-    SHintInputMode = '控制输入法激活后默认进入中文或英文状态，不是界面语言。';
+    SOptionSimplifiedChineseInput = '简体中文输入';
+    SOptionTraditionalChineseInput = '繁体中文输入';
+    SOptionEnglishInput = '英文输入';
     SHintCandidateStrategy = '长拼音更适合启用分段候选；“优先只取首段”更保守，候选会更稳定但不够激进。';
-    SHintAppearance = '这里的选项影响激活后的显示和输出风格，不会改变设置界面语言。';
     SHintHotkeys = '关闭后，对应组合键会回到应用程序自身处理。';
     SHintAiBehavior = 'AI 候选只在适合的完整拼音场景里触发，不会替代基础词库。';
     SLabelMaxCandidates = '最大候选数';
-    SLabelDictionaryVariant = '默认字形';
-    SOptionSimplifiedChinese = '简体';
-    SOptionTraditionalChinese = '繁体';
-    SCheckFullWidthMode = '使用全角字符';
-    SCheckPunctuationFullWidth = '使用全角标点';
+    SLabelPunctuationMode = '标点';
+    SCheckFullWidthMode = '使用全角输入';
     SCheckEnableSegmentCandidates = '启用分段候选';
     SCheckSegmentHeadOnly = '多音节分段时优先只取首段';
     SCheckEnableCtrlSpace = '启用 Ctrl+Space 切换中英文';
     SCheckEnableShiftSpace = '启用 Shift+Space 切换全角';
     SCheckEnableCtrlPeriod = '启用 Ctrl+. 切换标点宽度';
-    SCheckShowStatusWidget = 'Cassotis 激活时显示状态浮窗';
+    SCheckShowStatusWidget = '显示状态浮窗';
     SCheckEnableAI = '启用 AI 候选增强';
     SLabelAIBackend = 'AI 后端';
     SOptionAuto = '自动';
@@ -749,7 +745,6 @@ begin
     add_general_controls;
     add_candidate_controls;
     add_hotkey_controls;
-    add_appearance_controls;
     add_ai_controls;
     add_logging_controls;
     add_advanced_controls;
@@ -868,10 +863,6 @@ begin
     m_tab_hotkeys.PageControl := m_page_control;
     m_tab_hotkeys.Caption := STabHotkeys;
 
-    m_tab_appearance := TTabSheet.Create(m_page_control);
-    m_tab_appearance.PageControl := m_page_control;
-    m_tab_appearance.Caption := STabAppearance;
-
     m_tab_ai := TTabSheet.Create(m_page_control);
     m_tab_ai.PageControl := m_page_control;
     m_tab_ai.Caption := STabAI;
@@ -952,10 +943,10 @@ var
     top: Integer;
     section_top: Integer;
     defaults_group: TPanel;
-    hint_label: TLabel;
+    appearance_group: TPanel;
 begin
     section_top := 18;
-    defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 188);
+    defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 218);
 
     top := c_section_inner_top;
     create_label(Self, defaults_group, SLabelInputMode, top);
@@ -965,23 +956,43 @@ begin
     m_combo_input_mode.Top := top;
     m_combo_input_mode.Width := c_combo_width;
     m_combo_input_mode.Style := csDropDownList;
-    m_combo_input_mode.Items.Add(SOptionChinese);
-    m_combo_input_mode.Items.Add(SOptionEnglish);
+    m_combo_input_mode.Items.Add(SOptionSimplifiedChineseInput);
+    m_combo_input_mode.Items.Add(SOptionTraditionalChineseInput);
+    m_combo_input_mode.Items.Add(SOptionEnglishInput);
     m_combo_input_mode.OnChange := mark_dirty;
 
-    hint_label := create_hint_label(Self, defaults_group, SHintInputMode, c_control_left, top + c_row_height - 2, 470);
+    Inc(top, c_row_height + c_row_gap);
+    create_label(Self, defaults_group, SLabelPunctuationMode, top);
+    m_combo_punctuation_mode := TComboBox.Create(Self);
+    m_combo_punctuation_mode.Parent := defaults_group;
+    m_combo_punctuation_mode.Left := c_control_left;
+    m_combo_punctuation_mode.Top := top;
+    m_combo_punctuation_mode.Width := c_combo_width;
+    m_combo_punctuation_mode.Style := csDropDownList;
+    m_combo_punctuation_mode.Items.Add(SOptionChinese);
+    m_combo_punctuation_mode.Items.Add(SOptionEnglish);
+    m_combo_punctuation_mode.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap + hint_label.Height - 2);
-    create_label(Self, defaults_group, SLabelDictionaryVariant, top);
-    m_combo_variant := TComboBox.Create(Self);
-    m_combo_variant.Parent := defaults_group;
-    m_combo_variant.Left := c_control_left;
-    m_combo_variant.Top := top;
-    m_combo_variant.Width := c_combo_width;
-    m_combo_variant.Style := csDropDownList;
-    m_combo_variant.Items.Add(SOptionSimplifiedChinese);
-    m_combo_variant.Items.Add(SOptionTraditionalChinese);
-    m_combo_variant.OnChange := mark_dirty;
+    Inc(top, c_row_height + c_row_gap);
+    m_chk_full_width_mode := TCheckBox.Create(Self);
+    m_chk_full_width_mode.Parent := defaults_group;
+    m_chk_full_width_mode.Left := c_label_left;
+    m_chk_full_width_mode.Top := top;
+    m_chk_full_width_mode.Width := c_check_width;
+    m_chk_full_width_mode.Caption := SCheckFullWidthMode;
+    m_chk_full_width_mode.OnClick := mark_dirty;
+
+    section_top := defaults_group.Top + defaults_group.Height + c_section_gap;
+    appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 96);
+
+    top := c_section_inner_top;
+    m_chk_show_status_widget := TCheckBox.Create(Self);
+    m_chk_show_status_widget.Parent := appearance_group;
+    m_chk_show_status_widget.Left := c_label_left;
+    m_chk_show_status_widget.Top := top;
+    m_chk_show_status_widget.Width := c_check_width;
+    m_chk_show_status_widget.Caption := SCheckShowStatusWidget;
+    m_chk_show_status_widget.OnClick := mark_dirty;
 end;
 
 procedure TncSettingsForm.add_candidate_controls;
@@ -1008,7 +1019,7 @@ begin
     m_chk_enable_segment_candidates.Parent := strategy_group;
     m_chk_enable_segment_candidates.Left := c_label_left;
     m_chk_enable_segment_candidates.Top := top;
-    m_chk_enable_segment_candidates.Width := 520;
+    m_chk_enable_segment_candidates.Width := c_check_width;
     m_chk_enable_segment_candidates.Caption := SCheckEnableSegmentCandidates;
     m_chk_enable_segment_candidates.OnClick := mark_dirty;
 
@@ -1017,11 +1028,11 @@ begin
     m_chk_segment_head_only.Parent := strategy_group;
     m_chk_segment_head_only.Left := c_label_left;
     m_chk_segment_head_only.Top := top;
-    m_chk_segment_head_only.Width := 560;
+    m_chk_segment_head_only.Width := c_check_width;
     m_chk_segment_head_only.Caption := SCheckSegmentHeadOnly;
     m_chk_segment_head_only.OnClick := mark_dirty;
 
-    create_hint_label(Self, strategy_group, SHintCandidateStrategy, c_label_left, top + c_row_height + 4, 690);
+    create_hint_label(Self, strategy_group, SHintCandidateStrategy, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
 
 procedure TncSettingsForm.add_hotkey_controls;
@@ -1038,7 +1049,7 @@ begin
     m_chk_enable_ctrl_space_toggle.Parent := hotkey_group;
     m_chk_enable_ctrl_space_toggle.Left := c_label_left;
     m_chk_enable_ctrl_space_toggle.Top := top;
-    m_chk_enable_ctrl_space_toggle.Width := 520;
+    m_chk_enable_ctrl_space_toggle.Width := c_check_width;
     m_chk_enable_ctrl_space_toggle.Caption := SCheckEnableCtrlSpace;
     m_chk_enable_ctrl_space_toggle.OnClick := mark_dirty;
 
@@ -1047,7 +1058,7 @@ begin
     m_chk_enable_shift_space_toggle.Parent := hotkey_group;
     m_chk_enable_shift_space_toggle.Left := c_label_left;
     m_chk_enable_shift_space_toggle.Top := top;
-    m_chk_enable_shift_space_toggle.Width := 520;
+    m_chk_enable_shift_space_toggle.Width := c_check_width;
     m_chk_enable_shift_space_toggle.Caption := SCheckEnableShiftSpace;
     m_chk_enable_shift_space_toggle.OnClick := mark_dirty;
 
@@ -1056,50 +1067,11 @@ begin
     m_chk_enable_ctrl_period_toggle.Parent := hotkey_group;
     m_chk_enable_ctrl_period_toggle.Left := c_label_left;
     m_chk_enable_ctrl_period_toggle.Top := top;
-    m_chk_enable_ctrl_period_toggle.Width := 520;
+    m_chk_enable_ctrl_period_toggle.Width := c_check_width;
     m_chk_enable_ctrl_period_toggle.Caption := SCheckEnableCtrlPeriod;
     m_chk_enable_ctrl_period_toggle.OnClick := mark_dirty;
 
-    create_hint_label(Self, hotkey_group, SHintHotkeys, c_label_left, top + c_row_height + 4, 690);
-end;
-
-procedure TncSettingsForm.add_appearance_controls;
-var
-    top: Integer;
-    section_top: Integer;
-    appearance_group: TPanel;
-begin
-    section_top := 18;
-    appearance_group := create_section_group(Self, m_tab_appearance, SGroupAppearance, section_top, 176);
-
-    top := c_section_inner_top;
-    m_chk_full_width_mode := TCheckBox.Create(Self);
-    m_chk_full_width_mode.Parent := appearance_group;
-    m_chk_full_width_mode.Left := c_label_left;
-    m_chk_full_width_mode.Top := top;
-    m_chk_full_width_mode.Width := 520;
-    m_chk_full_width_mode.Caption := SCheckFullWidthMode;
-    m_chk_full_width_mode.OnClick := mark_dirty;
-
-    Inc(top, c_row_height);
-    m_chk_punctuation_full_width := TCheckBox.Create(Self);
-    m_chk_punctuation_full_width.Parent := appearance_group;
-    m_chk_punctuation_full_width.Left := c_label_left;
-    m_chk_punctuation_full_width.Top := top;
-    m_chk_punctuation_full_width.Width := 520;
-    m_chk_punctuation_full_width.Caption := SCheckPunctuationFullWidth;
-    m_chk_punctuation_full_width.OnClick := mark_dirty;
-
-    Inc(top, c_row_height);
-    m_chk_show_status_widget := TCheckBox.Create(Self);
-    m_chk_show_status_widget.Parent := appearance_group;
-    m_chk_show_status_widget.Left := c_label_left;
-    m_chk_show_status_widget.Top := top;
-    m_chk_show_status_widget.Width := 520;
-    m_chk_show_status_widget.Caption := SCheckShowStatusWidget;
-    m_chk_show_status_widget.OnClick := mark_dirty;
-
-    create_hint_label(Self, appearance_group, SHintAppearance, c_label_left, top + c_row_height + 4, 690);
+    create_hint_label(Self, hotkey_group, SHintHotkeys, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
 
 procedure TncSettingsForm.add_ai_controls;
@@ -1117,7 +1089,7 @@ begin
     m_chk_enable_ai.Parent := behavior_group;
     m_chk_enable_ai.Left := c_label_left;
     m_chk_enable_ai.Top := top;
-    m_chk_enable_ai.Width := 520;
+    m_chk_enable_ai.Width := c_check_width;
     m_chk_enable_ai.Caption := SCheckEnableAI;
     m_chk_enable_ai.OnClick := mark_dirty;
 
@@ -1144,7 +1116,7 @@ begin
     configure_numeric_edit(m_edit_ai_timeout_ms, '100..10000');
     m_edit_ai_timeout_ms.OnChange := mark_dirty;
 
-    create_hint_label(Self, behavior_group, SHintAiBehavior, c_label_left, top + c_row_height + 4, 690);
+    create_hint_label(Self, behavior_group, SHintAiBehavior, c_label_left, top + c_row_height + 4, c_hint_width);
 
     section_top := behavior_group.Top + behavior_group.Height + c_section_gap;
     resources_group := create_section_group(Self, m_tab_ai, SGroupAiResources, section_top, 222);
@@ -1204,7 +1176,7 @@ begin
     m_chk_log_enabled.Parent := logging_group;
     m_chk_log_enabled.Left := c_label_left;
     m_chk_log_enabled.Top := top;
-    m_chk_log_enabled.Width := 520;
+    m_chk_log_enabled.Width := c_check_width;
     m_chk_log_enabled.Caption := SCheckEnableLogging;
     m_chk_log_enabled.OnClick := mark_dirty;
 
@@ -1252,7 +1224,7 @@ begin
     m_btn_log_defaults := create_action_button(Self, files_group, c_control_left + c_action_button_width + 12, top,
         SButtonUseDefaultLogging, on_log_defaults_click);
 
-    m_hint_logging := create_hint_label(Self, files_group, SHintLogging, c_label_left, top + c_row_height + 4, 690);
+    m_hint_logging := create_hint_label(Self, files_group, SHintLogging, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
 
 procedure TncSettingsForm.add_advanced_controls;
@@ -1271,7 +1243,7 @@ begin
     m_chk_debug_mode.Parent := debug_group;
     m_chk_debug_mode.Left := c_label_left;
     m_chk_debug_mode.Top := top;
-    m_chk_debug_mode.Width := 520;
+    m_chk_debug_mode.Width := c_check_width;
     m_chk_debug_mode.Caption := SCheckEnableDebugMode;
     m_chk_debug_mode.OnClick := mark_dirty;
 
@@ -1325,7 +1297,7 @@ begin
     m_btn_open_config_file := create_action_button(Self, tools_group, c_label_left + c_action_button_width + 12, top,
         SButtonOpenConfigFile, on_open_config_file);
 
-    m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, c_label_left, top + c_row_height + 8, 690);
+    m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, c_label_left, top + c_row_height + 8, c_hint_width);
 end;
 
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
@@ -1582,22 +1554,15 @@ begin
     begin
         if m_engine_config.input_mode = im_english then
         begin
+            m_combo_input_mode.ItemIndex := 2;
+        end
+        else if m_engine_config.dictionary_variant = dv_traditional then
+        begin
             m_combo_input_mode.ItemIndex := 1;
         end
         else
         begin
             m_combo_input_mode.ItemIndex := 0;
-        end;
-    end;
-    if m_combo_variant <> nil then
-    begin
-        if m_engine_config.dictionary_variant = dv_traditional then
-        begin
-            m_combo_variant.ItemIndex := 1;
-        end
-        else
-        begin
-            m_combo_variant.ItemIndex := 0;
         end;
     end;
 
@@ -1609,9 +1574,16 @@ begin
     begin
         m_chk_full_width_mode.Checked := m_engine_config.full_width_mode;
     end;
-    if m_chk_punctuation_full_width <> nil then
+    if m_combo_punctuation_mode <> nil then
     begin
-        m_chk_punctuation_full_width.Checked := m_engine_config.punctuation_full_width;
+        if m_engine_config.punctuation_full_width then
+        begin
+            m_combo_punctuation_mode.ItemIndex := 0;
+        end
+        else
+        begin
+            m_combo_punctuation_mode.ItemIndex := 1;
+        end;
     end;
     if m_chk_segment_head_only <> nil then
     begin
@@ -1769,25 +1741,25 @@ begin
     end;
     next_log_config.max_size_kb := log_max_size_kb;
 
-    if m_combo_variant.ItemIndex = 1 then
-    begin
-        next_config.dictionary_variant := dv_traditional;
-    end
+    case m_combo_input_mode.ItemIndex of
+        1:
+            begin
+                next_config.input_mode := im_chinese;
+                next_config.dictionary_variant := dv_traditional;
+            end;
+        2:
+            begin
+                next_config.input_mode := im_english;
+            end;
     else
-    begin
-        next_config.dictionary_variant := dv_simplified;
-    end;
-    if m_combo_input_mode.ItemIndex = 1 then
-    begin
-        next_config.input_mode := im_english;
-    end
-    else
-    begin
-        next_config.input_mode := im_chinese;
+        begin
+            next_config.input_mode := im_chinese;
+            next_config.dictionary_variant := dv_simplified;
+        end;
     end;
 
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
-    next_config.punctuation_full_width := m_chk_punctuation_full_width.Checked;
+    next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.enable_segment_candidates := m_chk_enable_segment_candidates.Checked;
     next_config.segment_head_only_multi_syllable := m_chk_segment_head_only.Checked;
     next_config.enable_ctrl_space_toggle := m_chk_enable_ctrl_space_toggle.Checked;
@@ -1968,7 +1940,7 @@ procedure TncSettingsForm.on_open_dictionary_folder(Sender: TObject);
 var
     path: string;
 begin
-    if m_combo_variant.ItemIndex = 1 then
+    if (m_combo_input_mode <> nil) and (m_combo_input_mode.ItemIndex = 1) then
     begin
         path := Trim(m_edit_dict_path_tc.Text);
         if path = '' then
