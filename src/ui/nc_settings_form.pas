@@ -193,6 +193,8 @@ type
         procedure on_ok_click(Sender: TObject);
         procedure on_cancel_click(Sender: TObject);
         procedure CMDialogKey(var Message: TCMDialogKey); message CM_DIALOGKEY;
+    protected
+        procedure DoShow; override;
     public
         constructor Create(AOwner: TComponent); override;
         class function ExecuteDialog(const owner: TComponent; var config: TncEngineConfig; var log_config: TncLogConfig;
@@ -237,7 +239,7 @@ resourcestring
     SButtonApply = '应用';
     SButtonOK = '确定';
     SButtonCancel = '取消';
-    SGroupDefaultBehavior = '默认行为';
+    SGroupDefaultBehavior = '基础设置';
     SGroupCandidateStrategy = '候选策略';
     SGroupAppearance = '显示与字符';
     SGroupHotkeys = '快捷切换';
@@ -248,18 +250,18 @@ resourcestring
     SGroupDebug = '调试';
     SGroupDictionaryPaths = '词库路径';
     SGroupConfigTools = '配置工具';
-    SLabelInputMode = '默认输入状态';
-    SOptionChinese = '中文输入';
-    SOptionEnglish = '英文输入';
-    SHintInputMode = '控制输入法激活时默认进入中文态还是英文态，不是界面语言。';
+    SLabelInputMode = '初始状态';
+    SOptionChinese = '中文';
+    SOptionEnglish = '英文';
+    SHintInputMode = '控制输入法激活后默认进入中文或英文状态，不是界面语言。';
     SHintCandidateStrategy = '长拼音更适合启用分段候选；“优先只取首段”更保守，候选会更稳定但不够激进。';
     SHintAppearance = '这里的选项影响激活后的显示和输出风格，不会改变设置界面语言。';
     SHintHotkeys = '关闭后，对应组合键会回到应用程序自身处理。';
     SHintAiBehavior = 'AI 候选只在适合的完整拼音场景里触发，不会替代基础词库。';
     SLabelMaxCandidates = '最大候选数';
-    SLabelDictionaryVariant = '词库类型';
-    SOptionSimplifiedChinese = '简体中文';
-    SOptionTraditionalChinese = '繁体中文';
+    SLabelDictionaryVariant = '默认字形';
+    SOptionSimplifiedChinese = '简体';
+    SOptionTraditionalChinese = '繁体';
     SCheckFullWidthMode = '使用全角字符';
     SCheckPunctuationFullWidth = '使用全角标点';
     SCheckEnableSegmentCandidates = '启用分段候选';
@@ -787,6 +789,33 @@ begin
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
     Color := RGB(245, 247, 250);
+end;
+
+procedure TncSettingsForm.DoShow;
+begin
+    inherited;
+    HandleNeeded;
+    SetWindowPos(
+        Handle,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE or SWP_NOSIZE or SWP_NOOWNERZORDER or SWP_SHOWWINDOW
+    );
+    SetWindowPos(
+        Handle,
+        HWND_NOTOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE or SWP_NOSIZE or SWP_NOOWNERZORDER
+    );
+    BringWindowToTop(Handle);
+    SetForegroundWindow(Handle);
+    SetActiveWindow(Handle);
 end;
 
 procedure TncSettingsForm.CMDialogKey(var Message: TCMDialogKey);

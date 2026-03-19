@@ -73,6 +73,7 @@ type
         m_status_drag_moved: Boolean;
         m_status_drag_cursor_origin: TPoint;
         m_status_drag_form_origin: TPoint;
+        m_status_saved_origin: TPoint;
         m_status_drag_source: TObject;
         m_settings_dialog_open: Boolean;
         m_engine_active: Boolean;
@@ -111,6 +112,7 @@ type
         procedure save_config;
         procedure apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;
             const status_widget_visible: Boolean);
+        procedure sync_status_widget_origin_from_window;
         function apply_runtime_state_to_host: Boolean;
         function reload_host_config: Boolean;
         procedure show_settings_dialog;
@@ -206,6 +208,7 @@ begin
     m_status_drag_moved := False;
     m_status_drag_cursor_origin := Point(0, 0);
     m_status_drag_form_origin := Point(0, 0);
+    m_status_saved_origin := Point(0, 0);
     m_status_drag_source := nil;
     m_settings_dialog_open := False;
     m_engine_active := False;
@@ -735,15 +738,34 @@ begin
     end;
 
     m_status_form.SetBounds(x_value, y_value, m_status_form.Width, m_status_form.Height);
+    m_status_saved_origin := Point(x_value, y_value);
     m_item_status_widget.Checked := visible_value;
     apply_status_widget_visibility;
     update_status_widget;
 end;
 
+procedure TncTrayHost.sync_status_widget_origin_from_window;
+var
+    window_rect: TRect;
+begin
+    if m_status_form = nil then
+    begin
+        Exit;
+    end;
+
+    if (m_status_form.HandleAllocated) and GetWindowRect(m_status_form.Handle, window_rect) then
+    begin
+        m_status_saved_origin := Point(window_rect.Left, window_rect.Top);
+    end
+    else
+    begin
+        m_status_saved_origin := Point(m_status_form.Left, m_status_form.Top);
+    end;
+end;
+
 procedure TncTrayHost.save_status_widget_state;
 var
     ini: TIniFile;
-    window_rect: TRect;
     saved_x: Integer;
     saved_y: Integer;
 begin
@@ -755,16 +777,8 @@ begin
     ForceDirectories(ExtractFileDir(m_config_path));
     ini := TIniFile.Create(m_config_path);
     try
-        if (m_status_form.HandleAllocated) and GetWindowRect(m_status_form.Handle, window_rect) then
-        begin
-            saved_x := window_rect.Left;
-            saved_y := window_rect.Top;
-        end
-        else
-        begin
-            saved_x := m_status_form.Left;
-            saved_y := m_status_form.Top;
-        end;
+        saved_x := m_status_saved_origin.X;
+        saved_y := m_status_saved_origin.Y;
 
         if m_item_status_widget <> nil then
         begin
@@ -891,6 +905,10 @@ begin
     end;
 
     should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active;
+    if m_settings_dialog_open then
+    begin
+        should_show := False;
+    end;
     if m_status_dragging and m_item_status_widget.Checked then
     begin
         // Do not hide during drag on transient active-state flips.
@@ -903,6 +921,7 @@ begin
     begin
         if not status_visible then
         begin
+            m_status_form.SetBounds(m_status_saved_origin.X, m_status_saved_origin.Y, m_status_form.Width, m_status_form.Height);
             enforce_status_form_toolwindow_style;
             m_status_form.Show;
         end;
@@ -1189,6 +1208,10 @@ begin
     next_config := m_engine_config;
     next_log_config := m_log_config;
     status_widget_visible := (m_item_status_widget <> nil) and m_item_status_widget.Checked;
+    if m_status_form <> nil then
+    begin
+        hide_status_hint;
+    end;
     TncSettingsForm.ExecuteDialog(Self, next_config, next_log_config, status_widget_visible,
         procedure(const config: TncEngineConfig; const log_config: TncLogConfig; const next_status_widget_visible: Boolean)
         begin
@@ -1341,6 +1364,7 @@ begin
         begin
             ReleaseCapture;
         end;
+        sync_status_widget_origin_from_window;
         save_status_widget_state;
         if not m_status_drag_moved then
         begin
@@ -1365,6 +1389,7 @@ begin
     Action := caNone;
     if m_status_form <> nil then
     begin
+        sync_status_widget_origin_from_window;
         m_status_form.Hide;
     end;
     if m_item_status_widget <> nil then
@@ -1395,6 +1420,10 @@ begin
     end;
 
     m_item_status_widget.Checked := not m_item_status_widget.Checked;
+    if (m_status_form <> nil) and m_status_form.Visible then
+    begin
+        sync_status_widget_origin_from_window;
+    end;
     apply_status_widget_visibility;
     save_status_widget_state;
 end;
