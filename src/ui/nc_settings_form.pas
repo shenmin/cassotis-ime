@@ -135,8 +135,6 @@ type
     private
         m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
-        m_tab_candidate: TTabSheet;
-        m_tab_hotkeys: TTabSheet;
         m_tab_ai: TTabSheet;
         m_tab_logging: TTabSheet;
         m_tab_advanced: TTabSheet;
@@ -145,14 +143,8 @@ type
         m_btn_ok: TncModernButton;
         m_btn_cancel: TncModernButton;
         m_combo_input_mode: TComboBox;
-        m_edit_max_candidates: TEdit;
         m_combo_punctuation_mode: TComboBox;
         m_chk_full_width_mode: TncModernCheckBox;
-        m_chk_enable_segment_candidates: TncModernCheckBox;
-        m_chk_segment_head_only: TncModernCheckBox;
-        m_chk_enable_ctrl_space_toggle: TncModernCheckBox;
-        m_chk_enable_shift_space_toggle: TncModernCheckBox;
-        m_chk_enable_ctrl_period_toggle: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
         m_chk_enable_ai: TncModernCheckBox;
         m_combo_ai_backend: TComboBox;
@@ -195,15 +187,12 @@ type
         procedure configure_tabs;
         procedure configure_buttons;
         procedure add_general_controls;
-        procedure add_candidate_controls;
-        procedure add_hotkey_controls;
         procedure add_ai_controls;
         procedure add_logging_controls;
         procedure add_advanced_controls;
         procedure update_scaled_control_metrics;
         procedure mark_dirty(Sender: TObject);
         procedure update_apply_button;
-        procedure update_candidate_controls;
         procedure update_ai_controls;
         procedure update_logging_controls;
         procedure load_defaults;
@@ -279,8 +268,6 @@ const
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
     STabGeneral = '常规';
-    STabCandidates = '候选';
-    STabHotkeys = '快捷键';
     STabAI = 'AI';
     STabLogging = '日志';
     STabAdvanced = '高级';
@@ -290,9 +277,7 @@ resourcestring
     SButtonOK = '确定';
     SButtonCancel = '取消';
     SGroupDefaultBehavior = '输入';
-    SGroupCandidateStrategy = '候选策略';
     SGroupAppearance = '外观';
-    SGroupHotkeys = '快捷切换';
     SGroupAiBehavior = 'AI 候选';
     SGroupAiResources = '模型与运行库';
     SGroupLogging = '记录策略';
@@ -306,17 +291,9 @@ resourcestring
     SOptionSimplifiedChineseInput = '简体中文输入';
     SOptionTraditionalChineseInput = '繁体中文输入';
     SOptionEnglishInput = '英文输入';
-    SHintCandidateStrategy = '长拼音更适合启用分段候选；“优先只取首段”更保守，候选会更稳定但不够激进。';
-    SHintHotkeys = '关闭后，对应组合键会回到应用程序自身处理。';
     SHintAiBehavior = 'AI 候选只在适合的完整拼音场景里触发，不会替代基础词库。';
-    SLabelMaxCandidates = '最大候选数';
     SLabelPunctuationMode = '标点';
     SCheckFullWidthMode = '使用全角输入';
-    SCheckEnableSegmentCandidates = '启用分段候选';
-    SCheckSegmentHeadOnly = '多音节分段时优先只取首段';
-    SCheckEnableCtrlSpace = '启用 Ctrl+Space 切换中英文';
-    SCheckEnableShiftSpace = '启用 Shift+Space 切换全角';
-    SCheckEnableCtrlPeriod = '启用 Ctrl+. 切换标点宽度';
     SCheckShowStatusWidget = '显示状态浮窗';
     SCheckEnableAI = '启用 AI 候选增强';
     SLabelAIBackend = 'AI 后端';
@@ -357,7 +334,6 @@ resourcestring
     SConfigFolderMissing = '配置目录不存在。';
     SConfigFileMissing = '配置文件尚不存在。';
     SConfirmRestoreDefaults = '要恢复默认设置吗？';
-    SSettingMaxCandidates = '最大候选数';
     SSettingAIRequestTimeout = 'AI 请求超时';
     SSettingMaxLogSize = '日志大小上限';
     SErrorValueTooSmall = '%s不能小于 %d。';
@@ -868,17 +844,25 @@ function create_section_group(const owner: TComponent; const parent: TWinControl
 var
     accent: TPanel;
     title_label: TLabel;
+    section_width: Integer;
 begin
+    section_width := c_section_width;
+    if (parent <> nil) and (parent.ClientWidth > (c_section_left * 2)) then
+    begin
+        section_width := parent.ClientWidth - (c_section_left * 2);
+    end;
+
     Result := TPanel.Create(owner);
     Result.Parent := parent;
     Result.Left := c_section_left;
     Result.Top := top;
-    Result.Width := c_section_width;
+    Result.Width := section_width;
     Result.Height := height;
     Result.BevelOuter := bvNone;
     Result.ParentBackground := False;
     Result.Color := clWhite;
     Result.ParentFont := True;
+    Result.Anchors := [akLeft, akTop, akRight];
 
     accent := TPanel.Create(Result);
     accent.Parent := Result;
@@ -1070,6 +1054,10 @@ begin
     Result.Left := c_label_left;
     Result.Top := top;
     Result.Width := c_check_width;
+    if (parent <> nil) and (parent.ClientWidth > (c_label_left * 2)) then
+    begin
+        Result.Width := parent.ClientWidth - (c_label_left * 2);
+    end;
     Result.Height := calculate_checkbox_height_for_dpi(Result.Font, get_control_scale_dpi(parent));
     if parent is TPanel then
     begin
@@ -1161,8 +1149,6 @@ begin
     configure_tabs;
     configure_buttons;
     add_general_controls;
-    add_candidate_controls;
-    add_hotkey_controls;
     add_ai_controls;
     add_logging_controls;
     add_advanced_controls;
@@ -1248,11 +1234,6 @@ var
 begin
     dpi := get_window_dpi(Handle);
     update_check_box_metrics(m_chk_full_width_mode);
-    update_check_box_metrics(m_chk_enable_segment_candidates);
-    update_check_box_metrics(m_chk_segment_head_only);
-    update_check_box_metrics(m_chk_enable_ctrl_space_toggle);
-    update_check_box_metrics(m_chk_enable_shift_space_toggle);
-    update_check_box_metrics(m_chk_enable_ctrl_period_toggle);
     update_check_box_metrics(m_chk_show_status_widget);
     update_check_box_metrics(m_chk_enable_ai);
     update_check_box_metrics(m_chk_log_enabled);
@@ -1300,14 +1281,6 @@ begin
     m_tab_general := TTabSheet.Create(m_page_control);
     m_tab_general.PageControl := m_page_control;
     m_tab_general.Caption := STabGeneral;
-
-    m_tab_candidate := TTabSheet.Create(m_page_control);
-    m_tab_candidate.PageControl := m_page_control;
-    m_tab_candidate.Caption := STabCandidates;
-
-    m_tab_hotkeys := TTabSheet.Create(m_page_control);
-    m_tab_hotkeys.PageControl := m_page_control;
-    m_tab_hotkeys.Caption := STabHotkeys;
 
     m_tab_ai := TTabSheet.Create(m_page_control);
     m_tab_ai.PageControl := m_page_control;
@@ -1427,61 +1400,6 @@ begin
 
     top := c_section_inner_top;
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
-end;
-
-procedure TncSettingsForm.add_candidate_controls;
-var
-    top: Integer;
-    section_top: Integer;
-    strategy_group: TPanel;
-begin
-    section_top := 18;
-    strategy_group := create_section_group(Self, m_tab_candidate, SGroupCandidateStrategy, section_top, 178);
-
-    top := c_section_inner_top;
-    create_label(Self, strategy_group, SLabelMaxCandidates, top);
-    m_edit_max_candidates := TEdit.Create(Self);
-    m_edit_max_candidates.Parent := strategy_group;
-    m_edit_max_candidates.Left := c_control_left;
-    m_edit_max_candidates.Top := top;
-    m_edit_max_candidates.Width := c_edit_width;
-    configure_numeric_edit(m_edit_max_candidates, '1..20');
-    m_edit_max_candidates.OnChange := mark_dirty;
-
-    Inc(top, c_row_height + c_row_gap);
-    m_chk_enable_segment_candidates := create_check_box(
-        Self,
-        strategy_group,
-        top,
-        SCheckEnableSegmentCandidates,
-        mark_dirty
-    );
-
-    Inc(top, c_row_height);
-    m_chk_segment_head_only := create_check_box(Self, strategy_group, top, SCheckSegmentHeadOnly, mark_dirty);
-
-    create_hint_label(Self, strategy_group, SHintCandidateStrategy, c_label_left, top + c_row_height + 4, c_hint_width);
-end;
-
-procedure TncSettingsForm.add_hotkey_controls;
-var
-    top: Integer;
-    section_top: Integer;
-    hotkey_group: TPanel;
-begin
-    section_top := 18;
-    hotkey_group := create_section_group(Self, m_tab_hotkeys, SGroupHotkeys, section_top, 164);
-
-    top := c_section_inner_top;
-    m_chk_enable_ctrl_space_toggle := create_check_box(Self, hotkey_group, top, SCheckEnableCtrlSpace, mark_dirty);
-
-    Inc(top, c_row_height);
-    m_chk_enable_shift_space_toggle := create_check_box(Self, hotkey_group, top, SCheckEnableShiftSpace, mark_dirty);
-
-    Inc(top, c_row_height);
-    m_chk_enable_ctrl_period_toggle := create_check_box(Self, hotkey_group, top, SCheckEnableCtrlPeriod, mark_dirty);
-
-    create_hint_label(Self, hotkey_group, SHintHotkeys, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
 
 procedure TncSettingsForm.add_ai_controls;
@@ -1695,7 +1613,6 @@ end;
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
 begin
     m_dirty := True;
-    update_candidate_controls;
     update_ai_controls;
     update_logging_controls;
     update_apply_button;
@@ -1706,17 +1623,6 @@ begin
     if m_btn_apply <> nil then
     begin
         m_btn_apply.Enabled := m_dirty;
-    end;
-end;
-
-procedure TncSettingsForm.update_candidate_controls;
-var
-    enabled: Boolean;
-begin
-    enabled := (m_chk_enable_segment_candidates <> nil) and m_chk_enable_segment_candidates.Checked;
-    if m_chk_segment_head_only <> nil then
-    begin
-        m_chk_segment_head_only.Enabled := enabled;
     end;
 end;
 
@@ -1938,10 +1844,6 @@ end;
 
 procedure TncSettingsForm.load_from_config;
 begin
-    if m_edit_max_candidates <> nil then
-    begin
-        m_edit_max_candidates.Text := IntToStr(m_engine_config.max_candidates);
-    end;
     if m_combo_input_mode <> nil then
     begin
         if m_engine_config.input_mode = im_english then
@@ -1958,10 +1860,6 @@ begin
         end;
     end;
 
-    if m_chk_enable_segment_candidates <> nil then
-    begin
-        m_chk_enable_segment_candidates.Checked := m_engine_config.enable_segment_candidates;
-    end;
     if m_chk_full_width_mode <> nil then
     begin
         m_chk_full_width_mode.Checked := m_engine_config.full_width_mode;
@@ -1976,22 +1874,6 @@ begin
         begin
             m_combo_punctuation_mode.ItemIndex := 1;
         end;
-    end;
-    if m_chk_segment_head_only <> nil then
-    begin
-        m_chk_segment_head_only.Checked := m_engine_config.segment_head_only_multi_syllable;
-    end;
-    if m_chk_enable_ctrl_space_toggle <> nil then
-    begin
-        m_chk_enable_ctrl_space_toggle.Checked := m_engine_config.enable_ctrl_space_toggle;
-    end;
-    if m_chk_enable_shift_space_toggle <> nil then
-    begin
-        m_chk_enable_shift_space_toggle.Checked := m_engine_config.enable_shift_space_full_width_toggle;
-    end;
-    if m_chk_enable_ctrl_period_toggle <> nil then
-    begin
-        m_chk_enable_ctrl_period_toggle.Checked := m_engine_config.enable_ctrl_period_punct_toggle;
     end;
     if m_chk_show_status_widget <> nil then
     begin
@@ -2071,7 +1953,6 @@ begin
     end;
 
     m_dirty := False;
-    update_candidate_controls;
     update_ai_controls;
     update_logging_controls;
     update_apply_button;
@@ -2100,7 +1981,6 @@ end;
 function TncSettingsForm.build_config_from_controls(out next_config: TncEngineConfig; out next_log_config: TncLogConfig;
     out next_status_widget_visible: Boolean; out error_text: string): Boolean;
 var
-    max_candidates: Integer;
     timeout_ms: Integer;
     log_max_size_kb: Integer;
 begin
@@ -2109,13 +1989,7 @@ begin
     next_status_widget_visible := m_status_widget_visible;
     error_text := '';
 
-    if not read_integer_setting(m_edit_max_candidates, m_engine_config.max_candidates, 1, 20,
-        SSettingMaxCandidates, max_candidates, error_text) then
-    begin
-        Result := False;
-        Exit;
-    end;
-    next_config.max_candidates := max_candidates;
+    next_config.max_candidates := 9;
 
     if not read_integer_setting(m_edit_ai_timeout_ms, m_engine_config.ai_request_timeout_ms, 100, 10000,
         SSettingAIRequestTimeout, timeout_ms, error_text) then
@@ -2152,11 +2026,11 @@ begin
 
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
-    next_config.enable_segment_candidates := m_chk_enable_segment_candidates.Checked;
-    next_config.segment_head_only_multi_syllable := m_chk_segment_head_only.Checked;
-    next_config.enable_ctrl_space_toggle := m_chk_enable_ctrl_space_toggle.Checked;
-    next_config.enable_shift_space_full_width_toggle := m_chk_enable_shift_space_toggle.Checked;
-    next_config.enable_ctrl_period_punct_toggle := m_chk_enable_ctrl_period_toggle.Checked;
+    next_config.enable_segment_candidates := True;
+    next_config.segment_head_only_multi_syllable := False;
+    next_config.enable_ctrl_space_toggle := False;
+    next_config.enable_shift_space_full_width_toggle := True;
+    next_config.enable_ctrl_period_punct_toggle := True;
     next_config.enable_ai := m_chk_enable_ai.Checked;
     next_status_widget_visible := m_chk_show_status_widget.Checked;
     case m_combo_ai_backend.ItemIndex of

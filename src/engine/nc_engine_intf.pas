@@ -1744,12 +1744,6 @@ end;
 
 function TncEngine.get_candidate_limit: Integer;
 begin
-    if m_config.max_candidates > 0 then
-    begin
-        Result := m_config.max_candidates;
-        Exit;
-    end;
-
     Result := c_default_page_size;
 end;
 

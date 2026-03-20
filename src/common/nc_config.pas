@@ -277,16 +277,15 @@ begin
             Result.input_mode := im_chinese;
         end;
 
-        Result.max_candidates := ini.ReadInteger('engine', 'max_candidates', 9);
+        Result.max_candidates := 9;
         Result.enable_ai := ini.ReadBool('engine', 'enable_ai', False);
-        Result.enable_ctrl_space_toggle := ini.ReadBool('engine', 'enable_ctrl_space_toggle', False);
-        Result.enable_shift_space_full_width_toggle := ini.ReadBool('engine', 'enable_shift_space_full_width_toggle', True);
-        Result.enable_ctrl_period_punct_toggle := ini.ReadBool('engine', 'enable_ctrl_period_punct_toggle', True);
+        Result.enable_ctrl_space_toggle := False;
+        Result.enable_shift_space_full_width_toggle := True;
+        Result.enable_ctrl_period_punct_toggle := True;
         Result.full_width_mode := ini.ReadBool('engine', 'full_width_mode', False);
         Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
-        Result.enable_segment_candidates := ini.ReadBool('engine', 'enable_segment_candidates', True);
-        Result.segment_head_only_multi_syllable := ini.ReadBool('engine',
-            'segment_head_only_multi_syllable', False);
+        Result.enable_segment_candidates := True;
+        Result.segment_head_only_multi_syllable := False;
         Result.suppress_nonlexicon_complete_long_candidates := ini.ReadBool('engine',
             'suppress_nonlexicon_complete_long_candidates', True);
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
@@ -321,9 +320,13 @@ begin
         end;
 
         needs_full_write := not ini.ValueExists('engine', 'input_mode') or
-            not ini.ValueExists('engine', 'max_candidates') or
+            ini.ValueExists('engine', 'max_candidates') or
             not ini.ValueExists('engine', 'enable_ai') or
-            not ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
+            ini.ValueExists('engine', 'enable_ctrl_space_toggle') or
+            ini.ValueExists('engine', 'enable_shift_space_full_width_toggle') or
+            ini.ValueExists('engine', 'enable_ctrl_period_punct_toggle') or
+            ini.ValueExists('engine', 'enable_segment_candidates') or
+            ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
             not ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
             not ini.ValueExists('engine', 'debug') or
             not ini.ValueExists('dictionary', 'variant') or
@@ -393,15 +396,33 @@ begin
     ini := TIniFile.Create(m_config_path);
     try
         ini.WriteInteger('engine', 'input_mode', Ord(config.input_mode));
-        ini.WriteInteger('engine', 'max_candidates', config.max_candidates);
+        if ini.ValueExists('engine', 'max_candidates') then
+        begin
+            ini.DeleteKey('engine', 'max_candidates');
+        end;
+        if ini.ValueExists('engine', 'enable_segment_candidates') then
+        begin
+            ini.DeleteKey('engine', 'enable_segment_candidates');
+        end;
+        if ini.ValueExists('engine', 'segment_head_only_multi_syllable') then
+        begin
+            ini.DeleteKey('engine', 'segment_head_only_multi_syllable');
+        end;
+        if ini.ValueExists('engine', 'enable_ctrl_space_toggle') then
+        begin
+            ini.DeleteKey('engine', 'enable_ctrl_space_toggle');
+        end;
+        if ini.ValueExists('engine', 'enable_shift_space_full_width_toggle') then
+        begin
+            ini.DeleteKey('engine', 'enable_shift_space_full_width_toggle');
+        end;
+        if ini.ValueExists('engine', 'enable_ctrl_period_punct_toggle') then
+        begin
+            ini.DeleteKey('engine', 'enable_ctrl_period_punct_toggle');
+        end;
         ini.WriteBool('engine', 'enable_ai', config.enable_ai);
-        ini.WriteBool('engine', 'enable_ctrl_space_toggle', config.enable_ctrl_space_toggle);
-        ini.WriteBool('engine', 'enable_shift_space_full_width_toggle', config.enable_shift_space_full_width_toggle);
-        ini.WriteBool('engine', 'enable_ctrl_period_punct_toggle', config.enable_ctrl_period_punct_toggle);
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
-        ini.WriteBool('engine', 'enable_segment_candidates', config.enable_segment_candidates);
-        ini.WriteBool('engine', 'segment_head_only_multi_syllable', config.segment_head_only_multi_syllable);
         ini.WriteBool('engine', 'suppress_nonlexicon_complete_long_candidates',
             config.suppress_nonlexicon_complete_long_candidates);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
