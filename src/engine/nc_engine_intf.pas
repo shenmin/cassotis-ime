@@ -6653,7 +6653,9 @@ begin
                 end;
 
                 if m_config.enable_segment_candidates and
-                    build_segment_candidates_timed(segment_candidates, not all_initial_compact_query,
+                    build_segment_candidates_timed(segment_candidates,
+                        (not all_initial_compact_query) and
+                        (not m_config.suppress_nonlexicon_complete_long_candidates),
                         allow_relaxed_missing_apostrophe) then
                 begin
                     has_raw_candidates := True;
@@ -6709,7 +6711,8 @@ begin
             begin
                 if m_config.enable_segment_candidates then
                 begin
-                    build_segment_candidates_timed(explicit_apostrophe_aligned_candidates, True);
+                    build_segment_candidates_timed(explicit_apostrophe_aligned_candidates,
+                        not m_config.suppress_nonlexicon_complete_long_candidates);
                 end;
                 filter_complete_candidates_for_explicit_apostrophe_boundary(raw_candidates,
                     explicit_apostrophe_aligned_candidates);
@@ -6745,21 +6748,29 @@ begin
             if m_config.enable_segment_candidates and raw_from_dictionary and
                 (not has_internal_dangling_initial) and (not all_initial_compact_query) then
             begin
-            if not has_segment_candidates then
-            begin
-                // For dictionary-hit multi-syllable input, still build full-path segment candidates
-                // so head-first constraints can suppress noisy direct lexicon matches.
-                has_segment_candidates := build_segment_candidates_timed(segment_candidates, True);
-            end;
+                if not has_segment_candidates then
+                begin
+                    // When exact lexicon hits already exist, keep the extra segment pass cheap.
+                    // The current product strategy prefers direct lexicon matches and only needs
+                    // lightweight partial/anchor assistance here, not a second full-path search.
+                    if m_config.suppress_nonlexicon_complete_long_candidates then
+                    begin
+                        has_segment_candidates := build_segment_candidates_timed(segment_candidates, False);
+                    end
+                    else
+                    begin
+                        has_segment_candidates := build_segment_candidates_timed(segment_candidates, True);
+                    end;
+                end;
 
-            if has_segment_candidates then
-            begin
-                raw_candidates := merge_candidate_lists(raw_candidates, segment_candidates, 0);
-                ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
-                ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
-                    single_char_partial_min_count);
+                if has_segment_candidates then
+                begin
+                    raw_candidates := merge_candidate_lists(raw_candidates, segment_candidates, 0);
+                    ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
+                    ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
+                        single_char_partial_min_count);
+                end;
             end;
-        end;
         end;
 
         // Even when segment candidates are disabled or fail to build, multi-syllable input

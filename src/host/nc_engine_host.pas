@@ -2239,6 +2239,7 @@ const
     c_slow_set_variant_ms = 20;
 var
     session: TncHostSession;
+    iter_session: TncHostSession;
     global_variant_changed: Boolean;
     config_to_save: TncEngineConfig;
     sessions_to_hide: TList<TncHostSession>;
@@ -2272,11 +2273,20 @@ begin
             begin
                 m_config.dictionary_variant := dictionary_variant;
                 sync_start_tick := GetTickCount64;
+                // Keep Ctrl+Shift+T responsive: only the current foreground
+                // session needs an eager dictionary provider switch. Other
+                // sessions inherit m_config and will resync on next activate.
                 sync_session_config_locked(session);
                 sync_elapsed_ms := Int64(GetTickCount64 - sync_start_tick);
-                session.engine.reset;
-                session.clear_candidates;
-                sessions_to_hide.Add(session);
+                for iter_session in m_sessions.Values do
+                begin
+                    if iter_session = session then
+                    begin
+                        iter_session.engine.reset;
+                    end;
+                    iter_session.clear_candidates;
+                    sessions_to_hide.Add(iter_session);
+                end;
                 config_to_save := m_config;
             end;
         finally
@@ -2734,8 +2744,9 @@ begin
         begin
             session_id := '';
         end;
-        if not (SameText(cmd, 'GET_ACTIVE') or SameText(cmd, 'GET_STATE') or SameText(cmd, 'PING') or
-            SameText(cmd, 'SET_SURROUNDING') or SameText(cmd, 'SET_CARET')) then
+        if not (SameText(cmd, 'GET_ACTIVE') or SameText(cmd, 'GET_STATE') or SameText(cmd, 'GET_VARIANT') or
+            SameText(cmd, 'PING') or SameText(cmd, 'SET_ACTIVE') or SameText(cmd, 'SET_SURROUNDING') or
+            SameText(cmd, 'SET_CARET')) then
         begin
             if host_log_enabled_for(ll_debug) then
             begin

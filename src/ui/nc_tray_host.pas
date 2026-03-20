@@ -83,6 +83,7 @@ type
         m_profile_event_seen: Boolean;
         m_active_sync_fail_count: Integer;
         m_last_state_poll_tick: UInt64;
+        m_last_variant_poll_tick: UInt64;
         m_last_config_poll_tick: UInt64;
         m_last_style_refresh_tick: UInt64;
         m_last_profile_activate_tick: UInt64;
@@ -160,6 +161,7 @@ const
     c_tray_timer_interval_ms = 120;
     c_state_poll_interval_ms = 320;
     c_state_poll_interval_idle_ms = 900;
+    c_variant_poll_interval_ms = c_state_poll_interval_ms;
     c_config_poll_interval_ms = 1500;
     c_style_refresh_interval_ms = 1500;
     c_style_refresh_interval_idle_ms = 3000;
@@ -221,6 +223,7 @@ begin
     m_profile_event_seen := False;
     m_active_sync_fail_count := 0;
     m_last_state_poll_tick := 0;
+    m_last_variant_poll_tick := 0;
     m_last_config_poll_tick := 0;
     m_last_style_refresh_tick := 0;
     m_last_profile_activate_tick := 0;
@@ -1088,11 +1091,15 @@ var
     dictionary_variant: TncDictionaryVariant;
     changed: Boolean;
     active_now: Boolean;
+    current_tick: UInt64;
+    should_poll_variant: Boolean;
 begin
     if (m_ipc_client = nil) or (m_session_id = '') then
     begin
         Exit;
     end;
+
+    current_tick := GetTickCount64;
 
     if not m_profile_active then
     begin
@@ -1147,7 +1154,17 @@ begin
     begin
         Exit;
     end;
-    if not m_ipc_client.get_dictionary_variant(m_session_id, dictionary_variant) then
+    should_poll_variant := (m_last_variant_poll_tick = 0) or
+        (current_tick - m_last_variant_poll_tick >= c_variant_poll_interval_ms);
+    if should_poll_variant then
+    begin
+        if not m_ipc_client.get_dictionary_variant(m_session_id, dictionary_variant) then
+        begin
+            dictionary_variant := m_engine_config.dictionary_variant;
+        end;
+        m_last_variant_poll_tick := current_tick;
+    end
+    else
     begin
         dictionary_variant := m_engine_config.dictionary_variant;
     end;
@@ -1173,6 +1190,7 @@ begin
     m_profile_event_seen := True;
     m_profile_active_pending := True;
     m_last_profile_activate_tick := GetTickCount64;
+    m_last_variant_poll_tick := 0;
     Message.Result := 0;
 end;
 
@@ -1182,6 +1200,7 @@ begin
     m_profile_active_pending := False;
     m_last_profile_activate_tick := 0;
     m_profile_active := False;
+    m_last_variant_poll_tick := 0;
     if m_engine_active then
     begin
         m_engine_active := False;
@@ -1589,6 +1608,7 @@ begin
         next_variant := dv_traditional;
     end;
     m_engine_config.dictionary_variant := next_variant;
+    update_menu;
     if not m_ipc_client.set_dictionary_variant(m_session_id, next_variant) then
     begin
         save_config;

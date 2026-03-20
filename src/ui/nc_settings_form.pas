@@ -1119,7 +1119,8 @@ begin
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
-    Result.segment_head_only_multi_syllable := False;
+    Result.segment_head_only_multi_syllable := True;
+    Result.suppress_nonlexicon_complete_long_candidates := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
@@ -2027,7 +2028,7 @@ begin
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.enable_segment_candidates := True;
-    next_config.segment_head_only_multi_syllable := False;
+    next_config.segment_head_only_multi_syllable := True;
     next_config.enable_ctrl_space_toggle := False;
     next_config.enable_shift_space_full_width_toggle := True;
     next_config.enable_ctrl_period_punct_toggle := True;

@@ -239,7 +239,7 @@ begin
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
-    Result.segment_head_only_multi_syllable := False;
+    Result.segment_head_only_multi_syllable := True;
     Result.suppress_nonlexicon_complete_long_candidates := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
@@ -285,7 +285,7 @@ begin
         Result.full_width_mode := ini.ReadBool('engine', 'full_width_mode', False);
         Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
         Result.enable_segment_candidates := True;
-        Result.segment_head_only_multi_syllable := False;
+        Result.segment_head_only_multi_syllable := True;
         Result.suppress_nonlexicon_complete_long_candidates := ini.ReadBool('engine',
             'suppress_nonlexicon_complete_long_candidates', True);
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
