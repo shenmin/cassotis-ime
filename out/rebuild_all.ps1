@@ -11,8 +11,9 @@ Set-Location $script_dir
 $root_dir = (Get-Item (Join-Path $script_dir '..')).FullName
 $rsvars_path = 'C:\Program Files (x86)\Embarcadero\Studio\21.0\bin\rsvars.bat'
 $is_admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$win32_stage_dir = Join-Path $script_dir '_win32_stage'
-$win64_stage_dir = Join-Path $script_dir '_win64_stage'
+$stage_root_dir = Join-Path ([System.IO.Path]::GetTempPath()) ("cassotis_ime_build_" + [System.Guid]::NewGuid().ToString('N'))
+$win32_stage_dir = Join-Path $stage_root_dir 'win32_stage'
+$win64_stage_dir = Join-Path $stage_root_dir 'win64_stage'
 $build_timeout_seconds = 1800
 $process_timeout_seconds = 30
 $enable_module_scan = $false
@@ -263,6 +264,20 @@ function assert_expected_machine([string]$path, [UInt16]$expected_machine)
     {
         throw ("Architecture mismatch: {0} machine=0x{1:X4}, expected=0x{2:X4}" -f $path, $machine, $expected_machine)
     }
+}
+
+foreach ($stale_path in @(
+    (Join-Path $root_dir 'dcu_test'),
+    (Join-Path $root_dir 'hpp_test'),
+    (Join-Path $root_dir 'out_test'),
+    (Join-Path $root_dir 'out_temp'),
+    (Join-Path $script_dir 'dcu_temp'),
+    (Join-Path $script_dir '_verify_stage'),
+    (Join-Path $script_dir '_win32_stage'),
+    (Join-Path $script_dir '_win64_stage')
+))
+{
+    remove_item_with_retry $stale_path $true $false | Out-Null
 }
 
 remove_item_with_retry $win32_stage_dir $true $false | Out-Null
@@ -971,6 +986,10 @@ if (Test-Path -LiteralPath $win32_stage_dir)
 if (Test-Path -LiteralPath $win64_stage_dir)
 {
     remove_item_with_retry $win64_stage_dir $true $false | Out-Null
+}
+if (Test-Path -LiteralPath $stage_root_dir)
+{
+    remove_item_with_retry $stage_root_dir $true $false | Out-Null
 }
 
 copy_sqlite_binaries

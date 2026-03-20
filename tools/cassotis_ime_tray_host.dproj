@@ -61,6 +61,8 @@
         <DCC_DcpOutput>../dcu</DCC_DcpOutput>
         <DCC_ExeOutput>../out</DCC_ExeOutput>
         <DCC_DcuOutput>../dcu</DCC_DcuOutput>
+        <DCC_HppOutput>../dcu</DCC_HppOutput>
+        <DCC_ObjOutput>../dcu</DCC_ObjOutput>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
         <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace>

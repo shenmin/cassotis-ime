@@ -70,6 +70,8 @@
         <DCC_DcpOutput>../dcu</DCC_DcpOutput>
         <DCC_ExeOutput>../out</DCC_ExeOutput>
         <DCC_DcuOutput>../dcu</DCC_DcuOutput>
+        <DCC_HppOutput>../dcu</DCC_HppOutput>
+        <DCC_ObjOutput>../dcu</DCC_ObjOutput>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <Android_LauncherIcon36>$(BDS)\bin\Artwork\Android\FM_LauncherIcon_36x36.png</Android_LauncherIcon36>
@@ -191,4 +193,3 @@
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
 </Project>
-

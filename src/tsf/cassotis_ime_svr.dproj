@@ -61,6 +61,8 @@
         <DCC_DcuOutput>../../dcu</DCC_DcuOutput>
         <DCC_DcpOutput>../../dcu</DCC_DcpOutput>
         <DCC_ExeOutput>../../out</DCC_ExeOutput>
+        <DCC_HppOutput>../../dcu</DCC_HppOutput>
+        <DCC_ObjOutput>../../dcu</DCC_ObjOutput>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
         <DCC_Namespace>Winapi;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace>
@@ -139,5 +141,4 @@
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
 </Project>
-
 
