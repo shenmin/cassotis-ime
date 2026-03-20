@@ -110,6 +110,13 @@ type
         m_last_lookup_normalized_from: string;
         m_last_lookup_syllable_count: Integer;
         m_last_three_syllable_partial_preference_kind: Integer;
+        m_last_three_syllable_head_exact_text: string;
+        m_last_three_syllable_head_strength: Integer;
+        m_last_three_syllable_tail_strength: Integer;
+        m_last_three_syllable_first_single_strength: Integer;
+        m_last_three_syllable_last_single_strength: Integer;
+        m_last_three_syllable_head_path_bonus: Integer;
+        m_last_three_syllable_tail_path_bonus: Integer;
         m_last_three_syllable_partial_debug_info: string;
         m_last_lookup_debug_extra: string;
         m_last_lookup_timing_info: string;
@@ -525,6 +532,13 @@ begin
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_three_syllable_partial_preference_kind := 0;
+    m_last_three_syllable_head_exact_text := '';
+    m_last_three_syllable_head_strength := 0;
+    m_last_three_syllable_tail_strength := 0;
+    m_last_three_syllable_first_single_strength := 0;
+    m_last_three_syllable_last_single_strength := 0;
+    m_last_three_syllable_head_path_bonus := 0;
+    m_last_three_syllable_tail_path_bonus := 0;
     m_last_three_syllable_partial_debug_info := '';
     m_last_lookup_debug_extra := '';
     m_last_lookup_timing_info := '';
@@ -1412,6 +1426,13 @@ begin
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
     m_last_three_syllable_partial_preference_kind := 0;
+    m_last_three_syllable_head_exact_text := '';
+    m_last_three_syllable_head_strength := 0;
+    m_last_three_syllable_tail_strength := 0;
+    m_last_three_syllable_first_single_strength := 0;
+    m_last_three_syllable_last_single_strength := 0;
+    m_last_three_syllable_head_path_bonus := 0;
+    m_last_three_syllable_tail_path_bonus := 0;
     m_last_three_syllable_partial_debug_info := '';
     m_last_lookup_debug_extra := '';
     m_last_lookup_timing_info := '';
@@ -2753,6 +2774,78 @@ var
             candidates[idx] := candidates[idx - 1];
         end;
         candidates[visible_limit - 1] := partial_candidate;
+    end;
+
+    function is_strong_exact_partial_candidate_for_visibility(
+        const candidate: TncCandidate): Boolean;
+    begin
+        Result := (candidate.comment <> '') and
+            (get_candidate_text_unit_count(Trim(candidate.text)) >= 2) and
+            (candidate.has_dict_weight or (candidate.source = cs_user) or
+            ((candidate.source = cs_rule) and
+            (not is_runtime_chain_candidate(candidate)) and
+            (not is_runtime_common_pattern_candidate(candidate)) and
+            (not is_runtime_redup_candidate(candidate))));
+    end;
+
+    procedure ensure_strong_two_plus_one_partial_visible(var candidates: TncCandidateList;
+        const visible_limit: Integer);
+    var
+        idx: Integer;
+        partial_index: Integer;
+        target_index: Integer;
+        partial_candidate: TncCandidate;
+    begin
+        if (m_last_lookup_syllable_count <> 3) or
+            (m_last_three_syllable_partial_preference_kind <> 1) or
+            (visible_limit <= 0) or (Length(candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to Min(visible_limit - 1, High(candidates)) do
+        begin
+            if is_strong_exact_partial_candidate_for_visibility(candidates[idx]) then
+            begin
+                Exit;
+            end;
+        end;
+
+        partial_index := -1;
+        for idx := 0 to High(candidates) do
+        begin
+            if is_strong_exact_partial_candidate_for_visibility(candidates[idx]) then
+            begin
+                partial_index := idx;
+                Break;
+            end;
+        end;
+
+        if partial_index < 0 then
+        begin
+            Exit;
+        end;
+
+        target_index := 2;
+        if target_index >= visible_limit then
+        begin
+            target_index := visible_limit - 1;
+        end;
+        if target_index >= Length(candidates) then
+        begin
+            target_index := Length(candidates) - 1;
+        end;
+        if (target_index < 0) or (partial_index <= target_index) then
+        begin
+            Exit;
+        end;
+
+        partial_candidate := candidates[partial_index];
+        for idx := partial_index downto target_index + 1 do
+        begin
+            candidates[idx] := candidates[idx - 1];
+        end;
+        candidates[target_index] := partial_candidate;
     end;
 
     function is_single_text_unit(const value: string): Boolean;
@@ -6501,6 +6594,14 @@ begin
         m_last_lookup_normalized_from := '';
         m_last_lookup_syllable_count := 0;
         m_last_three_syllable_partial_preference_kind := 0;
+        m_last_three_syllable_head_exact_text := '';
+        m_last_three_syllable_head_strength := 0;
+        m_last_three_syllable_tail_strength := 0;
+        m_last_three_syllable_first_single_strength := 0;
+        m_last_three_syllable_last_single_strength := 0;
+        m_last_three_syllable_head_path_bonus := 0;
+        m_last_three_syllable_tail_path_bonus := 0;
+        m_last_three_syllable_partial_debug_info := '';
         m_last_lookup_debug_extra := '';
         m_last_lookup_timing_info := '';
         m_runtime_chain_text := '';
@@ -6755,7 +6856,7 @@ begin
                     // lightweight partial/anchor assistance here, not a second full-path search.
                     if m_config.suppress_nonlexicon_complete_long_candidates then
                     begin
-                        has_segment_candidates := build_segment_candidates_timed(segment_candidates, False);
+                has_segment_candidates := build_segment_candidates_timed(segment_candidates, False);
                     end
                     else
                     begin
@@ -6769,6 +6870,8 @@ begin
                     ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
                     ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
                         single_char_partial_min_count);
+                    ensure_strong_two_plus_one_partial_visible(raw_candidates,
+                        get_candidate_limit);
                 end;
             end;
         end;
@@ -6790,6 +6893,8 @@ begin
             ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
                 single_char_partial_min_count);
+            ensure_strong_two_plus_one_partial_visible(raw_candidates,
+                get_candidate_limit);
             prefer_relaxed_missing_apostrophe_boundary_partial(raw_candidates);
         end;
 
@@ -6846,6 +6951,8 @@ begin
             ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
                 single_char_partial_min_count);
+            ensure_strong_two_plus_one_partial_visible(m_candidates,
+                get_candidate_limit);
             ensure_redup_complete_candidate_visible(m_candidates, limit);
             prefer_relaxed_missing_apostrophe_boundary_partial(m_candidates);
             if Length(m_candidates) > limit then
@@ -6884,6 +6991,7 @@ begin
         end;
         ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
         ensure_single_char_partial_visible(m_candidates, get_candidate_limit, single_char_partial_min_count);
+        ensure_strong_two_plus_one_partial_visible(m_candidates, get_candidate_limit);
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_hard_single_char_partial_visible(m_candidates);
         ensure_non_ai_first(m_candidates);
@@ -10562,6 +10670,9 @@ type
         is_runtime_constructed_complete_phrase: Boolean;
         is_prioritized_user_phrase: Boolean;
         is_boundary_anchor_partial: Boolean;
+        is_weighted_partial_phrase: Boolean;
+        is_complete_phrase_prefix_partial: Boolean;
+        is_supported_head_phrase_partial: Boolean;
         partial_comment_syllables: Integer;
         is_one_plus_two_partial: Boolean;
         is_two_plus_one_partial: Boolean;
@@ -10595,6 +10706,13 @@ const
     c_three_syllable_boundary_ratio_pct = 100;
     c_three_syllable_partial_shape_margin = 24;
     c_demonstrative_head_friendly_partial_rank_bonus = 220;
+    c_strong_exact_partial_shape_penalty = 240;
+    c_complete_phrase_prefix_partial_rank_bonus = 420;
+    c_complete_phrase_prefix_partial_override_gap = 120;
+    c_supported_head_phrase_partial_rank_bonus = 260;
+    c_supported_head_phrase_partial_override_gap = 0;
+    c_supported_head_phrase_first_single_margin = 180;
+    c_supported_head_phrase_tail_ratio_pct = 80;
     function get_partial_comment_syllable_count(const comment_text: string): Integer;
     var
         normalized_comment: string;
@@ -10625,6 +10743,112 @@ const
             end;
         end;
         partial_comment_syllable_cache.AddOrSetValue(normalized_comment, Result);
+    end;
+    function is_exact_phrase_candidate_for_ranking(const candidate: TncCandidate): Boolean;
+    begin
+        Result := (candidate.comment = '') and
+            (get_candidate_text_unit_count(candidate.text) >= 2) and
+            (candidate.has_dict_weight or (candidate.source = cs_user) or
+            ((candidate.source = cs_rule) and
+            (not is_runtime_chain_candidate(candidate)) and
+            (not is_runtime_common_pattern_candidate(candidate)) and
+            (not is_runtime_redup_candidate(candidate))));
+    end;
+    function is_complete_phrase_prefix_partial_candidate(const partial_candidate: TncCandidate;
+        const partial_units: Integer; const partial_comment_syllables: Integer): Boolean;
+    var
+        idx: Integer;
+        unit_idx: Integer;
+        partial_text_units: TArray<string>;
+        complete_text_units: TArray<string>;
+        matches_prefix: Boolean;
+    begin
+        Result := False;
+        if (partial_candidate.comment = '') or (partial_units < 2) or
+            (partial_comment_syllables <= 0) or
+            (partial_units + partial_comment_syllables <> m_last_lookup_syllable_count) then
+        begin
+            Exit;
+        end;
+
+        partial_text_units := split_text_units(Trim(partial_candidate.text));
+        if Length(partial_text_units) <> partial_units then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(candidates) do
+        begin
+            if not is_exact_phrase_candidate_for_ranking(candidates[idx]) then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(candidates[idx].text) <>
+                m_last_lookup_syllable_count then
+            begin
+                Continue;
+            end;
+
+            complete_text_units := split_text_units(Trim(candidates[idx].text));
+            if Length(complete_text_units) <> m_last_lookup_syllable_count then
+            begin
+                Continue;
+            end;
+
+            matches_prefix := True;
+            for unit_idx := 0 to partial_units - 1 do
+            begin
+                if complete_text_units[unit_idx] <> partial_text_units[unit_idx] then
+                begin
+                    matches_prefix := False;
+                    Break;
+                end;
+            end;
+            if matches_prefix then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+    function is_supported_head_phrase_partial_candidate(const sort_item: TncCandidateSortItem): Boolean;
+    begin
+        Result := False;
+        if (m_last_lookup_syllable_count <> 3) or
+            (preferred_three_syllable_partial_kind <> 1) or
+            (not sort_item.is_two_plus_one_partial) then
+        begin
+            Exit;
+        end;
+        if (m_last_three_syllable_head_exact_text = '') or
+            (Trim(sort_item.candidate.text) <> m_last_three_syllable_head_exact_text) then
+        begin
+            Exit;
+        end;
+
+        if m_last_three_syllable_head_strength <= 0 then
+        begin
+            Exit;
+        end;
+        if m_last_three_syllable_head_strength <
+            (m_last_three_syllable_first_single_strength +
+            c_supported_head_phrase_first_single_margin) then
+        begin
+            Exit;
+        end;
+
+        if m_last_three_syllable_head_path_bonus > 0 then
+        begin
+            Exit(True);
+        end;
+
+        if m_last_three_syllable_tail_strength <= 0 then
+        begin
+            Exit(True);
+        end;
+
+        Result := (m_last_three_syllable_head_strength * 100) >=
+            (m_last_three_syllable_tail_strength *
+            c_supported_head_phrase_tail_ratio_pct);
     end;
     function get_cached_single_char_preference(const syllable_index: Integer;
         const unit_text: string; out out_matched: Boolean): Boolean;
@@ -11094,6 +11318,9 @@ begin
                 (candidates[i].source = cs_user) and (item.text_units >= 2);
             item.is_one_plus_two_partial := False;
             item.is_two_plus_one_partial := False;
+            item.is_weighted_partial_phrase := False;
+            item.is_complete_phrase_prefix_partial := False;
+            item.is_supported_head_phrase_partial := False;
             candidate_path_score_hint := get_candidate_segment_path_score_hint(candidates[i]);
             item.is_boundary_anchor_partial := (candidates[i].comment <> '') and
                 (candidate_path_score_hint >= c_boundary_anchor_partial_score_hint_flag);
@@ -11127,6 +11354,20 @@ begin
             item.is_two_plus_one_partial := item.is_two_plus_one_partial or
                 ((m_last_lookup_syllable_count = 3) and
                 (item.partial_comment_syllables = 1) and (item.text_units >= 2));
+            item.is_weighted_partial_phrase := (candidates[i].comment <> '') and
+                (item.text_units >= 2) and
+                (candidates[i].has_dict_weight or (candidates[i].source = cs_user) or
+                ((candidates[i].source = cs_rule) and
+                (not is_runtime_chain_candidate(candidates[i])) and
+                (not is_runtime_common_pattern_candidate(candidates[i])) and
+                (not is_runtime_redup_candidate(candidates[i]))));
+            item.is_complete_phrase_prefix_partial := False;
+            item.is_supported_head_phrase_partial :=
+                is_supported_head_phrase_partial_candidate(item);
+            if item.is_supported_head_phrase_partial then
+            begin
+                Inc(item.rank_score, c_supported_head_phrase_partial_rank_bonus);
+            end;
             item.is_demonstrative_head_friendly_partial :=
                 is_demonstrative_head_friendly_partial_candidate_cached(candidates[i]);
             if item.is_demonstrative_head_friendly_partial then
@@ -11215,7 +11456,17 @@ begin
                 item := list[i];
                 if (preferred_three_syllable_partial_kind = 1) and item.is_two_plus_one_partial then
                 begin
-                    Dec(item.rank_score, 880);
+                    if item.is_complete_phrase_prefix_partial then
+                    begin
+                    end
+                    else if item.is_weighted_partial_phrase then
+                    begin
+                        Dec(item.rank_score, c_strong_exact_partial_shape_penalty);
+                    end
+                    else
+                    begin
+                        Dec(item.rank_score, 880);
+                    end;
                 end
                 else if (preferred_three_syllable_partial_kind = 2) and item.is_one_plus_two_partial then
                 begin
@@ -11395,6 +11646,25 @@ begin
                 begin
                     if preferred_three_syllable_partial_kind = 1 then
                     begin
+                        if left.is_one_plus_two_partial and
+                            right.is_supported_head_phrase_partial and
+                            right.is_two_plus_one_partial and
+                            (right.rank_score >= left.rank_score +
+                            c_supported_head_phrase_partial_override_gap) then
+                        begin
+                            Result := 1;
+                            Exit;
+                        end;
+                        if right.is_one_plus_two_partial and
+                            left.is_supported_head_phrase_partial and
+                            left.is_two_plus_one_partial and
+                            (left.rank_score >= right.rank_score +
+                            c_supported_head_phrase_partial_override_gap) then
+                        begin
+                            Result := -1;
+                            Exit;
+                        end;
+
                         if left.is_one_plus_two_partial and
                             (((not right.is_one_plus_two_partial) and
                             (not right_protected_complete)) or
@@ -12896,6 +13166,13 @@ var
     begin
         m_last_three_syllable_partial_preference_kind := 0;
         m_last_three_syllable_partial_debug_info := '';
+        m_last_three_syllable_head_exact_text := '';
+        m_last_three_syllable_head_strength := 0;
+        m_last_three_syllable_tail_strength := 0;
+        m_last_three_syllable_first_single_strength := 0;
+        m_last_three_syllable_last_single_strength := 0;
+        m_last_three_syllable_head_path_bonus := 0;
+        m_last_three_syllable_tail_path_bonus := 0;
         if (not m_config.suppress_nonlexicon_complete_long_candidates) or
             (Length(syllables) < 3) then
         begin
@@ -13160,6 +13437,51 @@ var
             end;
         end;
 
+        if (head_two_exact_strength > 0) and (tail_two_exact_strength <= 0) and
+            (not has_quantity_boundary_head_partial) then
+        begin
+            m_last_three_syllable_partial_preference_kind := 2;
+            m_last_three_syllable_head_exact_text := Trim(head_two_exact_text);
+            m_last_three_syllable_head_strength := head_two_strength;
+            m_last_three_syllable_tail_strength := tail_two_strength;
+            m_last_three_syllable_first_single_strength := first_single_strength;
+            m_last_three_syllable_last_single_strength := last_single_strength;
+            m_last_three_syllable_head_path_bonus := head_two_query_path_bonus;
+            m_last_three_syllable_tail_path_bonus := tail_two_query_path_bonus;
+            Exit;
+        end;
+
+        if (tail_two_exact_strength > 0) and (head_two_exact_strength <= 0) and
+            (not has_quantity_boundary_head_partial) then
+        begin
+            m_last_three_syllable_partial_preference_kind := 1;
+            m_last_three_syllable_head_exact_text := Trim(head_two_exact_text);
+            m_last_three_syllable_head_strength := head_two_strength;
+            m_last_three_syllable_tail_strength := tail_two_strength;
+            m_last_three_syllable_first_single_strength := first_single_strength;
+            m_last_three_syllable_last_single_strength := last_single_strength;
+            m_last_three_syllable_head_path_bonus := head_two_query_path_bonus;
+            m_last_three_syllable_tail_path_bonus := tail_two_query_path_bonus;
+            Exit;
+        end;
+
+        if (head_two_exact_strength > 0) and (tail_two_exact_strength > 0) then
+        begin
+            if (head_two_query_path_bonus <= 0) and
+                ((tail_two_exact_strength - head_two_exact_strength) >= 220) then
+            begin
+                m_last_three_syllable_partial_preference_kind := 1;
+                m_last_three_syllable_head_exact_text := Trim(head_two_exact_text);
+                m_last_three_syllable_head_strength := head_two_strength;
+                m_last_three_syllable_tail_strength := tail_two_strength;
+                m_last_three_syllable_first_single_strength := first_single_strength;
+                m_last_three_syllable_last_single_strength := last_single_strength;
+                m_last_three_syllable_head_path_bonus := head_two_query_path_bonus;
+                m_last_three_syllable_tail_path_bonus := tail_two_query_path_bonus;
+                Exit;
+            end;
+        end;
+
         if has_quantity_boundary_head_partial and (preferred_boundary_unit_strength > 0) then
         begin
             Inc(head_two_strength, c_quantity_boundary_head_bias_base_local +
@@ -13261,6 +13583,14 @@ var
                 end;
             end;
         end;
+
+        m_last_three_syllable_head_exact_text := Trim(head_two_exact_text);
+        m_last_three_syllable_head_strength := head_two_strength;
+        m_last_three_syllable_tail_strength := tail_two_strength;
+        m_last_three_syllable_first_single_strength := first_single_strength;
+        m_last_three_syllable_last_single_strength := last_single_strength;
+        m_last_three_syllable_head_path_bonus := head_two_query_path_bonus;
+        m_last_three_syllable_tail_path_bonus := tail_two_query_path_bonus;
 
         if m_config.debug_mode then
         begin
@@ -13385,6 +13715,8 @@ var
         c_anchor_partial_hint_two_plus_one_local = 2;
         c_anchor_partial_tail_bonus_scale_local = 4;
         c_anchor_partial_remaining_penalty_local = 36;
+        c_anchor_partial_non_preferred_penalty_local = 220;
+        c_anchor_partial_non_preferred_gap_local = 48;
         c_boundary_anchor_partial_score_hint_flag_local = 1000000;
         c_segmented_prefix_strength_penalty_local = 520;
     var
@@ -13411,6 +13743,80 @@ var
         shifted_boundary_unit_text_local: string;
         shifted_boundary_unit_strength_local: Integer;
         use_shifted_boundary_local: Boolean;
+
+        procedure append_exact_head_fallback_candidate(
+            const preferred_score_value_local: Integer;
+            const tail_support_strength_local: Integer);
+        var
+            fallback_text_local: string;
+            fallback_strength_local: Integer;
+            fallback_source_local: TncCandidateSource;
+            fallback_has_dict_weight_local: Boolean;
+            fallback_dict_weight_local: Integer;
+            fallback_remaining_pinyin_local: string;
+            fallback_last_single_text_local: string;
+            fallback_last_single_strength_local: Integer;
+            fallback_gap_penalty_local: Integer;
+            fallback_score_local: Integer;
+            fallback_hint_local: Integer;
+        begin
+            fallback_remaining_pinyin_local := build_syllable_text(2, Length(syllables) - 2);
+            if fallback_remaining_pinyin_local = '' then
+            begin
+                Exit;
+            end;
+
+            if not try_get_best_scored_exact_phrase_candidate_local(build_syllable_text(0, 2),
+                fallback_text_local, fallback_strength_local, fallback_source_local,
+                fallback_has_dict_weight_local, fallback_dict_weight_local) then
+            begin
+                Exit;
+            end;
+
+            if get_candidate_text_unit_count(fallback_text_local) < 2 then
+            begin
+                Exit;
+            end;
+
+            fallback_last_single_text_local := '';
+            fallback_last_single_strength_local := 0;
+            try_get_best_single_char_candidate_for_syllable_local(2,
+                fallback_last_single_text_local, fallback_last_single_strength_local);
+
+            fallback_gap_penalty_local := 0;
+            if tail_support_strength_local > fallback_strength_local then
+            begin
+                fallback_gap_penalty_local := Min(220,
+                    (tail_support_strength_local - fallback_strength_local) div 3);
+            end;
+
+            fallback_score_local := fallback_strength_local + c_anchor_partial_bonus_local +
+                Min(220, (fallback_strength_local + fallback_last_single_strength_local) div
+                c_anchor_partial_tail_bonus_scale_local) -
+                c_anchor_partial_remaining_penalty_local -
+                c_anchor_partial_non_preferred_penalty_local -
+                fallback_gap_penalty_local;
+            if (preferred_score_value_local > 0) and
+                (fallback_score_local >= preferred_score_value_local) then
+            begin
+                fallback_score_local := preferred_score_value_local -
+                    c_anchor_partial_non_preferred_gap_local;
+            end;
+
+            if fallback_score_local <= 0 then
+            begin
+                Exit;
+            end;
+
+            append_candidate(fallback_text_local, fallback_score_local, fallback_source_local,
+                fallback_remaining_pinyin_local, fallback_has_dict_weight_local,
+                fallback_dict_weight_local);
+            fallback_hint_local := c_boundary_anchor_partial_score_hint_flag_local +
+                (c_anchor_partial_hint_two_plus_one_local *
+                c_anchor_partial_hint_kind_scale_local) + fallback_score_local;
+            remember_segment_path_score_hint_for_candidate(fallback_text_local,
+                fallback_remaining_pinyin_local, fallback_hint_local);
+        end;
     begin
         if include_full_path or (Length(syllables) < 3) or
             (not m_config.suppress_nonlexicon_complete_long_candidates) then
@@ -13420,6 +13826,7 @@ var
 
         if m_last_three_syllable_partial_preference_kind = 1 then
         begin
+            score_value_local := 0;
             remaining_pinyin := build_syllable_text(1, Length(syllables) - 1);
             boundary_tail_key := build_syllable_text(1, 2);
             tail_strength := get_best_exact_phrase_strength_local(boundary_tail_key);
@@ -13442,6 +13849,8 @@ var
                 remember_segment_path_score_hint_for_candidate(anchor_text, remaining_pinyin,
                     anchor_hint_local);
             end;
+
+            append_exact_head_fallback_candidate(score_value_local, tail_strength);
         end
         else if m_last_three_syllable_partial_preference_kind = 2 then
         begin
@@ -14657,6 +15066,8 @@ var
             c_anchor_partial_bonus = 420;
             c_anchor_partial_tail_bonus_scale = 4;
             c_anchor_partial_remaining_penalty = 36;
+            c_anchor_partial_non_preferred_penalty = 220;
+            c_anchor_partial_non_preferred_gap = 48;
             c_anchor_partial_score_hint_flag = 1000000;
             c_anchor_partial_hint_kind_scale = 10000;
             c_anchor_partial_hint_one_plus_two = 1;
@@ -14680,6 +15091,69 @@ var
             is_preferred: Boolean;
             anchor_hint: Integer;
             derived_head_strength: Integer;
+            preferred_one_plus_two_score: Integer;
+
+            procedure append_non_preferred_head_two_anchor_candidate(
+                const preferred_score_value: Integer;
+                const tail_support_strength_value: Integer);
+            var
+                fallback_state: TncSegmentPathState;
+                fallback_score: Integer;
+                fallback_hint: Integer;
+                fallback_remaining_pinyin: string;
+                fallback_units: Integer;
+                fallback_gap_penalty: Integer;
+            begin
+                fallback_remaining_pinyin := build_syllable_text(2, Length(syllables) - 2);
+                if fallback_remaining_pinyin = '' then
+                begin
+                    Exit;
+                end;
+
+                if not try_get_best_anchor_state(2, 2, fallback_state) then
+                begin
+                    Exit;
+                end;
+
+                fallback_units := get_candidate_text_unit_count(fallback_state.text);
+                if fallback_units < 2 then
+                begin
+                    Exit;
+                end;
+
+                fallback_gap_penalty := 0;
+                if tail_support_strength_value > head_two_supported_strength then
+                begin
+                    fallback_gap_penalty := Min(220,
+                        (tail_support_strength_value - head_two_supported_strength) div 3);
+                end;
+
+                fallback_score := fallback_state.score + c_anchor_partial_bonus +
+                    Min(220, head_two_supported_strength div
+                    c_anchor_partial_tail_bonus_scale) -
+                    c_anchor_partial_remaining_penalty -
+                    c_anchor_partial_non_preferred_penalty -
+                    fallback_gap_penalty;
+                if (preferred_score_value > 0) and
+                    (fallback_score >= preferred_score_value) then
+                begin
+                    fallback_score := preferred_score_value -
+                        c_anchor_partial_non_preferred_gap;
+                end;
+
+                if fallback_score <= 0 then
+                begin
+                    Exit;
+                end;
+
+                append_candidate(fallback_state.text, fallback_score,
+                    fallback_state.source, fallback_remaining_pinyin);
+                fallback_hint := c_anchor_partial_score_hint_flag +
+                    (c_anchor_partial_hint_two_plus_one *
+                    c_anchor_partial_hint_kind_scale) + fallback_score;
+                remember_segment_path_for_candidate(fallback_state.text,
+                    fallback_remaining_pinyin, fallback_state.path_text, fallback_hint);
+            end;
         begin
             if (not m_config.suppress_nonlexicon_complete_long_candidates) or
                 (Length(syllables) < 3) then
@@ -14740,6 +15214,7 @@ var
                 Exit;
             end;
 
+            preferred_one_plus_two_score := 0;
             if (tail_two_supported_strength > 0) and
                 ((head_two_supported_strength <= 0) or
                 ((head_two_supported_strength * 100) <=
@@ -14755,6 +15230,7 @@ var
                         anchor_score := anchor_state.score + c_anchor_partial_bonus +
                             Min(220, tail_two_supported_strength div c_anchor_partial_tail_bonus_scale) -
                             (2 * c_anchor_partial_remaining_penalty);
+                        preferred_one_plus_two_score := anchor_score;
                         append_candidate(anchor_state.text, anchor_score, anchor_state.source, remaining_pinyin);
                         anchor_hint := c_anchor_partial_score_hint_flag +
                             (c_anchor_partial_hint_one_plus_two * c_anchor_partial_hint_kind_scale) +
@@ -14763,6 +15239,9 @@ var
                             anchor_state.path_text, anchor_hint);
                     end;
                 end;
+
+                append_non_preferred_head_two_anchor_candidate(
+                    preferred_one_plus_two_score, tail_two_supported_strength);
             end;
 
             if (head_two_supported_strength > 0) and
