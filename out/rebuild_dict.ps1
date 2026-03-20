@@ -215,6 +215,9 @@ $lexicon_clean_sc = Join-Path $lexicon_root 'data\generated\dict_clean_sc.txt'
 $lexicon_clean_tc = Join-Path $lexicon_root 'data\generated\dict_clean_tc.txt'
 $lexicon_query_path_sc = Join-Path $lexicon_root 'data\generated\dict_query_path_prior_sc.txt'
 $lexicon_query_path_tc = Join-Path $lexicon_root 'data\generated\dict_query_path_prior_tc.txt'
+$custom_dict_shared = Join-Path $repo_root 'data\custom_dict_shared.txt'
+$custom_dict_sc = Join-Path $repo_root 'data\custom_dict_sc.txt'
+$custom_dict_tc = Join-Path $repo_root 'data\custom_dict_tc.txt'
 
 require_path $dict_init 'cassotis_ime_dict_init.exe'
 require_path $schema_path 'schema.sql'
@@ -273,6 +276,24 @@ try {
         else {
             Write-Warning "Query-path prior files not found under lexicon data/generated; skipping base path-prior import."
         }
+    }
+
+    if (Test-Path -LiteralPath $custom_dict_shared) {
+        Write-Host ("Importing shared custom dict into simplified db from: " + $custom_dict_shared)
+        invoke_tool 'cassotis_ime_dict_init (custom shared sc)' $dict_init @($base_db_sc_path, $schema_path, $custom_dict_shared)
+
+        Write-Host ("Importing shared custom dict into traditional db from: " + $custom_dict_shared)
+        invoke_tool 'cassotis_ime_dict_init (custom shared tc)' $dict_init @($base_db_tc_path, $schema_path, $custom_dict_shared)
+    }
+
+    if (Test-Path -LiteralPath $custom_dict_sc) {
+        Write-Host ("Importing simplified custom dict from: " + $custom_dict_sc)
+        invoke_tool 'cassotis_ime_dict_init (custom sc)' $dict_init @($base_db_sc_path, $schema_path, $custom_dict_sc)
+    }
+
+    if (Test-Path -LiteralPath $custom_dict_tc) {
+        Write-Host ("Importing traditional custom dict from: " + $custom_dict_tc)
+        invoke_tool 'cassotis_ime_dict_init (custom tc)' $dict_init @($base_db_tc_path, $schema_path, $custom_dict_tc)
     }
 
     Write-Host 'Rebuild completed.'
