@@ -40,6 +40,7 @@ type
     private
         m_config: TncEngineConfig;
         m_composition_text: string;
+        m_composition_display_text: string;
         m_candidates: TncCandidateList;
         m_dictionary: TncDictionaryProvider;
         m_cached_dictionary_simplified: TncDictionaryProvider;
@@ -124,7 +125,8 @@ type
         m_confirmed_text: string;
         m_recent_partial_prefix_text: string;
         m_confirmed_segments: TList<TncConfirmedSegment>;
-        function is_alpha_key(const key_code: Word; out out_char: Char): Boolean;
+        function is_alpha_key(const key_code: Word; const key_state: TncKeyState; out normalized_char: Char;
+            out display_char: Char): Boolean;
         function get_candidate_limit: Integer;
         function get_total_candidate_limit: Integer;
         function create_dictionary_from_config: TncDictionaryProvider;
@@ -514,6 +516,7 @@ begin
     inherited create;
     m_config := config;
     m_composition_text := '';
+    m_composition_display_text := '';
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
@@ -1399,6 +1402,7 @@ var
     ai_response: TncAiResponse;
 begin
     m_composition_text := '';
+    m_composition_display_text := '';
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
@@ -1717,11 +1721,20 @@ begin
     Result := Length(out_candidates) > 0;
 end;
 
-function TncEngine.is_alpha_key(const key_code: Word; out out_char: Char): Boolean;
+function TncEngine.is_alpha_key(const key_code: Word; const key_state: TncKeyState; out normalized_char: Char;
+    out display_char: Char): Boolean;
 begin
     if (key_code >= Ord('A')) and (key_code <= Ord('Z')) then
     begin
-        out_char := Char(key_code + Ord('a') - Ord('A'));
+        normalized_char := Char(key_code + Ord('a') - Ord('A'));
+        if key_state.shift_down xor key_state.caps_lock then
+        begin
+            display_char := Char(key_code);
+        end
+        else
+        begin
+            display_char := normalized_char;
+        end;
         Result := True;
         Exit;
     end;
@@ -6946,7 +6959,14 @@ begin
     end;
 
         SetLength(m_candidates, 1);
-        m_candidates[0].text := m_composition_text;
+        if m_composition_display_text <> '' then
+        begin
+            m_candidates[0].text := m_composition_display_text;
+        end
+        else
+        begin
+            m_candidates[0].text := m_composition_text;
+        end;
         m_candidates[0].comment := fallback_comment;
         m_candidates[0].score := 0;
         m_candidates[0].source := cs_rule;
@@ -15752,6 +15772,14 @@ begin
     end;
 
     m_composition_text := segment.pinyin + m_composition_text;
+    if m_composition_display_text <> '' then
+    begin
+        m_composition_display_text := segment.pinyin + m_composition_display_text;
+    end
+    else
+    begin
+        m_composition_display_text := m_composition_text;
+    end;
     clear_pending_commit;
     m_page_index := 0;
     build_candidates;
@@ -15940,6 +15968,7 @@ begin
     push_confirmed_segment(selected_text, prefix_pinyin);
 
     m_composition_text := remaining_pinyin;
+    m_composition_display_text := remaining_pinyin;
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
@@ -16596,6 +16625,7 @@ end;
 function TncEngine.process_key(const key_code: Word; const key_state: TncKeyState): Boolean;
 var
     key_char: Char;
+    display_key_char: Char;
     index: Integer;
     commit_text: string;
     page_size: Integer;
@@ -16617,7 +16647,14 @@ var
             Exit;
         end;
 
-        out_candidate.text := m_composition_text;
+        if m_composition_display_text <> '' then
+        begin
+            out_candidate.text := m_composition_display_text;
+        end
+        else
+        begin
+            out_candidate.text := m_composition_text;
+        end;
         out_candidate.comment := '';
         out_candidate.score := 0;
         out_candidate.source := cs_rule;
@@ -17013,10 +17050,11 @@ begin
         normalize_page_and_selection;
     end;
 
-    if is_alpha_key(key_code, key_char) then
+    if is_alpha_key(key_code, key_state, key_char, display_key_char) then
     begin
         clear_pending_commit;
         m_composition_text := m_composition_text + key_char;
+        m_composition_display_text := m_composition_display_text + display_key_char;
         build_candidates;
         Result := True;
         Exit;
@@ -17094,6 +17132,10 @@ begin
                 begin
                     clear_pending_commit;
                     Delete(m_composition_text, Length(m_composition_text), 1);
+                    if m_composition_display_text <> '' then
+                    begin
+                        Delete(m_composition_display_text, Length(m_composition_display_text), 1);
+                    end;
                     build_candidates;
                     Result := True;
                 end;
@@ -17106,6 +17148,7 @@ begin
                     if m_composition_text[Length(m_composition_text)] <> '''' then
                     begin
                         m_composition_text := m_composition_text + '''';
+                        m_composition_display_text := m_composition_display_text + '''';
                         build_candidates;
                     end;
 
@@ -17141,7 +17184,14 @@ begin
                 if m_composition_text <> '' then
                 begin
                     // Enter should commit raw input text instead of selecting candidate.
-                    set_pending_commit(m_composition_text);
+                    if m_composition_display_text <> '' then
+                    begin
+                        set_pending_commit(m_composition_display_text);
+                    end
+                    else
+                    begin
+                        set_pending_commit(m_composition_text);
+                    end;
                     Result := True;
                 end
                 else if m_confirmed_text <> '' then
@@ -17255,7 +17305,14 @@ begin
                     end
                     else
                     begin
-                        set_pending_commit(m_composition_text);
+                        if m_composition_display_text <> '' then
+                        begin
+                            set_pending_commit(m_composition_display_text);
+                        end
+                        else
+                        begin
+                            set_pending_commit(m_composition_text);
+                        end;
                         Result := True;
                     end;
                 end
@@ -17441,7 +17498,14 @@ end;
 
 function TncEngine.get_composition_text: string;
 begin
-    Result := m_composition_text;
+    if m_composition_display_text <> '' then
+    begin
+        Result := m_composition_display_text;
+    end
+    else
+    begin
+        Result := m_composition_text;
+    end;
 end;
 
 function TncEngine.get_display_text: string;
@@ -17470,7 +17534,14 @@ begin
         end
         else
         begin
-            display_text := m_composition_text;
+            if m_composition_display_text <> '' then
+            begin
+                display_text := m_composition_display_text;
+            end
+            else
+            begin
+                display_text := m_composition_text;
+            end;
         end;
     end;
 
@@ -17700,6 +17771,7 @@ end;
 function TncEngine.should_handle_key(const key_code: Word; const key_state: TncKeyState): Boolean;
 var
     key_char: Char;
+    display_key_char: Char;
     punct_char: Char;
     has_candidates: Boolean;
 begin
@@ -17732,7 +17804,7 @@ begin
         Exit(False);
     end;
 
-    if is_alpha_key(key_code, key_char) then
+    if is_alpha_key(key_code, key_state, key_char, display_key_char) then
     begin
         Result := True;
         Exit;
@@ -18543,7 +18615,14 @@ begin
     page_index := get_page_index;
     page_count := get_page_count;
     selected_index := get_selected_index;
-    preedit_text := m_composition_text;
+    if m_composition_display_text <> '' then
+    begin
+        preedit_text := m_composition_display_text;
+    end
+    else
+    begin
+        preedit_text := m_composition_text;
+    end;
     Result := True;
 end;
 
