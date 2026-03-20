@@ -38,6 +38,7 @@ type
         m_pressed: Boolean;
         m_default_button: Boolean;
         m_cancel_button: Boolean;
+        m_focusable: Boolean;
         procedure set_caption(const value: string);
         procedure set_kind(const value: TncModernButtonKind);
         procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
@@ -57,7 +58,51 @@ type
         property Caption: string read m_caption write set_caption;
         property Default: Boolean read m_default_button write m_default_button default False;
         property Cancel: Boolean read m_cancel_button write m_cancel_button default False;
+        property Focusable: Boolean read m_focusable write m_focusable default True;
         property VisualKind: TncModernButtonKind read m_kind write set_kind;
+        property Align;
+        property Anchors;
+        property Enabled;
+        property Font;
+        property ParentFont;
+        property ParentShowHint;
+        property ShowHint;
+        property Hint;
+        property Cursor;
+        property TabOrder;
+        property TabStop;
+        property Visible;
+        property OnClick;
+        property OnMouseDown;
+        property OnMouseMove;
+        property OnMouseUp;
+        property OnMouseEnter;
+        property OnMouseLeave;
+    end;
+
+    TncModernCheckBox = class(TCustomControl)
+    private
+        m_caption: string;
+        m_checked: Boolean;
+        m_hot: Boolean;
+        m_pressed: Boolean;
+        procedure set_caption(const value: string);
+        procedure set_checked(const value: Boolean);
+        procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
+        procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
+        procedure CMEnabledChanged(var Message: TMessage); message CM_ENABLEDCHANGED;
+    protected
+        procedure Paint; override;
+        procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer); override;
+        procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer); override;
+        procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+        procedure DoEnter; override;
+        procedure DoExit; override;
+    public
+        constructor Create(AOwner: TComponent); override;
+    published
+        property Caption: string read m_caption write set_caption;
+        property Checked: Boolean read m_checked write set_checked default False;
         property Align;
         property Anchors;
         property Enabled;
@@ -102,14 +147,14 @@ type
         m_combo_input_mode: TComboBox;
         m_edit_max_candidates: TEdit;
         m_combo_punctuation_mode: TComboBox;
-        m_chk_full_width_mode: TCheckBox;
-        m_chk_enable_segment_candidates: TCheckBox;
-        m_chk_segment_head_only: TCheckBox;
-        m_chk_enable_ctrl_space_toggle: TCheckBox;
-        m_chk_enable_shift_space_toggle: TCheckBox;
-        m_chk_enable_ctrl_period_toggle: TCheckBox;
-        m_chk_show_status_widget: TCheckBox;
-        m_chk_enable_ai: TCheckBox;
+        m_chk_full_width_mode: TncModernCheckBox;
+        m_chk_enable_segment_candidates: TncModernCheckBox;
+        m_chk_segment_head_only: TncModernCheckBox;
+        m_chk_enable_ctrl_space_toggle: TncModernCheckBox;
+        m_chk_enable_shift_space_toggle: TncModernCheckBox;
+        m_chk_enable_ctrl_period_toggle: TncModernCheckBox;
+        m_chk_show_status_widget: TncModernCheckBox;
+        m_chk_enable_ai: TncModernCheckBox;
         m_combo_ai_backend: TComboBox;
         m_edit_ai_timeout_ms: TEdit;
         m_edit_ai_runtime_dir_cpu: TEdit;
@@ -120,7 +165,7 @@ type
         m_btn_ai_model_path: TncModernButton;
         m_btn_ai_defaults: TncModernButton;
         m_btn_ai_open_model_folder: TncModernButton;
-        m_chk_log_enabled: TCheckBox;
+        m_chk_log_enabled: TncModernCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
         m_edit_log_path: TEdit;
@@ -128,7 +173,7 @@ type
         m_btn_open_log_folder: TncModernButton;
         m_btn_log_defaults: TncModernButton;
         m_hint_logging: TLabel;
-        m_chk_debug_mode: TCheckBox;
+        m_chk_debug_mode: TncModernCheckBox;
         m_edit_dict_path_sc: TEdit;
         m_edit_dict_path_tc: TEdit;
         m_edit_user_dict_path: TEdit;
@@ -155,6 +200,7 @@ type
         procedure add_ai_controls;
         procedure add_logging_controls;
         procedure add_advanced_controls;
+        procedure update_scaled_control_metrics;
         procedure mark_dirty(Sender: TObject);
         procedure update_apply_button;
         procedure update_candidate_controls;
@@ -331,11 +377,21 @@ resourcestring
     SCurrentLogFolder = '当前日志目录';
     SCurrentDictionaryPath = '当前词库路径';
 
+function get_ui_scale_dpi: Integer; forward;
+function scale_ui(const value: Integer): Integer; forward;
+function measure_font_height(const font: TFont): Integer; forward;
+function calculate_checkbox_height(const font: TFont): Integer; forward;
+function get_window_dpi(const wnd: HWND): Integer; forward;
+function get_control_scale_dpi(const control: TControl): Integer; forward;
+function scale_ui_for_dpi(const value: Integer; const dpi: Integer): Integer; forward;
+function calculate_checkbox_height_for_dpi(const font: TFont; const dpi: Integer): Integer; forward;
+
 constructor TncModernButton.Create(AOwner: TComponent);
 begin
     inherited Create(AOwner);
     m_kind := mbkSecondary;
     m_caption := '';
+    m_focusable := True;
     ParentFont := True;
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
@@ -390,7 +446,10 @@ begin
     inherited;
     if Button = mbLeft then
     begin
-        SetFocus;
+        if m_focusable then
+        begin
+            SetFocus;
+        end;
         m_pressed := True;
     end;
     Invalidate;
@@ -560,7 +619,7 @@ begin
         DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX
     );
 
-    if Focused and (not is_disabled) then
+    if m_focusable and Focused and (not is_disabled) then
     begin
         InflateRect(draw_rect, -4, -4);
         Canvas.Brush.Style := bsClear;
@@ -568,6 +627,223 @@ begin
         Canvas.Pen.Width := 1;
         Canvas.Pen.Color := RGB(132, 146, 166);
         Canvas.RoundRect(draw_rect.Left, draw_rect.Top, draw_rect.Right, draw_rect.Bottom, 6, 6);
+    end;
+end;
+
+constructor TncModernCheckBox.Create(AOwner: TComponent);
+begin
+    inherited Create(AOwner);
+    m_caption := '';
+    m_checked := False;
+    ParentFont := True;
+    Font.Name := 'Microsoft YaHei UI';
+    Font.Size := 9;
+    Width := c_check_width;
+    Height := 24;
+    TabStop := True;
+    DoubleBuffered := True;
+    Cursor := crHandPoint;
+end;
+
+procedure TncModernCheckBox.set_caption(const value: string);
+begin
+    if m_caption = value then
+    begin
+        Exit;
+    end;
+    m_caption := value;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.set_checked(const value: Boolean);
+begin
+    if m_checked = value then
+    begin
+        Exit;
+    end;
+    m_checked := value;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.CMMouseEnter(var Message: TMessage);
+begin
+    inherited;
+    m_hot := True;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.CMMouseLeave(var Message: TMessage);
+begin
+    inherited;
+    m_hot := False;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.CMEnabledChanged(var Message: TMessage);
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.MouseDown(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
+begin
+    inherited;
+    if Button = mbLeft then
+    begin
+        SetFocus;
+        m_pressed := True;
+        Invalidate;
+    end;
+end;
+
+procedure TncModernCheckBox.MouseUp(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
+begin
+    inherited;
+    if Button = mbLeft then
+    begin
+        if m_pressed and PtInRect(ClientRect, Point(X, Y)) and Enabled then
+        begin
+            m_checked := not m_checked;
+            Click;
+        end;
+        m_pressed := False;
+        Invalidate;
+    end;
+end;
+
+procedure TncModernCheckBox.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+    inherited;
+    if (Key = VK_SPACE) and Enabled then
+    begin
+        m_checked := not m_checked;
+        Click;
+        Invalidate;
+        Key := 0;
+    end;
+end;
+
+procedure TncModernCheckBox.DoEnter;
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.DoExit;
+begin
+    inherited;
+    m_pressed := False;
+    Invalidate;
+end;
+
+procedure TncModernCheckBox.Paint;
+var
+    draw_rect: TRect;
+    glyph_rect: TRect;
+    text_rect: TRect;
+    focus_rect: TRect;
+    dpi: Integer;
+    box_size: Integer;
+    glyph_width: Integer;
+    glyph_text: string;
+    text_color: TColor;
+    glyph_color: TColor;
+    glyph_font: TFont;
+begin
+    draw_rect := ClientRect;
+    Canvas.Brush.Color := Color;
+    Canvas.FillRect(draw_rect);
+
+    dpi := get_control_scale_dpi(Self);
+    box_size := scale_ui_for_dpi(16, dpi);
+    if box_size < 16 then
+    begin
+        box_size := 16;
+    end;
+    glyph_width := box_size + scale_ui_for_dpi(6, dpi);
+
+    if not Enabled then
+    begin
+        text_color := RGB(171, 176, 184);
+        glyph_color := RGB(171, 176, 184);
+    end
+    else if m_checked then
+    begin
+        text_color := RGB(44, 50, 59);
+        glyph_color := RGB(50, 118, 255);
+        if m_hot then
+        begin
+            glyph_color := RGB(35, 104, 245);
+        end;
+    end
+    else
+    begin
+        text_color := RGB(44, 50, 59);
+        glyph_color := RGB(112, 122, 136);
+        if m_hot then
+        begin
+            glyph_color := RGB(90, 129, 212);
+        end;
+    end;
+
+    if m_pressed and Enabled then
+    begin
+        if m_checked then
+        begin
+            glyph_color := RGB(28, 93, 224);
+        end
+        else
+        begin
+            glyph_color := RGB(84, 122, 204);
+        end;
+    end;
+
+    glyph_text := '☐';
+    if m_checked then
+    begin
+        glyph_text := '☑';
+    end;
+
+    glyph_rect := Rect(0, 0, glyph_width, Height);
+    Canvas.Brush.Style := bsClear;
+    glyph_font := TFont.Create;
+    try
+        glyph_font.Assign(Font);
+        glyph_font.Name := 'Segoe UI Symbol';
+        glyph_font.Height := -scale_ui_for_dpi(18, dpi);
+        Canvas.Font.Assign(glyph_font);
+        Canvas.Font.Color := glyph_color;
+        DrawText(Canvas.Handle, PChar(glyph_text), Length(glyph_text), glyph_rect,
+            DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+    finally
+        glyph_font.Free;
+    end;
+
+    text_rect := Rect(glyph_rect.Right + scale_ui_for_dpi(4, dpi), 0, Width, Height);
+    Canvas.Font.Assign(Font);
+    Canvas.Font.Color := text_color;
+    DrawText(Canvas.Handle, PChar(m_caption), Length(m_caption), text_rect, DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+
+    if Focused and Enabled then
+    begin
+        focus_rect := Rect(
+            glyph_rect.Right + scale_ui_for_dpi(2, dpi),
+            scale_ui_for_dpi(2, dpi),
+            Width - scale_ui_for_dpi(2, dpi),
+            Height - scale_ui_for_dpi(2, dpi)
+        );
+        Canvas.Brush.Style := bsClear;
+        Canvas.Pen.Style := psDot;
+        Canvas.Pen.Width := 1;
+        Canvas.Pen.Color := RGB(132, 146, 166);
+        Canvas.RoundRect(
+            focus_rect.Left,
+            focus_rect.Top,
+            focus_rect.Right,
+            focus_rect.Bottom,
+            scale_ui_for_dpi(4, dpi),
+            scale_ui_for_dpi(4, dpi)
+        );
     end;
 end;
 
@@ -669,6 +945,142 @@ begin
     Result.Height := measure_wrapped_label_height(Result.Font, caption, width);
     Result.Caption := caption;
     Result.Font.Color := clGrayText;
+end;
+
+function get_ui_scale_dpi: Integer;
+begin
+    Result := Screen.PixelsPerInch;
+    if Result <= 0 then
+    begin
+        Result := 96;
+    end;
+end;
+
+function scale_ui(const value: Integer): Integer;
+begin
+    Result := MulDiv(value, get_ui_scale_dpi, 96);
+end;
+
+function get_window_dpi(const wnd: HWND): Integer;
+begin
+    Result := 96;
+    if wnd <> 0 then
+    begin
+        Result := GetDpiForWindow(wnd);
+    end;
+    if Result <= 0 then
+    begin
+        Result := get_ui_scale_dpi;
+    end;
+end;
+
+function get_control_scale_dpi(const control: TControl): Integer;
+var
+    win_control: TWinControl;
+begin
+    Result := get_ui_scale_dpi;
+    if control = nil then
+    begin
+        Exit;
+    end;
+
+    if control is TWinControl then
+    begin
+        win_control := TWinControl(control);
+        if win_control.HandleAllocated then
+        begin
+            Result := get_window_dpi(win_control.Handle);
+            Exit;
+        end;
+    end;
+
+    if (control.Parent <> nil) and control.Parent.HandleAllocated then
+    begin
+        Result := get_window_dpi(control.Parent.Handle);
+    end;
+end;
+
+function scale_ui_for_dpi(const value: Integer; const dpi: Integer): Integer;
+var
+    effective_dpi: Integer;
+begin
+    effective_dpi := dpi;
+    if effective_dpi <= 0 then
+    begin
+        effective_dpi := 96;
+    end;
+    Result := MulDiv(value, effective_dpi, 96);
+end;
+
+function measure_font_height(const font: TFont): Integer;
+var
+    dc: HDC;
+    old_font: HGDIOBJ;
+    metrics: TTextMetric;
+begin
+    Result := 12;
+    if font = nil then
+    begin
+        Exit;
+    end;
+
+    dc := GetDC(0);
+    if dc = 0 then
+    begin
+        Exit;
+    end;
+    try
+        old_font := SelectObject(dc, font.Handle);
+        try
+            if GetTextMetrics(dc, metrics) then
+            begin
+                Result := metrics.tmHeight;
+            end;
+        finally
+            SelectObject(dc, old_font);
+        end;
+    finally
+        ReleaseDC(0, dc);
+    end;
+end;
+
+function calculate_checkbox_height(const font: TFont): Integer;
+begin
+    Result := calculate_checkbox_height_for_dpi(font, get_ui_scale_dpi);
+end;
+
+function calculate_checkbox_height_for_dpi(const font: TFont; const dpi: Integer): Integer;
+var
+    min_height: Integer;
+begin
+    min_height := scale_ui_for_dpi(24, dpi);
+    Result := measure_font_height(font) + scale_ui_for_dpi(10, dpi);
+    if Result < min_height then
+    begin
+        Result := min_height;
+    end;
+end;
+
+function create_check_box(const owner: TComponent; const parent: TWinControl; const top: Integer;
+    const caption: string; const on_click: TNotifyEvent): TncModernCheckBox;
+begin
+    Result := TncModernCheckBox.Create(owner);
+    Result.Parent := parent;
+    Result.ParentFont := True;
+    Result.Left := c_label_left;
+    Result.Top := top;
+    Result.Width := c_check_width;
+    Result.Height := calculate_checkbox_height_for_dpi(Result.Font, get_control_scale_dpi(parent));
+    if parent is TPanel then
+    begin
+        Result.Color := TPanel(parent).Color;
+    end
+    else
+    begin
+        Result.Color := clWhite;
+    end;
+    Result.Caption := caption;
+    Result.OnClick := on_click;
 end;
 
 function create_browse_button(const owner: TComponent; const parent: TWinControl; const top: Integer;
@@ -796,6 +1208,7 @@ procedure TncSettingsForm.DoShow;
 begin
     inherited;
     HandleNeeded;
+    update_scaled_control_metrics;
     SetWindowPos(
         Handle,
         HWND_TOPMOST,
@@ -817,6 +1230,33 @@ begin
     BringWindowToTop(Handle);
     SetForegroundWindow(Handle);
     SetActiveWindow(Handle);
+end;
+
+procedure TncSettingsForm.update_scaled_control_metrics;
+var
+    dpi: Integer;
+
+    procedure update_check_box_metrics(const control: TncModernCheckBox);
+    begin
+        if control = nil then
+        begin
+            Exit;
+        end;
+        control.Height := calculate_checkbox_height_for_dpi(control.Font, dpi);
+        control.Invalidate;
+    end;
+begin
+    dpi := get_window_dpi(Handle);
+    update_check_box_metrics(m_chk_full_width_mode);
+    update_check_box_metrics(m_chk_enable_segment_candidates);
+    update_check_box_metrics(m_chk_segment_head_only);
+    update_check_box_metrics(m_chk_enable_ctrl_space_toggle);
+    update_check_box_metrics(m_chk_enable_shift_space_toggle);
+    update_check_box_metrics(m_chk_enable_ctrl_period_toggle);
+    update_check_box_metrics(m_chk_show_status_widget);
+    update_check_box_metrics(m_chk_enable_ai);
+    update_check_box_metrics(m_chk_log_enabled);
+    update_check_box_metrics(m_chk_debug_mode);
 end;
 
 procedure TncSettingsForm.CMDialogKey(var Message: TCMDialogKey);
@@ -980,25 +1420,13 @@ begin
     m_combo_punctuation_mode.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    m_chk_full_width_mode := TCheckBox.Create(Self);
-    m_chk_full_width_mode.Parent := defaults_group;
-    m_chk_full_width_mode.Left := c_label_left;
-    m_chk_full_width_mode.Top := top;
-    m_chk_full_width_mode.Width := c_check_width;
-    m_chk_full_width_mode.Caption := SCheckFullWidthMode;
-    m_chk_full_width_mode.OnClick := mark_dirty;
+    m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
 
     section_top := defaults_group.Top + defaults_group.Height + c_section_gap;
     appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 96);
 
     top := c_section_inner_top;
-    m_chk_show_status_widget := TCheckBox.Create(Self);
-    m_chk_show_status_widget.Parent := appearance_group;
-    m_chk_show_status_widget.Left := c_label_left;
-    m_chk_show_status_widget.Top := top;
-    m_chk_show_status_widget.Width := c_check_width;
-    m_chk_show_status_widget.Caption := SCheckShowStatusWidget;
-    m_chk_show_status_widget.OnClick := mark_dirty;
+    m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
 end;
 
 procedure TncSettingsForm.add_candidate_controls;
@@ -1021,22 +1449,16 @@ begin
     m_edit_max_candidates.OnChange := mark_dirty;
 
     Inc(top, c_row_height + c_row_gap);
-    m_chk_enable_segment_candidates := TCheckBox.Create(Self);
-    m_chk_enable_segment_candidates.Parent := strategy_group;
-    m_chk_enable_segment_candidates.Left := c_label_left;
-    m_chk_enable_segment_candidates.Top := top;
-    m_chk_enable_segment_candidates.Width := c_check_width;
-    m_chk_enable_segment_candidates.Caption := SCheckEnableSegmentCandidates;
-    m_chk_enable_segment_candidates.OnClick := mark_dirty;
+    m_chk_enable_segment_candidates := create_check_box(
+        Self,
+        strategy_group,
+        top,
+        SCheckEnableSegmentCandidates,
+        mark_dirty
+    );
 
     Inc(top, c_row_height);
-    m_chk_segment_head_only := TCheckBox.Create(Self);
-    m_chk_segment_head_only.Parent := strategy_group;
-    m_chk_segment_head_only.Left := c_label_left;
-    m_chk_segment_head_only.Top := top;
-    m_chk_segment_head_only.Width := c_check_width;
-    m_chk_segment_head_only.Caption := SCheckSegmentHeadOnly;
-    m_chk_segment_head_only.OnClick := mark_dirty;
+    m_chk_segment_head_only := create_check_box(Self, strategy_group, top, SCheckSegmentHeadOnly, mark_dirty);
 
     create_hint_label(Self, strategy_group, SHintCandidateStrategy, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
@@ -1051,31 +1473,13 @@ begin
     hotkey_group := create_section_group(Self, m_tab_hotkeys, SGroupHotkeys, section_top, 164);
 
     top := c_section_inner_top;
-    m_chk_enable_ctrl_space_toggle := TCheckBox.Create(Self);
-    m_chk_enable_ctrl_space_toggle.Parent := hotkey_group;
-    m_chk_enable_ctrl_space_toggle.Left := c_label_left;
-    m_chk_enable_ctrl_space_toggle.Top := top;
-    m_chk_enable_ctrl_space_toggle.Width := c_check_width;
-    m_chk_enable_ctrl_space_toggle.Caption := SCheckEnableCtrlSpace;
-    m_chk_enable_ctrl_space_toggle.OnClick := mark_dirty;
+    m_chk_enable_ctrl_space_toggle := create_check_box(Self, hotkey_group, top, SCheckEnableCtrlSpace, mark_dirty);
 
     Inc(top, c_row_height);
-    m_chk_enable_shift_space_toggle := TCheckBox.Create(Self);
-    m_chk_enable_shift_space_toggle.Parent := hotkey_group;
-    m_chk_enable_shift_space_toggle.Left := c_label_left;
-    m_chk_enable_shift_space_toggle.Top := top;
-    m_chk_enable_shift_space_toggle.Width := c_check_width;
-    m_chk_enable_shift_space_toggle.Caption := SCheckEnableShiftSpace;
-    m_chk_enable_shift_space_toggle.OnClick := mark_dirty;
+    m_chk_enable_shift_space_toggle := create_check_box(Self, hotkey_group, top, SCheckEnableShiftSpace, mark_dirty);
 
     Inc(top, c_row_height);
-    m_chk_enable_ctrl_period_toggle := TCheckBox.Create(Self);
-    m_chk_enable_ctrl_period_toggle.Parent := hotkey_group;
-    m_chk_enable_ctrl_period_toggle.Left := c_label_left;
-    m_chk_enable_ctrl_period_toggle.Top := top;
-    m_chk_enable_ctrl_period_toggle.Width := c_check_width;
-    m_chk_enable_ctrl_period_toggle.Caption := SCheckEnableCtrlPeriod;
-    m_chk_enable_ctrl_period_toggle.OnClick := mark_dirty;
+    m_chk_enable_ctrl_period_toggle := create_check_box(Self, hotkey_group, top, SCheckEnableCtrlPeriod, mark_dirty);
 
     create_hint_label(Self, hotkey_group, SHintHotkeys, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
@@ -1091,13 +1495,7 @@ begin
     behavior_group := create_section_group(Self, m_tab_ai, SGroupAiBehavior, section_top, 170);
 
     top := c_section_inner_top;
-    m_chk_enable_ai := TCheckBox.Create(Self);
-    m_chk_enable_ai.Parent := behavior_group;
-    m_chk_enable_ai.Left := c_label_left;
-    m_chk_enable_ai.Top := top;
-    m_chk_enable_ai.Width := c_check_width;
-    m_chk_enable_ai.Caption := SCheckEnableAI;
-    m_chk_enable_ai.OnClick := mark_dirty;
+    m_chk_enable_ai := create_check_box(Self, behavior_group, top, SCheckEnableAI, mark_dirty);
 
     Inc(top, c_row_height + c_row_gap);
     create_label(Self, behavior_group, SLabelAIBackend, top);
@@ -1178,13 +1576,7 @@ begin
     logging_group := create_section_group(Self, m_tab_logging, SGroupLogging, section_top, 162);
 
     top := c_section_inner_top;
-    m_chk_log_enabled := TCheckBox.Create(Self);
-    m_chk_log_enabled.Parent := logging_group;
-    m_chk_log_enabled.Left := c_label_left;
-    m_chk_log_enabled.Top := top;
-    m_chk_log_enabled.Width := c_check_width;
-    m_chk_log_enabled.Caption := SCheckEnableLogging;
-    m_chk_log_enabled.OnClick := mark_dirty;
+    m_chk_log_enabled := create_check_box(Self, logging_group, top, SCheckEnableLogging, mark_dirty);
 
     Inc(top, c_row_height + c_row_gap);
     create_label(Self, logging_group, SLabelLogLevel, top);
@@ -1245,13 +1637,7 @@ begin
     debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 84);
 
     top := c_section_inner_top;
-    m_chk_debug_mode := TCheckBox.Create(Self);
-    m_chk_debug_mode.Parent := debug_group;
-    m_chk_debug_mode.Left := c_label_left;
-    m_chk_debug_mode.Top := top;
-    m_chk_debug_mode.Width := c_check_width;
-    m_chk_debug_mode.Caption := SCheckEnableDebugMode;
-    m_chk_debug_mode.OnClick := mark_dirty;
+    m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
 
     section_top := debug_group.Top + debug_group.Height + c_section_gap;
     dictionaries_group := create_section_group(Self, m_tab_advanced, SGroupDictionaryPaths, section_top, 212);

@@ -126,6 +126,8 @@ type
         procedure on_status_widget_click(Sender: TObject);
         procedure on_status_settings_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
             Y: Integer);
+        procedure on_status_settings_mouse_up(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
+            Y: Integer);
         procedure on_input_mode_click(Sender: TObject);
         procedure on_dictionary_variant_click(Sender: TObject);
         procedure on_full_width_click(Sender: TObject);
@@ -620,7 +622,9 @@ begin
     m_status_btn_settings.Caption := '设置';
     m_status_btn_settings.VisualKind := mbkSubtle;
     m_status_btn_settings.OnMouseDown := on_status_settings_mouse_down;
+    m_status_btn_settings.OnMouseUp := on_status_settings_mouse_up;
     m_status_btn_settings.TabStop := False;
+    m_status_btn_settings.Focusable := False;
 
     m_status_form.OnMouseDown := status_mouse_down;
     m_status_form.OnMouseMove := status_mouse_move;
@@ -1461,6 +1465,8 @@ end;
 
 procedure TncTrayHost.on_status_settings_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
     Y: Integer);
+var
+    control: TControl;
 begin
     if Button <> mbLeft then
     begin
@@ -1468,7 +1474,42 @@ begin
     end;
 
     hide_status_hint;
-    PostMessage(Handle, WM_NC_OPEN_SETTINGS, 0, 0);
+    if Sender is TControl then
+    begin
+        control := TControl(Sender);
+        if (control is TWinControl) and TWinControl(control).HandleAllocated then
+        begin
+            SetCapture(TWinControl(control).Handle);
+        end;
+    end;
+end;
+
+procedure TncTrayHost.on_status_settings_mouse_up(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer;
+    Y: Integer);
+var
+    control: TControl;
+begin
+    if GetCapture <> 0 then
+    begin
+        ReleaseCapture;
+    end;
+
+    if Button <> mbLeft then
+    begin
+        Exit;
+    end;
+
+    if not (Sender is TControl) then
+    begin
+        Exit;
+    end;
+
+    control := TControl(Sender);
+    if PtInRect(control.ClientRect, Point(X, Y)) then
+    begin
+        hide_status_hint;
+        PostMessage(Handle, WM_NC_OPEN_SETTINGS, 0, 0);
+    end;
 end;
 
 procedure TncTrayHost.on_input_mode_click(Sender: TObject);
