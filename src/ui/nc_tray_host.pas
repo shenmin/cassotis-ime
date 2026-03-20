@@ -67,7 +67,7 @@ type
         m_status_label_mode: TLabel;
         m_status_label_variant: TLabel;
         m_status_label_punct: TLabel;
-        m_status_btn_settings: TButton;
+        m_status_btn_settings: TncModernButton;
         m_status_hint_window: THintWindow;
         m_status_dragging: Boolean;
         m_status_drag_moved: Boolean;
@@ -151,8 +151,8 @@ const
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
     c_status_widget_y_key = 'status_widget_y';
-    c_status_widget_default_width = 260;
-    c_status_widget_default_height = 38;
+    c_status_widget_default_width = 276;
+    c_status_widget_default_height = 40;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
     c_state_poll_interval_ms = 320;
@@ -516,6 +516,8 @@ begin
 end;
 
 procedure TncTrayHost.configure_status_widget;
+var
+    divider: TBevel;
 begin
     m_status_form := TncStatusForm.CreateNew(Self);
     m_status_form.BorderStyle := bsNone;
@@ -523,7 +525,7 @@ begin
     m_status_form.FormStyle := fsStayOnTop;
     m_status_form.Width := c_status_widget_default_width;
     m_status_form.Height := c_status_widget_default_height;
-    m_status_form.Color := RGB(32, 32, 32);
+    m_status_form.Color := RGB(190, 196, 204);
     m_status_form.AlphaBlend := False;
     m_status_form.KeyPreview := False;
     m_status_form.PopupMode := pmNone;
@@ -533,22 +535,27 @@ begin
 
     m_status_panel := TPanel.Create(m_status_form);
     m_status_panel.Parent := m_status_form;
-    m_status_panel.Align := alClient;
+    m_status_panel.Left := 1;
+    m_status_panel.Top := 1;
+    m_status_panel.Width := m_status_form.ClientWidth - 2;
+    m_status_panel.Height := m_status_form.ClientHeight - 2;
+    m_status_panel.Anchors := [akLeft, akTop, akRight, akBottom];
     m_status_panel.BevelOuter := bvNone;
-    m_status_panel.Color := RGB(32, 32, 32);
+    m_status_panel.Color := RGB(226, 231, 237);
     m_status_panel.Font.Name := 'Microsoft YaHei UI';
+    m_status_panel.Font.Size := 9;
     m_status_panel.ParentBackground := False;
 
     m_status_label_mode := TLabel.Create(m_status_panel);
     m_status_label_mode.Parent := m_status_panel;
-    m_status_label_mode.Left := 10;
+    m_status_label_mode.Left := 12;
     m_status_label_mode.Top := 11;
-    m_status_label_mode.Width := 52;
-    m_status_label_mode.Height := 16;
+    m_status_label_mode.Width := 34;
+    m_status_label_mode.Height := 18;
     m_status_label_mode.AutoSize := False;
     m_status_label_mode.Alignment := taCenter;
     m_status_label_mode.Layout := tlCenter;
-    m_status_label_mode.Font.Color := clWhite;
+    m_status_label_mode.Font.Color := RGB(31, 63, 116);
     m_status_label_mode.Font.Style := [fsBold];
     m_status_label_mode.Transparent := True;
     m_status_label_mode.ParentShowHint := False;
@@ -556,45 +563,62 @@ begin
     m_status_label_mode.Hint := '切换中/英（Shift）';
     m_status_label_mode.Cursor := crHandPoint;
 
+    divider := TBevel.Create(m_status_panel);
+    divider.Parent := m_status_panel;
+    divider.Left := 50;
+    divider.Top := 11;
+    divider.Width := 2;
+    divider.Height := 18;
+    divider.Shape := bsLeftLine;
+
     m_status_label_variant := TLabel.Create(m_status_panel);
     m_status_label_variant.Parent := m_status_panel;
-    m_status_label_variant.Left := 72;
+    m_status_label_variant.Left := 58;
     m_status_label_variant.Top := 11;
-    m_status_label_variant.Width := 60;
-    m_status_label_variant.Height := 16;
+    m_status_label_variant.Width := 40;
+    m_status_label_variant.Height := 18;
     m_status_label_variant.AutoSize := False;
     m_status_label_variant.Alignment := taCenter;
     m_status_label_variant.Layout := tlCenter;
-    m_status_label_variant.Font.Color := RGB(180, 220, 255);
+    m_status_label_variant.Font.Color := RGB(70, 78, 92);
     m_status_label_variant.Transparent := True;
     m_status_label_variant.ParentShowHint := False;
     m_status_label_variant.ShowHint := True;
     m_status_label_variant.Hint := '切换简/繁（Ctrl+Shift+T）';
     m_status_label_variant.Cursor := crHandPoint;
 
+    divider := TBevel.Create(m_status_panel);
+    divider.Parent := m_status_panel;
+    divider.Left := 104;
+    divider.Top := 11;
+    divider.Width := 2;
+    divider.Height := 18;
+    divider.Shape := bsLeftLine;
+
     m_status_label_punct := TLabel.Create(m_status_panel);
     m_status_label_punct.Parent := m_status_panel;
-    m_status_label_punct.Left := 142;
+    m_status_label_punct.Left := 112;
     m_status_label_punct.Top := 11;
-    m_status_label_punct.Width := 64;
-    m_status_label_punct.Height := 16;
+    m_status_label_punct.Width := 76;
+    m_status_label_punct.Height := 18;
     m_status_label_punct.AutoSize := False;
     m_status_label_punct.Alignment := taCenter;
     m_status_label_punct.Layout := tlCenter;
-    m_status_label_punct.Font.Color := RGB(255, 220, 170);
+    m_status_label_punct.Font.Color := RGB(100, 72, 24);
     m_status_label_punct.Transparent := True;
     m_status_label_punct.ParentShowHint := False;
     m_status_label_punct.ShowHint := True;
     m_status_label_punct.Hint := '切换标点（Ctrl+.）';
     m_status_label_punct.Cursor := crHandPoint;
 
-    m_status_btn_settings := TButton.Create(m_status_panel);
+    m_status_btn_settings := TncModernButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
-    m_status_btn_settings.Left := 214;
-    m_status_btn_settings.Top := 7;
-    m_status_btn_settings.Width := 40;
+    m_status_btn_settings.Left := 198;
+    m_status_btn_settings.Top := 8;
+    m_status_btn_settings.Width := 66;
     m_status_btn_settings.Height := 24;
     m_status_btn_settings.Caption := '设置';
+    m_status_btn_settings.VisualKind := mbkSubtle;
     m_status_btn_settings.OnMouseDown := on_status_settings_mouse_down;
     m_status_btn_settings.TabStop := False;
 
@@ -821,18 +845,18 @@ begin
 
         if m_engine_config.punctuation_full_width then
         begin
-            punct_text := '标点：中文';
+            punct_text := '中文标点';
         end
         else
         begin
-            punct_text := '标点：英文';
+            punct_text := '英文标点';
         end;
     end
     else
     begin
         mode_text := '英文';
         variant_text := '-';
-        punct_text := '标点：英文';
+        punct_text := '英文标点';
     end;
 
     m_status_label_mode.Caption := mode_text;
@@ -1008,6 +1032,7 @@ var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
     punctuation_full_width: Boolean;
+    dictionary_variant: TncDictionaryVariant;
     changed: Boolean;
     active_now: Boolean;
 begin
@@ -1069,10 +1094,15 @@ begin
     begin
         Exit;
     end;
+    if not m_ipc_client.get_dictionary_variant(m_session_id, dictionary_variant) then
+    begin
+        dictionary_variant := m_engine_config.dictionary_variant;
+    end;
 
     changed := (m_engine_config.input_mode <> input_mode) or
         (m_engine_config.full_width_mode <> full_width_mode) or
-        (m_engine_config.punctuation_full_width <> punctuation_full_width);
+        (m_engine_config.punctuation_full_width <> punctuation_full_width) or
+        (m_engine_config.dictionary_variant <> dictionary_variant);
     if not changed then
     begin
         Exit;
@@ -1081,6 +1111,7 @@ begin
     m_engine_config.input_mode := input_mode;
     m_engine_config.full_width_mode := full_width_mode;
     m_engine_config.punctuation_full_width := punctuation_full_width;
+    m_engine_config.dictionary_variant := dictionary_variant;
     update_menu;
 end;
 
@@ -1456,18 +1487,23 @@ begin
 end;
 
 procedure TncTrayHost.on_dictionary_variant_click(Sender: TObject);
+var
+    next_variant: TncDictionaryVariant;
 begin
     if m_engine_config.dictionary_variant = dv_traditional then
     begin
-        m_engine_config.dictionary_variant := dv_simplified;
+        next_variant := dv_simplified;
     end
     else
     begin
-        m_engine_config.dictionary_variant := dv_traditional;
+        next_variant := dv_traditional;
     end;
-    save_config;
-    reload_host_config;
-    apply_runtime_state_to_host;
+    m_engine_config.dictionary_variant := next_variant;
+    if not m_ipc_client.set_dictionary_variant(m_session_id, next_variant) then
+    begin
+        save_config;
+        reload_host_config;
+    end;
     refresh_state_from_host;
 end;
 

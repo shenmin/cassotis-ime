@@ -66,10 +66,16 @@ type
         property ParentShowHint;
         property ShowHint;
         property Hint;
+        property Cursor;
         property TabOrder;
         property TabStop;
         property Visible;
         property OnClick;
+        property OnMouseDown;
+        property OnMouseMove;
+        property OnMouseUp;
+        property OnMouseEnter;
+        property OnMouseLeave;
     end;
 
     TncFlatPageControl = class(TPageControl)

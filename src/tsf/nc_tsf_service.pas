@@ -1250,7 +1250,6 @@ begin
 
     if key_state.ctrl_down and key_state.shift_down and (not key_state.alt_down) and (key_code = Ord('T')) then
     begin
-        m_ctrl_shift_t_toggle_pending := True;
         eaten := 1;
         Result := S_OK;
         Exit;
@@ -1445,7 +1444,11 @@ begin
 
     if key_state.ctrl_down and key_state.shift_down and (not key_state.alt_down) and (key_code = Ord('T')) then
     begin
-        m_ctrl_shift_t_toggle_pending := True;
+        if not m_ctrl_shift_t_toggle_pending then
+        begin
+            m_ctrl_shift_t_toggle_pending := True;
+            toggle_dictionary_variant_by_ctrl_shift_t;
+        end;
         eaten := 1;
         Result := S_OK;
         Exit;
@@ -1657,7 +1660,6 @@ begin
     if (key_code = Ord('T')) and m_ctrl_shift_t_toggle_pending then
     begin
         m_ctrl_shift_t_toggle_pending := False;
-        toggle_dictionary_variant_by_ctrl_shift_t;
         eaten := 1;
         Result := S_OK;
         Exit;
@@ -1891,12 +1893,14 @@ var
     config_manager: TncConfigManager;
     engine_config: TncEngineConfig;
     variant_text: string;
+    variant_applied: Boolean;
 begin
     if m_config_path = '' then
     begin
         Exit;
     end;
 
+    variant_applied := False;
     config_manager := TncConfigManager.create(m_config_path);
     try
         engine_config := config_manager.load_engine_config;
@@ -1910,12 +1914,23 @@ begin
             engine_config.dictionary_variant := dv_traditional;
             variant_text := 'traditional';
         end;
-        config_manager.save_engine_config(engine_config);
+        if m_ipc_client <> nil then
+        begin
+            variant_applied := m_ipc_client.set_dictionary_variant(m_session_id, engine_config.dictionary_variant);
+        end;
+        if not variant_applied then
+        begin
+            config_manager.save_engine_config(engine_config);
+        end;
     finally
         config_manager.Free;
     end;
 
     m_last_config_write := get_config_write_time;
+    if (not variant_applied) and (m_ipc_client <> nil) then
+    begin
+        m_ipc_client.reload_config(m_session_id);
+    end;
     cancel_composition;
 
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then

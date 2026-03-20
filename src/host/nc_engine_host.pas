@@ -110,6 +110,7 @@ type
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
         procedure apply_global_engine_config_locked(const config: TncEngineConfig);
+        procedure sync_session_config_locked(const session: TncHostSession);
         procedure touch_session_activity(const session_id: string);
         procedure set_session_active(const session_id: string; const active: Boolean);
         function has_active_session: Boolean;
@@ -127,8 +128,10 @@ type
             out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
+        function get_dictionary_variant(const session_id: string; out dictionary_variant: TncDictionaryVariant): Boolean;
         function set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean): Boolean;
+        function set_dictionary_variant(const session_id: string; const dictionary_variant: TncDictionaryVariant): Boolean;
         function get_active(out active: Boolean): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
         function reload_config_now: Boolean;
@@ -1353,6 +1356,15 @@ begin
     end;
 end;
 
+procedure TncEngineHost.sync_session_config_locked(const session: TncHostSession);
+begin
+    if session = nil then
+    begin
+        Exit;
+    end;
+    session.update_config(m_config);
+end;
+
 function TncEngineHost.get_or_create_session(const session_id: string): TncHostSession;
 var
     config_snapshot: TncEngineConfig;
@@ -1915,6 +1927,7 @@ begin
     try
         touch_session_activity(session_id);
         had_candidates_before := session.has_candidates;
+        sync_session_config_locked(session);
         reload_start_tick := GetTickCount64;
         session.engine.reload_dictionary_if_needed;
         reload_elapsed_ms := Int64(GetTickCount64 - reload_start_tick);
@@ -2113,6 +2126,25 @@ begin
     Result := True;
 end;
 
+function TncEngineHost.get_dictionary_variant(const session_id: string; out dictionary_variant: TncDictionaryVariant): Boolean;
+begin
+    dictionary_variant := dv_simplified;
+    if session_id = '' then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    reload_config_if_needed;
+    m_lock.Acquire;
+    try
+        dictionary_variant := m_config.dictionary_variant;
+    finally
+        m_lock.Release;
+    end;
+    Result := True;
+end;
+
 function TncEngineHost.set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
     const punctuation_full_width: Boolean): Boolean;
 var
@@ -2138,7 +2170,7 @@ begin
         session := get_or_create_session(session_id);
         m_lock.Acquire;
         try
-            next_config := session.engine.config;
+            next_config := m_config;
             input_mode_changed := next_config.input_mode <> input_mode;
             global_input_mode_changed := m_config.input_mode <> input_mode;
             next_config.input_mode := input_mode;
@@ -2201,6 +2233,98 @@ begin
     Result := True;
 end;
 
+function TncEngineHost.set_dictionary_variant(const session_id: string;
+    const dictionary_variant: TncDictionaryVariant): Boolean;
+const
+    c_slow_set_variant_ms = 20;
+var
+    session: TncHostSession;
+    global_variant_changed: Boolean;
+    config_to_save: TncEngineConfig;
+    sessions_to_hide: TList<TncHostSession>;
+    debug_logging: Boolean;
+    total_start_tick: UInt64;
+    sync_start_tick: UInt64;
+    persist_start_tick: UInt64;
+    sync_elapsed_ms: Int64;
+    persist_elapsed_ms: Int64;
+    total_elapsed_ms: Int64;
+begin
+    Result := False;
+    if session_id = '' then
+    begin
+        Exit;
+    end;
+
+    debug_logging := host_log_enabled_for(ll_debug);
+    total_start_tick := GetTickCount64;
+    sync_elapsed_ms := 0;
+    persist_elapsed_ms := 0;
+    sessions_to_hide := nil;
+    try
+        sessions_to_hide := TList<TncHostSession>.Create;
+        reload_config_if_needed;
+        session := get_or_create_session(session_id);
+        m_lock.Acquire;
+        try
+            global_variant_changed := m_config.dictionary_variant <> dictionary_variant;
+            if global_variant_changed then
+            begin
+                m_config.dictionary_variant := dictionary_variant;
+                sync_start_tick := GetTickCount64;
+                sync_session_config_locked(session);
+                sync_elapsed_ms := Int64(GetTickCount64 - sync_start_tick);
+                session.engine.reset;
+                session.clear_candidates;
+                sessions_to_hide.Add(session);
+                config_to_save := m_config;
+            end;
+        finally
+            m_lock.Release;
+        end;
+
+        if global_variant_changed then
+        begin
+            persist_start_tick := GetTickCount64;
+            persist_engine_config(config_to_save);
+            persist_elapsed_ms := Int64(GetTickCount64 - persist_start_tick);
+            queue_session_prewarm(session_id);
+        end;
+
+        if sessions_to_hide.Count > 0 then
+        begin
+            run_on_ui_thread(
+                procedure
+                var
+                    hide_session: TncHostSession;
+                begin
+                    for hide_session in sessions_to_hide do
+                    begin
+                        hide_session.hide_candidate_window;
+                    end;
+                end);
+        end;
+    finally
+        sessions_to_hide.Free;
+    end;
+
+    total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
+    if debug_logging then
+    begin
+        host_log_debug(Format('[DEBUG] perf set_variant session=%s variant=%d sync=%d persist=%d total=%d changed=%d',
+            [session_id, Ord(dictionary_variant), sync_elapsed_ms, persist_elapsed_ms, total_elapsed_ms,
+            Ord(global_variant_changed)]));
+    end
+    else if total_elapsed_ms >= c_slow_set_variant_ms then
+    begin
+        host_log(Format('[PERF] set_variant session=%s variant=%d sync=%d persist=%d total=%d changed=%d',
+            [session_id, Ord(dictionary_variant), sync_elapsed_ms, persist_elapsed_ms, total_elapsed_ms,
+            Ord(global_variant_changed)]));
+    end;
+
+    Result := True;
+end;
+
 function TncEngineHost.get_active(out active: Boolean): Boolean;
 begin
     active := has_active_session;
@@ -2229,6 +2353,7 @@ begin
         try
             if m_sessions.TryGetValue(session_id, session) then
             begin
+                sync_session_config_locked(session);
                 session.engine.reload_dictionary_if_needed;
             end;
         finally
@@ -2574,6 +2699,7 @@ var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
     punctuation_full_width: Boolean;
+    dictionary_variant: TncDictionaryVariant;
     mode_value: Integer;
     x: Integer;
     y: Integer;
@@ -2717,6 +2843,19 @@ begin
             Exit;
         end;
 
+        if SameText(cmd, 'GET_VARIANT') then
+        begin
+            if m_host.get_dictionary_variant(session_id, dictionary_variant) then
+            begin
+                Result := 'OK'#9 + IntToStr(Ord(dictionary_variant));
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
         if SameText(cmd, 'GET_ACTIVE') then
         begin
             if m_host.get_active(active_flag) then
@@ -2771,6 +2910,30 @@ begin
             full_width_mode := flag_to_bool(fields[3]);
             punctuation_full_width := flag_to_bool(fields[4]);
             if m_host.set_state(session_id, input_mode, full_width_mode, punctuation_full_width) then
+            begin
+                Result := 'OK';
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
+        if SameText(cmd, 'SET_VARIANT') then
+        begin
+            if Length(fields) < 3 then
+            begin
+                Result := 'ERROR'#9'bad_args';
+                Exit;
+            end;
+
+            mode_value := StrToIntDef(fields[2], Ord(dv_simplified));
+            if (mode_value < Ord(Low(TncDictionaryVariant))) or (mode_value > Ord(High(TncDictionaryVariant))) then
+            begin
+                mode_value := Ord(dv_simplified);
+            end;
+            if m_host.set_dictionary_variant(session_id, TncDictionaryVariant(mode_value)) then
             begin
                 Result := 'OK';
             end

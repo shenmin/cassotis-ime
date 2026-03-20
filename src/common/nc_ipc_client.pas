@@ -32,9 +32,11 @@ type
             out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
+        function get_dictionary_variant(const session_id: string; out dictionary_variant: TncDictionaryVariant): Boolean;
         function get_active(const session_id: string; out active: Boolean): Boolean;
         function set_state(const session_id: string; const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean): Boolean;
+        function set_dictionary_variant(const session_id: string; const dictionary_variant: TncDictionaryVariant): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
         function set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
             const line_height: Integer = 0; const source: TncCaretAnchorSource = casCursor;
@@ -469,6 +471,38 @@ begin
     Result := False;
 end;
 
+function TncIpcClient.get_dictionary_variant(const session_id: string; out dictionary_variant: TncDictionaryVariant): Boolean;
+var
+    request_text: string;
+    response_text: string;
+    fields: TArray<string>;
+    variant_value: Integer;
+begin
+    dictionary_variant := dv_simplified;
+    request_text := 'GET_VARIANT'#9 + session_id;
+    if not call_pipe(request_text, response_text) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    if (Length(fields) >= 2) and SameText(fields[0], 'OK') then
+    begin
+        variant_value := StrToIntDef(fields[1], Ord(dv_simplified));
+        if (variant_value < Ord(Low(TncDictionaryVariant))) or
+            (variant_value > Ord(High(TncDictionaryVariant))) then
+        begin
+            variant_value := Ord(dv_simplified);
+        end;
+        dictionary_variant := TncDictionaryVariant(variant_value);
+        Result := True;
+        Exit;
+    end;
+
+    Result := False;
+end;
+
 function TncIpcClient.get_active(const session_id: string; out active: Boolean): Boolean;
 var
     request_text: string;
@@ -510,6 +544,31 @@ begin
 
     request_text := Format('SET_STATE'#9'%s'#9'%d'#9'%d'#9'%d',
         [session_id, Ord(input_mode), Ord(full_width_mode), Ord(punctuation_full_width)]);
+    if not call_pipe(request_text, response_text) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
+end;
+
+function TncIpcClient.set_dictionary_variant(const session_id: string;
+    const dictionary_variant: TncDictionaryVariant): Boolean;
+var
+    request_text: string;
+    response_text: string;
+    fields: TArray<string>;
+begin
+    if session_id = '' then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Result := False;
+        Exit;
+    end;
+
+    request_text := Format('SET_VARIANT'#9'%s'#9'%d', [session_id, Ord(dictionary_variant)]);
     if not call_pipe(request_text, response_text) then
     begin
         Result := False;

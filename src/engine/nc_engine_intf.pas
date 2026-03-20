@@ -42,6 +42,8 @@ type
         m_composition_text: string;
         m_candidates: TncCandidateList;
         m_dictionary: TncDictionaryProvider;
+        m_cached_dictionary_simplified: TncDictionaryProvider;
+        m_cached_dictionary_traditional: TncDictionaryProvider;
         m_ai_provider: TncAiProvider;
         m_dictionary_path: string;
         m_dictionary_write_time: TDateTime;
@@ -126,6 +128,11 @@ type
         function get_candidate_limit: Integer;
         function get_total_candidate_limit: Integer;
         function create_dictionary_from_config: TncDictionaryProvider;
+        function take_cached_dictionary_provider(const variant: TncDictionaryVariant;
+            const base_path: string; const user_path: string): TncDictionaryProvider;
+        procedure store_current_dictionary_provider(const previous_config: TncEngineConfig);
+        procedure clear_cached_dictionary_providers;
+        procedure free_dictionary_provider(var provider: TncDictionaryProvider);
         function create_ai_provider_from_config: TncAiProvider;
         function get_active_dictionary_path: string;
         function get_dictionary_write_time(const path: string): TDateTime;
@@ -529,6 +536,10 @@ begin
     m_selected_index := 0;
     m_confirmed_text := '';
     m_recent_partial_prefix_text := '';
+    m_dictionary := nil;
+    m_cached_dictionary_simplified := nil;
+    m_cached_dictionary_traditional := nil;
+    m_ai_provider := nil;
     m_dictionary_path := '';
     m_dictionary_write_time := 0;
     m_user_dictionary_path := '';
@@ -602,6 +613,7 @@ begin
         m_dictionary.Free;
         m_dictionary := nil;
     end;
+    clear_cached_dictionary_providers;
 
     if m_context_order <> nil then
     begin
@@ -1437,11 +1449,18 @@ end;
 
 procedure TncEngine.update_config(const config: TncEngineConfig);
 var
+    previous_config: TncEngineConfig;
     dictionary_changed: Boolean;
+    dictionary_path_changed: Boolean;
     ai_changed: Boolean;
 begin
+    previous_config := m_config;
     dictionary_changed :=
         (m_config.dictionary_variant <> config.dictionary_variant) or
+        (m_config.dictionary_path_simplified <> config.dictionary_path_simplified) or
+        (m_config.dictionary_path_traditional <> config.dictionary_path_traditional) or
+        (m_config.user_dictionary_path <> config.user_dictionary_path);
+    dictionary_path_changed :=
         (m_config.dictionary_path_simplified <> config.dictionary_path_simplified) or
         (m_config.dictionary_path_traditional <> config.dictionary_path_traditional) or
         (m_config.user_dictionary_path <> config.user_dictionary_path);
@@ -1459,6 +1478,14 @@ begin
     end;
     if dictionary_changed then
     begin
+        if dictionary_path_changed then
+        begin
+            clear_cached_dictionary_providers;
+        end
+        else
+        begin
+            store_current_dictionary_provider(previous_config);
+        end;
         set_dictionary_provider(create_dictionary_from_config);
     end;
     if ai_changed then
@@ -1492,6 +1519,124 @@ begin
     clear_lookup_bonus_caches;
     m_last_dictionary_reload_check_tick := 0;
     update_dictionary_state;
+end;
+
+procedure TncEngine.free_dictionary_provider(var provider: TncDictionaryProvider);
+begin
+    if provider <> nil then
+    begin
+        provider.Free;
+        provider := nil;
+    end;
+end;
+
+procedure TncEngine.clear_cached_dictionary_providers;
+begin
+    free_dictionary_provider(m_cached_dictionary_simplified);
+    free_dictionary_provider(m_cached_dictionary_traditional);
+end;
+
+function TncEngine.take_cached_dictionary_provider(const variant: TncDictionaryVariant;
+    const base_path: string; const user_path: string): TncDictionaryProvider;
+var
+    cached_provider: TncDictionaryProvider;
+    sqlite_dict: TncSqliteDictionary;
+begin
+    Result := nil;
+    if variant = dv_traditional then
+    begin
+        cached_provider := m_cached_dictionary_traditional;
+    end
+    else
+    begin
+        cached_provider := m_cached_dictionary_simplified;
+    end;
+
+    if cached_provider = nil then
+    begin
+        Exit;
+    end;
+
+    if not (cached_provider is TncSqliteDictionary) then
+    begin
+        if variant = dv_traditional then
+        begin
+            free_dictionary_provider(m_cached_dictionary_traditional);
+        end
+        else
+        begin
+            free_dictionary_provider(m_cached_dictionary_simplified);
+        end;
+        Exit;
+    end;
+
+    sqlite_dict := TncSqliteDictionary(cached_provider);
+    if SameText(sqlite_dict.db_path, base_path) and SameText(sqlite_dict.user_db_path, user_path) then
+    begin
+        Result := cached_provider;
+        if variant = dv_traditional then
+        begin
+            m_cached_dictionary_traditional := nil;
+        end
+        else
+        begin
+            m_cached_dictionary_simplified := nil;
+        end;
+        Exit;
+    end;
+
+    if variant = dv_traditional then
+    begin
+        free_dictionary_provider(m_cached_dictionary_traditional);
+    end
+    else
+    begin
+        free_dictionary_provider(m_cached_dictionary_simplified);
+    end;
+end;
+
+procedure TncEngine.store_current_dictionary_provider(const previous_config: TncEngineConfig);
+var
+    cache_target: ^TncDictionaryProvider;
+    sqlite_dict: TncSqliteDictionary;
+    expected_base_path: string;
+begin
+    if m_dictionary = nil then
+    begin
+        Exit;
+    end;
+
+    if previous_config.dictionary_variant = dv_traditional then
+    begin
+        cache_target := @m_cached_dictionary_traditional;
+        expected_base_path := previous_config.dictionary_path_traditional;
+    end
+    else
+    begin
+        cache_target := @m_cached_dictionary_simplified;
+        expected_base_path := previous_config.dictionary_path_simplified;
+    end;
+
+    if not (m_dictionary is TncSqliteDictionary) then
+    begin
+        free_dictionary_provider(m_dictionary);
+        Exit;
+    end;
+
+    sqlite_dict := TncSqliteDictionary(m_dictionary);
+    if (not SameText(sqlite_dict.db_path, expected_base_path)) or
+        (not SameText(sqlite_dict.user_db_path, previous_config.user_dictionary_path)) then
+    begin
+        free_dictionary_provider(m_dictionary);
+        Exit;
+    end;
+
+    if cache_target^ <> nil then
+    begin
+        free_dictionary_provider(cache_target^);
+    end;
+    cache_target^ := m_dictionary;
+    m_dictionary := nil;
 end;
 
 procedure TncEngine.set_dictionary_path(const dictionary_path: string);
@@ -1612,6 +1757,13 @@ begin
     base_path := get_active_dictionary_path;
     if base_path <> '' then
     begin
+        Result := take_cached_dictionary_provider(m_config.dictionary_variant, base_path, m_config.user_dictionary_path);
+        if Result <> nil then
+        begin
+            Result.set_debug_mode(m_config.debug_mode);
+            Exit;
+        end;
+
         sqlite_dict := TncSqliteDictionary.create(base_path, m_config.user_dictionary_path);
         if sqlite_dict.open then
         begin
@@ -1741,6 +1893,9 @@ end;
 procedure TncEngine.prewarm_dictionary_caches;
 var
     sqlite_dict: TncSqliteDictionary;
+    alt_variant: TncDictionaryVariant;
+    alt_base_path: string;
+    alt_dict: TncSqliteDictionary;
 begin
     if not (m_dictionary is TncSqliteDictionary) then
     begin
@@ -1749,6 +1904,46 @@ begin
 
     sqlite_dict := TncSqliteDictionary(m_dictionary);
     sqlite_dict.prewarm_short_lookup_caches;
+
+    if m_config.dictionary_variant = dv_traditional then
+    begin
+        alt_variant := dv_simplified;
+        alt_base_path := m_config.dictionary_path_simplified;
+        if (m_cached_dictionary_simplified <> nil) or (alt_base_path = '') then
+        begin
+            Exit;
+        end;
+    end
+    else
+    begin
+        alt_variant := dv_traditional;
+        alt_base_path := m_config.dictionary_path_traditional;
+        if (m_cached_dictionary_traditional <> nil) or (alt_base_path = '') then
+        begin
+            Exit;
+        end;
+    end;
+
+    alt_dict := TncSqliteDictionary.Create(alt_base_path, m_config.user_dictionary_path);
+    if alt_dict.open then
+    begin
+        alt_dict.set_debug_mode(m_config.debug_mode);
+        alt_dict.prewarm_short_lookup_caches;
+        if alt_variant = dv_traditional then
+        begin
+            free_dictionary_provider(m_cached_dictionary_traditional);
+            m_cached_dictionary_traditional := alt_dict;
+        end
+        else
+        begin
+            free_dictionary_provider(m_cached_dictionary_simplified);
+            m_cached_dictionary_simplified := alt_dict;
+        end;
+    end
+    else
+    begin
+        alt_dict.Free;
+    end;
 end;
 
 procedure TncEngine.set_external_left_context(const left_context: string);
