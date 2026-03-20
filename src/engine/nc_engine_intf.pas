@@ -10012,7 +10012,7 @@ begin
             ';':
                 Result := Char($FF1B);
             '/':
-                Result := Char($3001);
+                Result := input_char;
             '\':
                 Result := Char($3001);
             '(':
