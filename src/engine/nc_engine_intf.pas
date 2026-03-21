@@ -294,6 +294,9 @@ type
 
 implementation
 
+const
+    c_suppress_nonlexicon_complete_long_candidates = True;
+
 type
     TncSegmentPathState = record
         text: string;
@@ -2529,7 +2532,7 @@ var
         candidate_text_units: Integer;
     begin
         if (input_syllable_count < 2) or
-            (not m_config.suppress_nonlexicon_complete_long_candidates) then
+            (not c_suppress_nonlexicon_complete_long_candidates) then
         begin
             Exit;
         end;
@@ -3502,7 +3505,7 @@ var
         candidate_text: string;
     begin
         if (m_dictionary = nil) or (pinyin_key = '') or
-            (not m_config.suppress_nonlexicon_complete_long_candidates) then
+            (not c_suppress_nonlexicon_complete_long_candidates) then
         begin
             Exit;
         end;
@@ -6756,7 +6759,7 @@ begin
                 if m_config.enable_segment_candidates and
                     build_segment_candidates_timed(segment_candidates,
                         (not all_initial_compact_query) and
-                        (not m_config.suppress_nonlexicon_complete_long_candidates),
+                        (not c_suppress_nonlexicon_complete_long_candidates),
                         allow_relaxed_missing_apostrophe) then
                 begin
                     has_raw_candidates := True;
@@ -6813,7 +6816,7 @@ begin
                 if m_config.enable_segment_candidates then
                 begin
                     build_segment_candidates_timed(explicit_apostrophe_aligned_candidates,
-                        not m_config.suppress_nonlexicon_complete_long_candidates);
+                        not c_suppress_nonlexicon_complete_long_candidates);
                 end;
                 filter_complete_candidates_for_explicit_apostrophe_boundary(raw_candidates,
                     explicit_apostrophe_aligned_candidates);
@@ -6854,7 +6857,7 @@ begin
                     // When exact lexicon hits already exist, keep the extra segment pass cheap.
                     // The current product strategy prefers direct lexicon matches and only needs
                     // lightweight partial/anchor assistance here, not a second full-path search.
-                    if m_config.suppress_nonlexicon_complete_long_candidates then
+                    if c_suppress_nonlexicon_complete_long_candidates then
                     begin
                 has_segment_candidates := build_segment_candidates_timed(segment_candidates, False);
                     end
@@ -11417,7 +11420,7 @@ begin
         end;
 
         if (preferred_three_syllable_partial_kind = 0) and
-            m_config.suppress_nonlexicon_complete_long_candidates and
+            c_suppress_nonlexicon_complete_long_candidates and
             (m_last_lookup_syllable_count >= 3) then
         begin
             if has_boundary_anchor_one_plus_two and (not has_boundary_anchor_two_plus_one) then
@@ -11431,7 +11434,7 @@ begin
         end;
 
         if (preferred_three_syllable_partial_kind = 0) and
-            m_config.suppress_nonlexicon_complete_long_candidates and
+            c_suppress_nonlexicon_complete_long_candidates and
             (m_last_lookup_syllable_count >= 3) then
         begin
             if (best_one_plus_two_partial_score > Low(Integer)) and
@@ -11447,7 +11450,7 @@ begin
             end;
         end;
 
-        if m_config.suppress_nonlexicon_complete_long_candidates and
+        if c_suppress_nonlexicon_complete_long_candidates and
             (m_last_lookup_syllable_count >= 3) and
             (preferred_three_syllable_partial_kind <> 0) then
         begin
@@ -11550,7 +11553,7 @@ begin
                     (right.text_units = m_last_lookup_syllable_count) and
                     ((right.candidate.source = cs_user) or right.is_weighted_complete_phrase);
 
-                if m_config.suppress_nonlexicon_complete_long_candidates and
+                if c_suppress_nonlexicon_complete_long_candidates and
                     (m_last_lookup_syllable_count >= 4) then
                 begin
                     if left_exact_long_complete and
@@ -11641,7 +11644,7 @@ begin
                     Exit;
                 end;
 
-                if m_config.suppress_nonlexicon_complete_long_candidates and
+                if c_suppress_nonlexicon_complete_long_candidates and
                     (m_last_lookup_syllable_count >= 3) then
                 begin
                     if preferred_three_syllable_partial_kind = 1 then
@@ -13466,7 +13469,7 @@ var
         m_last_three_syllable_last_single_strength := 0;
         m_last_three_syllable_head_path_bonus := 0;
         m_last_three_syllable_tail_path_bonus := 0;
-        if (not m_config.suppress_nonlexicon_complete_long_candidates) or
+        if (not c_suppress_nonlexicon_complete_long_candidates) or
             (Length(syllables) < 3) then
         begin
             Exit;
@@ -14146,7 +14149,7 @@ var
         end;
     begin
         if include_full_path or (Length(syllables) < 3) or
-            (not m_config.suppress_nonlexicon_complete_long_candidates) then
+            (not c_suppress_nonlexicon_complete_long_candidates) then
         begin
             Exit;
         end;
@@ -14277,7 +14280,7 @@ var
         score_value_local: Integer;
     begin
         if include_full_path or (Length(syllables) < 4) or
-            (not m_config.suppress_nonlexicon_complete_long_candidates) then
+            (not c_suppress_nonlexicon_complete_long_candidates) then
         begin
             Exit;
         end;
@@ -15233,7 +15236,7 @@ var
             suffix_tail_bias: Integer;
         begin
             Result := 0;
-            if not m_config.suppress_nonlexicon_complete_long_candidates then
+            if not c_suppress_nonlexicon_complete_long_candidates then
             begin
                 Exit;
             end;
@@ -15508,7 +15511,7 @@ var
                     fallback_remaining_pinyin, fallback_state.path_text, fallback_hint);
             end;
         begin
-            if (not m_config.suppress_nonlexicon_complete_long_candidates) or
+            if (not c_suppress_nonlexicon_complete_long_candidates) or
                 (Length(syllables) < 3) then
             begin
                 Exit;

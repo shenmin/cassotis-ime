@@ -1120,7 +1120,6 @@ begin
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
-    Result.suppress_nonlexicon_complete_long_candidates := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.dictionary_path_simplified := get_default_dictionary_path_simplified;

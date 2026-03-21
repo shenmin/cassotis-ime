@@ -46,7 +46,6 @@ type
         punctuation_full_width: Boolean;
         enable_segment_candidates: Boolean;
         segment_head_only_multi_syllable: Boolean;
-        suppress_nonlexicon_complete_long_candidates: Boolean;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
         dictionary_path_simplified: string;

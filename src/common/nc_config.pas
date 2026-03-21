@@ -240,7 +240,6 @@ begin
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
-    Result.suppress_nonlexicon_complete_long_candidates := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
@@ -286,8 +285,6 @@ begin
         Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
-        Result.suppress_nonlexicon_complete_long_candidates := ini.ReadBool('engine',
-            'suppress_nonlexicon_complete_long_candidates', True);
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
         variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
@@ -327,7 +324,7 @@ begin
             ini.ValueExists('engine', 'enable_ctrl_period_punct_toggle') or
             ini.ValueExists('engine', 'enable_segment_candidates') or
             ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
-            not ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
+            ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
             not ini.ValueExists('engine', 'debug') or
             not ini.ValueExists('dictionary', 'variant') or
             not ini.ValueExists('dictionary', 'db_path_sc') or
@@ -420,11 +417,13 @@ begin
         begin
             ini.DeleteKey('engine', 'enable_ctrl_period_punct_toggle');
         end;
+        if ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') then
+        begin
+            ini.DeleteKey('engine', 'suppress_nonlexicon_complete_long_candidates');
+        end;
         ini.WriteBool('engine', 'enable_ai', config.enable_ai);
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
-        ini.WriteBool('engine', 'suppress_nonlexicon_complete_long_candidates',
-            config.suppress_nonlexicon_complete_long_candidates);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
         ini.WriteString('dictionary', 'db_path_sc', config.dictionary_path_simplified);

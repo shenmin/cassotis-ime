@@ -12,6 +12,8 @@ uses
     System.UITypes,
     Winapi.Windows,
     Winapi.Messages,
+    Winapi.GDIPAPI,
+    Winapi.GDIPOBJ,
     Vcl.Forms,
     Vcl.Menus,
     Vcl.Controls,
@@ -64,6 +66,9 @@ type
         m_tray_state_inited: Boolean;
         m_status_form: TForm;
         m_status_panel: TPanel;
+        m_status_logo: TPaintBox;
+        m_status_logo_icon: TIcon;
+        m_status_logo_bitmap: TGPBitmap;
         m_status_label_mode: TLabel;
         m_status_label_variant: TLabel;
         m_status_label_full_width: TLabel;
@@ -93,6 +98,7 @@ type
         m_active_state_shutdown: Boolean;
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
         function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
+        procedure status_logo_paint(Sender: TObject);
         procedure handle_status_label_click(const source: TObject);
         procedure show_status_hint(const control: TControl);
         procedure hide_status_hint;
@@ -155,7 +161,7 @@ const
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
     c_status_widget_y_key = 'status_widget_y';
-    c_status_widget_default_width = 330;
+    c_status_widget_default_width = 326;
     c_status_widget_default_height = 40;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
@@ -204,6 +210,9 @@ begin
     m_tray_state_inited := False;
     m_status_form := nil;
     m_status_panel := nil;
+    m_status_logo := nil;
+    m_status_logo_icon := nil;
+    m_status_logo_bitmap := nil;
     m_status_label_mode := nil;
     m_status_label_variant := nil;
     m_status_label_full_width := nil;
@@ -253,6 +262,16 @@ begin
         m_ipc_client.Free;
         m_ipc_client := nil;
     end;
+    if m_status_logo_bitmap <> nil then
+    begin
+        m_status_logo_bitmap.Free;
+        m_status_logo_bitmap := nil;
+    end;
+    if m_status_logo_icon <> nil then
+    begin
+        m_status_logo_icon.Free;
+        m_status_logo_icon := nil;
+    end;
     m_icon_chinese_simplified.Free;
     m_icon_chinese_traditional.Free;
     m_icon_english.Free;
@@ -272,6 +291,40 @@ begin
         m_inactive_state_event := nil;
     end;
     inherited Destroy;
+end;
+
+procedure TncTrayHost.status_logo_paint(Sender: TObject);
+var
+    paint_box: TPaintBox;
+    draw_rect: TRect;
+    graphics: TGPGraphics;
+begin
+    if not (Sender is TPaintBox) then
+    begin
+        Exit;
+    end;
+
+    paint_box := TPaintBox(Sender);
+    paint_box.Canvas.Brush.Color := m_status_panel.Color;
+    paint_box.Canvas.FillRect(paint_box.ClientRect);
+    if m_status_logo_bitmap = nil then
+    begin
+        Exit;
+    end;
+
+    draw_rect := paint_box.ClientRect;
+    InflateRect(draw_rect, -1, -1);
+    graphics := TGPGraphics.Create(paint_box.Canvas.Handle);
+    try
+        graphics.SetCompositingQuality(CompositingQualityHighQuality);
+        graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        graphics.SetSmoothingMode(SmoothingModeHighQuality);
+        graphics.DrawImage(m_status_logo_bitmap, draw_rect.Left, draw_rect.Top,
+            draw_rect.Right - draw_rect.Left, draw_rect.Bottom - draw_rect.Top);
+    finally
+        graphics.Free;
+    end;
 end;
 
 function TncTrayHost.create_mode_icon(const text: string; const background_color: TColor): TIcon;
@@ -531,6 +584,7 @@ end;
 procedure TncTrayHost.configure_status_widget;
 var
     divider: TBevel;
+    icon_path: string;
 begin
     m_status_form := TncStatusForm.CreateNew(Self);
     m_status_form.BorderStyle := bsNone;
@@ -559,9 +613,33 @@ begin
     m_status_panel.Font.Size := 9;
     m_status_panel.ParentBackground := False;
 
+    m_status_logo_icon := TIcon.Create;
+    m_status_logo_bitmap := nil;
+    m_status_logo := TPaintBox.Create(m_status_panel);
+    m_status_logo.Parent := m_status_panel;
+    m_status_logo.Left := 10;
+    m_status_logo.Top := 8;
+    m_status_logo.Width := 22;
+    m_status_logo.Height := 22;
+    m_status_logo.OnPaint := status_logo_paint;
+    icon_path := TPath.GetFullPath(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)),
+        '..\cassotis_ime_yanquan.ico'));
+    if FileExists(icon_path) then
+    begin
+        m_status_logo_bitmap := TGPBitmap.Create(icon_path);
+    end
+    else if (m_tray_icon <> nil) and (m_tray_icon.Icon <> nil) then
+    begin
+        m_status_logo_icon.Assign(m_tray_icon.Icon);
+        if not m_status_logo_icon.Empty then
+        begin
+            m_status_logo_bitmap := TGPBitmap.Create(m_status_logo_icon.Handle);
+        end;
+    end;
+
     m_status_label_mode := TLabel.Create(m_status_panel);
     m_status_label_mode.Parent := m_status_panel;
-    m_status_label_mode.Left := 12;
+    m_status_label_mode.Left := 42;
     m_status_label_mode.Top := 11;
     m_status_label_mode.Width := 34;
     m_status_label_mode.Height := 18;
@@ -578,7 +656,7 @@ begin
 
     divider := TBevel.Create(m_status_panel);
     divider.Parent := m_status_panel;
-    divider.Left := 50;
+    divider.Left := 82;
     divider.Top := 11;
     divider.Width := 2;
     divider.Height := 18;
@@ -586,7 +664,7 @@ begin
 
     m_status_label_variant := TLabel.Create(m_status_panel);
     m_status_label_variant.Parent := m_status_panel;
-    m_status_label_variant.Left := 58;
+    m_status_label_variant.Left := 90;
     m_status_label_variant.Top := 11;
     m_status_label_variant.Width := 40;
     m_status_label_variant.Height := 18;
@@ -602,7 +680,7 @@ begin
 
     divider := TBevel.Create(m_status_panel);
     divider.Parent := m_status_panel;
-    divider.Left := 104;
+    divider.Left := 136;
     divider.Top := 11;
     divider.Width := 2;
     divider.Height := 18;
@@ -610,7 +688,7 @@ begin
 
     m_status_label_full_width := TLabel.Create(m_status_panel);
     m_status_label_full_width.Parent := m_status_panel;
-    m_status_label_full_width.Left := 112;
+    m_status_label_full_width.Left := 144;
     m_status_label_full_width.Top := 11;
     m_status_label_full_width.Width := 40;
     m_status_label_full_width.Height := 18;
@@ -626,7 +704,7 @@ begin
 
     divider := TBevel.Create(m_status_panel);
     divider.Parent := m_status_panel;
-    divider.Left := 158;
+    divider.Left := 190;
     divider.Top := 11;
     divider.Width := 2;
     divider.Height := 18;
@@ -634,9 +712,9 @@ begin
 
     m_status_label_punct := TLabel.Create(m_status_panel);
     m_status_label_punct.Parent := m_status_panel;
-    m_status_label_punct.Left := 166;
+    m_status_label_punct.Left := 198;
     m_status_label_punct.Top := 11;
-    m_status_label_punct.Width := 64;
+    m_status_label_punct.Width := 56;
     m_status_label_punct.Height := 18;
     m_status_label_punct.AutoSize := False;
     m_status_label_punct.Alignment := taCenter;
@@ -650,9 +728,9 @@ begin
 
     m_status_btn_settings := TncModernButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
-    m_status_btn_settings.Left := 240;
+    m_status_btn_settings.Left := 258;
     m_status_btn_settings.Top := 8;
-    m_status_btn_settings.Width := 66;
+    m_status_btn_settings.Width := 56;
     m_status_btn_settings.Height := 24;
     m_status_btn_settings.Caption := '设置';
     m_status_btn_settings.VisualKind := mbkSubtle;
@@ -668,6 +746,10 @@ begin
     m_status_panel.OnMouseDown := status_mouse_down;
     m_status_panel.OnMouseMove := status_mouse_move;
     m_status_panel.OnMouseUp := status_mouse_up;
+
+    m_status_logo.OnMouseDown := status_mouse_down;
+    m_status_logo.OnMouseMove := status_mouse_move;
+    m_status_logo.OnMouseUp := status_mouse_up;
 
     m_status_label_mode.OnMouseDown := status_mouse_down;
     m_status_label_mode.OnMouseMove := status_mouse_move;
