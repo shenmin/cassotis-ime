@@ -12932,6 +12932,294 @@ var
         end;
     end;
 
+    function get_suffix_tail_bias_base_for_pinyin_key_local(const pinyin_key: string): Integer;
+    var
+        normalized_pinyin_key: string;
+    begin
+        Result := 0;
+        normalized_pinyin_key := LowerCase(Trim(pinyin_key));
+        if normalized_pinyin_key = '' then
+        begin
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'de' then
+        begin
+            Exit(520);
+        end;
+
+        if (normalized_pinyin_key = 'le') or (normalized_pinyin_key = 'zhe') or
+            (normalized_pinyin_key = 'guo') then
+        begin
+            Exit(420);
+        end;
+
+        if (normalized_pinyin_key = 'ma') or (normalized_pinyin_key = 'ne') or
+            (normalized_pinyin_key = 'ba') then
+        begin
+            Exit(360);
+        end;
+
+        if (normalized_pinyin_key = 'la') or (normalized_pinyin_key = 'a') or
+            (normalized_pinyin_key = 'ya') or (normalized_pinyin_key = 'wa') or
+            (normalized_pinyin_key = 'ha') then
+        begin
+            Exit(300);
+        end;
+    end;
+
+    function is_suffix_tail_expected_text_local(const pinyin_key: string;
+        const text_value: string): Boolean;
+    var
+        normalized_pinyin_key: string;
+        normalized_text_value: string;
+    begin
+        Result := False;
+        normalized_pinyin_key := LowerCase(Trim(pinyin_key));
+        normalized_text_value := Trim(text_value);
+        if (normalized_pinyin_key = '') or (normalized_text_value = '') or
+            (get_text_unit_count(normalized_text_value) <> 1) then
+        begin
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'de' then
+        begin
+            Result := (normalized_text_value = string(Char($7684))) or
+                (normalized_text_value = string(Char($5F97))) or
+                (normalized_text_value = string(Char($5730)));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'le' then
+        begin
+            Result := normalized_text_value = string(Char($4E86));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'zhe' then
+        begin
+            Result := (normalized_text_value = string(Char($7740))) or
+                (normalized_text_value = string(Char($8457)));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'guo' then
+        begin
+            Result := normalized_text_value = string(Char($8FC7));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'ma' then
+        begin
+            Result := (normalized_text_value = string(Char($5417))) or
+                (normalized_text_value = string(Char($561B)));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'ne' then
+        begin
+            Result := normalized_text_value = string(Char($5462));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'ba' then
+        begin
+            Result := (normalized_text_value = string(Char($5427))) or
+                (normalized_text_value = string(Char($7F62)));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'la' then
+        begin
+            Result := normalized_text_value = string(Char($5566));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'a' then
+        begin
+            Result := normalized_text_value = string(Char($554A));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'ya' then
+        begin
+            Result := normalized_text_value = string(Char($5440));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'wa' then
+        begin
+            Result := normalized_text_value = string(Char($54C7));
+            Exit;
+        end;
+
+        if normalized_pinyin_key = 'ha' then
+        begin
+            Result := normalized_text_value = string(Char($54C8));
+            Exit;
+        end;
+    end;
+
+    function get_suffix_tail_expected_text_support_strength_local(
+        const syllable_index: Integer; const pinyin_key: string;
+        const best_single_text: string; const best_single_strength: Integer;
+        out out_matched_text: string): Integer;
+    var
+        normalized_best_single_text: string;
+
+        procedure consider_expected_text_local(const expected_text: string);
+        var
+            local_strength: Integer;
+        begin
+            if expected_text = '' then
+            begin
+                Exit;
+            end;
+
+            if (normalized_best_single_text <> '') and
+                SameText(normalized_best_single_text, expected_text) and
+                (best_single_strength > 0) then
+            begin
+                local_strength := best_single_strength;
+            end
+            else
+            begin
+                local_strength := get_single_char_strength_for_text_at_syllable_local(
+                    syllable_index, expected_text);
+            end;
+
+            if local_strength > Result then
+            begin
+                Result := local_strength;
+                out_matched_text := expected_text;
+            end;
+        end;
+    begin
+        Result := 0;
+        out_matched_text := '';
+        if (syllable_index < 0) or (syllable_index > High(syllables)) then
+        begin
+            Exit;
+        end;
+
+        normalized_best_single_text := Trim(best_single_text);
+        if not is_full_pinyin_key(Trim(syllables[syllable_index].text)) then
+        begin
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'de') then
+        begin
+            consider_expected_text_local(string(Char($7684)));
+            consider_expected_text_local(string(Char($5F97)));
+            consider_expected_text_local(string(Char($5730)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'le') then
+        begin
+            consider_expected_text_local(string(Char($4E86)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'zhe') then
+        begin
+            consider_expected_text_local(string(Char($7740)));
+            consider_expected_text_local(string(Char($8457)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'guo') then
+        begin
+            consider_expected_text_local(string(Char($8FC7)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'ma') then
+        begin
+            consider_expected_text_local(string(Char($5417)));
+            consider_expected_text_local(string(Char($561B)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'ne') then
+        begin
+            consider_expected_text_local(string(Char($5462)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'ba') then
+        begin
+            consider_expected_text_local(string(Char($5427)));
+            consider_expected_text_local(string(Char($7F62)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'la') then
+        begin
+            consider_expected_text_local(string(Char($5566)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'a') then
+        begin
+            consider_expected_text_local(string(Char($554A)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'ya') then
+        begin
+            consider_expected_text_local(string(Char($5440)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'wa') then
+        begin
+            consider_expected_text_local(string(Char($54C7)));
+            Exit;
+        end;
+
+        if SameText(Trim(pinyin_key), 'ha') then
+        begin
+            consider_expected_text_local(string(Char($54C8)));
+            Exit;
+        end;
+    end;
+
+    function get_suffix_tail_bias_adjustment_for_syllable_local(
+        const syllable_index: Integer; const best_single_text: string;
+        const best_single_strength: Integer; out out_matched_text: string;
+        out out_support_strength: Integer): Integer;
+    var
+        base_bias: Integer;
+        pinyin_key: string;
+    begin
+        Result := 0;
+        out_matched_text := '';
+        out_support_strength := 0;
+        if (syllable_index < 0) or (syllable_index > High(syllables)) then
+        begin
+            Exit;
+        end;
+
+        pinyin_key := Trim(syllables[syllable_index].text);
+        base_bias := get_suffix_tail_bias_base_for_pinyin_key_local(pinyin_key);
+        if base_bias <= 0 then
+        begin
+            Exit;
+        end;
+
+        out_support_strength := get_suffix_tail_expected_text_support_strength_local(
+            syllable_index, pinyin_key, best_single_text, best_single_strength, out_matched_text);
+        if out_support_strength <= 0 then
+        begin
+            Exit;
+        end;
+
+        Result := base_bias + Min(base_bias div 2, out_support_strength div 2);
+    end;
+
     function try_get_best_exact_phrase_candidate_local(const pinyin_key: string;
         out out_text: string; out out_strength: Integer; out out_source: TncCandidateSource;
         out out_has_dict_weight: Boolean; out out_dict_weight: Integer): Boolean;
@@ -13054,6 +13342,7 @@ var
         c_quantity_boundary_head_bias_base_local = 960;
         c_quantity_boundary_head_bias_cap_local = 420;
         c_quantity_boundary_tail_penalty_local = 280;
+        c_suffix_tail_conflict_penalty_cap_local = 480;
         c_segmented_prefix_strength_penalty_local = 520;
         c_head_phrase_first_unit_mismatch_penalty_local = 560;
         c_head_phrase_first_unit_near_top_ratio_pct_local = 92;
@@ -13114,6 +13403,10 @@ var
         shifted_tail_key_local: string;
         shifted_boundary_unit_text_local: string;
         shifted_boundary_unit_strength_local: Integer;
+        suffix_tail_matched_text_local: string;
+        suffix_tail_support_strength_local: Integer;
+        suffix_tail_bias_local: Integer;
+        tail_two_suffix_conflict_penalty_local: Integer;
 
         function is_backward_attaching_boundary_unit_local(const text_value: string): Boolean;
         var
@@ -13234,12 +13527,18 @@ var
         shifted_tail_key_local := '';
         shifted_boundary_unit_text_local := '';
         shifted_boundary_unit_strength_local := 0;
+        suffix_tail_matched_text_local := '';
+        suffix_tail_support_strength_local := 0;
+        tail_two_suffix_conflict_penalty_local := 0;
         try_get_best_single_char_candidate_for_syllable_local(0, first_single_text,
             first_single_strength);
         try_get_best_single_char_candidate_for_syllable_local(1, middle_single_text,
             middle_single_strength);
         try_get_best_single_char_candidate_for_syllable_local(2, last_single_text,
             last_single_strength);
+        suffix_tail_bias_local := get_suffix_tail_bias_adjustment_for_syllable_local(
+            2, last_single_text, last_single_strength, suffix_tail_matched_text_local,
+            suffix_tail_support_strength_local);
         try_get_best_boundary_unit_single_char_for_syllable_local(1, preferred_boundary_unit_text,
             preferred_boundary_unit_strength);
         if (preferred_boundary_unit_strength <= 0) and
@@ -13437,6 +13736,34 @@ var
             end;
         end;
 
+        if (suffix_tail_bias_local > 0) and (suffix_tail_support_strength_local > 0) and
+            (suffix_tail_matched_text_local <> '') and (head_two_exact_strength > 0) then
+        begin
+            if (tail_two_exact_strength <= 0) or
+                ((head_two_exact_strength * 100) >= (tail_two_exact_strength * 55)) then
+            begin
+                Inc(head_two_strength, suffix_tail_bias_local);
+            end
+            else
+            begin
+                Inc(head_two_strength, Max(180, suffix_tail_bias_local div 2));
+            end;
+
+            if (tail_two_exact_text <> '') and (Length(tail_two_units) > 1) and
+                (not is_suffix_tail_expected_text_local(syllables[2].text, tail_two_units[1])) then
+            begin
+                tail_two_suffix_conflict_penalty_local := Min(
+                    c_suffix_tail_conflict_penalty_cap_local,
+                    Max(suffix_tail_support_strength_local div 2,
+                    (suffix_tail_bias_local * 2) div 3));
+                Dec(tail_two_strength, tail_two_suffix_conflict_penalty_local);
+                if tail_two_strength < 0 then
+                begin
+                    tail_two_strength := 0;
+                end;
+            end;
+        end;
+
         if (head_two_exact_strength > 0) and (tail_two_exact_strength <= 0) and
             (not has_quantity_boundary_head_partial) then
         begin
@@ -13595,10 +13922,10 @@ var
         if m_config.debug_mode then
         begin
             m_last_three_syllable_partial_debug_info := Format(
-                ' b3head=%d b3tail=%d b3first=%d b3last=%d b3link=%d b3qty=%d b3unit=%d b3hpath=%d b3tpath=%d headkey=%s tailkey=%s',
+                ' b3head=%d b3tail=%d b3first=%d b3last=%d b3link=%d b3qty=%d b3unit=%d b3sfx=%d b3hpath=%d b3tpath=%d headkey=%s tailkey=%s',
                 [head_two_strength, tail_two_strength, first_single_strength, last_single_strength,
                 shared_tail_friendly_boundary_bias, Ord(has_quantity_boundary_head_partial),
-                preferred_boundary_unit_strength, head_two_query_path_bonus,
+                preferred_boundary_unit_strength, suffix_tail_bias_local, head_two_query_path_bonus,
                 tail_two_query_path_bonus, head_two_key, tail_two_key]);
         end;
 
@@ -14893,6 +15220,7 @@ var
             c_three_syllable_tail_phrase_penalty = 284;
             c_three_syllable_tail_phrase_soft_penalty = 112;
             c_three_syllable_weak_tail_phrase_penalty = 420;
+            c_suffix_tail_phrase_bonus_cap = 420;
         var
             remaining_syllables: Integer;
             current_phrase_strength: Integer;
@@ -14900,6 +15228,9 @@ var
             next_single_chain_strength: Integer;
             overlapping_phrase_strength: Integer;
             previous_text_units: Integer;
+            suffix_tail_matched_text: string;
+            suffix_tail_support_strength: Integer;
+            suffix_tail_bias: Integer;
         begin
             Result := 0;
             if not m_config.suppress_nonlexicon_complete_long_candidates then
@@ -14943,6 +15274,17 @@ var
             begin
                 next_single_chain_strength := preferred_single_strength[next_pos] +
                     preferred_single_strength[next_pos + 1];
+            end;
+
+            suffix_tail_matched_text := '';
+            suffix_tail_support_strength := 0;
+            suffix_tail_bias := 0;
+            if (segment_len >= 2) and (remaining_syllables = 1) and
+                (next_pos >= 0) and (next_pos < Length(syllables)) then
+            begin
+                suffix_tail_bias := get_suffix_tail_bias_adjustment_for_syllable_local(
+                    next_pos, '', 0, suffix_tail_matched_text,
+                    suffix_tail_support_strength);
             end;
 
             if (state_pos = 0) and (remaining_syllables > 0) then
@@ -14994,6 +15336,12 @@ var
                                 Dec(Result, c_three_syllable_tail_phrase_soft_penalty +
                                     Min(92, overlapping_phrase_strength div 10));
                             end;
+                        end;
+                        if (suffix_tail_bias > 0) and (suffix_tail_support_strength > 0) and
+                            (suffix_tail_matched_text <> '') then
+                        begin
+                            Inc(Result, Min(c_suffix_tail_phrase_bonus_cap,
+                                (suffix_tail_bias * 2) div 3));
                         end;
                     end
                     else if next_phrase_strength > current_phrase_strength + 120 then
@@ -15082,7 +15430,12 @@ var
             tail_two_strength: Integer;
             tail_two_supported_strength: Integer;
             first_single_strength: Integer;
+            last_single_text: string;
             last_single_strength: Integer;
+            detected_last_single_strength: Integer;
+            suffix_tail_matched_text: string;
+            suffix_tail_support_strength: Integer;
+            suffix_tail_bias: Integer;
             remaining_pinyin: string;
             anchor_state: TncSegmentPathState;
             prefix_two_state: TncSegmentPathState;
@@ -15176,11 +15529,24 @@ var
             begin
                 first_single_strength := preferred_single_strength[0];
             end;
+            last_single_text := '';
             last_single_strength := 0;
+            detected_last_single_strength := 0;
             if Length(preferred_single_strength) > 2 then
             begin
                 last_single_strength := preferred_single_strength[2];
             end;
+            try_get_best_single_char_candidate_for_syllable_local(2, last_single_text,
+                detected_last_single_strength);
+            if last_single_strength <= 0 then
+            begin
+                last_single_strength := detected_last_single_strength;
+            end;
+            suffix_tail_matched_text := '';
+            suffix_tail_support_strength := 0;
+            suffix_tail_bias := get_suffix_tail_bias_adjustment_for_syllable_local(
+                2, last_single_text, last_single_strength, suffix_tail_matched_text,
+                suffix_tail_support_strength);
 
             head_two_effective_strength := head_two_strength;
             if try_get_best_anchor_state(2, 2, prefix_two_state) then
@@ -15201,6 +15567,11 @@ var
             begin
                 Inc(head_two_supported_strength, Min(c_last_single_head_bias_cap,
                     last_single_strength + Min(160, last_single_strength div 2)));
+            end;
+            if (head_two_effective_strength > 0) and (suffix_tail_bias > 0) and
+                (suffix_tail_support_strength > 0) and (suffix_tail_matched_text <> '') then
+            begin
+                Inc(head_two_supported_strength, suffix_tail_bias);
             end;
 
             tail_two_supported_strength := tail_two_strength;
