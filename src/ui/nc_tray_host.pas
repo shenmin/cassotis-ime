@@ -112,6 +112,7 @@ type
         procedure load_status_widget_state;
         procedure save_status_widget_state;
         procedure update_status_widget;
+        procedure refresh_status_widget_frame;
         procedure enforce_status_form_toolwindow_style;
         procedure apply_status_widget_visibility;
         procedure refresh_state_from_host;
@@ -162,7 +163,7 @@ const
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
     c_status_widget_y_key = 'status_widget_y';
-    c_status_widget_default_width = 274;
+    c_status_widget_default_width = 258;
     c_status_widget_default_height = 40;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
@@ -173,6 +174,87 @@ const
     c_style_refresh_interval_ms = 1500;
     c_style_refresh_interval_idle_ms = 3000;
     c_profile_activate_debounce_ms = 180;
+
+function get_window_dpi(const wnd: HWND): Integer;
+begin
+    Result := 96;
+    if wnd <> 0 then
+    begin
+        Result := GetDpiForWindow(wnd);
+    end;
+    if Result <= 0 then
+    begin
+        Result := Screen.PixelsPerInch;
+    end;
+    if Result <= 0 then
+    begin
+        Result := 96;
+    end;
+end;
+
+function get_control_dpi(const control: TControl): Integer;
+var
+    win_control: TWinControl;
+begin
+    Result := Screen.PixelsPerInch;
+    if Result <= 0 then
+    begin
+        Result := 96;
+    end;
+
+    if control = nil then
+    begin
+        Exit;
+    end;
+
+    if control is TWinControl then
+    begin
+        win_control := TWinControl(control);
+        if win_control.HandleAllocated then
+        begin
+            Result := get_window_dpi(win_control.Handle);
+            Exit;
+        end;
+    end;
+
+    if (control.Parent <> nil) and control.Parent.HandleAllocated then
+    begin
+        Result := get_window_dpi(control.Parent.Handle);
+    end;
+end;
+
+function scale_int_for_dpi(const value: Integer; const dpi: Integer): Integer;
+var
+    effective_dpi: Integer;
+begin
+    effective_dpi := dpi;
+    if effective_dpi <= 0 then
+    begin
+        effective_dpi := 96;
+    end;
+    Result := MulDiv(value, effective_dpi, 96);
+end;
+
+function scale_float_for_dpi(const value: Single; const dpi: Integer): Single;
+var
+    effective_dpi: Integer;
+begin
+    effective_dpi := dpi;
+    if effective_dpi <= 0 then
+    begin
+        effective_dpi := 96;
+    end;
+    Result := value * effective_dpi / 96.0;
+end;
+
+procedure set_canvas_font_point_size_for_dpi(const canvas: TCanvas; const point_size: Integer; const dpi: Integer);
+begin
+    if canvas = nil then
+    begin
+        Exit;
+    end;
+    canvas.Font.Height := -MulDiv(point_size, dpi, 72);
+end;
 
 procedure TncStatusForm.CreateParams(var Params: TCreateParams);
 begin
@@ -340,6 +422,7 @@ var
     period_left: Single;
     period_top: Single;
     period_size: Single;
+    dpi: Integer;
 begin
     if not (Sender is TPaintBox) then
     begin
@@ -353,35 +436,46 @@ begin
     paint_box.Canvas.Font.Color := RGB(100, 72, 24);
     SetBkMode(paint_box.Canvas.Handle, TRANSPARENT);
     mark_color := MakeColor(255, 100, 72, 24);
+    dpi := get_control_dpi(paint_box);
 
     if m_engine_config.punctuation_full_width then
     begin
         top_left_text := '’';
         paint_box.Canvas.Font.Name := 'SimSun';
-        draw_rect := Rect(7, 6, 23, 20);
+        draw_rect := Rect(
+            scale_int_for_dpi(7, dpi),
+            scale_int_for_dpi(6, dpi),
+            scale_int_for_dpi(23, dpi),
+            scale_int_for_dpi(20, dpi)
+        );
     end
     else
     begin
         top_left_text := '''';
         paint_box.Canvas.Font.Name := 'Segoe UI';
-        draw_rect := Rect(4, 4, 20, 18);
+        draw_rect := Rect(
+            scale_int_for_dpi(4, dpi),
+            scale_int_for_dpi(4, dpi),
+            scale_int_for_dpi(20, dpi),
+            scale_int_for_dpi(18, dpi)
+        );
     end;
 
-    paint_box.Canvas.Font.Size := 13;
+    set_canvas_font_point_size_for_dpi(paint_box.Canvas, 13, dpi);
     paint_box.Canvas.Font.Style := [];
     DrawText(paint_box.Canvas.Handle, PChar(top_left_text), Length(top_left_text), draw_rect,
         DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
 
-    period_left := 23.0;
-    period_top := 12.0;
-    period_size := 4.0;
+    period_left := scale_float_for_dpi(23.0, dpi);
+    period_top := scale_float_for_dpi(12.0, dpi);
+    period_size := scale_float_for_dpi(4.0, dpi);
     graphics := TGPGraphics.Create(paint_box.Canvas.Handle);
     try
         graphics.SetSmoothingMode(SmoothingModeHighQuality);
         graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
         if m_engine_config.punctuation_full_width then
         begin
-            pen := TGPPen.Create(mark_color, 1.3);
+            pen := TGPPen.Create(mark_color, 1.0);
             try
                 graphics.DrawEllipse(pen, period_left, period_top, period_size, period_size);
             finally
@@ -799,11 +893,13 @@ begin
 
     m_status_btn_settings := TncModernButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
-    m_status_btn_settings.Left := 208;
+    m_status_btn_settings.Left := 210;
     m_status_btn_settings.Top := 8;
-    m_status_btn_settings.Width := 50;
+    m_status_btn_settings.Width := 34;
     m_status_btn_settings.Height := 24;
-    m_status_btn_settings.Caption := '设置';
+    m_status_btn_settings.Caption := #$E713;
+    m_status_btn_settings.Font.Name := 'Segoe MDL2 Assets';
+    m_status_btn_settings.Font.Size := 10;
     m_status_btn_settings.VisualKind := mbkSubtle;
     m_status_btn_settings.OnMouseDown := on_status_settings_mouse_down;
     m_status_btn_settings.OnMouseUp := on_status_settings_mouse_up;
@@ -1061,6 +1157,42 @@ begin
     m_status_label_variant.Caption := variant_text;
     m_status_label_full_width.Caption := full_width_text;
     m_status_label_punct.Invalidate;
+end;
+
+procedure TncTrayHost.refresh_status_widget_frame;
+var
+    inset: Integer;
+    panel_width: Integer;
+    panel_height: Integer;
+begin
+    if (m_status_form = nil) or (m_status_panel = nil) then
+    begin
+        Exit;
+    end;
+
+    inset := 1;
+    panel_width := m_status_form.ClientWidth - inset * 2;
+    panel_height := m_status_form.ClientHeight - inset * 2;
+    if panel_width < 0 then
+    begin
+        panel_width := 0;
+    end;
+    if panel_height < 0 then
+    begin
+        panel_height := 0;
+    end;
+
+    if (m_status_panel.Left <> inset) or
+        (m_status_panel.Top <> inset) or
+        (m_status_panel.Width <> panel_width) or
+        (m_status_panel.Height <> panel_height) then
+    begin
+        m_status_panel.SetBounds(inset, inset, panel_width, panel_height);
+        if m_status_label_punct <> nil then
+        begin
+            m_status_label_punct.Invalidate;
+        end;
+    end;
 end;
 
 procedure TncTrayHost.enforce_status_form_toolwindow_style;
@@ -1837,6 +1969,7 @@ begin
         if (m_status_form <> nil) and m_status_form.Visible then
         begin
             enforce_status_form_toolwindow_style;
+            refresh_status_widget_frame;
         end;
         m_last_style_refresh_tick := now_tick;
     end;
