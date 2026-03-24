@@ -9,7 +9,6 @@ uses
     nc_engine_host_app in '..\src\host\nc_engine_host_app.pas',
     nc_engine_host in '..\src\host\nc_engine_host.pas',
     nc_engine_intf in '..\src\engine\nc_engine_intf.pas',
-    nc_candidate_fusion in '..\src\engine\nc_candidate_fusion.pas',
     nc_dictionary_intf in '..\src\engine\nc_dictionary_intf.pas',
     nc_dictionary_sqlite in '..\src\engine\nc_dictionary_sqlite.pas',
     nc_pinyin_parser in '..\src\engine\nc_pinyin_parser.pas',

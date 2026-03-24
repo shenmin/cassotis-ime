@@ -91,7 +91,6 @@ type
         m_maintenance_wakeup: TEvent;
         m_active_state_event: TEvent;
         m_inactive_state_event: TEvent;
-        m_ai_refresh_thread: TThread;
         m_maintenance_thread: TThread;
         m_config_path: string;
         m_last_config_write: TDateTime;
@@ -101,9 +100,6 @@ type
         m_last_user_dict_checkpoint_activity_tick: UInt64;
         m_config: TncEngineConfig;
         function get_config_write_time: TDateTime;
-        procedure reap_ai_refresh_thread_if_stopped;
-        procedure stop_ai_refresh_thread;
-        procedure sync_ai_refresh_thread(const enabled: Boolean);
         procedure maybe_checkpoint_user_dictionary;
         procedure persist_engine_config(const config: TncEngineConfig);
         function reload_config(const force: Boolean): Boolean;
@@ -117,7 +113,6 @@ type
         procedure queue_session_prewarm(const session_id: string);
         procedure perform_session_prewarm;
         procedure remove_user_candidate(const session_id: string; const candidate_index: Integer);
-        procedure refresh_ai_candidates;
     public
         constructor create;
         destructor Destroy; override;
@@ -154,16 +149,6 @@ type
         property pipe_name: string read m_pipe_name;
     end;
 
-    TncAiRefreshThread = class(TThread)
-    private
-        m_host: TncEngineHost;
-    protected
-        procedure Execute; override;
-    public
-        constructor create(const host: TncEngineHost);
-        procedure detach_host;
-    end;
-
     TncMaintenanceThread = class(TThread)
     private
         m_host: TncEngineHost;
@@ -189,7 +174,6 @@ const
     // logical spacing instead of collapsing the candidate window too close
     // to the composing row.
     c_text_ext_offset = 6;
-    c_ai_refresh_poll_ms = 120;
     c_maintenance_poll_ms = 200;
     c_recent_active_ttl_ms = 320;
     c_candidate_apply_merge_ms = 35;
@@ -1039,7 +1023,6 @@ begin
     m_maintenance_wakeup := TEvent.Create(nil, False, False, '');
     m_active_state_event := TEvent.Create(nil, False, False, get_nc_active_event);
     m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
-    m_ai_refresh_thread := nil;
     m_maintenance_thread := nil;
     m_config_path := get_default_config_path;
     m_last_config_write := 0;
@@ -1057,7 +1040,6 @@ begin
     m_config.input_mode := im_chinese;
     m_last_config_write := get_config_write_time;
     m_last_config_check_tick := GetTickCount64;
-    sync_ai_refresh_thread(m_config.enable_ai);
     m_maintenance_thread := TncMaintenanceThread.create(Self);
 end;
 
@@ -1081,22 +1063,6 @@ begin
             host_log('[WARN] maintenance thread did not exit during destroy; leaving FreeOnTerminate enabled.');
             m_maintenance_thread.FreeOnTerminate := True;
             m_maintenance_thread := nil;
-        end;
-    end;
-    stop_ai_refresh_thread;
-    if m_ai_refresh_thread <> nil then
-    begin
-        TncAiRefreshThread(m_ai_refresh_thread).detach_host;
-        m_ai_refresh_thread.Terminate;
-        if wait_for_thread_exit(m_ai_refresh_thread, 5000) then
-        begin
-            reap_ai_refresh_thread_if_stopped;
-        end
-        else
-        begin
-            host_log('[WARN] AI refresh thread did not exit during destroy; leaving FreeOnTerminate enabled.');
-            m_ai_refresh_thread.FreeOnTerminate := True;
-            m_ai_refresh_thread := nil;
         end;
     end;
     if m_lock <> nil then
@@ -1150,115 +1116,6 @@ begin
         m_shift_toggle_ticks := nil;
     end;
     inherited Destroy;
-end;
-
-procedure TncEngineHost.reap_ai_refresh_thread_if_stopped;
-var
-    refresh_thread: TThread;
-begin
-    refresh_thread := m_ai_refresh_thread;
-    if refresh_thread = nil then
-    begin
-        Exit;
-    end;
-
-    if WaitForSingleObject(refresh_thread.Handle, 0) <> WAIT_OBJECT_0 then
-    begin
-        Exit;
-    end;
-
-    m_ai_refresh_thread := nil;
-    refresh_thread.Free;
-end;
-
-procedure TncEngineHost.stop_ai_refresh_thread;
-var
-    refresh_thread: TThread;
-begin
-    reap_ai_refresh_thread_if_stopped;
-    refresh_thread := m_ai_refresh_thread;
-    if refresh_thread = nil then
-    begin
-        Exit;
-    end;
-
-    TncAiRefreshThread(refresh_thread).detach_host;
-    refresh_thread.Terminate;
-    if not wait_for_thread_exit(refresh_thread, 1500) then
-    begin
-        host_log('[WARN] AI refresh thread stop timed out; will retry cleanup later.');
-        Exit;
-    end;
-
-    m_ai_refresh_thread := nil;
-    refresh_thread.Free;
-end;
-
-procedure TncEngineHost.sync_ai_refresh_thread(const enabled: Boolean);
-begin
-    reap_ai_refresh_thread_if_stopped;
-    if enabled then
-    begin
-        if m_ai_refresh_thread = nil then
-        begin
-            m_ai_refresh_thread := TncAiRefreshThread.create(Self);
-        end;
-        Exit;
-    end;
-
-    stop_ai_refresh_thread;
-end;
-
-procedure TncEngineHost.refresh_ai_candidates;
-var
-    session: TncHostSession;
-    refresh_sessions: TList<TncHostSession>;
-    candidates: TncCandidateList;
-    page_index: Integer;
-    page_count: Integer;
-    selected_index: Integer;
-    preedit_text: string;
-    caret_point: TPoint;
-    has_caret: Boolean;
-begin
-    refresh_sessions := TList<TncHostSession>.Create;
-    try
-        m_lock.Acquire;
-        try
-            for session in m_sessions.Values do
-            begin
-                if not session.engine.refresh_ai_candidates_if_ready(candidates, page_index, page_count, selected_index,
-                    preedit_text) then
-                begin
-                    Continue;
-                end;
-
-                session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
-                refresh_sessions.Add(session);
-            end;
-        finally
-            m_lock.Release;
-        end;
-
-        for session in refresh_sessions do
-        begin
-            caret_point := session.last_caret;
-            has_caret := session.has_caret;
-            run_on_ui_thread(
-                procedure
-                begin
-                    session.apply_candidate_state(caret_point, has_caret, session.caret_line_height,
-                        session.m_terminal_like_target, session.m_last_candidate_source,
-                        session.m_last_candidate_score);
-                end);
-        end;
-        if refresh_sessions.Count > 0 then
-        begin
-            host_log_debug(Format('[DEBUG] AI refresh applied sessions=%d', [refresh_sessions.Count]));
-        end;
-    finally
-        refresh_sessions.Free;
-    end;
 end;
 
 function TncEngineHost.get_config_write_time: TDateTime;
@@ -1335,7 +1192,6 @@ begin
         m_lock.Release;
     end;
 
-    sync_ai_refresh_thread(m_config.enable_ai);
     apply_host_log_config(next_log_config);
     m_last_config_write := current_write;
     Result := True;
@@ -2599,46 +2455,6 @@ begin
     else
     begin
         m_pipe_name := get_nc_pipe_name;
-    end;
-end;
-
-constructor TncAiRefreshThread.create(const host: TncEngineHost);
-begin
-    inherited create(False);
-    FreeOnTerminate := False;
-    m_host := host;
-end;
-
-procedure TncAiRefreshThread.detach_host;
-begin
-    m_host := nil;
-end;
-
-procedure TncAiRefreshThread.Execute;
-var
-    host: TncEngineHost;
-begin
-    while not Terminated do
-    begin
-        Sleep(c_ai_refresh_poll_ms);
-        if Terminated then
-        begin
-            Break;
-        end;
-
-        try
-            host := m_host;
-            if host = nil then
-            begin
-                Break;
-            end;
-            host.refresh_ai_candidates;
-        except
-            on e: Exception do
-            begin
-                host_log(Format('[WARN] AI refresh exception %s: %s', [e.ClassName, e.Message]));
-            end;
-        end;
     end;
 end;
 

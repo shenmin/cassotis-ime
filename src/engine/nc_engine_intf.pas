@@ -7,17 +7,12 @@ uses
     System.Math,
     System.Classes,
     System.IOUtils,
-    System.SyncObjs,
     System.Generics.Collections,
     System.Generics.Defaults,
     Winapi.Windows,
     nc_types,
     nc_dictionary_intf,
     nc_dictionary_sqlite,
-    nc_ai_intf,
-    nc_ai_null,
-    nc_ai_llama,
-    nc_candidate_fusion,
     nc_pinyin_parser,
     nc_config;
 
@@ -46,7 +41,6 @@ type
         m_dictionary: TncDictionaryProvider;
         m_cached_dictionary_simplified: TncDictionaryProvider;
         m_cached_dictionary_traditional: TncDictionaryProvider;
-        m_ai_provider: TncAiProvider;
         m_dictionary_path: string;
         m_dictionary_write_time: TDateTime;
         m_user_dictionary_path: string;
@@ -143,7 +137,6 @@ type
         procedure store_current_dictionary_provider(const previous_config: TncEngineConfig);
         procedure clear_cached_dictionary_providers;
         procedure free_dictionary_provider(var provider: TncDictionaryProvider);
-        function create_ai_provider_from_config: TncAiProvider;
         function get_active_dictionary_path: string;
         function get_dictionary_write_time(const path: string): TDateTime;
         function get_page_count_internal(const page_size: Integer): Integer;
@@ -220,9 +213,6 @@ type
         function normalize_adjacent_swap_typo(const value: string): string;
         function split_text_units(const input_text: string): TArray<string>;
         function is_common_surname_text(const value: string): Boolean;
-        function ai_candidate_matches_pinyin(const candidate_text: string; const pinyin_text: string): Boolean;
-        procedure filter_ai_candidates_by_pinyin(var candidates: TncCandidateList; const pinyin_text: string);
-        procedure ensure_non_ai_first(var candidates: TncCandidateList);
         function merge_candidate_lists(const primary_candidates: TncCandidateList;
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
@@ -254,10 +244,8 @@ type
         procedure set_pending_commit(const text: string; const remaining_pinyin: string = '';
             const allow_learning: Boolean = True; const segment_path: string = '');
         procedure clear_pending_commit;
-        procedure set_ai_provider(const provider: TncAiProvider);
         procedure update_dictionary_state;
         procedure toggle_input_mode;
-        function get_ai_candidates(out out_candidates: TncCandidateList): Boolean;
     public
         constructor create(const config: TncEngineConfig);
         destructor Destroy; override;
@@ -284,8 +272,6 @@ type
         function get_debug_candidate_segment_path(const candidate_index: Integer): string;
         function get_debug_pending_commit_segment_path: string;
         function get_dictionary_debug_info: string;
-        function refresh_ai_candidates_if_ready(out out_candidates: TncCandidateList; out page_index: Integer;
-            out page_count: Integer; out selected_index: Integer; out preedit_text: string): Boolean;
         function should_handle_key(const key_code: Word; const key_state: TncKeyState): Boolean;
         function commit_text(out out_text: string): Boolean;
         function remove_user_candidate(const pinyin: string; const text: string): Boolean;
@@ -313,11 +299,9 @@ type
 const
     c_default_page_size = 9;
     c_default_total_limit = 30;
-    c_default_ai_timeout_ms = 1200;
     c_candidate_total_expand_factor = 16;
     c_candidate_total_limit_max = 256;
     c_user_score_bonus = 1000;
-    c_ai_score_penalty = 20;
     c_partial_candidate_score_penalty = 260;
     c_left_context_max_len = 20;
     c_context_history_limit = 200;
@@ -333,31 +317,6 @@ const
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
     c_session_query_path_separator = #4;
-
-type
-    TncAiSharedProvider = class(TncAiProvider)
-    private
-        m_config: TncEngineConfig;
-    public
-        constructor create(const config: TncEngineConfig);
-        function request_suggestions(const request: TncAiRequest; out response: TncAiResponse): Boolean; override;
-    end;
-
-var
-    g_shared_ai_lock: TCriticalSection = nil;
-    g_shared_ai_provider: TncAiProvider = nil;
-    g_shared_ai_signature: string = '';
-    g_shared_ai_retry_after_tick: UInt64 = 0;
-
-const
-    c_shared_ai_retry_interval_ms = 5000;
-
-function build_ai_provider_signature(const config: TncEngineConfig): string;
-begin
-    Result := Format('%d|%s|%s|%s',
-        [Ord(config.ai_llama_backend), LowerCase(Trim(config.ai_llama_runtime_dir_cpu)),
-        LowerCase(Trim(config.ai_llama_runtime_dir_cuda)), LowerCase(Trim(config.ai_llama_model_path))]);
-end;
 
 function get_encoded_path_segment_count_local(const encoded_path: string): Integer;
 var
@@ -377,91 +336,6 @@ begin
         begin
             Inc(Result);
         end;
-    end;
-end;
-
-function ensure_shared_ai_provider_locked(const config: TncEngineConfig): TncAiProvider;
-var
-    signature: string;
-    now_tick: UInt64;
-begin
-    signature := build_ai_provider_signature(config);
-    if (g_shared_ai_provider <> nil) and (g_shared_ai_signature = signature) and (g_shared_ai_provider is TncAiLlamaProvider) then
-    begin
-        if not TncAiLlamaProvider(g_shared_ai_provider).ready then
-        begin
-            now_tick := GetTickCount64;
-            if now_tick >= g_shared_ai_retry_after_tick then
-            begin
-                g_shared_ai_provider.Free;
-                g_shared_ai_provider := nil;
-            end;
-        end;
-    end;
-
-    if (g_shared_ai_provider = nil) or (g_shared_ai_signature <> signature) then
-    begin
-        if g_shared_ai_provider <> nil then
-        begin
-            g_shared_ai_provider.Free;
-            g_shared_ai_provider := nil;
-        end;
-
-        g_shared_ai_signature := signature;
-        try
-            g_shared_ai_provider := TncAiLlamaProvider.create(config);
-            if (g_shared_ai_provider is TncAiLlamaProvider) and (not TncAiLlamaProvider(g_shared_ai_provider).ready) then
-            begin
-                g_shared_ai_retry_after_tick := GetTickCount64 + c_shared_ai_retry_interval_ms;
-            end
-            else
-            begin
-                g_shared_ai_retry_after_tick := 0;
-            end;
-        except
-            on e: Exception do
-            begin
-                OutputDebugString(PChar(Format('[engine] Shared AI provider create failed %s: %s, fallback to null provider',
-                    [e.ClassName, e.Message])));
-                g_shared_ai_provider := TncAiNullProvider.create;
-                g_shared_ai_retry_after_tick := 0;
-            end;
-        end;
-    end;
-
-    Result := g_shared_ai_provider;
-end;
-
-constructor TncAiSharedProvider.create(const config: TncEngineConfig);
-begin
-    inherited create;
-    m_config := config;
-end;
-
-function TncAiSharedProvider.request_suggestions(const request: TncAiRequest; out response: TncAiResponse): Boolean;
-var
-    provider: TncAiProvider;
-begin
-    SetLength(response.candidates, 0);
-    response.success := False;
-    Result := False;
-
-    if g_shared_ai_lock = nil then
-    begin
-        Exit;
-    end;
-
-    g_shared_ai_lock.Acquire;
-    try
-        provider := ensure_shared_ai_provider_locked(m_config);
-        if provider = nil then
-        begin
-            Exit;
-        end;
-
-        Result := provider.request_suggestions(request, response);
-    finally
-        g_shared_ai_lock.Release;
     end;
 end;
 
@@ -559,7 +433,6 @@ begin
     m_dictionary := nil;
     m_cached_dictionary_simplified := nil;
     m_cached_dictionary_traditional := nil;
-    m_ai_provider := nil;
     m_dictionary_path := '';
     m_dictionary_write_time := 0;
     m_user_dictionary_path := '';
@@ -617,17 +490,10 @@ begin
     m_pending_commit_segment_path := '';
     SetLength(m_candidates, 0);
     set_dictionary_provider(create_dictionary_from_config);
-    set_ai_provider(create_ai_provider_from_config);
 end;
 
 destructor TncEngine.Destroy;
 begin
-    if m_ai_provider <> nil then
-    begin
-        m_ai_provider.Free;
-        m_ai_provider := nil;
-    end;
-
     if m_dictionary <> nil then
     begin
         m_dictionary.Free;
@@ -1414,9 +1280,6 @@ begin
 end;
 
 procedure TncEngine.reset;
-var
-    ai_request: TncAiRequest;
-    ai_response: TncAiResponse;
 begin
     m_composition_text := '';
     m_composition_display_text := '';
@@ -1462,34 +1325,15 @@ begin
     end;
     clear_segment_path_tracking;
     clear_lookup_bonus_caches;
-
-    if m_ai_provider <> nil then
-    begin
-        ai_request.context.composition_text := '';
-        ai_request.context.left_context := '';
-        ai_request.max_suggestions := 0;
-        ai_request.timeout_ms := 0;
-        SetLength(ai_response.candidates, 0);
-        ai_response.success := False;
-        m_ai_provider.request_suggestions(ai_request, ai_response);
-    end;
 end;
 
 procedure TncEngine.update_config(const config: TncEngineConfig);
 var
     previous_config: TncEngineConfig;
     dictionary_changed: Boolean;
-    ai_changed: Boolean;
 begin
     previous_config := m_config;
     dictionary_changed := m_config.dictionary_variant <> config.dictionary_variant;
-    ai_changed :=
-        (m_config.enable_ai <> config.enable_ai) or
-        (m_config.ai_llama_backend <> config.ai_llama_backend) or
-        (m_config.ai_llama_runtime_dir_cpu <> config.ai_llama_runtime_dir_cpu) or
-        (m_config.ai_llama_runtime_dir_cuda <> config.ai_llama_runtime_dir_cuda) or
-        (m_config.ai_llama_model_path <> config.ai_llama_model_path) or
-        (m_config.ai_request_timeout_ms <> config.ai_request_timeout_ms);
     m_config := config;
     if m_dictionary <> nil then
     begin
@@ -1499,10 +1343,6 @@ begin
     begin
         store_current_dictionary_provider(previous_config);
         set_dictionary_provider(create_dictionary_from_config);
-    end;
-    if ai_changed then
-    begin
-        set_ai_provider(create_ai_provider_from_config);
     end;
 end;
 
@@ -1651,68 +1491,6 @@ begin
     m_dictionary := nil;
 end;
 
-procedure TncEngine.set_ai_provider(const provider: TncAiProvider);
-begin
-    if m_ai_provider = provider then
-    begin
-        Exit;
-    end;
-
-    if m_ai_provider <> nil then
-    begin
-        m_ai_provider.Free;
-    end;
-
-    m_ai_provider := provider;
-end;
-
-function TncEngine.get_ai_candidates(out out_candidates: TncCandidateList): Boolean;
-var
-    ai_request: TncAiRequest;
-    ai_response: TncAiResponse;
-    raw_count: Integer;
-begin
-    SetLength(out_candidates, 0);
-    if (m_ai_provider = nil) or (m_composition_text = '') then
-    begin
-        Result := False;
-        Exit;
-    end;
-    // AI candidate generation is most reliable on complete full-pinyin input.
-    // Skip partial/abbreviated composition to reduce noisy asynchronous outputs.
-    if not is_full_pinyin_key(m_composition_text) then
-    begin
-        Result := False;
-        Exit;
-    end;
-
-    ai_request.context.composition_text := m_composition_text;
-    ai_request.context.left_context := m_left_context;
-    ai_request.max_suggestions := get_candidate_limit;
-    ai_request.timeout_ms := m_config.ai_request_timeout_ms;
-    if ai_request.timeout_ms <= 0 then
-    begin
-        ai_request.timeout_ms := c_default_ai_timeout_ms;
-    end;
-
-    Result := m_ai_provider.request_suggestions(ai_request, ai_response);
-    if not Result or not ai_response.success then
-    begin
-        Result := False;
-        Exit;
-    end;
-
-    out_candidates := ai_response.candidates;
-    raw_count := Length(out_candidates);
-    filter_ai_candidates_by_pinyin(out_candidates, ai_request.context.composition_text);
-    if (raw_count > 0) and (Length(out_candidates) = 0) then
-    begin
-        OutputDebugString(PChar(Format('[engine] AI candidates filtered to zero query=%s raw=%d',
-            [ai_request.context.composition_text, raw_count])));
-    end;
-    Result := Length(out_candidates) > 0;
-end;
-
 function TncEngine.is_alpha_key(const key_code: Word; const key_state: TncKeyState; out normalized_char: Char;
     out display_char: Char): Boolean;
 begin
@@ -1777,26 +1555,6 @@ begin
     end;
 
     Result := TncInMemoryDictionary.create;
-end;
-
-function TncEngine.create_ai_provider_from_config: TncAiProvider;
-begin
-    if not m_config.enable_ai then
-    begin
-        Result := TncAiNullProvider.create;
-        Exit;
-    end;
-
-    try
-        Result := TncAiSharedProvider.create(m_config);
-    except
-        on e: Exception do
-        begin
-            OutputDebugString(PChar(Format('[engine] AI provider create failed %s: %s, fallback to null provider',
-                [e.ClassName, e.Message])));
-            Result := TncAiNullProvider.create;
-        end;
-    end;
 end;
 
 function TncEngine.get_active_dictionary_path: string;
@@ -2139,9 +1897,7 @@ var
     raw_candidates: TncCandidateList;
     segment_candidates: TncCandidateList;
     full_lookup_candidates: TncCandidateList;
-    ai_candidates: TncCandidateList;
     lookup_cache: TDictionary<string, TncCandidateList>;
-    fusion: TncCandidateFusion;
     limit: Integer;
     i: Integer;
     fallback_comment: string;
@@ -2170,7 +1926,6 @@ var
     lookup_elapsed_ms: Int64;
     segment_elapsed_ms: Int64;
     runtime_elapsed_ms: Int64;
-    ai_elapsed_ms: Int64;
     post_elapsed_ms: Int64;
     sort_elapsed_ms: Int64;
     path_search_elapsed_ms: Int64;
@@ -2905,15 +2660,6 @@ var
         Inc(sort_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
     end;
 
-    function get_ai_candidates_timed(out out_candidates: TncCandidateList): Boolean;
-    var
-        phase_start_tick: UInt64;
-    begin
-        phase_start_tick := GetTickCount64;
-        Result := get_ai_candidates(out_candidates);
-        Inc(ai_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
-    end;
-
     procedure note_post_phase_elapsed(const phase_start_tick: UInt64);
     begin
         Inc(post_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
@@ -2931,8 +2677,8 @@ var
 
         total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
         m_last_lookup_timing_info := Format(
-            'perf=[lk=%d seg=%d path=%d rt=%d ai=%d post=%d sort=%d cache=%d/%d total=%d]',
-            [lookup_elapsed_ms, segment_elapsed_ms, path_search_elapsed_ms, runtime_elapsed_ms, ai_elapsed_ms, post_elapsed_ms, sort_elapsed_ms,
+            'perf=[lk=%d seg=%d path=%d rt=%d post=%d sort=%d cache=%d/%d total=%d]',
+            [lookup_elapsed_ms, segment_elapsed_ms, path_search_elapsed_ms, runtime_elapsed_ms, post_elapsed_ms, sort_elapsed_ms,
             lookup_cache_hits, lookup_cache_misses, total_elapsed_ms]);
     end;
 
@@ -6557,7 +6303,6 @@ begin
         lookup_elapsed_ms := 0;
         segment_elapsed_ms := 0;
         runtime_elapsed_ms := 0;
-        ai_elapsed_ms := 0;
         post_elapsed_ms := 0;
         sort_elapsed_ms := 0;
         path_search_elapsed_ms := 0;
@@ -6910,44 +6655,17 @@ begin
 
         ensure_redup_complete_candidate_visible(raw_candidates, limit);
 
-        if m_config.enable_ai and get_ai_candidates_timed(ai_candidates) then
+        if Length(raw_candidates) > limit then
         begin
-            clear_candidate_comments(ai_candidates);
-            fusion := TncCandidateFusion.create;
-            try
-                m_candidates := fusion.merge_candidates(raw_candidates, ai_candidates, 0);
-            finally
-                fusion.Free;
-            end;
-            filter_non_bmp_single_char_candidates(m_candidates);
-            sort_candidates_timed(m_candidates);
-            ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
-            ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
-                single_char_partial_min_count);
-            ensure_strong_two_plus_one_partial_visible(m_candidates,
-                get_candidate_limit);
-            ensure_redup_complete_candidate_visible(m_candidates, limit);
-            prefer_relaxed_missing_apostrophe_boundary_partial(m_candidates);
-            if Length(m_candidates) > limit then
+            SetLength(m_candidates, limit);
+            for i := 0 to limit - 1 do
             begin
-                SetLength(m_candidates, limit);
-            end;
-            ensure_non_ai_first(m_candidates);
+                m_candidates[i] := raw_candidates[i];
+            end
         end
         else
         begin
-            if Length(raw_candidates) > limit then
-            begin
-                SetLength(m_candidates, limit);
-                for i := 0 to limit - 1 do
-                begin
-                    m_candidates[i] := raw_candidates[i];
-                end;
-            end
-            else
-            begin
-                m_candidates := raw_candidates;
-            end;
+            m_candidates := raw_candidates;
         end;
 
         phase_start_tick := GetTickCount64;
@@ -6967,7 +6685,6 @@ begin
         ensure_strong_two_plus_one_partial_visible(m_candidates, get_candidate_limit);
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_hard_single_char_partial_visible(m_candidates);
-        ensure_non_ai_first(m_candidates);
         prefer_relaxed_missing_apostrophe_boundary_partial(m_candidates);
         finalize_lookup_timing_info;
         if m_config.debug_mode then
@@ -6986,51 +6703,6 @@ begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra +
                     m_last_three_syllable_partial_debug_info;
             end;
-            if Length(m_candidates) > 0 then
-            begin
-                m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
-                    get_candidate_debug_summary(m_candidates[0]);
-            end;
-        end;
-        refresh_candidate_segment_paths;
-        note_ranked_top_candidate;
-        m_page_index := 0;
-        m_selected_index := 0;
-        Exit;
-    end;
-
-    if m_config.enable_ai and get_ai_candidates_timed(ai_candidates) then
-    begin
-        clear_candidate_comments(ai_candidates);
-        filter_non_bmp_single_char_candidates(ai_candidates);
-        sort_candidates_timed(ai_candidates);
-        limit := get_total_candidate_limit;
-        if m_config.enable_segment_candidates then
-        begin
-            if get_candidate_limit * c_candidate_total_expand_factor > limit then
-            begin
-                limit := get_candidate_limit * c_candidate_total_expand_factor;
-            end;
-            if limit > c_candidate_total_limit_max then
-            begin
-                limit := c_candidate_total_limit_max;
-            end;
-        end;
-        if Length(ai_candidates) > limit then
-        begin
-            SetLength(ai_candidates, limit);
-        end;
-
-        m_candidates := ai_candidates;
-        apply_user_penalties(lookup_text, m_candidates);
-        sort_candidates_timed(m_candidates);
-        finalize_lookup_timing_info;
-        if m_config.debug_mode then
-        begin
-            m_last_lookup_debug_extra := Format('multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d ai_only=1',
-                [Ord(has_multi_syllable_input), 0, Ord(has_internal_dangling_initial),
-                Ord(head_only_multi_syllable), Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
-                Format(' allinit=%d', [Ord(all_initial_compact_query)]);
             if Length(m_candidates) > 0 then
             begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
@@ -7135,8 +6807,6 @@ begin
             Result := 0;
         cs_rule:
             Result := 1;
-        cs_ai:
-            Result := 2;
     else
         Result := 1;
     end;
@@ -8879,10 +8549,6 @@ begin
     begin
         Result := 4;
     end
-    else if candidate.source = cs_ai then
-    begin
-        Result := 4;
-    end
     else if is_runtime_chain_candidate(candidate) then
     begin
         Result := 8;
@@ -10233,10 +9899,6 @@ begin
             if syllable_gap = 0 then
             begin
                 Inc(Result, 520 + (text_units * 24));
-                if candidate.source = cs_ai then
-                begin
-                    Inc(Result, 180);
-                end;
             end;
             if syllable_gap = 1 then
             begin
@@ -10327,8 +9989,6 @@ begin
     case candidate.source of
         cs_user:
             Inc(Result, c_user_score_bonus);
-        cs_ai:
-            Dec(Result, c_ai_score_penalty);
     end;
 end;
 
@@ -12018,199 +11678,6 @@ begin
         $84EC, $5168:
             Result := True;
     end;
-end;
-
-function TncEngine.ai_candidate_matches_pinyin(const candidate_text: string; const pinyin_text: string): Boolean;
-var
-    parser: TncPinyinParser;
-    syllables: TncPinyinParseResult;
-    text_units: TArray<string>;
-    syllable_cache: TObjectDictionary<string, TDictionary<string, Boolean>>;
-    allowed_chars: TDictionary<string, Boolean>;
-    lookup_results: TncCandidateList;
-    syllable_text: string;
-    unit_text: string;
-    i: Integer;
-    j: Integer;
-    normalized_pinyin: string;
-    sqlite_dict: TncSqliteDictionary;
-
-    function is_single_text_unit(const value: string): Boolean;
-    begin
-        if Length(value) = 1 then
-        begin
-            Result := True;
-            Exit;
-        end;
-
-        Result := (Length(value) = 2) and
-            (Ord(value[1]) >= $D800) and (Ord(value[1]) <= $DBFF) and
-            (Ord(value[2]) >= $DC00) and (Ord(value[2]) <= $DFFF);
-    end;
-begin
-    Result := False;
-    if (candidate_text = '') or (pinyin_text = '') then
-    begin
-        Exit;
-    end;
-
-    normalized_pinyin := normalize_pinyin_text(pinyin_text);
-    if normalized_pinyin = '' then
-    begin
-        Exit;
-    end;
-
-    parser := TncPinyinParser.Create;
-    try
-        syllables := parser.parse(normalized_pinyin);
-    finally
-        parser.Free;
-    end;
-    if Length(syllables) = 0 then
-    begin
-        Exit;
-    end;
-
-    text_units := split_text_units(candidate_text);
-    if Length(text_units) <> Length(syllables) then
-    begin
-        Exit;
-    end;
-
-    if m_dictionary = nil then
-    begin
-        Result := True;
-        Exit;
-    end;
-
-    sqlite_dict := nil;
-    if m_dictionary is TncSqliteDictionary then
-    begin
-        sqlite_dict := TncSqliteDictionary(m_dictionary);
-    end;
-    if sqlite_dict <> nil then
-    begin
-        for i := 0 to High(syllables) do
-        begin
-            syllable_text := syllables[i].text;
-            if (syllable_text = '') or (not sqlite_dict.single_char_matches_pinyin(syllable_text, text_units[i])) then
-            begin
-                Exit;
-            end;
-        end;
-        Result := True;
-        Exit;
-    end;
-
-    syllable_cache := TObjectDictionary<string, TDictionary<string, Boolean>>.Create([doOwnsValues]);
-    try
-        for i := 0 to High(syllables) do
-        begin
-            syllable_text := syllables[i].text;
-            if syllable_text = '' then
-            begin
-                Exit;
-            end;
-
-            if not syllable_cache.TryGetValue(syllable_text, allowed_chars) then
-            begin
-                allowed_chars := TDictionary<string, Boolean>.Create;
-                SetLength(lookup_results, 0);
-                if not m_dictionary.lookup(syllable_text, lookup_results) then
-                begin
-                    allowed_chars.Free;
-                    Exit;
-                end;
-
-                for j := 0 to High(lookup_results) do
-                begin
-                    unit_text := lookup_results[j].text;
-                    if (unit_text <> '') and is_single_text_unit(unit_text) then
-                    begin
-                        allowed_chars.AddOrSetValue(unit_text, True);
-                    end;
-                end;
-                syllable_cache.Add(syllable_text, allowed_chars);
-            end;
-
-            if not allowed_chars.ContainsKey(text_units[i]) then
-            begin
-                Exit;
-            end;
-        end;
-    finally
-        syllable_cache.Free;
-    end;
-
-    Result := True;
-end;
-
-procedure TncEngine.filter_ai_candidates_by_pinyin(var candidates: TncCandidateList; const pinyin_text: string);
-var
-    filtered: TList<TncCandidate>;
-    i: Integer;
-begin
-    if Length(candidates) <= 0 then
-    begin
-        Exit;
-    end;
-
-    filtered := TList<TncCandidate>.Create;
-    try
-        for i := 0 to High(candidates) do
-        begin
-            if ai_candidate_matches_pinyin(candidates[i].text, pinyin_text) then
-            begin
-                filtered.Add(candidates[i]);
-            end;
-        end;
-        SetLength(candidates, filtered.Count);
-        for i := 0 to filtered.Count - 1 do
-        begin
-            candidates[i] := filtered[i];
-        end;
-    finally
-        filtered.Free;
-    end;
-end;
-
-procedure TncEngine.ensure_non_ai_first(var candidates: TncCandidateList);
-var
-    i: Integer;
-    non_ai_index: Integer;
-    non_ai_candidate: TncCandidate;
-begin
-    if Length(candidates) <= 1 then
-    begin
-        Exit;
-    end;
-
-    if candidates[0].source <> cs_ai then
-    begin
-        Exit;
-    end;
-
-    non_ai_index := -1;
-    for i := 1 to High(candidates) do
-    begin
-        if candidates[i].source <> cs_ai then
-        begin
-            non_ai_index := i;
-            Break;
-        end;
-    end;
-
-    if non_ai_index <= 0 then
-    begin
-        Exit;
-    end;
-
-    non_ai_candidate := candidates[non_ai_index];
-    for i := non_ai_index downto 1 do
-    begin
-        candidates[i] := candidates[i - 1];
-    end;
-    candidates[0] := non_ai_candidate;
 end;
 
 function TncEngine.merge_candidate_lists(const primary_candidates: TncCandidateList;
@@ -13945,13 +13412,9 @@ var
         begin
             Result := cs_user;
         end
-        else if (left = cs_rule) or (right = cs_rule) then
-        begin
-            Result := cs_rule;
-        end
         else
         begin
-            Result := cs_ai;
+            Result := cs_rule;
         end;
     end;
 
@@ -19216,256 +18679,5 @@ begin
 
     Result := True;
 end;
-
-function TncEngine.refresh_ai_candidates_if_ready(out out_candidates: TncCandidateList; out page_index: Integer;
-    out page_count: Integer; out selected_index: Integer; out preedit_text: string): Boolean;
-var
-    ai_candidates: TncCandidateList;
-    base_candidates: TncCandidateList;
-    merged_candidates: TncCandidateList;
-    old_candidates: TncCandidateList;
-    fusion: TncCandidateFusion;
-    idx: Integer;
-    limit: Integer;
-    page_size: Integer;
-    old_selected_abs: Integer;
-    old_selected_idx: Integer;
-    old_selected_text: string;
-    primary_base_text: string;
-    primary_base_idx: Integer;
-    primary_candidate: TncCandidate;
-    changed: Boolean;
-
-    procedure clear_candidate_comments(var candidates: TncCandidateList);
-    var
-        idx: Integer;
-    begin
-        for idx := 0 to High(candidates) do
-        begin
-            candidates[idx].comment := '';
-        end;
-    end;
-
-    procedure remove_ai_source(const input_candidates: TncCandidateList; out output_candidates: TncCandidateList);
-    var
-        idx: Integer;
-        count: Integer;
-    begin
-        SetLength(output_candidates, Length(input_candidates));
-        count := 0;
-        for idx := 0 to High(input_candidates) do
-        begin
-            if input_candidates[idx].source <> cs_ai then
-            begin
-                output_candidates[count] := input_candidates[idx];
-                Inc(count);
-            end;
-        end;
-        SetLength(output_candidates, count);
-    end;
-
-    function same_candidates(const left: TncCandidateList; const right: TncCandidateList): Boolean;
-    var
-        idx: Integer;
-    begin
-        if Length(left) <> Length(right) then
-        begin
-            Exit(False);
-        end;
-
-        for idx := 0 to High(left) do
-        begin
-            if left[idx].text <> right[idx].text then
-            begin
-                Exit(False);
-            end;
-            if left[idx].comment <> right[idx].comment then
-            begin
-                Exit(False);
-            end;
-            if left[idx].score <> right[idx].score then
-            begin
-                Exit(False);
-            end;
-            if left[idx].source <> right[idx].source then
-            begin
-                Exit(False);
-            end;
-        end;
-
-        Result := True;
-    end;
-begin
-    SetLength(out_candidates, 0);
-    page_index := 0;
-    page_count := 0;
-    selected_index := 0;
-    preedit_text := '';
-    Result := False;
-
-    if not m_config.enable_ai then
-    begin
-        Exit;
-    end;
-
-    if m_composition_text = '' then
-    begin
-        Exit;
-    end;
-
-    if not get_ai_candidates(ai_candidates) then
-    begin
-        Exit;
-    end;
-
-    if Length(ai_candidates) = 0 then
-    begin
-        Exit;
-    end;
-
-    old_candidates := m_candidates;
-    primary_base_text := '';
-    old_selected_text := '';
-    page_size := get_candidate_limit;
-    if page_size <= 0 then
-    begin
-        page_size := 1;
-    end;
-    old_selected_abs := (m_page_index * page_size) + m_selected_index;
-    if (old_selected_abs >= 0) and (old_selected_abs < Length(old_candidates)) then
-    begin
-        old_selected_text := old_candidates[old_selected_abs].text;
-    end;
-    remove_ai_source(old_candidates, base_candidates);
-    if Length(base_candidates) = 0 then
-    begin
-        base_candidates := old_candidates;
-    end;
-    if Length(base_candidates) = 0 then
-    begin
-        Exit;
-    end;
-    primary_base_text := base_candidates[0].text;
-
-    clear_candidate_comments(ai_candidates);
-    fusion := TncCandidateFusion.create;
-    try
-        merged_candidates := fusion.merge_candidates(base_candidates, ai_candidates, 0);
-    finally
-        fusion.Free;
-    end;
-
-    sort_candidates(merged_candidates);
-    limit := get_total_candidate_limit;
-    if m_config.enable_segment_candidates then
-    begin
-        if get_candidate_limit * c_candidate_total_expand_factor > limit then
-        begin
-            limit := get_candidate_limit * c_candidate_total_expand_factor;
-        end;
-        if limit > c_candidate_total_limit_max then
-        begin
-            limit := c_candidate_total_limit_max;
-        end;
-    end;
-    if Length(merged_candidates) > limit then
-    begin
-        SetLength(merged_candidates, limit);
-    end;
-    ensure_non_ai_first(merged_candidates);
-
-    if (primary_base_text <> '') and (Length(merged_candidates) > 0) and
-        (not SameText(merged_candidates[0].text, primary_base_text)) then
-    begin
-        primary_base_idx := -1;
-        for idx := 0 to High(merged_candidates) do
-        begin
-            if SameText(merged_candidates[idx].text, primary_base_text) then
-            begin
-                primary_base_idx := idx;
-                Break;
-            end;
-        end;
-        if primary_base_idx > 0 then
-        begin
-            primary_candidate := merged_candidates[primary_base_idx];
-            for idx := primary_base_idx downto 1 do
-            begin
-                merged_candidates[idx] := merged_candidates[idx - 1];
-            end;
-            merged_candidates[0] := primary_candidate;
-        end;
-    end;
-
-    changed := not same_candidates(old_candidates, merged_candidates);
-    if not changed then
-    begin
-        Exit;
-    end;
-
-    m_candidates := merged_candidates;
-    if old_selected_text <> '' then
-    begin
-        old_selected_idx := -1;
-        for idx := 0 to High(m_candidates) do
-        begin
-            if SameText(m_candidates[idx].text, old_selected_text) then
-            begin
-                old_selected_idx := idx;
-                Break;
-            end;
-        end;
-        if old_selected_idx >= 0 then
-        begin
-            page_size := get_candidate_limit;
-            if page_size <= 0 then
-            begin
-                page_size := 1;
-            end;
-            m_page_index := old_selected_idx div page_size;
-            m_selected_index := old_selected_idx mod page_size;
-        end;
-    end;
-    if m_page_index < 0 then
-    begin
-        m_page_index := 0;
-    end;
-    if m_selected_index < 0 then
-    begin
-        m_selected_index := 0;
-    end;
-    normalize_page_and_selection;
-
-    out_candidates := get_candidates;
-    page_index := get_page_index;
-    page_count := get_page_count;
-    selected_index := get_selected_index;
-    if m_composition_display_text <> '' then
-    begin
-        preedit_text := m_composition_display_text;
-    end
-    else
-    begin
-        preedit_text := m_composition_text;
-    end;
-    Result := True;
-end;
-
-initialization
-    g_shared_ai_lock := TCriticalSection.Create;
-
-finalization
-    if g_shared_ai_provider <> nil then
-    begin
-        g_shared_ai_provider.Free;
-        g_shared_ai_provider := nil;
-    end;
-    g_shared_ai_signature := '';
-    g_shared_ai_retry_after_tick := 0;
-    if g_shared_ai_lock <> nil then
-    begin
-        g_shared_ai_lock.Free;
-        g_shared_ai_lock := nil;
-    end;
 
 end.

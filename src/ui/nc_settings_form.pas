@@ -135,7 +135,6 @@ type
     private
         m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
-        m_tab_ai: TTabSheet;
         m_tab_logging: TTabSheet;
         m_tab_advanced: TTabSheet;
         m_btn_reset: TncModernButton;
@@ -146,17 +145,6 @@ type
         m_combo_punctuation_mode: TComboBox;
         m_chk_full_width_mode: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
-        m_chk_enable_ai: TncModernCheckBox;
-        m_combo_ai_backend: TComboBox;
-        m_edit_ai_timeout_ms: TEdit;
-        m_edit_ai_runtime_dir_cpu: TEdit;
-        m_edit_ai_runtime_dir_cuda: TEdit;
-        m_edit_ai_model_path: TEdit;
-        m_btn_ai_runtime_dir_cpu: TncModernButton;
-        m_btn_ai_runtime_dir_cuda: TncModernButton;
-        m_btn_ai_model_path: TncModernButton;
-        m_btn_ai_defaults: TncModernButton;
-        m_btn_ai_open_model_folder: TncModernButton;
         m_chk_log_enabled: TncModernCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
@@ -177,19 +165,16 @@ type
         procedure configure_form;
         procedure configure_tabs;
         procedure configure_buttons;
+        procedure update_dialog_height_for_content;
         procedure add_general_controls;
-        procedure add_ai_controls;
         procedure add_logging_controls;
         procedure add_advanced_controls;
         procedure update_scaled_control_metrics;
         procedure mark_dirty(Sender: TObject);
         procedure update_apply_button;
-        procedure update_ai_controls;
         procedure update_logging_controls;
         procedure load_defaults;
         procedure load_from_config;
-        function browse_for_directory(const title: string; var path: string): Boolean;
-        function browse_for_open_file(const title: string; const filter: string; var path: string): Boolean;
         function browse_for_save_file(const title: string; const filter: string; const default_ext: string;
             var path: string): Boolean;
         procedure assign_path_edit(const edit: TEdit; const path: string);
@@ -201,11 +186,6 @@ type
             out value: Integer; out error_text: string): Boolean;
         function build_config_from_controls(out next_config: TncEngineConfig; out next_log_config: TncLogConfig;
             out next_status_widget_visible: Boolean; out error_text: string): Boolean;
-        procedure on_browse_ai_runtime_dir_cpu(Sender: TObject);
-        procedure on_browse_ai_runtime_dir_cuda(Sender: TObject);
-        procedure on_browse_ai_model_path(Sender: TObject);
-        procedure on_ai_defaults_click(Sender: TObject);
-        procedure on_open_ai_model_folder(Sender: TObject);
         procedure on_browse_log_path(Sender: TObject);
         procedure on_open_log_folder(Sender: TObject);
         procedure on_log_defaults_click(Sender: TObject);
@@ -229,7 +209,7 @@ implementation
 
 const
     c_dialog_width = 596;
-    c_dialog_height = 492;
+    c_dialog_height = 452;
     c_page_margin = 10;
     c_footer_height = 50;
     c_section_left = 12;
@@ -255,7 +235,6 @@ const
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
     STabGeneral = '常规';
-    STabAI = 'AI';
     STabLogging = '日志';
     STabAdvanced = '高级';
     SButtonBrowse = '浏览';
@@ -265,8 +244,6 @@ resourcestring
     SButtonCancel = '取消';
     SGroupDefaultBehavior = '输入';
     SGroupAppearance = '外观';
-    SGroupAiBehavior = 'AI 候选';
-    SGroupAiResources = '模型与运行库';
     SGroupLogging = '记录策略';
     SGroupLogFiles = '文件位置';
     SGroupDebug = '调试';
@@ -281,17 +258,6 @@ resourcestring
     SLabelPunctuationMode = '标点';
     SCheckFullWidthMode = '使用全角输入';
     SCheckShowStatusWidget = '显示状态浮窗';
-    SCheckEnableAI = '启用 AI 候选增强';
-    SLabelAIBackend = 'AI 后端';
-    SOptionAuto = '自动';
-    SOptionCPU = 'CPU';
-    SOptionCUDA = 'CUDA';
-    SLabelAIRequestTimeout = '请求超时（毫秒）';
-    SLabelAIRuntimeDirCPU = 'CPU 运行库目录';
-    SLabelAIRuntimeDirCUDA = 'CUDA 运行库目录';
-    SLabelAIModelPath = '模型路径';
-    SButtonUseDefaultAIPaths = '恢复默认 AI 路径';
-    SButtonOpenAIFolder = '打开 AI 目录';
     SCheckEnableLogging = '启用日志';
     SLabelLogLevel = '日志级别';
     SOptionLogDebug = '调试';
@@ -318,22 +284,16 @@ resourcestring
     SConfigFolderMissing = '配置目录不存在。';
     SConfigFileMissing = '配置文件尚不存在。';
     SConfirmRestoreDefaults = '要恢复默认设置吗？';
-    SSettingAIRequestTimeout = 'AI 请求超时';
     SSettingMaxLogSize = '日志大小上限';
     SErrorValueTooSmall = '%s不能小于 %d。';
     SErrorValueTooLarge = '%s不能大于 %d。';
-    SDialogSelectCpuRuntimeDir = '选择 CPU 运行库目录';
-    SDialogSelectCudaRuntimeDir = '选择 CUDA 运行库目录';
-    SDialogSelectModelFile = '选择模型文件';
     SDialogSelectLogFile = '选择日志文件';
     SDialogSelectSimplifiedDictionary = '选择简体词库';
     SDialogSelectTraditionalDictionary = '选择繁体词库';
     SDialogSelectUserDictionary = '选择用户词库文件';
-    SFilterModelFiles = '模型文件|*.gguf|所有文件|*.*';
     SFilterLogFiles = '日志文件|*.log;*.txt|所有文件|*.*';
     SFilterDictionaryFiles = '词库文件|*.db;*.sqlite|所有文件|*.*';
     SFilterDatabaseFiles = '数据库文件|*.db;*.sqlite|所有文件|*.*';
-    SCurrentAIModelPath = '当前 AI 模型路径';
     SCurrentLogFolder = '当前日志目录';
     SCurrentDictionaryPath = '当前词库路径';
 
@@ -1096,7 +1056,6 @@ function build_default_engine_config_value: TncEngineConfig;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
-    Result.enable_ai := False;
     Result.enable_ctrl_space_toggle := False;
     Result.enable_shift_space_full_width_toggle := True;
     Result.enable_ctrl_period_punct_toggle := True;
@@ -1106,11 +1065,6 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
-    Result.ai_llama_backend := lb_auto;
-    Result.ai_llama_runtime_dir_cpu := get_default_ai_llama_runtime_dir_cpu;
-    Result.ai_llama_runtime_dir_cuda := get_default_ai_llama_runtime_dir_cuda;
-    Result.ai_llama_model_path := get_default_ai_llama_model_path;
-    Result.ai_request_timeout_ms := 1200;
 end;
 
 function build_default_log_config_value: TncLogConfig;
@@ -1130,7 +1084,6 @@ begin
     configure_tabs;
     configure_buttons;
     add_general_controls;
-    add_ai_controls;
     add_logging_controls;
     add_advanced_controls;
     load_from_config;
@@ -1171,11 +1124,72 @@ begin
     Color := RGB(245, 247, 250);
 end;
 
+procedure TncSettingsForm.update_dialog_height_for_content;
+var
+    tab_sheet: TTabSheet;
+    control: TControl;
+    display_rect: TRect;
+    tab_index: Integer;
+    control_index: Integer;
+    max_content_bottom: Integer;
+    tab_strip_height: Integer;
+    desired_page_client_height: Integer;
+    desired_client_height: Integer;
+begin
+    if m_page_control = nil then
+    begin
+        Exit;
+    end;
+
+    m_page_control.HandleNeeded;
+    display_rect := m_page_control.DisplayRect;
+    tab_strip_height := m_page_control.Height - (display_rect.Bottom - display_rect.Top);
+    if tab_strip_height < 0 then
+    begin
+        tab_strip_height := 0;
+    end;
+
+    max_content_bottom := 0;
+    for tab_index := 0 to m_page_control.PageCount - 1 do
+    begin
+        tab_sheet := m_page_control.Pages[tab_index];
+        if tab_sheet = nil then
+        begin
+            Continue;
+        end;
+
+        for control_index := 0 to tab_sheet.ControlCount - 1 do
+        begin
+            control := tab_sheet.Controls[control_index];
+            if (control <> nil) and control.Visible then
+            begin
+                if (control.Top + control.Height) > max_content_bottom then
+                begin
+                    max_content_bottom := control.Top + control.Height;
+                end;
+            end;
+        end;
+    end;
+
+    desired_page_client_height := max_content_bottom + 18;
+    desired_client_height := c_page_margin + tab_strip_height + desired_page_client_height + c_footer_height;
+    if desired_client_height < (c_footer_height + 220) then
+    begin
+        desired_client_height := c_footer_height + 220;
+    end;
+
+    if ClientHeight <> desired_client_height then
+    begin
+        ClientHeight := desired_client_height;
+    end;
+end;
+
 procedure TncSettingsForm.DoShow;
 begin
     inherited;
     HandleNeeded;
     update_scaled_control_metrics;
+    update_dialog_height_for_content;
     SetWindowPos(
         Handle,
         HWND_TOPMOST,
@@ -1216,7 +1230,6 @@ begin
     dpi := get_window_dpi(Handle);
     update_check_box_metrics(m_chk_full_width_mode);
     update_check_box_metrics(m_chk_show_status_widget);
-    update_check_box_metrics(m_chk_enable_ai);
     update_check_box_metrics(m_chk_log_enabled);
     update_check_box_metrics(m_chk_debug_mode);
 end;
@@ -1262,10 +1275,6 @@ begin
     m_tab_general := TTabSheet.Create(m_page_control);
     m_tab_general.PageControl := m_page_control;
     m_tab_general.Caption := STabGeneral;
-
-    m_tab_ai := TTabSheet.Create(m_page_control);
-    m_tab_ai.PageControl := m_page_control;
-    m_tab_ai.Caption := STabAI;
 
     m_tab_logging := TTabSheet.Create(m_page_control);
     m_tab_logging.PageControl := m_page_control;
@@ -1383,85 +1392,6 @@ begin
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
 end;
 
-procedure TncSettingsForm.add_ai_controls;
-var
-    top: Integer;
-    section_top: Integer;
-    behavior_group: TPanel;
-    resources_group: TPanel;
-begin
-    section_top := 18;
-    behavior_group := create_section_group(Self, m_tab_ai, SGroupAiBehavior, section_top, 152);
-
-    top := c_section_inner_top;
-    m_chk_enable_ai := create_check_box(Self, behavior_group, top, SCheckEnableAI, mark_dirty);
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, behavior_group, SLabelAIBackend, top);
-    m_combo_ai_backend := TComboBox.Create(Self);
-    m_combo_ai_backend.Parent := behavior_group;
-    m_combo_ai_backend.Left := c_control_left;
-    m_combo_ai_backend.Top := top;
-    m_combo_ai_backend.Width := c_combo_width;
-    m_combo_ai_backend.Style := csDropDownList;
-    m_combo_ai_backend.Items.Add(SOptionAuto);
-    m_combo_ai_backend.Items.Add(SOptionCPU);
-    m_combo_ai_backend.Items.Add(SOptionCUDA);
-    m_combo_ai_backend.OnChange := mark_dirty;
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, behavior_group, SLabelAIRequestTimeout, top);
-    m_edit_ai_timeout_ms := TEdit.Create(Self);
-    m_edit_ai_timeout_ms.Parent := behavior_group;
-    m_edit_ai_timeout_ms.Left := c_control_left;
-    m_edit_ai_timeout_ms.Top := top;
-    m_edit_ai_timeout_ms.Width := c_edit_width;
-    configure_numeric_edit(m_edit_ai_timeout_ms, '100..10000');
-    m_edit_ai_timeout_ms.OnChange := mark_dirty;
-
-    section_top := behavior_group.Top + behavior_group.Height + c_section_gap;
-    resources_group := create_section_group(Self, m_tab_ai, SGroupAiResources, section_top, 192);
-
-    top := c_section_inner_top;
-    create_label(Self, resources_group, SLabelAIRuntimeDirCPU, top);
-    m_edit_ai_runtime_dir_cpu := TEdit.Create(Self);
-    m_edit_ai_runtime_dir_cpu.Parent := resources_group;
-    m_edit_ai_runtime_dir_cpu.Left := c_control_left;
-    m_edit_ai_runtime_dir_cpu.Top := top;
-    m_edit_ai_runtime_dir_cpu.Width := c_path_edit_width;
-    configure_path_edit(m_edit_ai_runtime_dir_cpu, get_default_ai_llama_runtime_dir_cpu);
-    m_edit_ai_runtime_dir_cpu.OnChange := mark_dirty;
-    m_btn_ai_runtime_dir_cpu := create_browse_button(Self, resources_group, top, on_browse_ai_runtime_dir_cpu);
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, resources_group, SLabelAIRuntimeDirCUDA, top);
-    m_edit_ai_runtime_dir_cuda := TEdit.Create(Self);
-    m_edit_ai_runtime_dir_cuda.Parent := resources_group;
-    m_edit_ai_runtime_dir_cuda.Left := c_control_left;
-    m_edit_ai_runtime_dir_cuda.Top := top;
-    m_edit_ai_runtime_dir_cuda.Width := c_path_edit_width;
-    configure_path_edit(m_edit_ai_runtime_dir_cuda, get_default_ai_llama_runtime_dir_cuda);
-    m_edit_ai_runtime_dir_cuda.OnChange := mark_dirty;
-    m_btn_ai_runtime_dir_cuda := create_browse_button(Self, resources_group, top, on_browse_ai_runtime_dir_cuda);
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, resources_group, SLabelAIModelPath, top);
-    m_edit_ai_model_path := TEdit.Create(Self);
-    m_edit_ai_model_path.Parent := resources_group;
-    m_edit_ai_model_path.Left := c_control_left;
-    m_edit_ai_model_path.Top := top;
-    m_edit_ai_model_path.Width := c_path_edit_width;
-    configure_path_edit(m_edit_ai_model_path, get_default_ai_llama_model_path);
-    m_edit_ai_model_path.OnChange := mark_dirty;
-    m_btn_ai_model_path := create_browse_button(Self, resources_group, top, on_browse_ai_model_path);
-
-    Inc(top, c_row_height + 2);
-    m_btn_ai_defaults := create_action_button(Self, resources_group, c_control_left, top,
-        SButtonUseDefaultAIPaths, on_ai_defaults_click);
-    m_btn_ai_open_model_folder := create_action_button(Self, resources_group, c_control_left + c_action_button_width + 12, top,
-        SButtonOpenAIFolder, on_open_ai_model_folder);
-end;
-
 procedure TncSettingsForm.add_logging_controls;
 var
     top: Integer;
@@ -1550,7 +1480,6 @@ end;
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
 begin
     m_dirty := True;
-    update_ai_controls;
     update_logging_controls;
     update_apply_button;
 end;
@@ -1560,53 +1489,6 @@ begin
     if m_btn_apply <> nil then
     begin
         m_btn_apply.Enabled := m_dirty;
-    end;
-end;
-
-procedure TncSettingsForm.update_ai_controls;
-var
-    enabled: Boolean;
-begin
-    enabled := (m_chk_enable_ai <> nil) and m_chk_enable_ai.Checked;
-    if m_combo_ai_backend <> nil then
-    begin
-        m_combo_ai_backend.Enabled := enabled;
-    end;
-    if m_edit_ai_timeout_ms <> nil then
-    begin
-        m_edit_ai_timeout_ms.Enabled := enabled;
-    end;
-    if m_edit_ai_runtime_dir_cpu <> nil then
-    begin
-        m_edit_ai_runtime_dir_cpu.Enabled := enabled;
-    end;
-    if m_btn_ai_runtime_dir_cpu <> nil then
-    begin
-        m_btn_ai_runtime_dir_cpu.Enabled := enabled;
-    end;
-    if m_edit_ai_runtime_dir_cuda <> nil then
-    begin
-        m_edit_ai_runtime_dir_cuda.Enabled := enabled;
-    end;
-    if m_btn_ai_runtime_dir_cuda <> nil then
-    begin
-        m_btn_ai_runtime_dir_cuda.Enabled := enabled;
-    end;
-    if m_edit_ai_model_path <> nil then
-    begin
-        m_edit_ai_model_path.Enabled := enabled;
-    end;
-    if m_btn_ai_model_path <> nil then
-    begin
-        m_btn_ai_model_path.Enabled := enabled;
-    end;
-    if m_btn_ai_defaults <> nil then
-    begin
-        m_btn_ai_defaults.Enabled := True;
-    end;
-    if m_btn_ai_open_model_folder <> nil then
-    begin
-        m_btn_ai_open_model_folder.Enabled := True;
     end;
 end;
 
@@ -1649,42 +1531,6 @@ begin
     load_from_config;
     m_dirty := True;
     update_apply_button;
-end;
-
-function TncSettingsForm.browse_for_directory(const title: string; var path: string): Boolean;
-var
-    selected_path: string;
-begin
-    selected_path := path;
-    Result := SelectDirectory(title, '', selected_path);
-    if Result then
-    begin
-        path := selected_path;
-    end;
-end;
-
-function TncSettingsForm.browse_for_open_file(const title: string; const filter: string; var path: string): Boolean;
-var
-    dialog: TOpenDialog;
-begin
-    dialog := TOpenDialog.Create(Self);
-    try
-        dialog.Title := title;
-        dialog.Filter := filter;
-        dialog.Options := [ofFileMustExist, ofPathMustExist, ofEnableSizing];
-        if Trim(path) <> '' then
-        begin
-            dialog.FileName := path;
-            dialog.InitialDir := ExtractFileDir(path);
-        end;
-        Result := dialog.Execute;
-        if Result then
-        begin
-            path := dialog.FileName;
-        end;
-    finally
-        dialog.Free;
-    end;
 end;
 
 function TncSettingsForm.browse_for_save_file(const title: string; const filter: string; const default_ext: string;
@@ -1816,37 +1662,6 @@ begin
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
     end;
-    if m_chk_enable_ai <> nil then
-    begin
-        m_chk_enable_ai.Checked := m_engine_config.enable_ai;
-    end;
-    if m_combo_ai_backend <> nil then
-    begin
-        case m_engine_config.ai_llama_backend of
-            lb_cpu:
-                m_combo_ai_backend.ItemIndex := 1;
-            lb_cuda:
-                m_combo_ai_backend.ItemIndex := 2;
-        else
-            m_combo_ai_backend.ItemIndex := 0;
-        end;
-    end;
-    if m_edit_ai_timeout_ms <> nil then
-    begin
-        m_edit_ai_timeout_ms.Text := IntToStr(m_engine_config.ai_request_timeout_ms);
-    end;
-    if m_edit_ai_runtime_dir_cpu <> nil then
-    begin
-        m_edit_ai_runtime_dir_cpu.Text := m_engine_config.ai_llama_runtime_dir_cpu;
-    end;
-    if m_edit_ai_runtime_dir_cuda <> nil then
-    begin
-        m_edit_ai_runtime_dir_cuda.Text := m_engine_config.ai_llama_runtime_dir_cuda;
-    end;
-    if m_edit_ai_model_path <> nil then
-    begin
-        m_edit_ai_model_path.Text := m_engine_config.ai_llama_model_path;
-    end;
     if m_chk_log_enabled <> nil then
     begin
         m_chk_log_enabled.Checked := m_log_config.enabled;
@@ -1877,7 +1692,6 @@ begin
         m_chk_debug_mode.Checked := m_engine_config.debug_mode;
     end;
     m_dirty := False;
-    update_ai_controls;
     update_logging_controls;
     update_apply_button;
 end;
@@ -1905,7 +1719,6 @@ end;
 function TncSettingsForm.build_config_from_controls(out next_config: TncEngineConfig; out next_log_config: TncLogConfig;
     out next_status_widget_visible: Boolean; out error_text: string): Boolean;
 var
-    timeout_ms: Integer;
     log_max_size_kb: Integer;
 begin
     next_config := m_engine_config;
@@ -1914,14 +1727,6 @@ begin
     error_text := '';
 
     next_config.max_candidates := 9;
-
-    if not read_integer_setting(m_edit_ai_timeout_ms, m_engine_config.ai_request_timeout_ms, 100, 10000,
-        SSettingAIRequestTimeout, timeout_ms, error_text) then
-    begin
-        Result := False;
-        Exit;
-    end;
-    next_config.ai_request_timeout_ms := timeout_ms;
 
     if not read_integer_setting(m_edit_log_max_size_kb, m_log_config.max_size_kb, 64, 1024 * 1024,
         SSettingMaxLogSize, log_max_size_kb, error_text) then
@@ -1955,23 +1760,8 @@ begin
     next_config.enable_ctrl_space_toggle := False;
     next_config.enable_shift_space_full_width_toggle := True;
     next_config.enable_ctrl_period_punct_toggle := True;
-    next_config.enable_ai := m_chk_enable_ai.Checked;
     next_status_widget_visible := m_chk_show_status_widget.Checked;
-    case m_combo_ai_backend.ItemIndex of
-        1:
-            next_config.ai_llama_backend := lb_cpu;
-        2:
-            next_config.ai_llama_backend := lb_cuda;
-    else
-        next_config.ai_llama_backend := lb_auto;
-    end;
     next_log_config.enabled := m_chk_log_enabled.Checked;
-    next_config.ai_llama_runtime_dir_cpu := normalize_path_override(
-        m_edit_ai_runtime_dir_cpu.Text, get_default_ai_llama_runtime_dir_cpu);
-    next_config.ai_llama_runtime_dir_cuda := normalize_path_override(
-        m_edit_ai_runtime_dir_cuda.Text, get_default_ai_llama_runtime_dir_cuda);
-    next_config.ai_llama_model_path := normalize_path_override(
-        m_edit_ai_model_path.Text, get_default_ai_llama_model_path);
     next_log_config.log_path := normalize_path_override(m_edit_log_path.Text, get_default_log_path);
     case m_combo_log_level.ItemIndex of
         0:
@@ -1986,58 +1776,6 @@ begin
     next_config.debug_mode := m_chk_debug_mode.Checked;
 
     Result := True;
-end;
-
-procedure TncSettingsForm.on_browse_ai_runtime_dir_cpu(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_ai_runtime_dir_cpu.Text);
-    if browse_for_directory(SDialogSelectCpuRuntimeDir, path) then
-    begin
-        assign_path_edit(m_edit_ai_runtime_dir_cpu, path);
-    end;
-end;
-
-procedure TncSettingsForm.on_browse_ai_runtime_dir_cuda(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_ai_runtime_dir_cuda.Text);
-    if browse_for_directory(SDialogSelectCudaRuntimeDir, path) then
-    begin
-        assign_path_edit(m_edit_ai_runtime_dir_cuda, path);
-    end;
-end;
-
-procedure TncSettingsForm.on_browse_ai_model_path(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_ai_model_path.Text);
-    if browse_for_open_file(SDialogSelectModelFile, SFilterModelFiles, path) then
-    begin
-        assign_path_edit(m_edit_ai_model_path, path);
-    end;
-end;
-
-procedure TncSettingsForm.on_ai_defaults_click(Sender: TObject);
-begin
-    assign_path_edit(m_edit_ai_runtime_dir_cpu, get_default_ai_llama_runtime_dir_cpu);
-    assign_path_edit(m_edit_ai_runtime_dir_cuda, get_default_ai_llama_runtime_dir_cuda);
-    assign_path_edit(m_edit_ai_model_path, get_default_ai_llama_model_path);
-end;
-
-procedure TncSettingsForm.on_open_ai_model_folder(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_ai_model_path.Text);
-    if path = '' then
-    begin
-        path := get_default_ai_llama_model_path;
-    end;
-    open_folder_for_path(path, SCurrentAIModelPath);
 end;
 
 procedure TncSettingsForm.on_browse_log_path(Sender: TObject);

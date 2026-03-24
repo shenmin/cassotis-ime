@@ -30,15 +30,11 @@ function get_runtime_data_directory: string;
 function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
 function get_default_user_dictionary_path: string;
-function get_default_ai_llama_runtime_dir_cpu: string;
-function get_default_ai_llama_runtime_dir_cuda: string;
-function get_default_ai_llama_model_path: string;
 
 implementation
 
 const
     c_config_version = 8;
-    c_default_ai_request_timeout_ms = 1200;
 
 function get_module_directory: string; forward;
 
@@ -125,35 +121,6 @@ begin
 
     Result := ExpandFileName(IncludeTrailingPathDelimiter(module_dir) + Result);
     Result := normalize_filesystem_path_text(Result);
-end;
-
-function parse_llama_backend_text(const value: string): TncLlamaBackend;
-begin
-    if SameText(value, 'cpu') then
-    begin
-        Result := lb_cpu;
-        Exit;
-    end;
-
-    if SameText(value, 'cuda') or SameText(value, 'gpu') then
-    begin
-        Result := lb_cuda;
-        Exit;
-    end;
-
-    Result := lb_auto;
-end;
-
-function llama_backend_to_text(const backend: TncLlamaBackend): string;
-begin
-    case backend of
-        lb_cpu:
-            Result := 'cpu';
-        lb_cuda:
-            Result := 'cuda';
-    else
-        Result := 'auto';
-    end;
 end;
 
 function get_module_directory: string;
@@ -289,59 +256,6 @@ begin
     Result.log_path := get_default_log_path;
 end;
 
-function get_default_ai_llama_runtime_dir_cpu: string;
-var
-    module_dir: string;
-begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
-    begin
-{$IFDEF WIN64}
-        Result := 'llama\win64';
-{$ELSE}
-        Result := 'llama\win32';
-{$ENDIF}
-        Exit;
-    end;
-
-{$IFDEF WIN64}
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\win64';
-{$ELSE}
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\win32';
-{$ENDIF}
-end;
-
-function get_default_ai_llama_runtime_dir_cuda: string;
-var
-    module_dir: string;
-begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
-    begin
-        Result := 'llama\win64-cuda';
-        Exit;
-    end;
-
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\win64-cuda';
-end;
-
-function get_default_ai_llama_model_path: string;
-var
-    module_dir: string;
-    model_dir: string;
-begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
-    begin
-        Result := '';
-        Exit;
-    end;
-
-    model_dir := IncludeTrailingPathDelimiter(module_dir) + 'models';
-    ForceDirectories(model_dir);
-    Result := IncludeTrailingPathDelimiter(model_dir) + 'llama.gguf';
-end;
-
 constructor TncConfigManager.create(const config_path: string);
 begin
     inherited create;
@@ -380,7 +294,6 @@ var
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
-    Result.enable_ai := False;
     Result.enable_ctrl_space_toggle := False;
     Result.enable_shift_space_full_width_toggle := True;
     Result.enable_ctrl_period_punct_toggle := True;
@@ -390,11 +303,6 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
-    Result.ai_llama_backend := lb_auto;
-    Result.ai_llama_runtime_dir_cpu := get_default_ai_llama_runtime_dir_cpu;
-    Result.ai_llama_runtime_dir_cuda := get_default_ai_llama_runtime_dir_cuda;
-    Result.ai_llama_model_path := get_default_ai_llama_model_path;
-    Result.ai_request_timeout_ms := c_default_ai_request_timeout_ms;
 
     if m_config_path = '' then
     begin
@@ -426,7 +334,6 @@ begin
         end;
 
         Result.max_candidates := 9;
-        Result.enable_ai := ini.ReadBool('engine', 'enable_ai', False);
         Result.enable_ctrl_space_toggle := False;
         Result.enable_shift_space_full_width_toggle := True;
         Result.enable_ctrl_period_punct_toggle := True;
@@ -452,21 +359,9 @@ begin
         end;
         legacy_tc_path := ini.ReadString('dictionary', 'db_path_tc', get_legacy_dictionary_path_traditional);
         legacy_user_path := ini.ReadString('dictionary', 'user_db_path', get_legacy_user_dictionary_path);
-        Result.ai_llama_backend := parse_llama_backend_text(ini.ReadString('ai', 'llama_backend', 'auto'));
-        Result.ai_llama_runtime_dir_cpu := ini.ReadString('ai', 'llama_runtime_dir_cpu',
-            get_default_ai_llama_runtime_dir_cpu);
-        Result.ai_llama_runtime_dir_cuda := ini.ReadString('ai', 'llama_runtime_dir_cuda',
-            get_default_ai_llama_runtime_dir_cuda);
-        Result.ai_llama_model_path := ini.ReadString('ai', 'llama_model_path', get_default_ai_llama_model_path);
-        Result.ai_request_timeout_ms := ini.ReadInteger('ai', 'request_timeout_ms', c_default_ai_request_timeout_ms);
-        if Result.ai_request_timeout_ms <= 0 then
-        begin
-            Result.ai_request_timeout_ms := c_default_ai_request_timeout_ms;
-        end;
 
         needs_full_write := not ini.ValueExists('engine', 'input_mode') or
             ini.ValueExists('engine', 'max_candidates') or
-            not ini.ValueExists('engine', 'enable_ai') or
             ini.ValueExists('engine', 'enable_ctrl_space_toggle') or
             ini.ValueExists('engine', 'enable_shift_space_full_width_toggle') or
             ini.ValueExists('engine', 'enable_ctrl_period_punct_toggle') or
@@ -478,12 +373,7 @@ begin
             ini.ValueExists('dictionary', 'db_path') or
             ini.ValueExists('dictionary', 'db_path_sc') or
             ini.ValueExists('dictionary', 'db_path_tc') or
-            ini.ValueExists('dictionary', 'user_db_path') or
-            not ini.ValueExists('ai', 'llama_backend') or
-            not ini.ValueExists('ai', 'llama_runtime_dir_cpu') or
-            not ini.ValueExists('ai', 'llama_runtime_dir_cuda') or
-            not ini.ValueExists('ai', 'llama_model_path') or
-            not ini.ValueExists('ai', 'request_timeout_ms');
+            ini.ValueExists('dictionary', 'user_db_path');
     finally
         ini.Free;
     end;
@@ -495,9 +385,6 @@ begin
     migrate_runtime_dictionary_file(legacy_tc_path, get_default_dictionary_path_traditional, False);
     migrate_runtime_dictionary_file(legacy_user_path, get_default_user_dictionary_path, True);
     migrate_runtime_dictionary_file(resolve_runtime_path('config\user_dict.db'), get_default_user_dictionary_path, True);
-    Result.ai_llama_runtime_dir_cpu := resolve_runtime_path(Result.ai_llama_runtime_dir_cpu);
-    Result.ai_llama_runtime_dir_cuda := resolve_runtime_path(Result.ai_llama_runtime_dir_cuda);
-    Result.ai_llama_model_path := resolve_runtime_path(Result.ai_llama_model_path);
 
     if (config_version < c_config_version) or needs_full_write then
     begin
@@ -564,7 +451,6 @@ begin
         begin
             ini.DeleteKey('engine', 'suppress_nonlexicon_complete_long_candidates');
         end;
-        ini.WriteBool('engine', 'enable_ai', config.enable_ai);
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
@@ -585,11 +471,6 @@ begin
         begin
             ini.DeleteKey('dictionary', 'user_db_path');
         end;
-        ini.WriteString('ai', 'llama_backend', llama_backend_to_text(config.ai_llama_backend));
-        ini.WriteString('ai', 'llama_runtime_dir_cpu', config.ai_llama_runtime_dir_cpu);
-        ini.WriteString('ai', 'llama_runtime_dir_cuda', config.ai_llama_runtime_dir_cuda);
-        ini.WriteString('ai', 'llama_model_path', config.ai_llama_model_path);
-        ini.WriteInteger('ai', 'request_timeout_ms', config.ai_request_timeout_ms);
         write_config_version(ini);
     finally
         ini.Free;

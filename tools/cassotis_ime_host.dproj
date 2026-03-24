@@ -61,7 +61,7 @@
         <DCC_ImageBase>00400000</DCC_ImageBase>
         <SanitizedProjectName>cassotis_ime_host</SanitizedProjectName>
         <DCC_Namespace>Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
-        <DCC_UnitSearchPath>../src/common;../src/engine;../src/ai;../src/ui;../src/host;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>../src/common;../src/engine;../src/ui;../src/host;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <VerInfo_Locale>2052</VerInfo_Locale>
         <VerInfo_Keys>CompanyName=;FileDescription=;FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=;ProductVersion=1.0.0.0;Comments=;CFBundleName=</VerInfo_Keys>
         <DCC_DcpOutput>../dcu</DCC_DcpOutput>
@@ -118,7 +118,6 @@
         <DCCReference Include="..\src\host\cassotis_ime_host_app.pas"/>
         <DCCReference Include="..\src\host\cassotis_ime_host.pas"/>
         <DCCReference Include="..\src\engine\nc_engine_intf.pas"/>
-        <DCCReference Include="..\src\engine\nc_candidate_fusion.pas"/>
         <DCCReference Include="..\src\engine\nc_dictionary_intf.pas"/>
         <DCCReference Include="..\src\engine\nc_dictionary_sqlite.pas"/>
         <DCCReference Include="..\src\engine\nc_pinyin_parser.pas"/>

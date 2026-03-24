@@ -4777,20 +4777,16 @@ var
                         Result := 0;
                     cs_rule:
                         Result := 1;
-                    cs_ai:
-                        Result := 2;
                 else
-                    Result := 3;
+                    Result := 2;
                 end;
                 case right.source of
                     cs_user:
                         Dec(Result, 0);
                     cs_rule:
                         Dec(Result, 1);
-                    cs_ai:
-                        Dec(Result, 2);
                 else
-                    Dec(Result, 3);
+                    Dec(Result, 2);
                 end;
                 if Result <> 0 then
                 begin

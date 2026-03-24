@@ -680,8 +680,6 @@ begin
     case source of
         cs_user:
             Result := TColor(RGB(46, 125, 50));
-        cs_ai:
-            Result := TColor(RGB(55, 71, 79));
         else
             Result := clBlack;
     end;
@@ -692,8 +690,6 @@ begin
     case source of
         cs_user:
             Result := TColor(RGB(27, 94, 32));
-        cs_ai:
-            Result := TColor(RGB(38, 50, 56));
         else
             Result := TColor(RGB(20, 20, 20));
     end;

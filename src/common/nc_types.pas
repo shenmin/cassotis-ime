@@ -3,7 +3,7 @@ unit nc_types;
 interface
 
 type
-    TncCandidateSource = (cs_rule, cs_user, cs_ai);
+    TncCandidateSource = (cs_rule, cs_user);
     TncLogLevel = (ll_debug, ll_info, ll_warn, ll_error);
 
     TncCandidate = record
@@ -33,12 +33,10 @@ type
 
     TncInputMode = (im_chinese, im_english);
     TncDictionaryVariant = (dv_simplified, dv_traditional);
-    TncLlamaBackend = (lb_auto, lb_cpu, lb_cuda);
 
     TncEngineConfig = record
         input_mode: TncInputMode;
         max_candidates: Integer;
-        enable_ai: Boolean;
         enable_ctrl_space_toggle: Boolean;
         enable_shift_space_full_width_toggle: Boolean;
         enable_ctrl_period_punct_toggle: Boolean;
@@ -48,11 +46,6 @@ type
         segment_head_only_multi_syllable: Boolean;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
-        ai_llama_backend: TncLlamaBackend;
-        ai_llama_runtime_dir_cpu: string;
-        ai_llama_runtime_dir_cuda: string;
-        ai_llama_model_path: string;
-        ai_request_timeout_ms: Integer;
     end;
 
 implementation
