@@ -887,7 +887,7 @@ begin
     m_status_label_punct.Height := 20;
     m_status_label_punct.ParentShowHint := False;
     m_status_label_punct.ShowHint := False;
-    m_status_label_punct.Hint := '切换标点（Ctrl+.）';
+    m_status_label_punct.Hint := '切换中文/英文标点（Ctrl+.）';
     m_status_label_punct.Cursor := crHandPoint;
     m_status_label_punct.OnPaint := status_punct_paint;
 
@@ -950,6 +950,7 @@ begin
     m_status_label_punct.OnMouseLeave := status_label_mouse_leave;
 
     enforce_status_form_toolwindow_style;
+    refresh_status_widget_frame;
 end;
 
 procedure TncTrayHost.enforce_application_toolwindow_style;
@@ -1063,6 +1064,7 @@ begin
     end;
 
     m_status_form.SetBounds(x_value, y_value, m_status_form.Width, m_status_form.Height);
+    refresh_status_widget_frame;
     m_status_saved_origin := Point(x_value, y_value);
     m_item_status_widget.Checked := visible_value;
     apply_status_widget_visibility;
@@ -1285,7 +1287,10 @@ begin
         begin
             m_status_form.SetBounds(m_status_saved_origin.X, m_status_saved_origin.Y, m_status_form.Width, m_status_form.Height);
             enforce_status_form_toolwindow_style;
+            refresh_status_widget_frame;
             m_status_form.Show;
+            refresh_status_widget_frame;
+            m_status_form.Update;
         end;
         SetWindowPos(
             m_status_form.Handle,

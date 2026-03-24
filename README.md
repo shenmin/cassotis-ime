@@ -14,6 +14,10 @@ English | [简体中文](README.CN.md)
 
 Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework).
 
+<p align="center">
+  <img src="snapshot.png" alt="Cassotis IME status widget snapshot" width="420">
+</p>
+
 ## Name Origin
 
 The English name **Cassotis** comes from the sacred spring inside the Temple of Delphi. Before delivering oracles, the priestess Pythia was said to drink from this spring to enter a prophetic state — the spring was regarded as the true source of prophecy and inspiration, resonating with the path from Delphi to human language.

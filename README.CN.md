@@ -14,6 +14,10 @@
 
 Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中文拼音输入法项目，主要使用 Delphi，并基于 TSF（Text Services Framework）实现。
 
+<p align="center">
+  <img src="snapshot.png" alt="言泉输入法状态浮窗截图" width="420">
+</p>
+
 ## 名称来源
 
 英文名 **Cassotis** 源自 Delphi 神庙内的一眼圣泉。传说女祭司皮媞亚（Pythia）在发布神谕前会饮用此泉水以进入通灵状态——这眼泉被视为预言与灵感的真正源头，与从 Delphi 到人类语言的路径恰好呼应。
