@@ -65,9 +65,9 @@ begin
     end;
 end;
 
-function resolve_runtime_path(const path_text: string): string;
+function normalize_filesystem_path_text(const path_text: string): string;
 var
-    module_dir: string;
+    prefix: string;
 begin
     Result := Trim(path_text);
     if Result = '' then
@@ -75,20 +75,56 @@ begin
         Exit;
     end;
 
+    if Copy(Result, 1, 4) = '\\?\' then
+    begin
+        Exit;
+    end;
+
+    prefix := '';
+    if Copy(Result, 1, 2) = '\\' then
+    begin
+        prefix := '\\';
+        Delete(Result, 1, 2);
+    end
+    else if (Length(Result) >= 3) and (Result[2] = ':') and (Result[3] = '\') then
+    begin
+        prefix := Copy(Result, 1, 3);
+        Delete(Result, 1, 3);
+    end;
+
+    while Pos('\\', Result) > 0 do
+    begin
+        Result := StringReplace(Result, '\\', '\', [rfReplaceAll]);
+    end;
+
+    Result := prefix + Result;
+end;
+
+function resolve_runtime_path(const path_text: string): string;
+var
+    module_dir: string;
+begin
+    Result := normalize_filesystem_path_text(path_text);
+    if Result = '' then
+    begin
+        Exit;
+    end;
+
     if TPath.IsPathRooted(Result) then
     begin
-        Result := ExpandFileName(Result);
+        Result := normalize_filesystem_path_text(ExpandFileName(Result));
         Exit;
     end;
 
     module_dir := get_module_directory;
     if module_dir = '' then
     begin
-        Result := ExpandFileName(Result);
+        Result := normalize_filesystem_path_text(ExpandFileName(Result));
         Exit;
     end;
 
     Result := ExpandFileName(IncludeTrailingPathDelimiter(module_dir) + Result);
+    Result := normalize_filesystem_path_text(Result);
 end;
 
 function parse_llama_backend_text(const value: string): TncLlamaBackend;
@@ -586,7 +622,7 @@ begin
             Result.level := TncLogLevel(level_value);
         end;
         Result.max_size_kb := ini.ReadInteger('log', 'max_size_kb', Result.max_size_kb);
-        Result.log_path := ini.ReadString('log', 'log_path', Result.log_path);
+        Result.log_path := normalize_filesystem_path_text(ini.ReadString('log', 'log_path', Result.log_path));
     finally
         ini.Free;
     end;
@@ -607,7 +643,7 @@ begin
         ini.WriteBool('log', 'enabled', config.enabled);
         ini.WriteInteger('log', 'level', Ord(config.level));
         ini.WriteInteger('log', 'max_size_kb', config.max_size_kb);
-        ini.WriteString('log', 'log_path', config.log_path);
+        ini.WriteString('log', 'log_path', normalize_filesystem_path_text(config.log_path));
         write_config_version(ini);
     finally
         ini.Free;

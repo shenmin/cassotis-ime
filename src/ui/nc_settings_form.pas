@@ -164,7 +164,6 @@ type
         m_btn_log_path: TncModernButton;
         m_btn_open_log_folder: TncModernButton;
         m_btn_log_defaults: TncModernButton;
-        m_hint_logging: TLabel;
         m_chk_debug_mode: TncModernCheckBox;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
@@ -230,7 +229,7 @@ implementation
 
 const
     c_dialog_width = 596;
-    c_dialog_height = 540;
+    c_dialog_height = 492;
     c_page_margin = 10;
     c_footer_height = 50;
     c_section_left = 12;
@@ -251,6 +250,7 @@ const
     c_footer_button_height = 30;
     c_check_width = c_section_width - c_label_left - 20;
     c_hint_width = c_section_width - (c_label_left * 2);
+    c_general_row_gap = 8;
 
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
@@ -278,7 +278,6 @@ resourcestring
     SOptionSimplifiedChineseInput = '简体中文输入';
     SOptionTraditionalChineseInput = '繁体中文输入';
     SOptionEnglishInput = '英文输入';
-    SHintAiBehavior = 'AI 候选只在适合的完整拼音场景里触发，不会替代基础词库。';
     SLabelPunctuationMode = '标点';
     SCheckFullWidthMode = '使用全角输入';
     SCheckShowStatusWidget = '显示状态浮窗';
@@ -303,9 +302,8 @@ resourcestring
     SLabelLogPath = '日志路径';
     SButtonOpenLogFolder = '打开日志目录';
     SButtonUseDefaultLogging = '恢复默认日志';
-    SHintLogging =
-        '修改会立即写回 ini 文件。Host 侧日志会立刻热重载；TSF 侧日志沿用现有配置重载路径。';
     SCheckEnableDebugMode = '启用调试模式';
+    SHintDebugMode = '开启后，候选栏中的候选词和单字将显示权重信息，仅用于调试和问题排查。';
     SLabelSimplifiedDictionary = '简体词库';
     SLabelTraditionalDictionary = '繁体词库';
     SLabelUserDictionary = '用户词库';
@@ -313,8 +311,7 @@ resourcestring
     SButtonOpenDictionaryFolder = '打开词库目录';
     SButtonOpenConfigFolder = '打开配置目录';
     SButtonOpenConfigFile = '打开配置文件';
-    SHintAdvanced =
-        '词库和模型路径会写回 ini 文件并立即重载。请使用有效路径，避免运行时资源失效。';
+    SHintAdvanced = '可直接打开配置目录和当前配置文件。';
     SPathEditHint = '留空表示使用内置默认路径。';
     SPathEmpty = '%s为空。';
     SPathMissing = '%s不存在。';
@@ -1349,7 +1346,7 @@ var
     appearance_group: TPanel;
 begin
     section_top := 18;
-    defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 218);
+    defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 158);
 
     top := c_section_inner_top;
     create_label(Self, defaults_group, SLabelInputMode, top);
@@ -1364,7 +1361,7 @@ begin
     m_combo_input_mode.Items.Add(SOptionEnglishInput);
     m_combo_input_mode.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap);
+    Inc(top, c_row_height + c_general_row_gap);
     create_label(Self, defaults_group, SLabelPunctuationMode, top);
     m_combo_punctuation_mode := TComboBox.Create(Self);
     m_combo_punctuation_mode.Parent := defaults_group;
@@ -1376,11 +1373,11 @@ begin
     m_combo_punctuation_mode.Items.Add(SOptionEnglish);
     m_combo_punctuation_mode.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap);
+    Inc(top, c_row_height + c_general_row_gap);
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
 
-    section_top := defaults_group.Top + defaults_group.Height + c_section_gap;
-    appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 96);
+    section_top := defaults_group.Top + defaults_group.Height + 10;
+    appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 76);
 
     top := c_section_inner_top;
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
@@ -1394,7 +1391,7 @@ var
     resources_group: TPanel;
 begin
     section_top := 18;
-    behavior_group := create_section_group(Self, m_tab_ai, SGroupAiBehavior, section_top, 170);
+    behavior_group := create_section_group(Self, m_tab_ai, SGroupAiBehavior, section_top, 152);
 
     top := c_section_inner_top;
     m_chk_enable_ai := create_check_box(Self, behavior_group, top, SCheckEnableAI, mark_dirty);
@@ -1422,10 +1419,8 @@ begin
     configure_numeric_edit(m_edit_ai_timeout_ms, '100..10000');
     m_edit_ai_timeout_ms.OnChange := mark_dirty;
 
-    create_hint_label(Self, behavior_group, SHintAiBehavior, c_label_left, top + c_row_height + 4, c_hint_width);
-
     section_top := behavior_group.Top + behavior_group.Height + c_section_gap;
-    resources_group := create_section_group(Self, m_tab_ai, SGroupAiResources, section_top, 222);
+    resources_group := create_section_group(Self, m_tab_ai, SGroupAiResources, section_top, 192);
 
     top := c_section_inner_top;
     create_label(Self, resources_group, SLabelAIRuntimeDirCPU, top);
@@ -1475,7 +1470,7 @@ var
     files_group: TPanel;
 begin
     section_top := 18;
-    logging_group := create_section_group(Self, m_tab_logging, SGroupLogging, section_top, 162);
+    logging_group := create_section_group(Self, m_tab_logging, SGroupLogging, section_top, 152);
 
     top := c_section_inner_top;
     m_chk_log_enabled := create_check_box(Self, logging_group, top, SCheckEnableLogging, mark_dirty);
@@ -1505,7 +1500,7 @@ begin
     m_edit_log_max_size_kb.OnChange := mark_dirty;
 
     section_top := logging_group.Top + logging_group.Height + c_section_gap;
-    files_group := create_section_group(Self, m_tab_logging, SGroupLogFiles, section_top, 148);
+    files_group := create_section_group(Self, m_tab_logging, SGroupLogFiles, section_top, 108);
 
     top := c_section_inner_top;
     create_label(Self, files_group, SLabelLogPath, top);
@@ -1524,7 +1519,6 @@ begin
     m_btn_log_defaults := create_action_button(Self, files_group, c_control_left + c_action_button_width + 12, top,
         SButtonUseDefaultLogging, on_log_defaults_click);
 
-    m_hint_logging := create_hint_label(Self, files_group, SHintLogging, c_label_left, top + c_row_height + 4, c_hint_width);
 end;
 
 procedure TncSettingsForm.add_advanced_controls;
@@ -1535,10 +1529,11 @@ var
     tools_group: TPanel;
 begin
     section_top := 18;
-    debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 84);
+    debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 116);
 
     top := c_section_inner_top;
     m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
+    create_hint_label(Self, debug_group, SHintDebugMode, c_label_left, top + c_row_height + 4, c_hint_width);
 
     section_top := debug_group.Top + debug_group.Height + c_section_gap;
     tools_group := create_section_group(Self, m_tab_advanced, SGroupConfigTools, section_top, 134);
@@ -2028,9 +2023,9 @@ end;
 
 procedure TncSettingsForm.on_ai_defaults_click(Sender: TObject);
 begin
-    assign_path_edit(m_edit_ai_runtime_dir_cpu, '');
-    assign_path_edit(m_edit_ai_runtime_dir_cuda, '');
-    assign_path_edit(m_edit_ai_model_path, '');
+    assign_path_edit(m_edit_ai_runtime_dir_cpu, get_default_ai_llama_runtime_dir_cpu);
+    assign_path_edit(m_edit_ai_runtime_dir_cuda, get_default_ai_llama_runtime_dir_cuda);
+    assign_path_edit(m_edit_ai_model_path, get_default_ai_llama_model_path);
 end;
 
 procedure TncSettingsForm.on_open_ai_model_folder(Sender: TObject);
@@ -2069,20 +2064,32 @@ begin
 end;
 
 procedure TncSettingsForm.on_log_defaults_click(Sender: TObject);
+var
+    default_log_config: TncLogConfig;
 begin
+    default_log_config := build_default_log_config_value;
     if m_chk_log_enabled <> nil then
     begin
-        m_chk_log_enabled.Checked := False;
+        m_chk_log_enabled.Checked := default_log_config.enabled;
     end;
     if m_combo_log_level <> nil then
     begin
-        m_combo_log_level.ItemIndex := 1;
+        case default_log_config.level of
+            ll_debug:
+                m_combo_log_level.ItemIndex := 0;
+            ll_warn:
+                m_combo_log_level.ItemIndex := 2;
+            ll_error:
+                m_combo_log_level.ItemIndex := 3;
+        else
+            m_combo_log_level.ItemIndex := 1;
+        end;
     end;
     if m_edit_log_max_size_kb <> nil then
     begin
-        m_edit_log_max_size_kb.Text := IntToStr(build_default_log_config_value.max_size_kb);
+        m_edit_log_max_size_kb.Text := IntToStr(default_log_config.max_size_kb);
     end;
-    assign_path_edit(m_edit_log_path, '');
+    assign_path_edit(m_edit_log_path, default_log_config.log_path);
 end;
 
 procedure TncSettingsForm.on_open_config_folder(Sender: TObject);
