@@ -15,7 +15,7 @@ English | [简体中文](README.CN.md)
 Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework).
 
 <p align="center">
-  <img src="snapshot.png" alt="Cassotis IME status widget snapshot" width="420">
+  <img src="snapshot.png" alt="Cassotis IME status widget snapshot" width="600">
 </p>
 
 ## Name Origin
