@@ -161,7 +161,7 @@ const
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
     c_status_widget_y_key = 'status_widget_y';
-    c_status_widget_default_width = 326;
+    c_status_widget_default_width = 292;
     c_status_widget_default_height = 40;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
@@ -641,7 +641,7 @@ begin
     m_status_label_mode.Parent := m_status_panel;
     m_status_label_mode.Left := 42;
     m_status_label_mode.Top := 11;
-    m_status_label_mode.Width := 34;
+    m_status_label_mode.Width := 28;
     m_status_label_mode.Height := 18;
     m_status_label_mode.AutoSize := False;
     m_status_label_mode.Alignment := taCenter;
@@ -651,12 +651,12 @@ begin
     m_status_label_mode.Transparent := True;
     m_status_label_mode.ParentShowHint := False;
     m_status_label_mode.ShowHint := False;
-    m_status_label_mode.Hint := '切换中/英（Shift）';
+    m_status_label_mode.Hint := '切换中文/英文（Shift）';
     m_status_label_mode.Cursor := crHandPoint;
 
     divider := TBevel.Create(m_status_panel);
     divider.Parent := m_status_panel;
-    divider.Left := 82;
+    divider.Left := 76;
     divider.Top := 11;
     divider.Width := 2;
     divider.Height := 18;
@@ -664,9 +664,9 @@ begin
 
     m_status_label_variant := TLabel.Create(m_status_panel);
     m_status_label_variant.Parent := m_status_panel;
-    m_status_label_variant.Left := 90;
+    m_status_label_variant.Left := 84;
     m_status_label_variant.Top := 11;
-    m_status_label_variant.Width := 40;
+    m_status_label_variant.Width := 24;
     m_status_label_variant.Height := 18;
     m_status_label_variant.AutoSize := False;
     m_status_label_variant.Alignment := taCenter;
@@ -675,12 +675,12 @@ begin
     m_status_label_variant.Transparent := True;
     m_status_label_variant.ParentShowHint := False;
     m_status_label_variant.ShowHint := False;
-    m_status_label_variant.Hint := '切换简/繁（Ctrl+Shift+T）';
+    m_status_label_variant.Hint := '切换简体/繁体（Ctrl+Shift+T）';
     m_status_label_variant.Cursor := crHandPoint;
 
     divider := TBevel.Create(m_status_panel);
     divider.Parent := m_status_panel;
-    divider.Left := 136;
+    divider.Left := 114;
     divider.Top := 11;
     divider.Width := 2;
     divider.Height := 18;
@@ -688,9 +688,9 @@ begin
 
     m_status_label_full_width := TLabel.Create(m_status_panel);
     m_status_label_full_width.Parent := m_status_panel;
-    m_status_label_full_width.Left := 144;
+    m_status_label_full_width.Left := 122;
     m_status_label_full_width.Top := 11;
-    m_status_label_full_width.Width := 40;
+    m_status_label_full_width.Width := 24;
     m_status_label_full_width.Height := 18;
     m_status_label_full_width.AutoSize := False;
     m_status_label_full_width.Alignment := taCenter;
@@ -699,12 +699,12 @@ begin
     m_status_label_full_width.Transparent := True;
     m_status_label_full_width.ParentShowHint := False;
     m_status_label_full_width.ShowHint := False;
-    m_status_label_full_width.Hint := '切换全/半角（Shift+Space）';
+    m_status_label_full_width.Hint := '切换全角/半角（Shift+Space）';
     m_status_label_full_width.Cursor := crHandPoint;
 
     divider := TBevel.Create(m_status_panel);
     divider.Parent := m_status_panel;
-    divider.Left := 190;
+    divider.Left := 152;
     divider.Top := 11;
     divider.Width := 2;
     divider.Height := 18;
@@ -712,9 +712,9 @@ begin
 
     m_status_label_punct := TLabel.Create(m_status_panel);
     m_status_label_punct.Parent := m_status_panel;
-    m_status_label_punct.Left := 198;
+    m_status_label_punct.Left := 160;
     m_status_label_punct.Top := 11;
-    m_status_label_punct.Width := 56;
+    m_status_label_punct.Width := 58;
     m_status_label_punct.Height := 18;
     m_status_label_punct.AutoSize := False;
     m_status_label_punct.Alignment := taCenter;
@@ -728,9 +728,9 @@ begin
 
     m_status_btn_settings := TncModernButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
-    m_status_btn_settings.Left := 258;
+    m_status_btn_settings.Left := 226;
     m_status_btn_settings.Top := 8;
-    m_status_btn_settings.Width := 56;
+    m_status_btn_settings.Width := 50;
     m_status_btn_settings.Height := 24;
     m_status_btn_settings.Caption := '设置';
     m_status_btn_settings.VisualKind := mbkSubtle;
@@ -961,14 +961,14 @@ begin
 
     if m_engine_config.input_mode = im_chinese then
     begin
-        mode_text := '中文';
+        mode_text := '中';
         if m_engine_config.dictionary_variant = dv_traditional then
         begin
-            variant_text := '繁体';
+            variant_text := '繁';
         end
         else
         begin
-            variant_text := '简体';
+            variant_text := '简';
         end;
 
         if m_engine_config.punctuation_full_width then
@@ -982,18 +982,18 @@ begin
     end
     else
     begin
-        mode_text := '英文';
+        mode_text := '英';
         variant_text := '-';
         punct_text := '英文标点';
     end;
 
     if m_engine_config.full_width_mode then
     begin
-        full_width_text := '全角';
+        full_width_text := '全';
     end
     else
     begin
-        full_width_text := '半角';
+        full_width_text := '半';
     end;
 
     m_status_label_mode.Caption := mode_text;

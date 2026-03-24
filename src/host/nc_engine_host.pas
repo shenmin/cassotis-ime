@@ -448,11 +448,11 @@ begin
         path_len := GetModuleFileName(HInstance, path_buffer, Length(path_buffer));
         if path_len = 0 then
         begin
-            g_host_log_path := 'logs\\engine_host.log';
+            g_host_log_path := 'logs\engine_host.log';
         end
         else
         begin
-            g_host_log_path := IncludeTrailingPathDelimiter(ExtractFileDir(path_buffer)) + 'logs\\engine_host.log';
+            g_host_log_path := IncludeTrailingPathDelimiter(ExtractFileDir(path_buffer)) + 'logs\engine_host.log';
         end;
     end;
 
@@ -1604,7 +1604,7 @@ var
 begin
     m_lock.Acquire;
     try
-        user_db_path := Trim(m_config.user_dictionary_path);
+        user_db_path := get_default_user_dictionary_path;
         debug_mode := m_config.debug_mode;
         last_activity_tick := m_last_user_activity_tick;
         last_checkpoint_activity_tick := m_last_user_dict_checkpoint_activity_tick;

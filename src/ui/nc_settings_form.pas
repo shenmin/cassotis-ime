@@ -166,14 +166,6 @@ type
         m_btn_log_defaults: TncModernButton;
         m_hint_logging: TLabel;
         m_chk_debug_mode: TncModernCheckBox;
-        m_edit_dict_path_sc: TEdit;
-        m_edit_dict_path_tc: TEdit;
-        m_edit_user_dict_path: TEdit;
-        m_btn_dict_path_sc: TncModernButton;
-        m_btn_dict_path_tc: TncModernButton;
-        m_btn_user_dict_path: TncModernButton;
-        m_btn_dict_defaults: TncModernButton;
-        m_btn_open_dictionary_folder: TncModernButton;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
         m_hint_advanced: TLabel;
@@ -218,11 +210,6 @@ type
         procedure on_browse_log_path(Sender: TObject);
         procedure on_open_log_folder(Sender: TObject);
         procedure on_log_defaults_click(Sender: TObject);
-        procedure on_browse_dict_path_sc(Sender: TObject);
-        procedure on_browse_dict_path_tc(Sender: TObject);
-        procedure on_browse_user_dict_path(Sender: TObject);
-        procedure on_dictionary_defaults_click(Sender: TObject);
-        procedure on_open_dictionary_folder(Sender: TObject);
         procedure on_open_config_folder(Sender: TObject);
         procedure on_open_config_file(Sender: TObject);
         procedure on_reset_click(Sender: TObject);
@@ -1122,9 +1109,6 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
-    Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
-    Result.dictionary_path_traditional := get_default_dictionary_path_traditional;
-    Result.user_dictionary_path := get_default_user_dictionary_path;
     Result.ai_llama_backend := lb_auto;
     Result.ai_llama_runtime_dir_cpu := get_default_ai_llama_runtime_dir_cpu;
     Result.ai_llama_runtime_dir_cuda := get_default_ai_llama_runtime_dir_cuda;
@@ -1548,7 +1532,6 @@ var
     top: Integer;
     section_top: Integer;
     debug_group: TPanel;
-    dictionaries_group: TPanel;
     tools_group: TPanel;
 begin
     section_top := 18;
@@ -1558,47 +1541,6 @@ begin
     m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
 
     section_top := debug_group.Top + debug_group.Height + c_section_gap;
-    dictionaries_group := create_section_group(Self, m_tab_advanced, SGroupDictionaryPaths, section_top, 212);
-
-    top := c_section_inner_top;
-    create_label(Self, dictionaries_group, SLabelSimplifiedDictionary, top);
-    m_edit_dict_path_sc := TEdit.Create(Self);
-    m_edit_dict_path_sc.Parent := dictionaries_group;
-    m_edit_dict_path_sc.Left := c_control_left;
-    m_edit_dict_path_sc.Top := top;
-    m_edit_dict_path_sc.Width := c_path_edit_width;
-    configure_path_edit(m_edit_dict_path_sc, get_default_dictionary_path_simplified);
-    m_edit_dict_path_sc.OnChange := mark_dirty;
-    m_btn_dict_path_sc := create_browse_button(Self, dictionaries_group, top, on_browse_dict_path_sc);
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, dictionaries_group, SLabelTraditionalDictionary, top);
-    m_edit_dict_path_tc := TEdit.Create(Self);
-    m_edit_dict_path_tc.Parent := dictionaries_group;
-    m_edit_dict_path_tc.Left := c_control_left;
-    m_edit_dict_path_tc.Top := top;
-    m_edit_dict_path_tc.Width := c_path_edit_width;
-    configure_path_edit(m_edit_dict_path_tc, get_default_dictionary_path_traditional);
-    m_edit_dict_path_tc.OnChange := mark_dirty;
-    m_btn_dict_path_tc := create_browse_button(Self, dictionaries_group, top, on_browse_dict_path_tc);
-
-    Inc(top, c_row_height + c_row_gap);
-    create_label(Self, dictionaries_group, SLabelUserDictionary, top);
-    m_edit_user_dict_path := TEdit.Create(Self);
-    m_edit_user_dict_path.Parent := dictionaries_group;
-    m_edit_user_dict_path.Left := c_control_left;
-    m_edit_user_dict_path.Top := top;
-    m_edit_user_dict_path.Width := c_path_edit_width;
-    configure_path_edit(m_edit_user_dict_path, get_default_user_dictionary_path);
-    m_edit_user_dict_path.OnChange := mark_dirty;
-    m_btn_user_dict_path := create_browse_button(Self, dictionaries_group, top, on_browse_user_dict_path);
-
-    Inc(top, c_row_height + 2);
-    m_btn_dict_defaults := create_action_button(Self, dictionaries_group, c_control_left, top,
-        SButtonUseDefaultDictionaries, on_dictionary_defaults_click);
-    m_btn_open_dictionary_folder := create_action_button(Self, dictionaries_group, c_control_left + c_action_button_width + 12, top,
-        SButtonOpenDictionaryFolder, on_open_dictionary_folder);
-    section_top := dictionaries_group.Top + dictionaries_group.Height + c_section_gap;
     tools_group := create_section_group(Self, m_tab_advanced, SGroupConfigTools, section_top, 134);
 
     top := c_section_inner_top;
@@ -1939,19 +1881,6 @@ begin
     begin
         m_chk_debug_mode.Checked := m_engine_config.debug_mode;
     end;
-    if m_edit_dict_path_sc <> nil then
-    begin
-        m_edit_dict_path_sc.Text := m_engine_config.dictionary_path_simplified;
-    end;
-    if m_edit_dict_path_tc <> nil then
-    begin
-        m_edit_dict_path_tc.Text := m_engine_config.dictionary_path_traditional;
-    end;
-    if m_edit_user_dict_path <> nil then
-    begin
-        m_edit_user_dict_path.Text := m_engine_config.user_dictionary_path;
-    end;
-
     m_dirty := False;
     update_ai_controls;
     update_logging_controls;
@@ -2059,12 +1988,6 @@ begin
     else
         next_log_config.level := ll_info;
     end;
-    next_config.dictionary_path_simplified := normalize_path_override(
-        m_edit_dict_path_sc.Text, get_default_dictionary_path_simplified);
-    next_config.dictionary_path_traditional := normalize_path_override(
-        m_edit_dict_path_tc.Text, get_default_dictionary_path_traditional);
-    next_config.user_dictionary_path := normalize_path_override(
-        m_edit_user_dict_path.Text, get_default_user_dictionary_path);
     next_config.debug_mode := m_chk_debug_mode.Checked;
 
     Result := True;
@@ -2160,69 +2083,6 @@ begin
         m_edit_log_max_size_kb.Text := IntToStr(build_default_log_config_value.max_size_kb);
     end;
     assign_path_edit(m_edit_log_path, '');
-end;
-
-procedure TncSettingsForm.on_browse_dict_path_sc(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_dict_path_sc.Text);
-    if browse_for_open_file(SDialogSelectSimplifiedDictionary, SFilterDictionaryFiles, path) then
-    begin
-        assign_path_edit(m_edit_dict_path_sc, path);
-    end;
-end;
-
-procedure TncSettingsForm.on_browse_dict_path_tc(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_dict_path_tc.Text);
-    if browse_for_open_file(SDialogSelectTraditionalDictionary, SFilterDictionaryFiles, path) then
-    begin
-        assign_path_edit(m_edit_dict_path_tc, path);
-    end;
-end;
-
-procedure TncSettingsForm.on_browse_user_dict_path(Sender: TObject);
-var
-    path: string;
-begin
-    path := Trim(m_edit_user_dict_path.Text);
-    if browse_for_save_file(SDialogSelectUserDictionary, SFilterDatabaseFiles, 'db', path) then
-    begin
-        assign_path_edit(m_edit_user_dict_path, path);
-    end;
-end;
-
-procedure TncSettingsForm.on_dictionary_defaults_click(Sender: TObject);
-begin
-    assign_path_edit(m_edit_dict_path_sc, '');
-    assign_path_edit(m_edit_dict_path_tc, '');
-    assign_path_edit(m_edit_user_dict_path, '');
-end;
-
-procedure TncSettingsForm.on_open_dictionary_folder(Sender: TObject);
-var
-    path: string;
-begin
-    if (m_combo_input_mode <> nil) and (m_combo_input_mode.ItemIndex = 1) then
-    begin
-        path := Trim(m_edit_dict_path_tc.Text);
-        if path = '' then
-        begin
-            path := get_default_dictionary_path_traditional;
-        end;
-    end
-    else
-    begin
-        path := Trim(m_edit_dict_path_sc.Text);
-        if path = '' then
-        begin
-            path := get_default_dictionary_path_simplified;
-        end;
-    end;
-    open_folder_for_path(path, SCurrentDictionaryPath);
 end;
 
 procedure TncSettingsForm.on_open_config_folder(Sender: TObject);

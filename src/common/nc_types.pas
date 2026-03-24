@@ -48,9 +48,6 @@ type
         segment_head_only_multi_syllable: Boolean;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
-        dictionary_path_simplified: string;
-        dictionary_path_traditional: string;
-        user_dictionary_path: string;
         ai_llama_backend: TncLlamaBackend;
         ai_llama_runtime_dir_cpu: string;
         ai_llama_runtime_dir_cuda: string;

@@ -26,6 +26,7 @@ type
     end;
 
 function get_default_config_path: string;
+function get_runtime_data_directory: string;
 function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
 function get_default_user_dictionary_path: string;
@@ -36,7 +37,7 @@ function get_default_ai_llama_model_path: string;
 implementation
 
 const
-    c_config_version = 7;
+    c_config_version = 8;
     c_default_ai_request_timeout_ms = 1200;
 
 function get_module_directory: string; forward;
@@ -134,6 +135,116 @@ begin
     Result := ExtractFileDir(path_buffer);
 end;
 
+function get_local_app_data_directory: string;
+begin
+    Result := Trim(GetEnvironmentVariable('LOCALAPPDATA'));
+    if Result = '' then
+    begin
+        Result := TPath.GetHomePath;
+    end;
+end;
+
+function get_runtime_root_directory: string;
+begin
+    Result := IncludeTrailingPathDelimiter(get_local_app_data_directory) + 'CassotisIme';
+    ForceDirectories(Result);
+end;
+
+function get_runtime_data_directory: string;
+begin
+    Result := IncludeTrailingPathDelimiter(get_runtime_root_directory) + 'data';
+    ForceDirectories(Result);
+end;
+
+function get_legacy_dictionary_path_simplified: string;
+var
+    module_dir: string;
+begin
+    module_dir := get_module_directory;
+    if module_dir = '' then
+    begin
+        Result := 'dict_sc.db';
+        Exit;
+    end;
+
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'data\dict_sc.db';
+end;
+
+function get_legacy_dictionary_path_traditional: string;
+var
+    module_dir: string;
+begin
+    module_dir := get_module_directory;
+    if module_dir = '' then
+    begin
+        Result := 'dict_tc.db';
+        Exit;
+    end;
+
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'data\dict_tc.db';
+end;
+
+function get_legacy_user_dictionary_path: string;
+var
+    module_dir: string;
+begin
+    module_dir := get_module_directory;
+    if module_dir = '' then
+    begin
+        Result := 'user_dict.db';
+        Exit;
+    end;
+
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'data\user_dict.db';
+end;
+
+procedure migrate_runtime_dictionary_file(const source_path: string; const target_path: string;
+    const move_source: Boolean);
+var
+    normalized_source: string;
+    normalized_target: string;
+begin
+    normalized_source := Trim(source_path);
+    normalized_target := Trim(target_path);
+    if (normalized_source = '') or (normalized_target = '') then
+    begin
+        Exit;
+    end;
+    if SameText(normalized_source, normalized_target) then
+    begin
+        Exit;
+    end;
+    if not FileExists(normalized_source) then
+    begin
+        Exit;
+    end;
+    if FileExists(normalized_target) then
+    begin
+        Exit;
+    end;
+
+    ForceDirectories(ExtractFileDir(normalized_target));
+    try
+        if move_source then
+        begin
+            TFile.Move(normalized_source, normalized_target);
+        end
+        else
+        begin
+            TFile.Copy(normalized_source, normalized_target, False);
+        end;
+    except
+        if move_source and (not FileExists(normalized_target)) then
+        begin
+            try
+                TFile.Copy(normalized_source, normalized_target, False);
+            except
+                // Ignore migration failure and keep using the source file.
+            end;
+        end;
+    end;
+end;
+
 function get_default_log_config: TncLogConfig;
 begin
     Result.enabled := False;
@@ -150,17 +261,17 @@ begin
     if module_dir = '' then
     begin
 {$IFDEF WIN64}
-        Result := 'llama\\win64';
+        Result := 'llama\win64';
 {$ELSE}
-        Result := 'llama\\win32';
+        Result := 'llama\win32';
 {$ENDIF}
         Exit;
     end;
 
 {$IFDEF WIN64}
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\\win64';
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\win64';
 {$ELSE}
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\\win32';
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\win32';
 {$ENDIF}
 end;
 
@@ -171,11 +282,11 @@ begin
     module_dir := get_module_directory;
     if module_dir = '' then
     begin
-        Result := 'llama\\win64-cuda';
+        Result := 'llama\win64-cuda';
         Exit;
     end;
 
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\\win64-cuda';
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'llama\win64-cuda';
 end;
 
 function get_default_ai_llama_model_path: string;
@@ -227,8 +338,9 @@ var
     variant_text: string;
     legacy_dict_path: string;
     needs_full_write: Boolean;
+    legacy_sc_path: string;
+    legacy_tc_path: string;
     legacy_user_path: string;
-    default_user_path: string;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
@@ -242,9 +354,6 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
-    Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
-    Result.dictionary_path_traditional := get_default_dictionary_path_traditional;
-    Result.user_dictionary_path := get_default_user_dictionary_path;
     Result.ai_llama_backend := lb_auto;
     Result.ai_llama_runtime_dir_cpu := get_default_ai_llama_runtime_dir_cpu;
     Result.ai_llama_runtime_dir_cuda := get_default_ai_llama_runtime_dir_cuda;
@@ -258,6 +367,10 @@ begin
 
     if not FileExists(m_config_path) then
     begin
+        migrate_runtime_dictionary_file(get_legacy_dictionary_path_simplified, get_default_dictionary_path_simplified, False);
+        migrate_runtime_dictionary_file(get_legacy_dictionary_path_traditional, get_default_dictionary_path_traditional, False);
+        migrate_runtime_dictionary_file(get_legacy_user_dictionary_path, get_default_user_dictionary_path, True);
+        migrate_runtime_dictionary_file(resolve_runtime_path('config\user_dict.db'), get_default_user_dictionary_path, True);
         save_engine_config(Result);
         save_log_config(get_default_log_config);
         Exit;
@@ -288,22 +401,21 @@ begin
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
         variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
-        Result.dictionary_path_simplified := ini.ReadString('dictionary', 'db_path_sc', '');
-        if Result.dictionary_path_simplified = '' then
+        legacy_sc_path := ini.ReadString('dictionary', 'db_path_sc', '');
+        if legacy_sc_path = '' then
         begin
             legacy_dict_path := ini.ReadString('dictionary', 'db_path', '');
             if legacy_dict_path <> '' then
             begin
-                Result.dictionary_path_simplified := legacy_dict_path;
+                legacy_sc_path := legacy_dict_path;
             end
             else
             begin
-                Result.dictionary_path_simplified := get_default_dictionary_path_simplified;
+                legacy_sc_path := get_legacy_dictionary_path_simplified;
             end;
         end;
-        Result.dictionary_path_traditional := ini.ReadString('dictionary', 'db_path_tc',
-            get_default_dictionary_path_traditional);
-        Result.user_dictionary_path := ini.ReadString('dictionary', 'user_db_path', get_default_user_dictionary_path);
+        legacy_tc_path := ini.ReadString('dictionary', 'db_path_tc', get_legacy_dictionary_path_traditional);
+        legacy_user_path := ini.ReadString('dictionary', 'user_db_path', get_legacy_user_dictionary_path);
         Result.ai_llama_backend := parse_llama_backend_text(ini.ReadString('ai', 'llama_backend', 'auto'));
         Result.ai_llama_runtime_dir_cpu := ini.ReadString('ai', 'llama_runtime_dir_cpu',
             get_default_ai_llama_runtime_dir_cpu);
@@ -327,9 +439,10 @@ begin
             ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
             not ini.ValueExists('engine', 'debug') or
             not ini.ValueExists('dictionary', 'variant') or
-            not ini.ValueExists('dictionary', 'db_path_sc') or
-            not ini.ValueExists('dictionary', 'db_path_tc') or
-            not ini.ValueExists('dictionary', 'user_db_path') or
+            ini.ValueExists('dictionary', 'db_path') or
+            ini.ValueExists('dictionary', 'db_path_sc') or
+            ini.ValueExists('dictionary', 'db_path_tc') or
+            ini.ValueExists('dictionary', 'user_db_path') or
             not ini.ValueExists('ai', 'llama_backend') or
             not ini.ValueExists('ai', 'llama_runtime_dir_cpu') or
             not ini.ValueExists('ai', 'llama_runtime_dir_cuda') or
@@ -339,19 +452,13 @@ begin
         ini.Free;
     end;
 
-    Result.dictionary_path_simplified := resolve_runtime_path(Result.dictionary_path_simplified);
-    Result.dictionary_path_traditional := resolve_runtime_path(Result.dictionary_path_traditional);
-    Result.user_dictionary_path := resolve_runtime_path(Result.user_dictionary_path);
-    legacy_user_path := resolve_runtime_path('config\\user_dict.db');
-    default_user_path := get_default_user_dictionary_path;
-    if SameText(Result.user_dictionary_path, legacy_user_path) then
-    begin
-        Result.user_dictionary_path := default_user_path;
-        if not SameText(default_user_path, legacy_user_path) then
-        begin
-            needs_full_write := True;
-        end;
-    end;
+    legacy_sc_path := resolve_runtime_path(legacy_sc_path);
+    legacy_tc_path := resolve_runtime_path(legacy_tc_path);
+    legacy_user_path := resolve_runtime_path(legacy_user_path);
+    migrate_runtime_dictionary_file(legacy_sc_path, get_default_dictionary_path_simplified, False);
+    migrate_runtime_dictionary_file(legacy_tc_path, get_default_dictionary_path_traditional, False);
+    migrate_runtime_dictionary_file(legacy_user_path, get_default_user_dictionary_path, True);
+    migrate_runtime_dictionary_file(resolve_runtime_path('config\user_dict.db'), get_default_user_dictionary_path, True);
     Result.ai_llama_runtime_dir_cpu := resolve_runtime_path(Result.ai_llama_runtime_dir_cpu);
     Result.ai_llama_runtime_dir_cuda := resolve_runtime_path(Result.ai_llama_runtime_dir_cuda);
     Result.ai_llama_model_path := resolve_runtime_path(Result.ai_llama_model_path);
@@ -426,9 +533,22 @@ begin
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
-        ini.WriteString('dictionary', 'db_path_sc', config.dictionary_path_simplified);
-        ini.WriteString('dictionary', 'db_path_tc', config.dictionary_path_traditional);
-        ini.WriteString('dictionary', 'user_db_path', config.user_dictionary_path);
+        if ini.ValueExists('dictionary', 'db_path') then
+        begin
+            ini.DeleteKey('dictionary', 'db_path');
+        end;
+        if ini.ValueExists('dictionary', 'db_path_sc') then
+        begin
+            ini.DeleteKey('dictionary', 'db_path_sc');
+        end;
+        if ini.ValueExists('dictionary', 'db_path_tc') then
+        begin
+            ini.DeleteKey('dictionary', 'db_path_tc');
+        end;
+        if ini.ValueExists('dictionary', 'user_db_path') then
+        begin
+            ini.DeleteKey('dictionary', 'user_db_path');
+        end;
         ini.WriteString('ai', 'llama_backend', llama_backend_to_text(config.ai_llama_backend));
         ini.WriteString('ai', 'llama_runtime_dir_cpu', config.ai_llama_runtime_dir_cpu);
         ini.WriteString('ai', 'llama_runtime_dir_cuda', config.ai_llama_runtime_dir_cuda);
@@ -496,99 +616,59 @@ end;
 
 function get_default_config_path: string;
 var
-    module_dir: string;
-    legacy_config_path: string;
+    legacy_primary_path: string;
+    legacy_secondary_path: string;
 begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
+    Result := IncludeTrailingPathDelimiter(get_runtime_root_directory) + 'cassotis_ime.ini';
+    if FileExists(Result) then
     begin
-        Result := 'cassotis_ime.ini';
         Exit;
     end;
 
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'cassotis_ime.ini';
-    legacy_config_path := IncludeTrailingPathDelimiter(module_dir) + 'config\\cassotis_ime.ini';
-    if (not FileExists(Result)) and FileExists(legacy_config_path) then
+    legacy_primary_path := resolve_runtime_path('cassotis_ime.ini');
+    legacy_secondary_path := resolve_runtime_path('config\cassotis_ime.ini');
+
+    if FileExists(legacy_primary_path) then
     begin
         try
-            TFile.Move(legacy_config_path, Result);
+            TFile.Move(legacy_primary_path, Result);
         except
             try
-                TFile.Copy(legacy_config_path, Result, False);
+                TFile.Copy(legacy_primary_path, Result, False);
             except
-                // If migration fails (for example permission issue), continue to
-                // use legacy path for backward compatibility.
-                Result := legacy_config_path;
+                // Keep using the fixed runtime path even if migration fails.
+            end;
+        end;
+        Exit;
+    end;
+
+    if FileExists(legacy_secondary_path) then
+    begin
+        try
+            TFile.Move(legacy_secondary_path, Result);
+        except
+            try
+                TFile.Copy(legacy_secondary_path, Result, False);
+            except
+                // Keep using the fixed runtime path even if migration fails.
             end;
         end;
     end;
 end;
 
 function get_default_dictionary_path_simplified: string;
-var
-    module_dir: string;
-    data_dir: string;
 begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
-    begin
-        Result := 'dict_sc.db';
-        Exit;
-    end;
-
-    data_dir := IncludeTrailingPathDelimiter(module_dir) + 'data';
-    ForceDirectories(data_dir);
-    Result := IncludeTrailingPathDelimiter(data_dir) + 'dict_sc.db';
+    Result := IncludeTrailingPathDelimiter(get_runtime_data_directory) + 'dict_sc.db';
 end;
 
 function get_default_dictionary_path_traditional: string;
-var
-    module_dir: string;
-    data_dir: string;
 begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
-    begin
-        Result := 'dict_tc.db';
-        Exit;
-    end;
-
-    data_dir := IncludeTrailingPathDelimiter(module_dir) + 'data';
-    ForceDirectories(data_dir);
-    Result := IncludeTrailingPathDelimiter(data_dir) + 'dict_tc.db';
+    Result := IncludeTrailingPathDelimiter(get_runtime_data_directory) + 'dict_tc.db';
 end;
 
 function get_default_user_dictionary_path: string;
-var
-    module_dir: string;
-    data_dir: string;
-    legacy_user_db_path: string;
 begin
-    module_dir := get_module_directory;
-    if module_dir = '' then
-    begin
-        Result := 'user_dict.db';
-        Exit;
-    end;
-
-    data_dir := IncludeTrailingPathDelimiter(module_dir) + 'data';
-    ForceDirectories(data_dir);
-    Result := IncludeTrailingPathDelimiter(data_dir) + 'user_dict.db';
-    legacy_user_db_path := IncludeTrailingPathDelimiter(module_dir) + 'config\\user_dict.db';
-    if (not FileExists(Result)) and FileExists(legacy_user_db_path) then
-    begin
-        try
-            TFile.Move(legacy_user_db_path, Result);
-        except
-            try
-                TFile.Copy(legacy_user_db_path, Result, False);
-            except
-                // If migration fails, keep using legacy location so runtime does
-                // not lose user dictionary unexpectedly.
-                Result := legacy_user_db_path;
-            end;
-        end;
-    end;
+    Result := IncludeTrailingPathDelimiter(get_runtime_data_directory) + 'user_dict.db';
 end;
 
 end.

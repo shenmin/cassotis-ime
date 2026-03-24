@@ -202,11 +202,16 @@ function resolve_lexicon_root {
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script_dir
 $repo_root = Split-Path -Parent $script_dir
+$local_app_data = $env:LOCALAPPDATA
+if ([string]::IsNullOrWhiteSpace($local_app_data)) {
+    $local_app_data = [Environment]::GetFolderPath('LocalApplicationData')
+}
+$runtime_data_dir = Join-Path $local_app_data 'CassotisIme\data'
 
 $dict_init = Join-Path $script_dir 'cassotis_ime_dict_init.exe'
 $schema_path = Join-Path $repo_root 'data\schema.sql'
-$base_db_sc_path = Join-Path $script_dir 'data\dict_sc.db'
-$base_db_tc_path = Join-Path $script_dir 'data\dict_tc.db'
+$base_db_sc_path = Join-Path $runtime_data_dir 'dict_sc.db'
+$base_db_tc_path = Join-Path $runtime_data_dir 'dict_tc.db'
 
 $lexicon_root = resolve_lexicon_root $repo_root
 $lexicon_unihan_sc = Join-Path $lexicon_root 'data\generated\dict_unihan_sc.txt'

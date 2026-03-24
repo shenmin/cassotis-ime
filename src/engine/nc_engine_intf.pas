@@ -18,7 +18,8 @@ uses
     nc_ai_null,
     nc_ai_llama,
     nc_candidate_fusion,
-    nc_pinyin_parser;
+    nc_pinyin_parser,
+    nc_config;
 
 type
     TncInMemoryDictionary = class(TncDictionaryProvider)
@@ -263,7 +264,6 @@ type
         procedure reset;
         procedure update_config(const config: TncEngineConfig);
         procedure set_dictionary_provider(const dictionary: TncDictionaryProvider);
-        procedure set_dictionary_path(const dictionary_path: string);
         procedure reload_dictionary_if_needed;
         procedure prewarm_dictionary_caches;
         procedure set_external_left_context(const left_context: string);
@@ -1479,19 +1479,10 @@ procedure TncEngine.update_config(const config: TncEngineConfig);
 var
     previous_config: TncEngineConfig;
     dictionary_changed: Boolean;
-    dictionary_path_changed: Boolean;
     ai_changed: Boolean;
 begin
     previous_config := m_config;
-    dictionary_changed :=
-        (m_config.dictionary_variant <> config.dictionary_variant) or
-        (m_config.dictionary_path_simplified <> config.dictionary_path_simplified) or
-        (m_config.dictionary_path_traditional <> config.dictionary_path_traditional) or
-        (m_config.user_dictionary_path <> config.user_dictionary_path);
-    dictionary_path_changed :=
-        (m_config.dictionary_path_simplified <> config.dictionary_path_simplified) or
-        (m_config.dictionary_path_traditional <> config.dictionary_path_traditional) or
-        (m_config.user_dictionary_path <> config.user_dictionary_path);
+    dictionary_changed := m_config.dictionary_variant <> config.dictionary_variant;
     ai_changed :=
         (m_config.enable_ai <> config.enable_ai) or
         (m_config.ai_llama_backend <> config.ai_llama_backend) or
@@ -1506,14 +1497,7 @@ begin
     end;
     if dictionary_changed then
     begin
-        if dictionary_path_changed then
-        begin
-            clear_cached_dictionary_providers;
-        end
-        else
-        begin
-            store_current_dictionary_provider(previous_config);
-        end;
+        store_current_dictionary_provider(previous_config);
         set_dictionary_provider(create_dictionary_from_config);
     end;
     if ai_changed then
@@ -1637,12 +1621,12 @@ begin
     if previous_config.dictionary_variant = dv_traditional then
     begin
         cache_target := @m_cached_dictionary_traditional;
-        expected_base_path := previous_config.dictionary_path_traditional;
+        expected_base_path := get_default_dictionary_path_traditional;
     end
     else
     begin
         cache_target := @m_cached_dictionary_simplified;
-        expected_base_path := previous_config.dictionary_path_simplified;
+        expected_base_path := get_default_dictionary_path_simplified;
     end;
 
     if not (m_dictionary is TncSqliteDictionary) then
@@ -1653,7 +1637,7 @@ begin
 
     sqlite_dict := TncSqliteDictionary(m_dictionary);
     if (not SameText(sqlite_dict.db_path, expected_base_path)) or
-        (not SameText(sqlite_dict.user_db_path, previous_config.user_dictionary_path)) then
+        (not SameText(sqlite_dict.user_db_path, get_default_user_dictionary_path)) then
     begin
         free_dictionary_provider(m_dictionary);
         Exit;
@@ -1665,22 +1649,6 @@ begin
     end;
     cache_target^ := m_dictionary;
     m_dictionary := nil;
-end;
-
-procedure TncEngine.set_dictionary_path(const dictionary_path: string);
-var
-    next_config: TncEngineConfig;
-begin
-    next_config := m_config;
-    if m_config.dictionary_variant = dv_traditional then
-    begin
-        next_config.dictionary_path_traditional := dictionary_path;
-    end
-    else
-    begin
-        next_config.dictionary_path_simplified := dictionary_path;
-    end;
-    update_config(next_config);
 end;
 
 procedure TncEngine.set_ai_provider(const provider: TncAiProvider);
@@ -1784,18 +1752,20 @@ function TncEngine.create_dictionary_from_config: TncDictionaryProvider;
 var
     sqlite_dict: TncSqliteDictionary;
     base_path: string;
+    user_path: string;
 begin
     base_path := get_active_dictionary_path;
+    user_path := get_default_user_dictionary_path;
     if base_path <> '' then
     begin
-        Result := take_cached_dictionary_provider(m_config.dictionary_variant, base_path, m_config.user_dictionary_path);
+        Result := take_cached_dictionary_provider(m_config.dictionary_variant, base_path, user_path);
         if Result <> nil then
         begin
             Result.set_debug_mode(m_config.debug_mode);
             Exit;
         end;
 
-        sqlite_dict := TncSqliteDictionary.create(base_path, m_config.user_dictionary_path);
+        sqlite_dict := TncSqliteDictionary.create(base_path, user_path);
         if sqlite_dict.open then
         begin
             sqlite_dict.set_debug_mode(m_config.debug_mode);
@@ -1833,11 +1803,11 @@ function TncEngine.get_active_dictionary_path: string;
 begin
     if m_config.dictionary_variant = dv_traditional then
     begin
-        Result := m_config.dictionary_path_traditional;
+        Result := get_default_dictionary_path_traditional;
     end
     else
     begin
-        Result := m_config.dictionary_path_simplified;
+        Result := get_default_dictionary_path_simplified;
     end;
 end;
 
@@ -1862,7 +1832,7 @@ begin
     begin
         m_dictionary_path := base_path;
         m_dictionary_write_time := get_dictionary_write_time(m_dictionary_path);
-        m_user_dictionary_path := m_config.user_dictionary_path;
+        m_user_dictionary_path := get_default_user_dictionary_path;
         m_user_dictionary_write_time := get_dictionary_write_time(m_user_dictionary_path);
     end
     else
@@ -1939,7 +1909,7 @@ begin
     if m_config.dictionary_variant = dv_traditional then
     begin
         alt_variant := dv_simplified;
-        alt_base_path := m_config.dictionary_path_simplified;
+        alt_base_path := get_default_dictionary_path_simplified;
         if (m_cached_dictionary_simplified <> nil) or (alt_base_path = '') then
         begin
             Exit;
@@ -1948,14 +1918,14 @@ begin
     else
     begin
         alt_variant := dv_traditional;
-        alt_base_path := m_config.dictionary_path_traditional;
+        alt_base_path := get_default_dictionary_path_traditional;
         if (m_cached_dictionary_traditional <> nil) or (alt_base_path = '') then
         begin
             Exit;
         end;
     end;
 
-    alt_dict := TncSqliteDictionary.Create(alt_base_path, m_config.user_dictionary_path);
+    alt_dict := TncSqliteDictionary.Create(alt_base_path, get_default_user_dictionary_path);
     if alt_dict.open then
     begin
         alt_dict.set_debug_mode(m_config.debug_mode);
@@ -18600,25 +18570,22 @@ begin
         end;
     end;
 
-    sc_path_value := m_config.dictionary_path_simplified;
+    sc_path_value := get_default_dictionary_path_simplified;
     if (sc_path_value <> '') and FileExists(sc_path_value) then
     begin
         sc_path_exists := 1;
     end;
 
-    tc_path_value := m_config.dictionary_path_traditional;
+    tc_path_value := get_default_dictionary_path_traditional;
     if (tc_path_value <> '') and FileExists(tc_path_value) then
     begin
         tc_path_exists := 1;
     end;
 
-    if (m_config.user_dictionary_path <> '') and FileExists(m_config.user_dictionary_path) then
+    user_path_value := get_default_user_dictionary_path;
+    if (user_path_value <> '') and FileExists(user_path_value) then
     begin
         user_path_exists := 1;
-        if user_path_value = '' then
-        begin
-            user_path_value := m_config.user_dictionary_path;
-        end;
     end;
 
     Result := Format('provider=%s ready=%d base_ready=%d user_ready=%d variant=%s dict_path=%s exists=%d dict_sc=%s sc_exists=%d dict_tc=%s tc_exists=%d user_path=%s user_exists=%d',

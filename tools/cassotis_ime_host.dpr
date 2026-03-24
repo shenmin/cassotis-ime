@@ -234,11 +234,11 @@ begin
     module_dir := ExtractFileDir(ParamStr(0));
     if module_dir = '' then
     begin
-        Result := 'logs\\engine_host.log';
+        Result := 'logs\engine_host.log';
     end
     else
     begin
-        Result := IncludeTrailingPathDelimiter(module_dir) + 'logs\\engine_host.log';
+        Result := IncludeTrailingPathDelimiter(module_dir) + 'logs\engine_host.log';
     end;
 end;
 

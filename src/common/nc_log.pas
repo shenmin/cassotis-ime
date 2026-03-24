@@ -304,11 +304,11 @@ begin
     module_dir := get_module_directory;
     if module_dir = '' then
     begin
-        Result := 'logs\\cassotis_ime.log';
+        Result := 'logs\cassotis_ime.log';
         Exit;
     end;
 
-    Result := IncludeTrailingPathDelimiter(module_dir) + 'logs\\cassotis_ime.log';
+    Result := IncludeTrailingPathDelimiter(module_dir) + 'logs\cassotis_ime.log';
 end;
 
 end.
