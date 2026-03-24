@@ -96,7 +96,7 @@ TSF DLL 与 host 进程均须存在，输入法才能正常工作。
 
 ## 词条资源与运行时词库
 
-运行时词库构建流程会从同级词库源码仓导入生成词条资源（`..\cassotis-lexicon` 或 `..\cassotis_lexicon`）：
+运行时词库构建流程会从同级词库源码仓导入生成词条资源（`..\cassotis-lexicon`）：
 
 词库源码仓已单独发布在 [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon)。
 

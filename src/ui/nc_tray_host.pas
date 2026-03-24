@@ -163,7 +163,7 @@ const
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
     c_status_widget_y_key = 'status_widget_y';
-    c_status_widget_default_width = 258;
+    c_status_widget_default_width = 248;
     c_status_widget_default_height = 40;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
@@ -893,16 +893,23 @@ begin
 
     m_status_btn_settings := TncModernButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
-    m_status_btn_settings.Left := 210;
+    m_status_btn_settings.Left := 208;
     m_status_btn_settings.Top := 8;
-    m_status_btn_settings.Width := 34;
+    m_status_btn_settings.Width := 30;
     m_status_btn_settings.Height := 24;
     m_status_btn_settings.Caption := #$E713;
     m_status_btn_settings.Font.Name := 'Segoe MDL2 Assets';
     m_status_btn_settings.Font.Size := 10;
-    m_status_btn_settings.VisualKind := mbkSubtle;
+    m_status_btn_settings.VisualKind := mbkGhost;
+    m_status_btn_settings.GhostBackgroundColor := m_status_panel.Color;
+    m_status_btn_settings.ParentShowHint := False;
+    m_status_btn_settings.ShowHint := False;
+    m_status_btn_settings.Hint := '设置';
+    m_status_btn_settings.Cursor := crHandPoint;
     m_status_btn_settings.OnMouseDown := on_status_settings_mouse_down;
     m_status_btn_settings.OnMouseUp := on_status_settings_mouse_up;
+    m_status_btn_settings.OnMouseEnter := status_label_mouse_enter;
+    m_status_btn_settings.OnMouseLeave := status_label_mouse_leave;
     m_status_btn_settings.TabStop := False;
     m_status_btn_settings.Focusable := False;
 

@@ -97,7 +97,7 @@ For the complete build guide — including incremental updates, manual IDE build
 ## Lexicon and Runtime Dictionaries
 
 The runtime dictionary build pipeline imports generated lexicon artifacts from a sibling lexicon repository
-located at `..\cassotis-lexicon` or `..\cassotis_lexicon`:
+located at `..\cassotis-lexicon`:
 
 The lexicon source repository is published separately at [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon).
 

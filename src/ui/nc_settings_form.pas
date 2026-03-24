@@ -27,7 +27,8 @@ type
     TncModernButtonKind = (
         mbkPrimary,
         mbkSecondary,
-        mbkSubtle
+        mbkSubtle,
+        mbkGhost
     );
 
     TncModernButton = class(TCustomControl)
@@ -39,8 +40,10 @@ type
         m_default_button: Boolean;
         m_cancel_button: Boolean;
         m_focusable: Boolean;
+        m_ghost_background_color: TColor;
         procedure set_caption(const value: string);
         procedure set_kind(const value: TncModernButtonKind);
+        procedure set_ghost_background_color(const value: TColor);
         procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
         procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
         procedure CMEnabledChanged(var Message: TMessage); message CM_ENABLEDCHANGED;
@@ -60,6 +63,7 @@ type
         property Cancel: Boolean read m_cancel_button write m_cancel_button default False;
         property Focusable: Boolean read m_focusable write m_focusable default True;
         property VisualKind: TncModernButtonKind read m_kind write set_kind;
+        property GhostBackgroundColor: TColor read m_ghost_background_color write set_ghost_background_color default clBtnFace;
         property Align;
         property Anchors;
         property Enabled;
@@ -312,6 +316,7 @@ begin
     m_kind := mbkSecondary;
     m_caption := '';
     m_focusable := True;
+    m_ghost_background_color := clBtnFace;
     ParentFont := True;
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
@@ -339,6 +344,19 @@ begin
     end;
     m_kind := value;
     Invalidate;
+end;
+
+procedure TncModernButton.set_ghost_background_color(const value: TColor);
+begin
+    if m_ghost_background_color = value then
+    begin
+        Exit;
+    end;
+    m_ghost_background_color := value;
+    if m_kind = mbkGhost then
+    begin
+        Invalidate;
+    end;
 end;
 
 procedure TncModernButton.CMMouseEnter(var Message: TMessage);
@@ -478,6 +496,24 @@ begin
                 begin
                     background_color := RGB(248, 249, 251);
                     border_color := RGB(230, 234, 239);
+                    text_color := RGB(180, 186, 194);
+                end;
+            end;
+        mbkGhost:
+            begin
+                background_color := m_ghost_background_color;
+                border_color := m_ghost_background_color;
+                text_color := RGB(70, 78, 90);
+                if m_hot then
+                begin
+                    text_color := RGB(32, 80, 168);
+                end;
+                if m_pressed then
+                begin
+                    text_color := RGB(24, 72, 156);
+                end;
+                if is_disabled then
+                begin
                     text_color := RGB(180, 186, 194);
                 end;
             end;
