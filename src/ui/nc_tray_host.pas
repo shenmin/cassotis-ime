@@ -72,7 +72,7 @@ type
         m_status_label_mode: TLabel;
         m_status_label_variant: TLabel;
         m_status_label_full_width: TLabel;
-        m_status_label_punct: TLabel;
+        m_status_label_punct: TPaintBox;
         m_status_btn_settings: TncModernButton;
         m_status_hint_window: THintWindow;
         m_status_dragging: Boolean;
@@ -99,6 +99,7 @@ type
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
         function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
         procedure status_logo_paint(Sender: TObject);
+        procedure status_punct_paint(Sender: TObject);
         procedure handle_status_label_click(const source: TObject);
         procedure show_status_hint(const control: TControl);
         procedure hide_status_hint;
@@ -161,7 +162,7 @@ const
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
     c_status_widget_y_key = 'status_widget_y';
-    c_status_widget_default_width = 292;
+    c_status_widget_default_width = 274;
     c_status_widget_default_height = 40;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
@@ -322,6 +323,80 @@ begin
         graphics.SetSmoothingMode(SmoothingModeHighQuality);
         graphics.DrawImage(m_status_logo_bitmap, draw_rect.Left, draw_rect.Top,
             draw_rect.Right - draw_rect.Left, draw_rect.Bottom - draw_rect.Top);
+    finally
+        graphics.Free;
+    end;
+end;
+
+procedure TncTrayHost.status_punct_paint(Sender: TObject);
+var
+    paint_box: TPaintBox;
+    top_left_text: string;
+    draw_rect: TRect;
+    graphics: TGPGraphics;
+    pen: TGPPen;
+    brush: TGPSolidBrush;
+    mark_color: TGPColor;
+    period_left: Single;
+    period_top: Single;
+    period_size: Single;
+begin
+    if not (Sender is TPaintBox) then
+    begin
+        Exit;
+    end;
+
+    paint_box := TPaintBox(Sender);
+    paint_box.Canvas.Brush.Color := m_status_panel.Color;
+    paint_box.Canvas.FillRect(paint_box.ClientRect);
+    paint_box.Canvas.Brush.Style := bsClear;
+    paint_box.Canvas.Font.Color := RGB(100, 72, 24);
+    SetBkMode(paint_box.Canvas.Handle, TRANSPARENT);
+    mark_color := MakeColor(255, 100, 72, 24);
+
+    if m_engine_config.punctuation_full_width then
+    begin
+        top_left_text := '’';
+        paint_box.Canvas.Font.Name := 'SimSun';
+        draw_rect := Rect(7, 6, 23, 20);
+    end
+    else
+    begin
+        top_left_text := '''';
+        paint_box.Canvas.Font.Name := 'Segoe UI';
+        draw_rect := Rect(4, 4, 20, 18);
+    end;
+
+    paint_box.Canvas.Font.Size := 13;
+    paint_box.Canvas.Font.Style := [];
+    DrawText(paint_box.Canvas.Handle, PChar(top_left_text), Length(top_left_text), draw_rect,
+        DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+
+    period_left := 23.0;
+    period_top := 12.0;
+    period_size := 4.0;
+    graphics := TGPGraphics.Create(paint_box.Canvas.Handle);
+    try
+        graphics.SetSmoothingMode(SmoothingModeHighQuality);
+        graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        if m_engine_config.punctuation_full_width then
+        begin
+            pen := TGPPen.Create(mark_color, 1.3);
+            try
+                graphics.DrawEllipse(pen, period_left, period_top, period_size, period_size);
+            finally
+                pen.Free;
+            end;
+        end
+        else
+        begin
+            brush := TGPSolidBrush.Create(mark_color);
+            try
+                graphics.FillEllipse(brush, period_left, period_top, period_size, period_size);
+            finally
+                brush.Free;
+            end;
+        end;
     finally
         graphics.Free;
     end;
@@ -710,25 +785,21 @@ begin
     divider.Height := 18;
     divider.Shape := bsLeftLine;
 
-    m_status_label_punct := TLabel.Create(m_status_panel);
+    m_status_label_punct := TPaintBox.Create(m_status_panel);
     m_status_label_punct.Parent := m_status_panel;
     m_status_label_punct.Left := 160;
-    m_status_label_punct.Top := 11;
-    m_status_label_punct.Width := 58;
-    m_status_label_punct.Height := 18;
-    m_status_label_punct.AutoSize := False;
-    m_status_label_punct.Alignment := taCenter;
-    m_status_label_punct.Layout := tlCenter;
-    m_status_label_punct.Font.Color := RGB(100, 72, 24);
-    m_status_label_punct.Transparent := True;
+    m_status_label_punct.Top := 9;
+    m_status_label_punct.Width := 40;
+    m_status_label_punct.Height := 20;
     m_status_label_punct.ParentShowHint := False;
     m_status_label_punct.ShowHint := False;
     m_status_label_punct.Hint := '切换标点（Ctrl+.）';
     m_status_label_punct.Cursor := crHandPoint;
+    m_status_label_punct.OnPaint := status_punct_paint;
 
     m_status_btn_settings := TncModernButton.Create(m_status_panel);
     m_status_btn_settings.Parent := m_status_panel;
-    m_status_btn_settings.Left := 226;
+    m_status_btn_settings.Left := 208;
     m_status_btn_settings.Top := 8;
     m_status_btn_settings.Width := 50;
     m_status_btn_settings.Height := 24;
@@ -952,7 +1023,6 @@ var
     mode_text: string;
     variant_text: string;
     full_width_text: string;
-    punct_text: string;
 begin
     if m_status_form = nil then
     begin
@@ -971,20 +1041,11 @@ begin
             variant_text := '简';
         end;
 
-        if m_engine_config.punctuation_full_width then
-        begin
-            punct_text := '中文标点';
-        end
-        else
-        begin
-            punct_text := '英文标点';
-        end;
     end
     else
     begin
         mode_text := '英';
         variant_text := '-';
-        punct_text := '英文标点';
     end;
 
     if m_engine_config.full_width_mode then
@@ -999,7 +1060,7 @@ begin
     m_status_label_mode.Caption := mode_text;
     m_status_label_variant.Caption := variant_text;
     m_status_label_full_width.Caption := full_width_text;
-    m_status_label_punct.Caption := punct_text;
+    m_status_label_punct.Invalidate;
 end;
 
 procedure TncTrayHost.enforce_status_form_toolwindow_style;

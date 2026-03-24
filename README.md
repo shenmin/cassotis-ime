@@ -24,15 +24,19 @@ Project focus:
 
 - Build a stable TSF-based IME foundation
 - Keep the architecture modular (TSF DLL + host process + tools)
-- Explore AI/LLM-assisted input in later stages
+- Continuously improve candidate ranking quality and phrase coverage
 
 ## Current Status
 
-- TSF text service pipeline is available (registration, activation, composition lifecycle).
-- TSF binaries support Win64 and Win32 (`svr.dll` / `svr32.dll`); host process is Win64 only.
-- Candidate window, paging, selection, and commit flow are implemented.
-- Dictionary split is supported: simplified base DB, traditional base DB, and user DB.
-- Surrounding-text/context synchronization and key state synchronization are implemented.
+- TSF text service pipeline is working (registration, activation, composition lifecycle).
+- TSF DLL supports Win64 and Win32 (`svr.dll` / `svr32.dll`); host process is Win64 only.
+- Candidate window with paging, selection, commit, and DPI-aware rendering is implemented.
+- Surrounding text context and key state are synchronized from the focused application.
+- DP-based pinyin syllable segmentation with scored disambiguation.
+- Multi-dimensional candidate ranking: session frequency, bigram/trigram context learning, segment path preference/penalty, and path confidence scoring.
+- User learning persisted in SQLite: commit statistics, n-gram context, query path preference, and per-candidate penalty.
+- Separate simplified and traditional base dictionaries; hot-swap without restart.
+- Multi-source candidate window anchor fusion (TSF coordinates, GUI messages, `GetCaretPos`, cursor position) with heuristic scoring for terminal-like hosts.
 
 ## Architecture
 
@@ -107,15 +111,15 @@ Main rebuild entry:
 
 ## Configuration
 
-Config file: `out/cassotis_ime.ini`
+Config file: `%LOCALAPPDATA%\CassotisIme\cassotis_ime.ini` (auto-created with defaults on first run).
 
 Detailed option reference: [CONFIGURE.md](CONFIGURE.md)
 
 Key options:
 
-- Simplified/traditional variant (`db_path_sc` / `db_path_tc`)
-- User dictionary path (`user_db_path`)
-- Logging and engine behavior toggles
+- Simplified/traditional variant (`dictionary.variant`)
+- Initial input mode, full-width, and punctuation style
+- File logging (path, level, rotation size)
 
 ## Documentation
 
@@ -133,4 +137,3 @@ Keep third-party notices consistent with [THIRD_PARTY.md](THIRD_PARTY.md).
 - Improve candidate ranking quality and practical phrase coverage
 - Improve user-dictionary quality control and tooling
 - Extend compatibility across editors, browsers, and IDEs
-- Evaluate local LLM (GGUF) assisted suggestion workflow
