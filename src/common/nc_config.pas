@@ -532,45 +532,8 @@ begin
 end;
 
 function get_default_config_path: string;
-var
-    legacy_primary_path: string;
-    legacy_secondary_path: string;
 begin
     Result := IncludeTrailingPathDelimiter(get_runtime_root_directory) + 'cassotis_ime.ini';
-    if FileExists(Result) then
-    begin
-        Exit;
-    end;
-
-    legacy_primary_path := resolve_runtime_path('cassotis_ime.ini');
-    legacy_secondary_path := resolve_runtime_path('config\cassotis_ime.ini');
-
-    if FileExists(legacy_primary_path) then
-    begin
-        try
-            TFile.Move(legacy_primary_path, Result);
-        except
-            try
-                TFile.Copy(legacy_primary_path, Result, False);
-            except
-                // Keep using the fixed runtime path even if migration fails.
-            end;
-        end;
-        Exit;
-    end;
-
-    if FileExists(legacy_secondary_path) then
-    begin
-        try
-            TFile.Move(legacy_secondary_path, Result);
-        except
-            try
-                TFile.Copy(legacy_secondary_path, Result, False);
-            except
-                // Keep using the fixed runtime path even if migration fails.
-            end;
-        end;
-    end;
 end;
 
 function get_default_dictionary_path_simplified: string;

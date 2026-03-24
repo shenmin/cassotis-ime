@@ -423,6 +423,7 @@ var
     period_top: Single;
     period_size: Single;
     dpi: Integer;
+    show_full_width_punct: Boolean;
 begin
     if not (Sender is TPaintBox) then
     begin
@@ -437,8 +438,10 @@ begin
     SetBkMode(paint_box.Canvas.Handle, TRANSPARENT);
     mark_color := MakeColor(255, 100, 72, 24);
     dpi := get_control_dpi(paint_box);
+    show_full_width_punct := (m_engine_config.input_mode <> im_english) and
+        m_engine_config.punctuation_full_width;
 
-    if m_engine_config.punctuation_full_width then
+    if show_full_width_punct then
     begin
         top_left_text := '’';
         paint_box.Canvas.Font.Name := 'SimSun';
@@ -473,7 +476,7 @@ begin
     try
         graphics.SetSmoothingMode(SmoothingModeHighQuality);
         graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-        if m_engine_config.punctuation_full_width then
+        if show_full_width_punct then
         begin
             pen := TGPPen.Create(mark_color, 1.0);
             try
