@@ -3941,6 +3941,7 @@ const
     c_nonfull_exact_penalty = 100;
     c_initial_single_char_penalty = 120;
     c_single_letter_full_query_extra_penalty = 120;
+    c_single_letter_full_query_cap_margin = 8;
     c_typo_transpose_penalty = 80;
     // For malformed non-full keys (e.g. "chagn"), adjacent-swap fallback
     // should stay conservative because earlier normalization already handles
@@ -3967,6 +3968,7 @@ var
     list: TList<TncCandidate>;
     seen: TDictionary<string, Boolean>;
     candidate_pinyin_map: TDictionary<string, string>;
+    candidate_score_cap_map: TDictionary<string, Integer>;
     learning_bonus_map: TDictionary<string, Integer>;
     text_learning_bonus_cache: TDictionary<string, Integer>;
     step_result: Integer;
@@ -3984,6 +3986,7 @@ var
     key: string;
     query_key: string;
     candidate_pinyin: string;
+    candidate_score_cap: Integer;
     mixed_full_prefix: string;
     mixed_jianpin_key: string;
     effective_jianpin_key: string;
@@ -4426,7 +4429,8 @@ var
 
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource; const has_dict_weight: Boolean = False;
-        const dict_weight: Integer = 0; const candidate_pinyin_key: string = '');
+        const dict_weight: Integer = 0; const candidate_pinyin_key: string = '';
+        const max_final_score: Integer = MaxInt);
     begin
         if text = '' then
         begin
@@ -4453,6 +4457,10 @@ var
             Inc(score_with_bonus, learning_bonus);
             Inc(applied_learning_bonus_count);
         end;
+        if score_with_bonus > max_final_score then
+        begin
+            score_with_bonus := max_final_score;
+        end;
 
         item.text := text;
         item.comment := comment;
@@ -4465,6 +4473,10 @@ var
         if (candidate_pinyin_key <> '') and (candidate_pinyin_map <> nil) then
         begin
             candidate_pinyin_map.AddOrSetValue(key, candidate_pinyin_key);
+        end;
+        if (candidate_score_cap_map <> nil) and (max_final_score < MaxInt) then
+        begin
+            candidate_score_cap_map.AddOrSetValue(key, max_final_score);
         end;
     end;
 
@@ -4890,6 +4902,11 @@ var
                 end;
 
                 candidate_item.score := candidate_item.score + bonus_value;
+                if candidate_score_cap_map.TryGetValue(candidate_item.text, candidate_score_cap) and
+                    (candidate_item.score > candidate_score_cap) then
+                begin
+                    candidate_item.score := candidate_score_cap;
+                end;
                 list[idx] := candidate_item;
                 Inc(applied_text_learning_bonus_count);
             end;
@@ -4897,6 +4914,263 @@ var
             if stmt_text_stats <> nil then
             begin
                 m_user_connection.finalize(stmt_text_stats);
+            end;
+        end;
+    end;
+
+    function get_single_letter_full_query_spoken_bonus(const text_value_local: string): Integer;
+    begin
+        Result := 0;
+        if (not single_letter_query) or (Length(query_key) <> 1) or (text_value_local = '') then
+        begin
+            Exit;
+        end;
+
+        case query_key[1] of
+            'a':
+                begin
+                    if text_value_local = string(Char($554A)) then      // 啊
+                    begin
+                        Result := 220;
+                    end
+                    else if text_value_local = string(Char($963F)) then // 阿
+                    begin
+                        Result := 80;
+                    end
+                    else if text_value_local = string(Char($5475)) then // 呵
+                    begin
+                        Result := 60;
+                    end
+                    else if text_value_local = string(Char($5416)) then // 吖
+                    begin
+                        Result := 40;
+                    end;
+                end;
+            'e':
+                begin
+                    if text_value_local = string(Char($5443)) then      // 呃
+                    begin
+                        Result := 240;
+                    end
+                    else if text_value_local = string(Char($8BE6)) then // 诶
+                    begin
+                        Result := 180;
+                    end
+                    else if text_value_local = string(Char($6B38)) then // 欸
+                    begin
+                        Result := 160;
+                    end
+                    else if text_value_local = string(Char($997F)) then // 饿
+                    begin
+                        Result := 80;
+                    end
+                    else if text_value_local = string(Char($54E6)) then // 哦
+                    begin
+                        Result := 60;
+                    end;
+                end;
+            'o':
+                begin
+                    if text_value_local = string(Char($54E6)) then      // 哦
+                    begin
+                        Result := 240;
+                    end
+                    else if text_value_local = string(Char($5662)) then // 噢
+                    begin
+                        Result := 220;
+                    end
+                    else if text_value_local = string(Char($5594)) then // 喔
+                    begin
+                        Result := 160;
+                    end;
+                end;
+        end;
+    end;
+
+    procedure apply_single_letter_full_query_standalone_rerank;
+    const
+        c_prefix_penalty_factor = 20.0;
+        c_prefix_penalty_cap = 140;
+    var
+        candidate_item: TncCandidate;
+        idx: Integer;
+        prefix_score: Integer;
+        penalty_value: Integer;
+        text_value_local: string;
+    begin
+        if (not full_pinyin_query) or (not single_letter_query) or (list.Count <= 1) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to list.Count - 1 do
+        begin
+            candidate_item := list[idx];
+            if (candidate_item.source <> cs_rule) or (candidate_item.comment <> '') then
+            begin
+                Continue;
+            end;
+
+            text_value_local := Trim(candidate_item.text);
+            if (text_value_local = '') or (get_text_unit_count_local(text_value_local) <> 1) then
+            begin
+                Continue;
+            end;
+
+            prefix_score := get_prefix_popularity_score(text_value_local);
+            if prefix_score <= 0 then
+            begin
+                Continue;
+            end;
+
+            penalty_value := Round(Ln(1.0 + prefix_score) * c_prefix_penalty_factor);
+            if penalty_value > c_prefix_penalty_cap then
+            begin
+                penalty_value := c_prefix_penalty_cap;
+            end;
+            if penalty_value <= 0 then
+            begin
+                Continue;
+            end;
+
+            Dec(candidate_item.score, penalty_value);
+            list[idx] := candidate_item;
+        end;
+    end;
+
+    procedure apply_single_letter_full_query_spoken_bonus;
+    var
+        candidate_item: TncCandidate;
+        idx: Integer;
+        spoken_bonus: Integer;
+        text_value_local: string;
+    begin
+        if (not full_pinyin_query) or (not single_letter_query) or (list.Count <= 1) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to list.Count - 1 do
+        begin
+            candidate_item := list[idx];
+            if (candidate_item.source <> cs_rule) or (candidate_item.comment <> '') then
+            begin
+                Continue;
+            end;
+
+            text_value_local := Trim(candidate_item.text);
+            if (text_value_local = '') or (get_text_unit_count_local(text_value_local) <> 1) then
+            begin
+                Continue;
+            end;
+
+            spoken_bonus := get_single_letter_full_query_spoken_bonus(text_value_local);
+            if spoken_bonus <= 0 then
+            begin
+                Continue;
+            end;
+
+            Inc(candidate_item.score, spoken_bonus);
+            list[idx] := candidate_item;
+        end;
+    end;
+
+    procedure enforce_single_letter_exact_group_priority;
+    var
+        candidate_item: TncCandidate;
+        idx: Integer;
+        exact_group_floor: Integer;
+        candidate_pinyin_key: string;
+        text_value_local: string;
+        has_exact_group: Boolean;
+    begin
+        if (not full_pinyin_query) or (not single_letter_query) or (list.Count <= 1) or
+            (candidate_pinyin_map = nil) then
+        begin
+            Exit;
+        end;
+
+        exact_group_floor := MaxInt;
+        has_exact_group := False;
+        for idx := 0 to list.Count - 1 do
+        begin
+            candidate_item := list[idx];
+            if candidate_item.comment <> '' then
+            begin
+                Continue;
+            end;
+
+            text_value_local := Trim(candidate_item.text);
+            if (text_value_local = '') or (get_text_unit_count_local(text_value_local) <> 1) then
+            begin
+                Continue;
+            end;
+
+            if (not candidate_pinyin_map.TryGetValue(candidate_item.text, candidate_pinyin_key)) or
+                (not SameText(candidate_pinyin_key, query_key)) then
+            begin
+                Continue;
+            end;
+
+            has_exact_group := True;
+            if candidate_item.score < exact_group_floor then
+            begin
+                exact_group_floor := candidate_item.score;
+            end;
+        end;
+
+        if (not has_exact_group) or (exact_group_floor = MaxInt) then
+        begin
+            Exit;
+        end;
+
+        Dec(exact_group_floor);
+        for idx := 0 to list.Count - 1 do
+        begin
+            candidate_item := list[idx];
+            if candidate_item.comment <> '' then
+            begin
+                Continue;
+            end;
+
+            text_value_local := Trim(candidate_item.text);
+            if (text_value_local = '') or (get_text_unit_count_local(text_value_local) <> 1) then
+            begin
+                Continue;
+            end;
+
+            if (candidate_pinyin_map.TryGetValue(candidate_item.text, candidate_pinyin_key)) and
+                SameText(candidate_pinyin_key, query_key) then
+            begin
+                Continue;
+            end;
+
+            if candidate_item.score > exact_group_floor then
+            begin
+                candidate_item.score := exact_group_floor;
+                list[idx] := candidate_item;
+            end;
+        end;
+    end;
+
+    procedure apply_candidate_score_caps;
+    var
+        candidate_item: TncCandidate;
+        idx: Integer;
+    begin
+        if (candidate_score_cap_map = nil) or (candidate_score_cap_map.Count <= 0) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to list.Count - 1 do
+        begin
+            candidate_item := list[idx];
+            if candidate_score_cap_map.TryGetValue(candidate_item.text, candidate_score_cap) and
+                (candidate_item.score > candidate_score_cap) then
+            begin
+                candidate_item.score := candidate_score_cap;
+                list[idx] := candidate_item;
             end;
         end;
     end;
@@ -5359,6 +5633,8 @@ begin
     skipped_noisy_user_count := 0;
     skipped_base_dup_user_count := 0;
     injected_learned_base_count := 0;
+    single_letter_cap_score := 0;
+    single_letter_has_cap := False;
     if (pinyin = '') or not ensure_open then
     begin
         Result := False;
@@ -5396,6 +5672,7 @@ begin
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Boolean>.Create;
     candidate_pinyin_map := TDictionary<string, string>.Create;
+    candidate_score_cap_map := TDictionary<string, Integer>.Create;
     learning_bonus_map := TDictionary<string, Integer>.Create;
     text_learning_bonus_cache := TDictionary<string, Integer>.Create;
     exact_base_hit := False;
@@ -5586,7 +5863,8 @@ begin
                             Dec(score_value, c_nonfull_exact_penalty);
                         end;
                         append_candidate(text_value, comment_value, score_value, cs_rule, True,
-                            dict_weight_value, candidate_pinyin);
+                            dict_weight_value, candidate_pinyin,
+                            IfThen((full_pinyin_query and single_letter_has_cap), single_letter_cap_score, MaxInt));
                         exact_base_hit := True;
                         step_result := m_base_connection.step(stmt);
                     end;
@@ -5624,7 +5902,7 @@ begin
                             dict_weight_value := m_base_connection.column_int(stmt, 3);
                             score_value := dict_weight_value;
                             append_candidate(text_value, comment_value, score_value, cs_rule, True,
-                                dict_weight_value, candidate_pinyin);
+                                dict_weight_value, query_key);
                             step_result := m_base_connection.step(stmt);
                         end;
                     end;
@@ -5865,12 +6143,12 @@ begin
             single_letter_has_cap := False;
             if full_pinyin_query and (list.Count > 0) then
             begin
-                single_letter_cap_score := list[0].score - 1;
+                single_letter_cap_score := list[0].score - c_single_letter_full_query_cap_margin;
                 for i := 1 to list.Count - 1 do
                 begin
-                    if list[i].score - 1 < single_letter_cap_score then
+                    if list[i].score - c_single_letter_full_query_cap_margin < single_letter_cap_score then
                     begin
-                        single_letter_cap_score := list[i].score - 1;
+                        single_letter_cap_score := list[i].score - c_single_letter_full_query_cap_margin;
                     end;
                 end;
                 single_letter_has_cap := True;
@@ -5971,6 +6249,10 @@ begin
         end;
 
         apply_text_learning_bonus;
+        apply_single_letter_full_query_standalone_rerank;
+        apply_single_letter_full_query_spoken_bonus;
+        enforce_single_letter_exact_group_priority;
+        apply_candidate_score_caps;
         sort_candidate_list_by_score;
 
         if list.Count > 0 then
@@ -6003,6 +6285,7 @@ begin
         begin
             mixed_parser.Free;
         end;
+        candidate_score_cap_map.Free;
         candidate_pinyin_map.Free;
         text_learning_bonus_cache.Free;
         learning_bonus_map.Free;
