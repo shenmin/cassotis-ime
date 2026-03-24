@@ -48,13 +48,13 @@
 | --- | --- | --- | --- | --- | --- |
 | `variant` | 词库变体（简/繁） | `simplified` / `traditional` / `tc` | `simplified` | `variant=simplified` | `traditional` 与 `tc` 等价。运行时可按 Ctrl+Shift+T 切换。 |
 
-词库文件存储在固定运行时路径，不可在配置文件中修改：
+运行时词库文件存储在固定运行时路径，不可在配置文件中修改：
 
 | 文件 | 路径 |
 | --- | --- |
-| 简体基础词库 | `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` |
-| 繁体基础词库 | `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` |
-| 用户词库 | `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` |
+| 简体基础词库文件 | `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` |
+| 繁体基础词库文件 | `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` |
+| 用户词库文件 | `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` |
 
 ---
 

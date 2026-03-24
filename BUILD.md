@@ -60,28 +60,28 @@ Passing either DLL is sufficient; the script finds and registers its pair automa
 .\register_tsf.ps1 -single
 ```
 
-### Step 3 - Build dictionaries
+### Step 3 - Build runtime dictionaries
 
 ```powershell
 .\rebuild_dict.ps1
 ```
 
-This script runs the dictionary pipeline using generated lexicon artifacts from a sibling lexicon repository located at `..\cassotis-lexicon` or `..\cassotis_lexicon`:
+This script runs the runtime dictionary pipeline using generated lexicon artifacts from a sibling lexicon repository located at `..\cassotis-lexicon` or `..\cassotis_lexicon`:
 
 1. Locates lexicon root (`..\cassotis-lexicon` first, then `..\cassotis_lexicon`)
-2. Imports Unihan base dictionaries:
+2. Imports Unihan-derived lexicon files:
    - `data/generated/dict_unihan_sc.txt`
    - `data/generated/dict_unihan_tc.txt`
-3. Imports broad cleaned dictionaries (unless `-NoExternalLexicon`):
+3. Imports broad cleaned lexicon files (unless `-NoExternalLexicon`):
    - `data/generated/dict_clean_sc.txt`
    - `data/generated/dict_clean_tc.txt`
-4. Rebuilds `out/data/dict_sc.db` and `out/data/dict_tc.db`
+4. Rebuilds the runtime dictionary files `out/data/dict_sc.db` and `out/data/dict_tc.db`
 5. Restarts the host process if it was stopped at the beginning
 
 Options:
 
 ```powershell
-# Import Unihan-only (skip external broad clean dictionaries)
+# Import Unihan-only (skip external broad clean lexicon files)
 .\rebuild_dict.ps1 -NoExternalLexicon
 
 # Skip restarting the host process after rebuild

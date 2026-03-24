@@ -48,13 +48,13 @@ Notes:
 | --- | --- | --- | --- | --- | --- |
 | `variant` | Dictionary variant | `simplified` / `traditional` / `tc` | `simplified` | `variant=simplified` | `traditional` and `tc` are equivalent. Toggle at runtime with Ctrl+Shift+T. |
 
-Dictionary files are stored at a fixed runtime location and are not configurable:
+Runtime dictionary files are stored at a fixed runtime location and are not configurable:
 
 | File | Path |
 | --- | --- |
-| Simplified base dictionary | `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` |
-| Traditional base dictionary | `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` |
-| User dictionary | `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` |
+| Simplified base dictionary file | `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` |
+| Traditional base dictionary file | `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` |
+| User dictionary file | `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` |
 
 ---
 

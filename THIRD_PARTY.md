@@ -5,7 +5,7 @@ This file lists third-party software/data used by Cassotis IME and the related l
 ## 1) SQLite
 
 - Component: SQLite runtime library (`sqlite3.dll`)
-- Used for: dictionary storage and query
+- Used for: runtime dictionary storage and query
 - Source:
   - https://www.sqlite.org/download.html
   - local artifacts: `third_party/sqlite/`
@@ -17,14 +17,14 @@ This file lists third-party software/data used by Cassotis IME and the related l
 ## 2) Unicode Unihan Data (UCD)
 
 - Component: Unicode Unihan data files
-- Used for: generating base single-character Chinese dictionary data
+- Used for: generating base single-character Chinese lexicon data
 - Source:
   - https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
 - License/terms:
   - Unicode Terms of Use: https://www.unicode.org/terms_of_use.html
 - Compliance notes:
   - Keep Unicode copyright/trademark/license notices when redistributing original Unicode data files.
-  - Keep attribution for derived dictionary artifacts generated from Unicode data.
+  - Keep attribution for derived lexicon inputs and runtime dictionary artifacts generated from Unicode data.
 
 ## 3) Proprietary Build Toolchain (Not Redistributed)
 

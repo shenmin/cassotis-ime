@@ -47,14 +47,14 @@ Project focus:
 | Host process | `src/host/` | Win64 process for engine/UI orchestration over Named Pipe IPC |
 | UI | `src/ui/` | Candidate window and tray integration |
 | Common | `src/common/` | Config, logging, IPC, SQLite wrapper, shared types |
-| Tools | `tools/` | Registration, dictionary build/import/diagnostics executables |
+| Tools | `tools/` | Registration, runtime dictionary build/import/diagnostics executables |
 
 ## Repository Layout
 
 ```
 src/          source code
-tools/        utility projects (registration, dictionary build, diagnostics)
-data/         database schema and sample dictionary import data
+tools/        utility projects (registration, runtime dictionary build, diagnostics)
+data/         database schema and sample runtime dictionary import data
 out/          compiled binaries and build/management scripts
 third_party/  vendored dependencies (SQLite runtime)
 ```
@@ -85,7 +85,7 @@ Run the following from `out/` in order:
 # 2. Register TSF with Windows (requires administrator)
 .\register_tsf.ps1
 
-# 3. Build dictionaries
+# 3. Build runtime dictionaries
 .\rebuild_dict.ps1
 
 # 4. Start TSF
@@ -94,13 +94,15 @@ Run the following from `out/` in order:
 
 For the complete build guide — including incremental updates, manual IDE builds, script parameters, and troubleshooting — see [BUILD.md](BUILD.md).
 
-## Dictionary
+## Lexicon and Runtime Dictionaries
 
-The base dictionary pipeline imports generated lexicon artifacts from a sibling lexicon repository
+The runtime dictionary build pipeline imports generated lexicon artifacts from a sibling lexicon repository
 located at `..\cassotis-lexicon` or `..\cassotis_lexicon`:
 
+The lexicon source repository is published separately at [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon).
+
 - Lexicon inputs: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt`
-- Generated databases: `out/data/dict_sc.db` (simplified), `out/data/dict_tc.db` (traditional)
+- Generated runtime dictionaries: `out/data/dict_sc.db` (simplified), `out/data/dict_tc.db` (traditional)
 - User dictionary: `out/data/user_dict.db`
 
 Main rebuild entry:
