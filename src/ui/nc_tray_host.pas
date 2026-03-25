@@ -1682,7 +1682,8 @@ begin
     m_item_full_width.Checked := m_engine_config.full_width_mode;
 
     m_item_punct_mode.Caption := '中文标点';
-    m_item_punct_mode.Checked := m_engine_config.punctuation_full_width;
+    m_item_punct_mode.Checked := (m_engine_config.input_mode <> im_english) and
+        m_engine_config.punctuation_full_width;
 
     update_status_widget;
     apply_status_widget_visibility;

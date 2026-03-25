@@ -900,7 +900,7 @@ begin
     begin
         conversion_value := conversion_value or TF_CONVERSIONMODE_FULLSHAPE;
     end;
-    if punctuation_full_width then
+    if (input_mode <> im_english) and punctuation_full_width then
     begin
         conversion_value := conversion_value or TF_CONVERSIONMODE_SYMBOL;
     end;
@@ -2448,7 +2448,10 @@ begin
     if has_conversion then
     begin
         next_full_width := (conversion_value and TF_CONVERSIONMODE_FULLSHAPE) <> 0;
-        next_punctuation_full_width := (conversion_value and TF_CONVERSIONMODE_SYMBOL) <> 0;
+        if next_input_mode <> im_english then
+        begin
+            next_punctuation_full_width := (conversion_value and TF_CONVERSIONMODE_SYMBOL) <> 0;
+        end;
     end;
 
     if m_ipc_client.set_state(m_session_id, next_input_mode, next_full_width, next_punctuation_full_width) then

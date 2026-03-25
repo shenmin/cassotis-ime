@@ -170,6 +170,7 @@ type
         function get_segment_path_context_bonus(const candidate: TncCandidate): Integer;
         function get_candidate_debug_summary(const candidate: TncCandidate): string;
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
+        function get_effective_punctuation_full_width: Boolean;
         function map_full_width_char(const input_char: Char): string;
         function map_punctuation_char(const input_char: Char): string;
         function get_direct_ascii_commit_text(const key_code: Word; const key_state: TncKeyState;
@@ -9783,7 +9784,7 @@ end;
 
 function TncEngine.map_punctuation_char(const input_char: Char): string;
 begin
-    if m_config.punctuation_full_width then
+    if get_effective_punctuation_full_width then
     begin
         case input_char of
             ',':
@@ -9890,6 +9891,11 @@ begin
     Result := input_char;
 end;
 
+function TncEngine.get_effective_punctuation_full_width: Boolean;
+begin
+    Result := (m_config.input_mode <> im_english) and m_config.punctuation_full_width;
+end;
+
 function TncEngine.get_direct_ascii_commit_text(const key_code: Word; const key_state: TncKeyState;
     out out_text: string): Boolean;
 var
@@ -9918,7 +9924,7 @@ begin
         Exit(True);
     end;
 
-    if (m_config.punctuation_full_width or m_config.full_width_mode) and
+    if (get_effective_punctuation_full_width or m_config.full_width_mode) and
         get_punctuation_char(key_code, key_state, punct_char) then
     begin
         out_text := map_punctuation_char(punct_char);
@@ -17515,7 +17521,7 @@ begin
                 Exit;
             end;
 
-            if m_config.punctuation_full_width or m_config.full_width_mode then
+            if get_effective_punctuation_full_width or m_config.full_width_mode then
             begin
                 set_pending_commit(punct_text);
                 Result := True;
@@ -18211,7 +18217,7 @@ begin
         end
         else
         begin
-            Result := m_config.punctuation_full_width or m_config.full_width_mode;
+            Result := get_effective_punctuation_full_width or m_config.full_width_mode;
         end;
         Exit;
     end;
