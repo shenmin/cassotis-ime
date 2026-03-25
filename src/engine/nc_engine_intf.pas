@@ -172,6 +172,9 @@ type
         function get_punctuation_char(const key_code: Word; const key_state: TncKeyState; out out_char: Char): Boolean;
         function map_full_width_char(const input_char: Char): string;
         function map_punctuation_char(const input_char: Char): string;
+        function get_direct_ascii_commit_text(const key_code: Word; const key_state: TncKeyState;
+            out out_text: string): Boolean;
+        function get_raw_composition_commit_text: string;
         function get_candidate_text_unit_count(const text: string): Integer;
         function is_runtime_chain_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
@@ -9576,6 +9579,24 @@ begin
             begin
                 Result := False;
             end;
+        Ord('2'):
+            if key_state.shift_down then
+            begin
+                out_char := '@';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('3'):
+            if key_state.shift_down then
+            begin
+                out_char := '#';
+            end
+            else
+            begin
+                Result := False;
+            end;
         Ord('4'):
             if key_state.shift_down then
             begin
@@ -9598,6 +9619,24 @@ begin
             if key_state.shift_down then
             begin
                 out_char := '^';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('7'):
+            if key_state.shift_down then
+            begin
+                out_char := '&';
+            end
+            else
+            begin
+                Result := False;
+            end;
+        Ord('8'):
+            if key_state.shift_down then
+            begin
+                out_char := '*';
             end
             else
             begin
@@ -9755,10 +9794,18 @@ begin
                 Result := Char($FF1F);
             '!':
                 Result := Char($FF01);
+            '@':
+                Result := Char($FF20);
+            '#':
+                Result := Char($FF03);
             '$':
                 Result := Char($FFE5);
             '%':
                 Result := Char($FF05);
+            '&':
+                Result := Char($FF06);
+            '*':
+                Result := Char($FF0A);
             ':':
                 Result := Char($FF1A);
             ';':
@@ -9841,6 +9888,71 @@ begin
     end;
 
     Result := input_char;
+end;
+
+function TncEngine.get_direct_ascii_commit_text(const key_code: Word; const key_state: TncKeyState;
+    out out_text: string): Boolean;
+var
+    key_char: Char;
+    display_key_char: Char;
+    punct_char: Char;
+begin
+    out_text := '';
+
+    if m_config.full_width_mode and is_alpha_key(key_code, key_state, key_char, display_key_char) then
+    begin
+        out_text := map_full_width_char(display_key_char);
+        Exit(True);
+    end;
+
+    if m_config.full_width_mode and (key_code >= Ord('0')) and (key_code <= Ord('9')) and
+        (not key_state.shift_down) then
+    begin
+        out_text := map_full_width_char(Char(key_code));
+        Exit(True);
+    end;
+
+    if m_config.full_width_mode and (key_code = VK_SPACE) then
+    begin
+        out_text := map_full_width_char(' ');
+        Exit(True);
+    end;
+
+    if (m_config.punctuation_full_width or m_config.full_width_mode) and
+        get_punctuation_char(key_code, key_state, punct_char) then
+    begin
+        out_text := map_punctuation_char(punct_char);
+        Exit(True);
+    end;
+
+    Result := False;
+end;
+
+function TncEngine.get_raw_composition_commit_text: string;
+var
+    source_text: string;
+    idx: Integer;
+begin
+    if m_composition_display_text <> '' then
+    begin
+        source_text := m_composition_display_text;
+    end
+    else
+    begin
+        source_text := m_composition_text;
+    end;
+
+    if (not m_config.full_width_mode) or (source_text = '') then
+    begin
+        Exit(source_text);
+    end;
+
+    Result := '';
+    SetLength(Result, 0);
+    for idx := 1 to Length(source_text) do
+    begin
+        Result := Result + map_full_width_char(source_text[idx]);
+    end;
 end;
 
 function TncEngine.get_rank_score(const candidate: TncCandidate): Integer;
@@ -17333,6 +17445,11 @@ begin
 
     if m_config.input_mode = im_english then
     begin
+        if get_direct_ascii_commit_text(key_code, key_state, commit_text) then
+        begin
+            set_pending_commit(commit_text);
+            Exit(True);
+        end;
         Exit(False);
     end;
 
@@ -17475,14 +17592,7 @@ begin
                 if m_composition_text <> '' then
                 begin
                     // Enter should commit raw input text instead of selecting candidate.
-                    if m_composition_display_text <> '' then
-                    begin
-                        set_pending_commit(m_composition_display_text);
-                    end
-                    else
-                    begin
-                        set_pending_commit(m_composition_text);
-                    end;
+                    set_pending_commit(get_raw_composition_commit_text);
                     Result := True;
                 end
                 else if m_confirmed_text <> '' then
@@ -17596,14 +17706,7 @@ begin
                     end
                     else
                     begin
-                        if m_composition_display_text <> '' then
-                        begin
-                            set_pending_commit(m_composition_display_text);
-                        end
-                        else
-                        begin
-                            set_pending_commit(m_composition_text);
-                        end;
+                        set_pending_commit(get_raw_composition_commit_text);
                         Result := True;
                     end;
                 end
@@ -18062,6 +18165,7 @@ var
     display_key_char: Char;
     punct_char: Char;
     has_candidates: Boolean;
+    direct_commit_text: string;
 begin
     Result := False;
     if key_state.ctrl_down and (key_code = VK_SPACE) then
@@ -18089,7 +18193,8 @@ begin
 
     if m_config.input_mode = im_english then
     begin
-        Exit(False);
+        Result := get_direct_ascii_commit_text(key_code, key_state, direct_commit_text);
+        Exit;
     end;
 
     if is_alpha_key(key_code, key_state, key_char, display_key_char) then
