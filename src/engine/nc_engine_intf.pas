@@ -12526,6 +12526,60 @@ var
         end;
     end;
 
+    function get_suffix_tail_head_preference_ratio_pct_local(
+        const pinyin_key: string): Integer;
+    var
+        normalized_pinyin_key: string;
+    begin
+        Result := 100;
+        normalized_pinyin_key := LowerCase(Trim(pinyin_key));
+        if normalized_pinyin_key = 'de' then
+        begin
+            Exit(170);
+        end;
+
+        if (normalized_pinyin_key = 'le') or (normalized_pinyin_key = 'zhe') or
+            (normalized_pinyin_key = 'guo') then
+        begin
+            Exit(118);
+        end;
+
+        if (normalized_pinyin_key = 'ma') or (normalized_pinyin_key = 'ne') or
+            (normalized_pinyin_key = 'ba') or (normalized_pinyin_key = 'la') or
+            (normalized_pinyin_key = 'a') or (normalized_pinyin_key = 'ya') or
+            (normalized_pinyin_key = 'wa') or (normalized_pinyin_key = 'ha') then
+        begin
+            Exit(112);
+        end;
+    end;
+
+    function get_suffix_tail_head_retention_bonus_local(
+        const pinyin_key: string): Integer;
+    var
+        normalized_pinyin_key: string;
+    begin
+        Result := 0;
+        normalized_pinyin_key := LowerCase(Trim(pinyin_key));
+        if normalized_pinyin_key = 'de' then
+        begin
+            Exit(420);
+        end;
+
+        if (normalized_pinyin_key = 'le') or (normalized_pinyin_key = 'zhe') or
+            (normalized_pinyin_key = 'guo') then
+        begin
+            Exit(200);
+        end;
+
+        if (normalized_pinyin_key = 'ma') or (normalized_pinyin_key = 'ne') or
+            (normalized_pinyin_key = 'ba') or (normalized_pinyin_key = 'la') or
+            (normalized_pinyin_key = 'a') or (normalized_pinyin_key = 'ya') or
+            (normalized_pinyin_key = 'wa') or (normalized_pinyin_key = 'ha') then
+        begin
+            Exit(120);
+        end;
+    end;
+
     function is_suffix_tail_expected_text_local(const pinyin_key: string;
         const text_value: string): Boolean;
     var
@@ -12964,7 +13018,10 @@ var
         suffix_tail_matched_text_local: string;
         suffix_tail_support_strength_local: Integer;
         suffix_tail_bias_local: Integer;
+        suffix_tail_boundary_ratio_pct_local: Integer;
+        suffix_tail_head_retention_bonus_local: Integer;
         tail_two_suffix_conflict_penalty_local: Integer;
+        head_two_first_unit_penalty_local: Integer;
 
         function is_backward_attaching_boundary_unit_local(const text_value: string): Boolean;
         var
@@ -13097,6 +13154,16 @@ var
         suffix_tail_bias_local := get_suffix_tail_bias_adjustment_for_syllable_local(
             2, last_single_text, last_single_strength, suffix_tail_matched_text_local,
             suffix_tail_support_strength_local);
+        suffix_tail_boundary_ratio_pct_local := c_three_syllable_boundary_ratio_pct_local;
+        suffix_tail_head_retention_bonus_local := 0;
+        if (suffix_tail_bias_local > 0) and (suffix_tail_support_strength_local > 0) and
+            (suffix_tail_matched_text_local <> '') and (head_two_exact_strength > 0) then
+        begin
+            suffix_tail_boundary_ratio_pct_local :=
+                get_suffix_tail_head_preference_ratio_pct_local(syllables[2].text);
+            suffix_tail_head_retention_bonus_local :=
+                get_suffix_tail_head_retention_bonus_local(syllables[2].text);
+        end;
         try_get_best_boundary_unit_single_char_for_syllable_local(1, preferred_boundary_unit_text,
             preferred_boundary_unit_strength);
         if (preferred_boundary_unit_strength <= 0) and
@@ -13247,8 +13314,16 @@ var
             begin
                 if not head_two_first_unit_near_top then
                 begin
-                    Dec(head_two_strength, c_head_phrase_first_unit_mismatch_penalty_local +
-                        Min(180, first_single_strength div 2));
+                    head_two_first_unit_penalty_local :=
+                        c_head_phrase_first_unit_mismatch_penalty_local +
+                        Min(180, first_single_strength div 2);
+                    if suffix_tail_head_retention_bonus_local > 0 then
+                    begin
+                        head_two_first_unit_penalty_local := Min(
+                            head_two_first_unit_penalty_local,
+                            220 + Min(120, first_single_strength div 4));
+                    end;
+                    Dec(head_two_strength, head_two_first_unit_penalty_local);
                     if head_two_strength < 0 then
                     begin
                         head_two_strength := 0;
@@ -13306,6 +13381,10 @@ var
             begin
                 Inc(head_two_strength, Max(180, suffix_tail_bias_local div 2));
             end;
+            if suffix_tail_head_retention_bonus_local > 0 then
+            begin
+                Inc(head_two_strength, suffix_tail_head_retention_bonus_local);
+            end;
 
             if (tail_two_exact_text <> '') and (Length(tail_two_units) > 1) and
                 (not is_suffix_tail_expected_text_local(syllables[2].text, tail_two_units[1])) then
@@ -13353,6 +13432,8 @@ var
         if (head_two_exact_strength > 0) and (tail_two_exact_strength > 0) then
         begin
             if (head_two_query_path_bonus <= 0) and
+                ((suffix_tail_bias_local <= 0) or (suffix_tail_support_strength_local <= 0) or
+                (suffix_tail_matched_text_local = '')) and
                 ((tail_two_exact_strength - head_two_exact_strength) >= 220) then
             begin
                 m_last_three_syllable_partial_preference_kind := 1;
@@ -13512,7 +13593,7 @@ var
         if (tail_two_strength > 0) and
             ((head_two_strength <= 0) or
             ((tail_two_strength * 100) >=
-            (head_two_strength * c_three_syllable_boundary_ratio_pct_local))) then
+            (head_two_strength * suffix_tail_boundary_ratio_pct_local))) then
         begin
             m_last_three_syllable_partial_preference_kind := 1;
         end
@@ -14990,6 +15071,8 @@ var
             suffix_tail_matched_text: string;
             suffix_tail_support_strength: Integer;
             suffix_tail_bias: Integer;
+            boundary_ratio_pct: Integer;
+            head_retention_bonus: Integer;
             remaining_pinyin: string;
             anchor_state: TncSegmentPathState;
             prefix_two_state: TncSegmentPathState;
@@ -15101,6 +15184,16 @@ var
             suffix_tail_bias := get_suffix_tail_bias_adjustment_for_syllable_local(
                 2, last_single_text, last_single_strength, suffix_tail_matched_text,
                 suffix_tail_support_strength);
+            boundary_ratio_pct := c_three_syllable_boundary_ratio_pct;
+            head_retention_bonus := 0;
+            if (suffix_tail_bias > 0) and (suffix_tail_support_strength > 0) and
+                (suffix_tail_matched_text <> '') and (head_two_strength > 0) then
+            begin
+                boundary_ratio_pct :=
+                    get_suffix_tail_head_preference_ratio_pct_local(syllables[2].text);
+                head_retention_bonus :=
+                    get_suffix_tail_head_retention_bonus_local(syllables[2].text);
+            end;
 
             head_two_effective_strength := head_two_strength;
             if try_get_best_anchor_state(2, 2, prefix_two_state) then
@@ -15126,6 +15219,10 @@ var
                 (suffix_tail_support_strength > 0) and (suffix_tail_matched_text <> '') then
             begin
                 Inc(head_two_supported_strength, suffix_tail_bias);
+                if head_retention_bonus > 0 then
+                begin
+                    Inc(head_two_supported_strength, head_retention_bonus);
+                end;
             end;
 
             tail_two_supported_strength := tail_two_strength;
@@ -15142,8 +15239,8 @@ var
             preferred_one_plus_two_score := 0;
             if (tail_two_supported_strength > 0) and
                 ((head_two_supported_strength <= 0) or
-                ((head_two_supported_strength * 100) <=
-                (tail_two_supported_strength * c_three_syllable_boundary_ratio_pct))) then
+                ((tail_two_supported_strength * 100) >=
+                (head_two_supported_strength * boundary_ratio_pct))) then
             begin
                 remaining_pinyin := build_syllable_text(1, Length(syllables) - 1);
                 if (remaining_pinyin <> '') and
@@ -15171,8 +15268,8 @@ var
 
             if (head_two_supported_strength > 0) and
                 ((tail_two_supported_strength <= 0) or
-                ((head_two_supported_strength * 100) >
-                (tail_two_supported_strength * c_three_syllable_boundary_ratio_pct))) then
+                ((tail_two_supported_strength * 100) <
+                (head_two_supported_strength * boundary_ratio_pct))) then
             begin
                 remaining_pinyin := build_syllable_text(2, Length(syllables) - 2);
                 if (remaining_pinyin <> '') and
