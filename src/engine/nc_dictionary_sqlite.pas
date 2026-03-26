@@ -143,7 +143,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''9'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''10'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -191,6 +191,14 @@ const
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);' + sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_stats_text ON dict_user_stats(text);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_user_query_latest (' + sLineBreak +
+        '    query_pinyin TEXT NOT NULL PRIMARY KEY,' + sLineBreak +
+        '    text TEXT NOT NULL,' + sLineBreak +
+        '    last_used INTEGER DEFAULT 0' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_query_latest_text ON dict_user_query_latest(text);' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_user_penalty (' + sLineBreak +
         '    pinyin TEXT NOT NULL,' + sLineBreak +
@@ -2095,6 +2103,24 @@ begin
     end;
 
     if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_user_query_latest (' +
+        'query_pinyin TEXT NOT NULL PRIMARY KEY,' +
+        'text TEXT NOT NULL,' +
+        'last_used INTEGER DEFAULT 0' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_query_latest_text ON dict_user_query_latest(text);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
         'CREATE TABLE IF NOT EXISTS dict_user_penalty (' +
         'pinyin TEXT NOT NULL,' +
         'text TEXT NOT NULL,' +
@@ -2216,7 +2242,7 @@ begin
 
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 9);
+        set_schema_version(connection, 10);
         Result := True;
         Exit;
     end;
@@ -2264,6 +2290,11 @@ begin
     if schema_version < 9 then
     begin
         set_schema_version(connection, 9);
+    end;
+
+    if schema_version < 10 then
+    begin
+        set_schema_version(connection, 10);
     end;
 
     Result := True;
@@ -6446,6 +6477,10 @@ const
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_stats_sql = 'INSERT OR IGNORE INTO dict_user_stats(pinyin, text, commit_count, last_used) ' +
         'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
+    update_latest_sql = 'UPDATE dict_user_query_latest SET text = ?2, ' +
+        'last_used = strftime(''%s'',''now'') WHERE query_pinyin = ?1';
+    insert_latest_sql = 'INSERT OR IGNORE INTO dict_user_query_latest(query_pinyin, text, last_used) ' +
+        'VALUES (?1, ?2, strftime(''%s'',''now''))';
     update_sql = 'UPDATE dict_user SET weight = weight + 1, last_used = strftime(''%s'',''now'') ' +
         'WHERE pinyin = ?1 AND text = ?2';
     insert_sql = 'INSERT OR IGNORE INTO dict_user(pinyin, text, weight, last_used) ' +
@@ -6529,6 +6564,40 @@ begin
         if m_user_connection.prepare(insert_stats_sql, stmt) then
         begin
             if m_user_connection.bind_text(stmt, 1, pinyin_key) and m_user_connection.bind_text(stmt, 2, text) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(update_latest_sql, stmt) then
+        begin
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(insert_latest_sql, stmt) then
+        begin
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text) then
             begin
                 m_user_connection.step(stmt);
             end;
@@ -7180,13 +7249,15 @@ end;
 function TncSqliteDictionary.get_query_latest_choice_text(const query_key: string): string;
 const
     query_sql =
+        'SELECT text, last_used FROM dict_user_query_latest WHERE query_pinyin = ?1 LIMIT 1';
+    fallback_query_sql =
         'SELECT text, commit_count, last_used FROM dict_user_stats ' +
         'WHERE pinyin = ?1 ORDER BY last_used DESC, commit_count DESC LIMIT 1';
     c_sec_per_180_days = 180 * 24 * 60 * 60;
 var
     normalized_query: string;
     step_result: Integer;
-    commit_count: Integer;
+    stmt: Psqlite3_stmt;
     last_used_unix: Int64;
     now_unix: Int64;
     age_seconds: Int64;
@@ -7223,16 +7294,49 @@ begin
         step_result := m_user_connection.step(m_stmt_query_latest_choice_text);
         if step_result <> SQLITE_ROW then
         begin
-            Exit;
+            stmt := nil;
+            try
+                if not m_user_connection.prepare(fallback_query_sql, stmt) or
+                    (not m_user_connection.bind_text(stmt, 1, normalized_query)) then
+                begin
+                    Exit;
+                end;
+
+                step_result := m_user_connection.step(stmt);
+                if step_result <> SQLITE_ROW then
+                begin
+                    Exit;
+                end;
+
+                last_used_unix := m_user_connection.column_int(stmt, 2);
+                if last_used_unix > 0 then
+                begin
+                    now_unix := get_unix_time_now;
+                    if now_unix > 0 then
+                    begin
+                        age_seconds := now_unix - last_used_unix;
+                        if age_seconds < 0 then
+                        begin
+                            age_seconds := 0;
+                        end;
+                        if age_seconds > c_sec_per_180_days then
+                        begin
+                            Exit;
+                        end;
+                    end;
+                end;
+
+                Result := Trim(m_user_connection.column_text(stmt, 0));
+                Exit;
+            finally
+                if stmt <> nil then
+                begin
+                    m_user_connection.finalize(stmt);
+                end;
+            end;
         end;
 
-        commit_count := m_user_connection.column_int(m_stmt_query_latest_choice_text, 1);
-        if commit_count <= 0 then
-        begin
-            Exit;
-        end;
-
-        last_used_unix := m_user_connection.column_int(m_stmt_query_latest_choice_text, 2);
+        last_used_unix := m_user_connection.column_int(m_stmt_query_latest_choice_text, 1);
         if last_used_unix > 0 then
         begin
             now_unix := get_unix_time_now;
@@ -7578,8 +7682,10 @@ procedure TncSqliteDictionary.purge_user_entry_internal(const pinyin: string; co
 const
     delete_user_sql = 'DELETE FROM dict_user WHERE pinyin = ?1 AND text = ?2';
     delete_stats_sql = 'DELETE FROM dict_user_stats WHERE pinyin = ?1 AND text = ?2';
+    delete_latest_sql = 'DELETE FROM dict_user_query_latest WHERE query_pinyin = ?1 AND text = ?2';
     delete_user_by_text_sql = 'DELETE FROM dict_user WHERE text = ?1';
     delete_stats_by_text_sql = 'DELETE FROM dict_user_stats WHERE text = ?1';
+    delete_latest_by_text_sql = 'DELETE FROM dict_user_query_latest WHERE text = ?1';
     delete_bigram_by_text_sql = 'DELETE FROM dict_user_bigram WHERE text = ?1';
     delete_bigram_by_left_sql = 'DELETE FROM dict_user_bigram WHERE left_text = ?1';
     delete_trigram_by_text_sql = 'DELETE FROM dict_user_trigram WHERE text = ?1';
@@ -7609,13 +7715,32 @@ begin
     end;
     if m_query_choice_bonus_cache <> nil then
     begin
-        if pinyin_key <> '' then
+        if purge_all_by_text then
+        begin
+            m_query_choice_bonus_cache.Clear;
+        end
+        else if pinyin_key <> '' then
         begin
             m_query_choice_bonus_cache.Remove(pinyin_key + #1 + text_key);
         end
         else
         begin
             m_query_choice_bonus_cache.Clear;
+        end;
+    end;
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        if purge_all_by_text then
+        begin
+            m_query_latest_choice_text_cache.Clear;
+        end
+        else if pinyin_key <> '' then
+        begin
+            m_query_latest_choice_text_cache.Remove(pinyin_key);
+        end
+        else
+        begin
+            m_query_latest_choice_text_cache.Clear;
         end;
     end;
 
@@ -7651,6 +7776,21 @@ begin
                 m_user_connection.finalize(stmt);
             end;
         end;
+
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_latest_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
     end;
 
     if purge_all_by_text then
@@ -7672,6 +7812,20 @@ begin
         stmt := nil;
         try
             if m_user_connection.prepare(delete_stats_by_text_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_latest_by_text_sql, stmt) and
                 m_user_connection.bind_text(stmt, 1, text_key) then
             begin
                 m_user_connection.step(stmt);

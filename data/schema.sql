@@ -1,11 +1,11 @@
--- cassotis ime sqlite schema v9
+-- cassotis ime sqlite schema v10
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '9');
+INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '10');
 
 CREATE TABLE IF NOT EXISTS dict_base (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS dict_user_stats (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);
+CREATE INDEX IF NOT EXISTS idx_dict_user_stats_text ON dict_user_stats(text);
+
+CREATE TABLE IF NOT EXISTS dict_user_query_latest (
+    query_pinyin TEXT NOT NULL PRIMARY KEY,
+    text TEXT NOT NULL,
+    last_used INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_dict_user_query_latest_text ON dict_user_query_latest(text);
 
 CREATE TABLE IF NOT EXISTS dict_user_penalty (
     pinyin TEXT NOT NULL,
