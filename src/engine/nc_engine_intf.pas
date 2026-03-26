@@ -13352,13 +13352,10 @@ var
             end;
         end;
 
-        if (tail_two_strength > 0) and (first_single_strength > 0) then
+        if (tail_two_strength > 0) and (first_single_strength > 0) and
+            (not head_two_first_unit_matches_best) then
         begin
-            if head_two_first_unit_matches_best then
-            begin
-                Inc(tail_two_strength, Min(c_first_single_tail_bias_cap_local, first_single_strength));
-            end
-            else if not head_two_first_unit_near_top then
+            if not head_two_first_unit_near_top then
             begin
                 Inc(tail_two_strength, Min(c_first_single_tail_bias_cap_local, first_single_strength));
             end;
