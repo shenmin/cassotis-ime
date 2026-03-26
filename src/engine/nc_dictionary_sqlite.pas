@@ -36,12 +36,16 @@ type
         m_prefix_popularity_cache: TDictionary<string, Integer>;
         m_pinyin_followup_popularity_cache: TDictionary<string, Integer>;
         m_single_char_weight_cache: TDictionary<string, Integer>;
+        m_query_choice_bonus_cache: TDictionary<string, Integer>;
+        m_query_latest_choice_text_cache: TDictionary<string, string>;
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
         m_stmt_base_query_path_bonus: Psqlite3_stmt;
         m_stmt_prefix_popularity: Psqlite3_stmt;
         m_stmt_pinyin_followup_popularity: Psqlite3_stmt;
         m_stmt_single_char_exact_weight: Psqlite3_stmt;
+        m_stmt_query_choice_bonus: Psqlite3_stmt;
+        m_stmt_query_latest_choice_text: Psqlite3_stmt;
         m_stmt_query_path_bonus: Psqlite3_stmt;
         m_stmt_query_path_penalty: Psqlite3_stmt;
         m_stmt_candidate_penalty: Psqlite3_stmt;
@@ -116,6 +120,8 @@ type
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; override;
         function get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
             const candidate_text: string): Integer; override;
+        function get_query_choice_bonus(const query_key: string; const candidate_text: string): Integer; override;
+        function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
@@ -1761,6 +1767,8 @@ begin
     m_stmt_prefix_popularity := nil;
     m_stmt_pinyin_followup_popularity := nil;
     m_stmt_single_char_exact_weight := nil;
+    m_stmt_query_choice_bonus := nil;
+    m_stmt_query_latest_choice_text := nil;
     m_stmt_query_path_bonus := nil;
     m_stmt_query_path_penalty := nil;
     m_stmt_candidate_penalty := nil;
@@ -1776,6 +1784,8 @@ begin
     m_prefix_popularity_cache := TDictionary<string, Integer>.Create;
     m_pinyin_followup_popularity_cache := TDictionary<string, Integer>.Create;
     m_single_char_weight_cache := TDictionary<string, Integer>.Create;
+    m_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
+    m_query_latest_choice_text_cache := TDictionary<string, string>.Create;
     m_query_path_penalty_cache := TDictionary<string, Integer>.Create;
     m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
     m_debug_mode := False;
@@ -1815,6 +1825,16 @@ begin
     begin
         m_single_char_weight_cache.Free;
         m_single_char_weight_cache := nil;
+    end;
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        m_query_choice_bonus_cache.Free;
+        m_query_choice_bonus_cache := nil;
+    end;
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        m_query_latest_choice_text_cache.Free;
+        m_query_latest_choice_text_cache := nil;
     end;
     if m_candidate_penalty_cache <> nil then
     begin
@@ -3749,6 +3769,10 @@ begin
     begin
         m_single_char_weight_cache.Clear;
     end;
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        m_query_choice_bonus_cache.Clear;
+    end;
     if m_candidate_penalty_cache <> nil then
     begin
         m_candidate_penalty_cache.Clear;
@@ -3761,6 +3785,16 @@ end;
 
 procedure TncSqliteDictionary.clear_cached_user_statements;
 begin
+    if (m_stmt_query_choice_bonus <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_query_choice_bonus);
+        m_stmt_query_choice_bonus := nil;
+    end;
+    if (m_stmt_query_latest_choice_text <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_query_latest_choice_text);
+        m_stmt_query_latest_choice_text := nil;
+    end;
     if (m_stmt_context_bonus <> nil) and (m_user_connection <> nil) then
     begin
         m_user_connection.finalize(m_stmt_context_bonus);
@@ -6417,17 +6451,32 @@ const
     insert_sql = 'INSERT OR IGNORE INTO dict_user(pinyin, text, weight, last_used) ' +
         'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
     delete_user_sql = 'DELETE FROM dict_user WHERE pinyin = ?1 AND text = ?2';
+    delete_penalty_sql = 'DELETE FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2';
 var
     stmt: Psqlite3_stmt;
     pinyin_key: string;
+    cache_key: string;
     full_pinyin_input: Boolean;
     base_entry_exists: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
+    cache_key := pinyin_key + #1 + Trim(text);
     if (pinyin_key = '') or (text = '') or (not is_valid_learning_text(text)) or
         (not ensure_open) or (not m_user_ready) then
     begin
         Exit;
+    end;
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        m_query_choice_bonus_cache.Remove(cache_key);
+    end;
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        m_query_latest_choice_text_cache.Remove(pinyin_key);
+    end;
+    if m_candidate_penalty_cache <> nil then
+    begin
+        m_candidate_penalty_cache.Remove(cache_key);
     end;
 
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
@@ -6439,6 +6488,25 @@ begin
     end;
 
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
+
+    // A positive explicit selection for the same query/text pair should
+    // cancel any earlier "remove candidate" feedback for that exact pair.
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_penalty_sql, stmt) then
+        begin
+            if m_user_connection.bind_text(stmt, 1, pinyin_key) and
+                m_user_connection.bind_text(stmt, 2, text) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
 
     stmt := nil;
     try
@@ -6947,6 +7015,256 @@ begin
     end;
 end;
 
+function TncSqliteDictionary.get_query_choice_bonus(const query_key: string;
+    const candidate_text: string): Integer;
+const
+    query_sql = 'SELECT commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    c_single_query_base = 44;
+    c_single_query_step = 34;
+    c_single_query_cap = 520;
+    c_multi_query_base = 96;
+    c_multi_query_step = 56;
+    c_multi_query_cap = 640;
+    c_recent_bonus_1d = 220;
+    c_recent_bonus_3d = 120;
+    c_recent_bonus_7d = 64;
+    c_recent_bonus_30d = 28;
+    c_sec_per_day = 24 * 60 * 60;
+    c_sec_per_3_days = 3 * c_sec_per_day;
+    c_sec_per_week = 7 * c_sec_per_day;
+    c_sec_per_30_days = 30 * c_sec_per_day;
+var
+    step_result: Integer;
+    normalized_query: string;
+    text_key: string;
+    cache_key: string;
+    commit_count: Integer;
+    last_used_unix: Int64;
+    units: Integer;
+    now_unix: Int64;
+    age_seconds: Int64;
+    recent_bonus: Integer;
+    session_like_bonus: Integer;
+    learning_floor_bonus: Integer;
+begin
+    Result := 0;
+    normalized_query := LowerCase(Trim(query_key));
+    text_key := Trim(candidate_text);
+    if (normalized_query = '') or (text_key = '') or (not ensure_open) or
+        (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    cache_key := normalized_query + #1 + text_key;
+    if (m_query_choice_bonus_cache <> nil) and m_query_choice_bonus_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    try
+        if m_stmt_query_choice_bonus = nil then
+        begin
+            if not m_user_connection.prepare(query_sql, m_stmt_query_choice_bonus) then
+            begin
+                Exit;
+            end;
+        end;
+        if (not m_user_connection.reset(m_stmt_query_choice_bonus)) or
+            (not m_user_connection.clear_bindings(m_stmt_query_choice_bonus)) or
+            (not m_user_connection.bind_text(m_stmt_query_choice_bonus, 1, normalized_query)) or
+            (not m_user_connection.bind_text(m_stmt_query_choice_bonus, 2, text_key)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(m_stmt_query_choice_bonus);
+        if step_result <> SQLITE_ROW then
+        begin
+            Exit;
+        end;
+
+        commit_count := m_user_connection.column_int(m_stmt_query_choice_bonus, 0);
+        if commit_count <= 0 then
+        begin
+            Exit;
+        end;
+
+        last_used_unix := m_user_connection.column_int(m_stmt_query_choice_bonus, 1);
+        now_unix := get_unix_time_now;
+        recent_bonus := 0;
+        if (last_used_unix > 0) and (now_unix > 0) then
+        begin
+            age_seconds := now_unix - last_used_unix;
+            if age_seconds < 0 then
+            begin
+                age_seconds := 0;
+            end;
+
+            if age_seconds <= c_sec_per_day then
+            begin
+                recent_bonus := c_recent_bonus_1d;
+            end
+            else if age_seconds <= c_sec_per_3_days then
+            begin
+                recent_bonus := c_recent_bonus_3d;
+            end
+            else if age_seconds <= c_sec_per_week then
+            begin
+                recent_bonus := c_recent_bonus_7d;
+            end
+            else if age_seconds <= c_sec_per_30_days then
+            begin
+                recent_bonus := c_recent_bonus_30d;
+            end;
+        end;
+
+        units := get_valid_cjk_codepoint_count(text_key);
+        if units <= 1 then
+        begin
+            session_like_bonus := c_single_query_base + ((commit_count - 1) * c_single_query_step) +
+                recent_bonus;
+            if commit_count >= 2 then
+            begin
+                Inc(session_like_bonus, 18);
+            end;
+            if commit_count >= 4 then
+            begin
+                Inc(session_like_bonus, 28);
+            end;
+            learning_floor_bonus := calc_learning_bonus(commit_count, last_used_unix, now_unix) div 2;
+            Result := Max(session_like_bonus, learning_floor_bonus);
+            if Result > c_single_query_cap then
+            begin
+                Result := c_single_query_cap;
+            end;
+        end
+        else
+        begin
+            session_like_bonus := c_multi_query_base + ((commit_count - 1) * c_multi_query_step) +
+                recent_bonus;
+            if (commit_count >= 2) and (recent_bonus >= c_recent_bonus_3d) then
+            begin
+                Inc(session_like_bonus, 56);
+            end;
+            if (commit_count >= 3) and (recent_bonus >= c_recent_bonus_7d) then
+            begin
+                Inc(session_like_bonus, 32);
+            end;
+            learning_floor_bonus := calc_learning_bonus(commit_count, last_used_unix, now_unix) div 3;
+            Result := Max(session_like_bonus, learning_floor_bonus);
+            if Result > c_multi_query_cap then
+            begin
+                Result := c_multi_query_cap;
+            end;
+        end;
+
+        if Result < 0 then
+        begin
+            Result := 0;
+        end;
+    finally
+        if m_stmt_query_choice_bonus <> nil then
+        begin
+            m_user_connection.reset(m_stmt_query_choice_bonus);
+            m_user_connection.clear_bindings(m_stmt_query_choice_bonus);
+        end;
+    end;
+
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        m_query_choice_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
+function TncSqliteDictionary.get_query_latest_choice_text(const query_key: string): string;
+const
+    query_sql =
+        'SELECT text, commit_count, last_used FROM dict_user_stats ' +
+        'WHERE pinyin = ?1 ORDER BY last_used DESC, commit_count DESC LIMIT 1';
+    c_sec_per_180_days = 180 * 24 * 60 * 60;
+var
+    normalized_query: string;
+    step_result: Integer;
+    commit_count: Integer;
+    last_used_unix: Int64;
+    now_unix: Int64;
+    age_seconds: Int64;
+begin
+    Result := '';
+    normalized_query := LowerCase(Trim(query_key));
+    if (normalized_query = '') or (not ensure_open) or (not m_user_ready) or
+        (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    if (m_query_latest_choice_text_cache <> nil) and
+        m_query_latest_choice_text_cache.TryGetValue(normalized_query, Result) then
+    begin
+        Exit;
+    end;
+
+    try
+        if m_stmt_query_latest_choice_text = nil then
+        begin
+            if not m_user_connection.prepare(query_sql, m_stmt_query_latest_choice_text) then
+            begin
+                Exit;
+            end;
+        end;
+        if (not m_user_connection.reset(m_stmt_query_latest_choice_text)) or
+            (not m_user_connection.clear_bindings(m_stmt_query_latest_choice_text)) or
+            (not m_user_connection.bind_text(m_stmt_query_latest_choice_text, 1, normalized_query)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(m_stmt_query_latest_choice_text);
+        if step_result <> SQLITE_ROW then
+        begin
+            Exit;
+        end;
+
+        commit_count := m_user_connection.column_int(m_stmt_query_latest_choice_text, 1);
+        if commit_count <= 0 then
+        begin
+            Exit;
+        end;
+
+        last_used_unix := m_user_connection.column_int(m_stmt_query_latest_choice_text, 2);
+        if last_used_unix > 0 then
+        begin
+            now_unix := get_unix_time_now;
+            if now_unix > 0 then
+            begin
+                age_seconds := now_unix - last_used_unix;
+                if age_seconds < 0 then
+                begin
+                    age_seconds := 0;
+                end;
+                if age_seconds > c_sec_per_180_days then
+                begin
+                    Exit;
+                end;
+            end;
+        end;
+
+        Result := Trim(m_user_connection.column_text(m_stmt_query_latest_choice_text, 0));
+    finally
+        if m_stmt_query_latest_choice_text <> nil then
+        begin
+            m_user_connection.reset(m_stmt_query_latest_choice_text);
+            m_user_connection.clear_bindings(m_stmt_query_latest_choice_text);
+        end;
+    end;
+
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        m_query_latest_choice_text_cache.AddOrSetValue(normalized_query, Result);
+    end;
+end;
+
 function TncSqliteDictionary.get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer;
 const
     user_query_sql =
@@ -7288,6 +7606,17 @@ begin
     if m_candidate_penalty_cache <> nil then
     begin
         m_candidate_penalty_cache.Clear;
+    end;
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        if pinyin_key <> '' then
+        begin
+            m_query_choice_bonus_cache.Remove(pinyin_key + #1 + text_key);
+        end
+        else
+        begin
+            m_query_choice_bonus_cache.Clear;
+        end;
     end;
 
     // Prefer exact pinyin+text removal when key is available, but do not require it.

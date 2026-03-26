@@ -23,6 +23,8 @@ type
         function get_context_bonus(const left_text: string; const candidate_text: string): Integer; virtual;
         function get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
             const candidate_text: string): Integer; virtual;
+        function get_query_choice_bonus(const query_key: string; const candidate_text: string): Integer; virtual;
+        function get_query_latest_choice_text(const query_key: string): string; virtual;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
@@ -82,6 +84,17 @@ function TncDictionaryProvider.get_context_trigram_bonus(const prev_prev_text: s
     const candidate_text: string): Integer;
 begin
     Result := 0;
+end;
+
+function TncDictionaryProvider.get_query_choice_bonus(const query_key: string;
+    const candidate_text: string): Integer;
+begin
+    Result := 0;
+end;
+
+function TncDictionaryProvider.get_query_latest_choice_text(const query_key: string): string;
+begin
+    Result := '';
 end;
 
 function TncDictionaryProvider.get_query_segment_path_bonus(const query_key: string;

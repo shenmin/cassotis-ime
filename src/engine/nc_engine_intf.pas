@@ -82,6 +82,7 @@ type
         m_lookup_text_unit_count_cache: TDictionary<string, Integer>;
         m_lookup_session_bonus_cache: TDictionary<string, Integer>;
         m_lookup_query_bonus_cache: TDictionary<string, Integer>;
+        m_lookup_query_latest_text_cache: TDictionary<string, string>;
         m_lookup_query_path_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_query_bonus_cache: TDictionary<string, Integer>;
         m_lookup_context_query_latest_bonus_cache: TDictionary<string, Integer>;
@@ -100,6 +101,7 @@ type
         m_has_pending_commit: Boolean;
         m_pending_commit_allow_learning: Boolean;
         m_pending_commit_segment_path: string;
+        m_pending_commit_query_key: string;
         m_last_debug_commit_segment_path: string;
         m_last_lookup_key: string;
         m_last_lookup_normalized_from: string;
@@ -409,6 +411,7 @@ begin
     m_pending_commit_remaining := '';
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
+    m_pending_commit_query_key := '';
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
@@ -478,6 +481,7 @@ begin
     m_lookup_text_unit_count_cache := TDictionary<string, Integer>.Create;
     m_lookup_session_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_query_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lookup_query_latest_text_cache := TDictionary<string, string>.Create;
     m_lookup_query_path_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_query_bonus_cache := TDictionary<string, Integer>.Create;
     m_lookup_context_query_latest_bonus_cache := TDictionary<string, Integer>.Create;
@@ -492,6 +496,7 @@ begin
     m_current_segment_path_query_prefix_map := TDictionary<string, string>.Create;
     SetLength(m_candidate_segment_paths, 0);
     m_pending_commit_segment_path := '';
+    m_pending_commit_query_key := '';
     SetLength(m_candidates, 0);
     set_dictionary_provider(create_dictionary_from_config);
 end;
@@ -627,6 +632,11 @@ begin
         m_lookup_query_bonus_cache.Free;
         m_lookup_query_bonus_cache := nil;
     end;
+    if m_lookup_query_latest_text_cache <> nil then
+    begin
+        m_lookup_query_latest_text_cache.Free;
+        m_lookup_query_latest_text_cache := nil;
+    end;
     if m_lookup_query_path_bonus_cache <> nil then
     begin
         m_lookup_query_path_bonus_cache.Free;
@@ -745,6 +755,10 @@ begin
     begin
         m_lookup_query_bonus_cache.Clear;
     end;
+    if m_lookup_query_latest_text_cache <> nil then
+    begin
+        m_lookup_query_latest_text_cache.Clear;
+    end;
     if m_lookup_query_path_bonus_cache <> nil then
     begin
         m_lookup_query_path_bonus_cache.Clear;
@@ -791,6 +805,7 @@ end;
 procedure TncEngine.clear_segment_path_tracking;
 begin
     m_pending_commit_segment_path := '';
+    m_pending_commit_query_key := '';
     SetLength(m_candidate_segment_paths, 0);
     if m_current_segment_path_map <> nil then
     begin
@@ -1292,6 +1307,7 @@ begin
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
     m_pending_commit_segment_path := '';
+    m_pending_commit_query_key := '';
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
@@ -7081,10 +7097,26 @@ begin
     Result := 0;
     if (key = '') or (m_session_query_choice_counts = nil) then
     begin
+        if (m_dictionary <> nil) and (m_last_lookup_key <> '') then
+        begin
+            Result := m_dictionary.get_query_choice_bonus(m_last_lookup_key, candidate_text);
+            if (key <> '') and (m_lookup_query_bonus_cache <> nil) then
+            begin
+                m_lookup_query_bonus_cache.AddOrSetValue(key, Result);
+            end;
+        end;
         Exit;
     end;
     if (not m_session_query_choice_counts.TryGetValue(key, count)) or (count <= 0) then
     begin
+        if m_dictionary <> nil then
+        begin
+            Result := m_dictionary.get_query_choice_bonus(m_last_lookup_key, candidate_text);
+            if (key <> '') and (m_lookup_query_bonus_cache <> nil) then
+            begin
+                m_lookup_query_bonus_cache.AddOrSetValue(key, Result);
+            end;
+        end;
         Exit;
     end;
 
@@ -8062,19 +8094,43 @@ end;
 
 function TncEngine.is_latest_session_query_choice(const candidate_text: string): Boolean;
 var
+    cached_latest_text: string;
     latest_text: string;
     text_key: string;
 begin
     Result := False;
     text_key := Trim(candidate_text);
-    if (m_last_lookup_key = '') or (text_key = '') or (m_session_query_latest_text = nil) then
+    if (m_last_lookup_key = '') or (text_key = '') then
     begin
         Exit;
     end;
 
-    if not m_session_query_latest_text.TryGetValue(m_last_lookup_key, latest_text) then
+    if (m_session_query_latest_text <> nil) and
+        m_session_query_latest_text.TryGetValue(m_last_lookup_key, latest_text) then
     begin
-        Exit;
+        Exit(SameText(text_key, latest_text));
+    end;
+
+    if (m_last_lookup_syllable_count <> 1) or
+        (get_candidate_text_unit_count(text_key) <> 1) or
+        (m_dictionary = nil) then
+    begin
+        Exit(False);
+    end;
+
+    latest_text := '';
+    if (m_lookup_query_latest_text_cache <> nil) and
+        m_lookup_query_latest_text_cache.TryGetValue(m_last_lookup_key, cached_latest_text) then
+    begin
+        latest_text := cached_latest_text;
+    end
+    else
+    begin
+        latest_text := Trim(m_dictionary.get_query_latest_choice_text(m_last_lookup_key));
+        if m_lookup_query_latest_text_cache <> nil then
+        begin
+            m_lookup_query_latest_text_cache.AddOrSetValue(m_last_lookup_key, latest_text);
+        end;
     end;
 
     Result := SameText(text_key, latest_text);
@@ -16486,12 +16542,20 @@ end;
 
 procedure TncEngine.set_pending_commit(const text: string; const remaining_pinyin: string = '';
     const allow_learning: Boolean = True; const segment_path: string = '');
+var
+    query_key: string;
 begin
     m_pending_commit_text := text;
     m_pending_commit_remaining := remaining_pinyin;
     m_has_pending_commit := True;
     m_pending_commit_allow_learning := allow_learning;
     m_pending_commit_segment_path := segment_path;
+    query_key := normalize_pinyin_text(m_last_lookup_key);
+    if query_key = '' then
+    begin
+        query_key := normalize_pinyin_text(m_composition_text);
+    end;
+    m_pending_commit_query_key := query_key;
 end;
 
 procedure TncEngine.clear_pending_commit;
@@ -16506,6 +16570,7 @@ begin
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
     m_pending_commit_segment_path := '';
+    m_pending_commit_query_key := '';
 end;
 
 procedure TncEngine.update_left_context(const committed_text: string);
@@ -18613,6 +18678,8 @@ begin
     m_has_pending_commit := False;
     m_pending_commit_allow_learning := True;
     m_pending_commit_segment_path := '';
+    normalized_pinyin := m_pending_commit_query_key;
+    m_pending_commit_query_key := '';
     prev_left_context := m_left_context;
     if m_segment_left_context <> '' then
     begin
@@ -18623,7 +18690,14 @@ begin
         prev_left_context := m_external_left_context;
     end;
     update_left_context(out_text);
-    normalized_pinyin := normalize_pinyin_text(m_composition_text);
+    if normalized_pinyin = '' then
+    begin
+        normalized_pinyin := normalize_pinyin_text(m_last_lookup_key);
+    end;
+    if normalized_pinyin = '' then
+    begin
+        normalized_pinyin := normalize_pinyin_text(m_composition_text);
+    end;
     full_pinyin := '';
     effective_segment_path := commit_segment_path;
     if allow_learning and (commit_segment_text <> '') and (normalized_pinyin <> '') then
