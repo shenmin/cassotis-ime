@@ -7118,6 +7118,11 @@ begin
         Exit;
     end;
 
+    if get_candidate_penalty(normalized_query, text_key) > 0 then
+    begin
+        Exit;
+    end;
+
     try
         if m_stmt_query_choice_bonus = nil then
         begin
@@ -7239,12 +7244,13 @@ const
         'SELECT text, last_used FROM dict_user_query_latest WHERE query_pinyin = ?1 LIMIT 1';
     fallback_query_sql =
         'SELECT text, commit_count, last_used FROM dict_user_stats ' +
-        'WHERE pinyin = ?1 ORDER BY last_used DESC, commit_count DESC LIMIT 1';
+        'WHERE pinyin = ?1 ORDER BY last_used DESC, commit_count DESC LIMIT 16';
     c_sec_per_180_days = 180 * 24 * 60 * 60;
 var
     normalized_query: string;
     step_result: Integer;
     stmt: Psqlite3_stmt;
+    candidate_text: string;
     last_used_unix: Int64;
     now_unix: Int64;
     age_seconds: Int64;
@@ -7290,30 +7296,37 @@ begin
                 end;
 
                 step_result := m_user_connection.step(stmt);
-                if step_result <> SQLITE_ROW then
+                while step_result = SQLITE_ROW do
                 begin
-                    Exit;
-                end;
-
-                last_used_unix := m_user_connection.column_int(stmt, 2);
-                if last_used_unix > 0 then
-                begin
-                    now_unix := get_unix_time_now;
-                    if now_unix > 0 then
+                    candidate_text := Trim(m_user_connection.column_text(stmt, 0));
+                    if candidate_text <> '' then
                     begin
-                        age_seconds := now_unix - last_used_unix;
-                        if age_seconds < 0 then
+                        last_used_unix := m_user_connection.column_int(stmt, 2);
+                        if last_used_unix > 0 then
                         begin
-                            age_seconds := 0;
+                            now_unix := get_unix_time_now;
+                            if now_unix > 0 then
+                            begin
+                                age_seconds := now_unix - last_used_unix;
+                                if age_seconds < 0 then
+                                begin
+                                    age_seconds := 0;
+                                end;
+                                if age_seconds > c_sec_per_180_days then
+                                begin
+                                    Break;
+                                end;
+                            end;
                         end;
-                        if age_seconds > c_sec_per_180_days then
+
+                        if get_candidate_penalty(normalized_query, candidate_text) <= 0 then
                         begin
+                            Result := candidate_text;
                             Exit;
                         end;
                     end;
+                    step_result := m_user_connection.step(stmt);
                 end;
-
-                Result := Trim(m_user_connection.column_text(stmt, 0));
                 Exit;
             finally
                 if stmt <> nil then
@@ -7323,6 +7336,7 @@ begin
             end;
         end;
 
+        candidate_text := Trim(m_user_connection.column_text(m_stmt_query_latest_choice_text, 0));
         last_used_unix := m_user_connection.column_int(m_stmt_query_latest_choice_text, 1);
         if last_used_unix > 0 then
         begin
@@ -7341,7 +7355,11 @@ begin
             end;
         end;
 
-        Result := Trim(m_user_connection.column_text(m_stmt_query_latest_choice_text, 0));
+        if (candidate_text <> '') and
+            (get_candidate_penalty(normalized_query, candidate_text) <= 0) then
+        begin
+            Result := candidate_text;
+        end;
     finally
         if m_stmt_query_latest_choice_text <> nil then
         begin
@@ -7607,6 +7625,7 @@ end;
 
 procedure TncSqliteDictionary.record_candidate_penalty(const pinyin: string; const text: string);
 const
+    delete_latest_sql = 'DELETE FROM dict_user_query_latest WHERE query_pinyin = ?1 AND text = ?2';
     update_penalty_sql = 'UPDATE dict_user_penalty SET penalty = MIN(penalty + ?3, ?4), ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_penalty_sql = 'INSERT OR IGNORE INTO dict_user_penalty(pinyin, text, penalty, last_used) ' +
@@ -7628,6 +7647,29 @@ begin
     if m_candidate_penalty_cache <> nil then
     begin
         m_candidate_penalty_cache.Clear;
+    end;
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        m_query_choice_bonus_cache.Remove(pinyin_key + #1 + text_key);
+    end;
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        m_query_latest_choice_text_cache.Remove(pinyin_key);
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(delete_latest_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) then
+        begin
+            m_user_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
     end;
 
     stmt := nil;
