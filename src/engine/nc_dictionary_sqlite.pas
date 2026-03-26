@@ -6360,13 +6360,9 @@ begin
 end;
 
 function TncSqliteDictionary.single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
-const
-    base_exists_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
 var
     pinyin_key: string;
     text_key: string;
-    stmt: Psqlite3_stmt;
-    step_result: Integer;
 begin
     Result := False;
     pinyin_key := LowerCase(Trim(pinyin));
@@ -6388,26 +6384,12 @@ begin
         Exit;
     end;
 
-    stmt := nil;
-    try
-        if m_base_ready and m_base_connection.prepare(base_exists_sql, stmt) and
-            m_base_connection.bind_text(stmt, 1, pinyin_key) and
-            m_base_connection.bind_text(stmt, 2, text_key) then
-        begin
-            step_result := m_base_connection.step(stmt);
-            if step_result = SQLITE_ROW then
-            begin
-                Result := True;
-                Exit;
-            end;
-        end;
-    finally
-        if stmt <> nil then
-        begin
-            m_base_connection.finalize(stmt);
-            stmt := nil;
-        end;
-    end;
+    // Reuse the same normalized base-entry check as phrase validation. Some
+    // single characters participate in exact lookup/ranking through normalized
+    // pinyin aliases or merged lexicon rows, so an exact dict_base(pinyin,text)
+    // probe is too narrow and can wrongly purge valid learned selections such
+    // as "ci -> 词" across host restarts.
+    Result := normalized_base_entry_exists(pinyin_key, text_key);
 end;
 
 procedure TncSqliteDictionary.prune_suspicious_user_entries;
@@ -6453,7 +6435,10 @@ begin
             if (pinyin_value <> '') and (text_unit_count = 1) and is_full_pinyin_key(pinyin_value) and
                 (not single_char_matches_pinyin(pinyin_value, text_value)) then
             begin
-                purge_user_entry_internal(pinyin_value, text_value, False, False);
+                // Lookup already ignores mismatched single-char user rows.
+                // Avoid destructive cleanup here so a provider reload cannot
+                // erase a valid recent choice due to transient validation
+                // disagreement or lexicon normalization differences.
             end
             else if (last_used_value <= 0) and
                 is_likely_noisy_constructed_phrase(pinyin_value, text_value, commit_count, user_weight) then
@@ -6518,7 +6503,9 @@ begin
     if full_pinyin_input and (get_valid_cjk_codepoint_count(text) = 1) and
         (not single_char_matches_pinyin(pinyin_key, text)) then
     begin
-        purge_user_entry_internal(pinyin_key, text, False, False);
+        // Ignore invalid single-char learning, but do not erase any existing
+        // persisted choice here. Runtime lookup already filters mismatched
+        // single-char rows, so destructive purge is unnecessary.
         Exit;
     end;
 
