@@ -1958,6 +1958,8 @@ var
     explicit_apostrophe_aligned_candidates: TncCandidateList;
     has_explicit_apostrophe_input: Boolean;
     confirmed_prefix_boundary_partial_preferred: Boolean;
+    explicit_apostrophe_query_syllables: TncPinyinParseResult;
+    explicit_apostrophe_query_parsed: Boolean;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -2033,6 +2035,55 @@ var
             Inc(out_idx);
         end;
         SetLength(candidates, out_idx);
+    end;
+
+    function matches_explicit_apostrophe_unit_alignment(const candidate_text: string): Boolean;
+    var
+        parser_local: TncPinyinParser;
+        text_units: TArray<string>;
+        idx: Integer;
+        is_preferred: Boolean;
+    begin
+        Result := False;
+        if (not has_explicit_apostrophe_input) or (input_syllable_count <= 1) then
+        begin
+            Exit;
+        end;
+
+        text_units := split_text_units(Trim(candidate_text));
+        if Length(text_units) <> input_syllable_count then
+        begin
+            Exit;
+        end;
+
+        if not explicit_apostrophe_query_parsed then
+        begin
+            explicit_apostrophe_query_parsed := True;
+            parser_local := TncPinyinParser.Create;
+            try
+                explicit_apostrophe_query_syllables := parser_local.parse(m_composition_text);
+            finally
+                parser_local.Free;
+            end;
+        end;
+
+        if Length(explicit_apostrophe_query_syllables) <> input_syllable_count then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to input_syllable_count - 1 do
+        begin
+            if not match_single_char_candidate_for_syllable(
+                Trim(explicit_apostrophe_query_syllables[idx].text),
+                text_units[idx],
+                is_preferred) then
+            begin
+                Exit(False);
+            end;
+        end;
+
+        Result := True;
     end;
 
     procedure filter_complete_candidates_for_explicit_apostrophe_boundary(
@@ -2124,6 +2175,16 @@ var
 
                 key := LowerCase(Trim(candidates[idx].text));
                 if (key <> '') and allowed_complete_texts.ContainsKey(key) then
+                begin
+                    if out_idx <> idx then
+                    begin
+                        candidates[out_idx] := candidates[idx];
+                    end;
+                    Inc(out_idx);
+                    Continue;
+                end;
+
+                if matches_explicit_apostrophe_unit_alignment(candidates[idx].text) then
                 begin
                     if out_idx <> idx then
                     begin
@@ -6389,6 +6450,8 @@ begin
         post_elapsed_ms := 0;
         sort_elapsed_ms := 0;
         path_search_elapsed_ms := 0;
+        SetLength(explicit_apostrophe_query_syllables, 0);
+        explicit_apostrophe_query_parsed := False;
         SetLength(m_candidates, 0);
         confirmed_prefix_boundary_partial_preferred := False;
         m_last_lookup_key := '';
