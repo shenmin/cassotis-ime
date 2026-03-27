@@ -1147,6 +1147,12 @@ begin
     if focus = 0 then
     begin
         cancel_composition;
+        if (m_ipc_client <> nil) and (m_session_id <> '') then
+        begin
+            signal_tray_profile_event(False);
+            update_active_state(False);
+            mark_session_dirty;
+        end;
         unadvise_context_sinks;
         m_doc_mgr := nil;
         m_context := nil;
