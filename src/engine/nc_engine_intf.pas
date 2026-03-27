@@ -10548,6 +10548,7 @@ type
         is_one_plus_two_partial: Boolean;
         is_two_plus_one_partial: Boolean;
         is_demonstrative_head_friendly_partial: Boolean;
+        is_fixed_top_single_char: Boolean;
     end;
 var
     list: TList<TncCandidateSortItem>;
@@ -10569,6 +10570,7 @@ var
     has_boundary_anchor_one_plus_two: Boolean;
     has_boundary_anchor_two_plus_one: Boolean;
     preferred_three_syllable_partial_kind: Integer;
+    fixed_top_single_char_text: string;
 const
     c_boundary_anchor_partial_score_hint_flag = 1000000;
     c_boundary_anchor_partial_shape_kind_scale = 10000;
@@ -10584,6 +10586,82 @@ const
     c_supported_head_phrase_partial_override_gap = 0;
     c_supported_head_phrase_first_single_margin = 180;
     c_supported_head_phrase_tail_ratio_pct = 80;
+    function get_fixed_top_single_char_for_query_local: string;
+    var
+        normalized_query: string;
+    begin
+        Result := '';
+        if m_last_lookup_syllable_count <> 1 then
+        begin
+            Exit;
+        end;
+
+        normalized_query := normalize_pinyin_text(m_last_lookup_key);
+        if normalized_query = 'en' then
+        begin
+            Result := string(Char($55EF));
+        end
+        else if normalized_query = 'ba' then
+        begin
+            Result := string(Char($5427));
+        end
+        else if normalized_query = 'e' then
+        begin
+            Result := string(Char($5443));
+        end
+        else if normalized_query = 'o' then
+        begin
+            Result := string(Char($54E6));
+        end
+        else if normalized_query = 'ha' then
+        begin
+            Result := string(Char($54C8));
+        end
+        else if normalized_query = 'xi' then
+        begin
+            Result := string(Char($563B));
+        end
+        else if normalized_query = 'xing' then
+        begin
+            Result := string(Char($884C));
+        end
+        else if normalized_query = 'hao' then
+        begin
+            Result := string(Char($597D));
+        end
+        else if normalized_query = 'ku' then
+        begin
+            Result := string(Char($9177));
+        end
+        else if normalized_query = 'bang' then
+        begin
+            Result := string(Char($68D2));
+        end
+        else if normalized_query = 'ya' then
+        begin
+            Result := string(Char($5440));
+        end
+        else if normalized_query = 'qie' then
+        begin
+            Result := string(Char($5207));
+        end
+        else if normalized_query = 'ca' then
+        begin
+            Result := string(Char($64E6));
+        end
+        else if normalized_query = 'gun' then
+        begin
+            Result := string(Char($6EDA));
+        end
+        else if normalized_query = 'hei' then
+        begin
+            Result := string(Char($563F));
+        end
+        else if normalized_query = 'pi' then
+        begin
+            Result := string(Char($5C41));
+        end
+    end;
     function get_partial_comment_syllable_count(const comment_text: string): Integer;
     var
         normalized_comment: string;
@@ -11136,6 +11214,7 @@ begin
     has_boundary_anchor_one_plus_two := False;
     has_boundary_anchor_two_plus_one := False;
     preferred_three_syllable_partial_kind := m_last_three_syllable_partial_preference_kind;
+    fixed_top_single_char_text := get_fixed_top_single_char_for_query_local;
 
     list := TList<TncCandidateSortItem>.Create;
     try
@@ -11245,6 +11324,9 @@ begin
             begin
                 Inc(item.rank_score, c_demonstrative_head_friendly_partial_rank_bonus);
             end;
+            item.is_fixed_top_single_char := (fixed_top_single_char_text <> '') and
+                (item.candidate.comment = '') and (item.text_units = 1) and
+                (Trim(item.candidate.text) = fixed_top_single_char_text);
             if use_intent_layers and (item.candidate.comment = '') and
                 (item.layer <= 1) and (get_candidate_text_unit_count(item.candidate.text) >= 2) and
                 (item.candidate.has_dict_weight or (item.candidate.source = cs_user) or
@@ -11408,6 +11490,17 @@ begin
                 left_exact_long_complete: Boolean;
                 right_exact_long_complete: Boolean;
             begin
+                if left.is_fixed_top_single_char and (not right.is_fixed_top_single_char) then
+                begin
+                    Result := -1;
+                    Exit;
+                end;
+                if right.is_fixed_top_single_char and (not left.is_fixed_top_single_char) then
+                begin
+                    Result := 1;
+                    Exit;
+                end;
+
                 left_protected_complete := (left.candidate.comment = '') and
                     ((left.candidate.source = cs_user) or left.is_weighted_complete_phrase);
                 right_protected_complete := (right.candidate.comment = '') and
