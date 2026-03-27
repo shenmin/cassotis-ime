@@ -309,6 +309,13 @@ begin
     Result := normalized;
 end;
 
+function sanitize_perf_log_extra_text(const value: string): string;
+begin
+    Result := StringReplace(value, #13, ' ', [rfReplaceAll]);
+    Result := StringReplace(Result, #10, ' ', [rfReplaceAll]);
+    Result := StringReplace(Result, #9, ' ', [rfReplaceAll]);
+end;
+
 function is_shift_key(const key_code: Word): Boolean;
 begin
     // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
@@ -1353,6 +1360,7 @@ var
     caret_push_start_tick: UInt64;
     caret_push_elapsed_ms: Int64;
     surrounding_sent: Boolean;
+    lookup_perf_info: string;
 begin
     ensure_active_context(context);
     eaten := 0;
@@ -1361,6 +1369,7 @@ begin
     composition_elapsed_ms := 0;
     candidate_point_elapsed_ms := 0;
     caret_push_elapsed_ms := 0;
+    lookup_perf_info := '';
     reload_config_if_needed;
     surrounding_start_tick := GetTickCount64;
     surrounding_sent := maybe_update_surrounding_text(context);
@@ -1481,7 +1490,7 @@ begin
         mark_session_dirty;
         process_start_tick := GetTickCount64;
         if m_ipc_client.process_key(m_session_id, key_code, key_state, handled, commit_text, display_text,
-            input_mode, full_width_mode, punctuation_full_width) then
+            input_mode, full_width_mode, punctuation_full_width, lookup_perf_info) then
         begin
             process_elapsed_ms := Int64(GetTickCount64 - process_start_tick);
             apply_engine_state_to_compartments(input_mode, full_width_mode, punctuation_full_width);
@@ -1557,10 +1566,11 @@ begin
         else
         begin
             m_logger.info(Format(
-                '[PERF] KeyDown session=%s key=%d sur=%d sent=%d ipc=%d comp=%d anchor=%d caret=%d total=%d handled=%d commit=%d display=%d text=[%s]',
+                '[PERF] KeyDown session=%s key=%d sur=%d sent=%d ipc=%d comp=%d anchor=%d caret=%d total=%d handled=%d commit=%d display=%d text=[%s] %s',
                 [m_session_id, key_code, surrounding_elapsed_ms, Ord(surrounding_sent), process_elapsed_ms,
                 composition_elapsed_ms, candidate_point_elapsed_ms, caret_push_elapsed_ms, total_elapsed_ms,
-                Ord(handled), Length(commit_text), Length(display_text), sanitize_perf_log_text(display_text)]));
+                Ord(handled), Length(commit_text), Length(display_text), sanitize_perf_log_text(display_text),
+                sanitize_perf_log_extra_text(lookup_perf_info)]));
         end;
     end;
 
@@ -1682,6 +1692,7 @@ var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
     punctuation_full_width: Boolean;
+    lookup_perf_info: string;
     key_state: TncKeyState;
     context: ITfContext;
 begin
@@ -1697,9 +1708,10 @@ begin
     input_mode := m_last_input_mode;
     full_width_mode := m_last_full_width_mode;
     punctuation_full_width := m_last_punctuation_full_width;
+    lookup_perf_info := '';
     FillChar(key_state, SizeOf(key_state), 0);
     if not m_ipc_client.process_key(m_session_id, VK_SPACE, key_state, handled, commit_text, display_text,
-        input_mode, full_width_mode, punctuation_full_width) then
+        input_mode, full_width_mode, punctuation_full_width, lookup_perf_info) then
     begin
         Exit;
     end;

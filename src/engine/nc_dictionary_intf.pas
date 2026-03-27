@@ -9,6 +9,8 @@ type
     TncDictionaryProvider = class
     public
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; virtual; abstract;
+        function lookup_full_pinyin_prefix(const pinyin_prefix: string;
+            out results: TncCandidateList): Boolean; virtual;
         procedure begin_learning_batch; virtual;
         procedure commit_learning_batch; virtual;
         procedure rollback_learning_batch; virtual;
@@ -32,6 +34,13 @@ type
     end;
 
 implementation
+
+function TncDictionaryProvider.lookup_full_pinyin_prefix(const pinyin_prefix: string;
+    out results: TncCandidateList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
+end;
 
 procedure TncDictionaryProvider.begin_learning_batch;
 begin

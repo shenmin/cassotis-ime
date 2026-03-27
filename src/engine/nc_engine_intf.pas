@@ -216,6 +216,10 @@ type
         function normalize_pinyin_text(const input_text: string): string;
         function is_valid_pinyin_syllable(const syllable: string): Boolean;
         function is_full_pinyin_key(const value: string): Boolean;
+        function get_effective_compact_pinyin_syllables(const input_text: string;
+            const allow_relaxed_split: Boolean = False): TncPinyinParseResult;
+        function get_effective_compact_pinyin_unit_count(const input_text: string;
+            const allow_relaxed_split: Boolean = False): Integer;
         function normalize_adjacent_swap_typo(const value: string): string;
         function split_text_units(const input_text: string): TArray<string>;
         function is_common_surname_text(const value: string): Boolean;
@@ -271,6 +275,7 @@ type
         function get_composition_text: string;
         function get_display_text: string;
         function get_confirmed_length: Integer;
+        function get_lookup_perf_info: string;
         function get_lookup_debug_info: string;
         function get_debug_last_output_commit_text: string;
         function get_debug_phrase_context_pair_count(const left_text: string; const candidate_text: string): Integer;
@@ -981,7 +986,6 @@ const
     c_infer_segment_max_syllables = 24;
     c_infer_segment_word_max_syllables = 4;
 var
-    parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
     target_units: TArray<string>;
     lookup_cache: TDictionary<string, TncCandidateList>;
@@ -1194,11 +1198,10 @@ begin
         Exit;
     end;
 
-    parser := TncPinyinParser.Create;
     lookup_cache := TDictionary<string, TncCandidateList>.Create;
     memo := TDictionary<string, TncInferredPathState>.Create;
     try
-        syllables := parser.parse(m_composition_text);
+        syllables := get_effective_compact_pinyin_syllables(m_composition_text);
         if (Length(syllables) <= 1) or (Length(syllables) > c_infer_segment_max_syllables) then
         begin
             Exit;
@@ -1218,7 +1221,6 @@ begin
     finally
         memo.Free;
         lookup_cache.Free;
-        parser.Free;
     end;
 end;
 
@@ -1924,6 +1926,7 @@ var
     has_raw_candidates: Boolean;
     has_segment_candidates: Boolean;
     raw_from_dictionary: Boolean;
+    trailing_prefix_rescue_applied: Boolean;
     lookup_text: string;
     has_multi_syllable_input: Boolean;
     has_internal_dangling_initial: Boolean;
@@ -2717,6 +2720,36 @@ var
         Result := Length(out_results) > 0;
     end;
 
+    function dictionary_prefix_lookup_cached(const pinyin_key: string;
+        out out_results: TncCandidateList): Boolean;
+    var
+        cache_key: string;
+        phase_start_tick: UInt64;
+    begin
+        SetLength(out_results, 0);
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit(False);
+        end;
+
+        cache_key := '#prefix#' + pinyin_key;
+        if lookup_cache.TryGetValue(cache_key, out_results) then
+        begin
+            Inc(lookup_cache_hits);
+            Exit(Length(out_results) > 0);
+        end;
+
+        Inc(lookup_cache_misses);
+        phase_start_tick := GetTickCount64;
+        if not m_dictionary.lookup_full_pinyin_prefix(pinyin_key, out_results) then
+        begin
+            SetLength(out_results, 0);
+        end;
+        Inc(lookup_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+        lookup_cache.AddOrSetValue(cache_key, out_results);
+        Result := Length(out_results) > 0;
+    end;
+
     function build_segment_candidates_timed(out out_candidates: TncCandidateList;
         const include_full_path: Boolean = True;
         const allow_relaxed_split: Boolean = False): Boolean;
@@ -2746,16 +2779,73 @@ var
         Inc(post_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
     end;
 
+    function has_complete_phrase_candidate_for_syllable_count(
+        const candidates: TncCandidateList; const expected_syllables: Integer): Boolean;
+    var
+        candidate_idx: Integer;
+    begin
+        Result := False;
+        if expected_syllables <= 0 then
+        begin
+            Exit;
+        end;
+
+        for candidate_idx := 0 to High(candidates) do
+        begin
+            if candidates[candidate_idx].comment <> '' then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(candidates[candidate_idx].text)) <>
+                expected_syllables then
+            begin
+                Continue;
+            end;
+            Exit(True);
+        end;
+    end;
+
+    function has_extendable_trailing_prefix_query_text(const pinyin_key: string): Boolean;
+    var
+        effective_syllables: TncPinyinParseResult;
+        local_syllable_count: Integer;
+        last_syllable_text: string;
+        suffix_ch: Char;
+        extended_key: string;
+    begin
+        Result := False;
+        if pinyin_key = '' then
+        begin
+            Exit;
+        end;
+
+        effective_syllables := get_effective_compact_pinyin_syllables(pinyin_key);
+        local_syllable_count := Length(effective_syllables);
+        if local_syllable_count < 4 then
+        begin
+            Exit;
+        end;
+
+        last_syllable_text := Trim(effective_syllables[High(effective_syllables)].text);
+        if last_syllable_text = '' then
+        begin
+            Exit;
+        end;
+
+        for suffix_ch := 'a' to 'z' do
+        begin
+            extended_key := pinyin_key + suffix_ch;
+            if get_effective_compact_pinyin_unit_count(extended_key) = local_syllable_count then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+
     procedure finalize_lookup_timing_info;
     var
         total_elapsed_ms: Int64;
     begin
-        if not m_config.debug_mode then
-        begin
-            m_last_lookup_timing_info := '';
-            Exit;
-        end;
-
         total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
         m_last_lookup_timing_info := Format(
             'perf=[lk=%d seg=%d path=%d rt=%d post=%d sort=%d cache=%d/%d total=%d]',
@@ -2874,47 +2964,8 @@ var
 
     function get_input_syllable_count_for_text(const pinyin_text: string;
         const allow_relaxed_split: Boolean = False): Integer;
-    var
-        parser: TncPinyinParser;
-        syllables: TncPinyinParseResult;
-        normalized_text: string;
-        prefix_text: string;
-        tail_cluster: string;
     begin
-        Result := 0;
-        if pinyin_text = '' then
-        begin
-            Exit;
-        end;
-
-        parser := TncPinyinParser.create;
-        try
-            if allow_relaxed_split then
-            begin
-                syllables := parse_pinyin_with_relaxed_missing_apostrophe(pinyin_text);
-            end
-            else
-            begin
-                syllables := parser.parse(pinyin_text);
-            end;
-            Result := Length(syllables);
-            if (not allow_relaxed_split) and (Result > 1) then
-            begin
-                normalized_text := normalize_pinyin_text(pinyin_text);
-                if Length(normalized_text) >= 4 then
-                begin
-                    tail_cluster := Copy(normalized_text, Length(normalized_text) - 1, 2);
-                    prefix_text := Copy(normalized_text, 1, Length(normalized_text) - 2);
-                    if ((tail_cluster = 'zh') or (tail_cluster = 'ch') or
-                        (tail_cluster = 'sh')) and is_full_pinyin_key(prefix_text) then
-                    begin
-                        Dec(Result);
-                    end;
-                end;
-            end;
-        finally
-            parser.Free;
-        end;
+        Result := get_effective_compact_pinyin_unit_count(pinyin_text, allow_relaxed_split);
     end;
 
     function get_input_syllable_count: Integer;
@@ -3353,13 +3404,244 @@ var
         candidates := merge_candidate_lists(candidates, exact_matches, 0);
     end;
 
+    function merge_incomplete_trailing_prefix_full_lookup_candidates(
+        var candidates: TncCandidateList; const pinyin_key: string): Boolean;
+    const
+        c_incomplete_trailing_prefix_visible_bonus = 780;
+    var
+        effective_syllables: TncPinyinParseResult;
+        lookup_results: TncCandidateList;
+        exact_matches: TncCandidateList;
+        probe_key: string;
+        shortest_tail_probe_key: string;
+        input_syllables: Integer;
+        probe_syllables: Integer;
+        text_units: Integer;
+        candidate_text: string;
+        last_syllable_text: string;
+        tail_trim_chars: Integer;
+
+        function has_exact_long_complete_candidate: Boolean;
+        var
+            candidate_idx: Integer;
+        begin
+            Result := False;
+            for candidate_idx := 0 to High(candidates) do
+            begin
+                if candidates[candidate_idx].comment <> '' then
+                begin
+                    Continue;
+                end;
+                if get_candidate_text_unit_count(Trim(candidates[candidate_idx].text)) <>
+                    input_syllables then
+                begin
+                    Continue;
+                end;
+                Exit(True);
+            end;
+        end;
+
+        function is_extendable_trailing_prefix_local: Boolean;
+        var
+            suffix_ch: Char;
+            extended_key: string;
+        begin
+            Result := False;
+            for suffix_ch := 'a' to 'z' do
+            begin
+                extended_key := pinyin_key + suffix_ch;
+                if get_effective_compact_pinyin_unit_count(extended_key) = input_syllables then
+                begin
+                    Exit(True);
+                end;
+            end;
+        end;
+
+        function try_merge_probe_key(const value: string): Boolean;
+        var
+            candidate_idx: Integer;
+        begin
+            Result := False;
+            if value = '' then
+            begin
+                Exit;
+            end;
+
+            if not dictionary_lookup_cached(value, lookup_results) then
+            begin
+                Exit;
+            end;
+
+            SetLength(exact_matches, 0);
+            for candidate_idx := 0 to High(lookup_results) do
+            begin
+                candidate_text := Trim(lookup_results[candidate_idx].text);
+                if (candidate_text = '') or (lookup_results[candidate_idx].comment <> '') then
+                begin
+                    Continue;
+                end;
+
+                text_units := get_text_unit_count(candidate_text);
+                if (text_units <> input_syllables) or (text_units < 2) then
+                begin
+                    Continue;
+                end;
+
+                if (lookup_results[candidate_idx].source <> cs_user) and
+                    (not lookup_results[candidate_idx].has_dict_weight) then
+                begin
+                    lookup_results[candidate_idx].has_dict_weight := True;
+                    lookup_results[candidate_idx].dict_weight := lookup_results[candidate_idx].score;
+                end;
+                Inc(lookup_results[candidate_idx].score,
+                    c_incomplete_trailing_prefix_visible_bonus);
+                SetLength(exact_matches, Length(exact_matches) + 1);
+                exact_matches[High(exact_matches)] := lookup_results[candidate_idx];
+            end;
+
+            if Length(exact_matches) = 0 then
+            begin
+                Exit;
+            end;
+
+            clear_candidate_comments(exact_matches);
+            candidates := merge_candidate_lists(candidates, exact_matches, 0);
+            Result := True;
+        end;
+
+        function try_merge_prefix_probe_key(const value: string): Boolean;
+        var
+            candidate_idx: Integer;
+        begin
+            Result := False;
+            if value = '' then
+            begin
+                Exit;
+            end;
+
+            if not dictionary_prefix_lookup_cached(value, lookup_results) then
+            begin
+                Exit;
+            end;
+
+            SetLength(exact_matches, 0);
+            for candidate_idx := 0 to High(lookup_results) do
+            begin
+                candidate_text := Trim(lookup_results[candidate_idx].text);
+                if (candidate_text = '') or (lookup_results[candidate_idx].comment <> '') then
+                begin
+                    Continue;
+                end;
+
+                text_units := get_text_unit_count(candidate_text);
+                if (text_units <> input_syllables) or (text_units < 2) then
+                begin
+                    Continue;
+                end;
+
+                if (lookup_results[candidate_idx].source <> cs_user) and
+                    (not lookup_results[candidate_idx].has_dict_weight) then
+                begin
+                    lookup_results[candidate_idx].has_dict_weight := True;
+                    lookup_results[candidate_idx].dict_weight := lookup_results[candidate_idx].score;
+                end;
+                Inc(lookup_results[candidate_idx].score,
+                    c_incomplete_trailing_prefix_visible_bonus);
+                SetLength(exact_matches, Length(exact_matches) + 1);
+                exact_matches[High(exact_matches)] := lookup_results[candidate_idx];
+            end;
+
+            if Length(exact_matches) = 0 then
+            begin
+                Exit;
+            end;
+
+            clear_candidate_comments(exact_matches);
+            candidates := merge_candidate_lists(candidates, exact_matches, 0);
+            Result := True;
+        end;
+    begin
+        Result := False;
+        if (m_dictionary = nil) or (pinyin_key = '') or
+            (not c_suppress_nonlexicon_complete_long_candidates) then
+        begin
+            Exit;
+        end;
+
+        effective_syllables := get_effective_compact_pinyin_syllables(pinyin_key);
+        input_syllables := Length(effective_syllables);
+        if input_syllables < 4 then
+        begin
+            Exit;
+        end;
+        if Length(effective_syllables) = 0 then
+        begin
+            Exit;
+        end;
+
+        last_syllable_text := Trim(effective_syllables[High(effective_syllables)].text);
+        if (last_syllable_text = '') or (not is_extendable_trailing_prefix_local) then
+        begin
+            Exit;
+        end;
+
+        if has_exact_long_complete_candidate then
+        begin
+            Exit;
+        end;
+
+        if try_merge_prefix_probe_key(pinyin_key) then
+        begin
+            Exit(True);
+        end;
+
+        probe_key := pinyin_key;
+        shortest_tail_probe_key := '';
+        if Length(probe_key) > 1 then
+        begin
+            SetLength(probe_key, Length(probe_key) - 1);
+            probe_syllables := get_effective_compact_pinyin_unit_count(probe_key);
+            if probe_syllables = input_syllables then
+            begin
+                if try_merge_probe_key(probe_key) then
+                begin
+                    Exit(True);
+                end;
+            end;
+        end;
+
+        tail_trim_chars := Length(last_syllable_text) - 1;
+        if tail_trim_chars <= 0 then
+        begin
+            Exit;
+        end;
+
+        if Length(pinyin_key) <= tail_trim_chars then
+        begin
+            Exit;
+        end;
+
+        shortest_tail_probe_key := Copy(pinyin_key, 1, Length(pinyin_key) - tail_trim_chars);
+        if shortest_tail_probe_key = probe_key then
+        begin
+            Exit;
+        end;
+
+        probe_syllables := get_effective_compact_pinyin_unit_count(shortest_tail_probe_key);
+        if probe_syllables <> input_syllables then
+        begin
+            Exit;
+        end;
+
+        Result := try_merge_probe_key(shortest_tail_probe_key);
+    end;
+
     function try_build_best_single_char_chain(out out_candidate: TncCandidate): Boolean;
     const
         c_chain_min_syllables = 2;
         c_chain_bonus = 160;
         c_chain_penalty_per_syllable = 28;
     var
-        parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
         syllable_text: string;
         local_lookup: TncCandidateList;
@@ -3388,19 +3670,8 @@ var
             Exit;
         end;
 
-        parser := TncPinyinParser.create;
-        try
-            if allow_relaxed_missing_apostrophe then
-            begin
-                syllables := parse_pinyin_with_relaxed_missing_apostrophe(m_composition_text);
-            end
-            else
-            begin
-                syllables := parser.parse(m_composition_text);
-            end;
-        finally
-            parser.Free;
-        end;
+        syllables := get_effective_compact_pinyin_syllables(m_composition_text,
+            allow_relaxed_missing_apostrophe);
 
         syllable_count := Length(syllables);
         if syllable_count < c_chain_min_syllables then
@@ -4901,7 +5172,6 @@ var
         // (e.g. "鐠? under "shi") are not dropped too early.
         c_forced_partial_max_candidates = c_candidate_total_limit_max;
     var
-        parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
         first_syllable: string;
         remaining_pinyin: string;
@@ -4920,19 +5190,8 @@ var
             Exit;
         end;
 
-        parser := TncPinyinParser.create;
-        try
-            if allow_relaxed_missing_apostrophe then
-            begin
-                syllables := parse_pinyin_with_relaxed_missing_apostrophe(m_composition_text);
-            end
-            else
-            begin
-                syllables := parser.parse(m_composition_text);
-            end;
-        finally
-            parser.Free;
-        end;
+        syllables := get_effective_compact_pinyin_syllables(m_composition_text,
+            allow_relaxed_missing_apostrophe);
 
         if Length(syllables) <= 1 then
         begin
@@ -5136,7 +5395,6 @@ var
         c_forced_partial_penalty_per_syllable = 120;
         c_forced_partial_prefix_bonus = 80;
     var
-        parser: TncPinyinParser;
         syllables: TncPinyinParseResult;
         first_syllable: string;
         remaining_pinyin: string;
@@ -5165,12 +5423,7 @@ var
             Exit;
         end;
 
-        parser := TncPinyinParser.create;
-        try
-            syllables := parser.parse(m_composition_text);
-        finally
-            parser.Free;
-        end;
+        syllables := get_effective_compact_pinyin_syllables(m_composition_text);
 
         if Length(syllables) <= 1 then
         begin
@@ -5462,7 +5715,7 @@ var
 
         parser := TncPinyinParser.create;
         try
-            syllables := parser.parse(m_composition_text);
+            syllables := get_effective_compact_pinyin_syllables(m_composition_text);
         finally
             parser.Free;
         end;
@@ -6270,7 +6523,7 @@ var
 
         parser := TncPinyinParser.create;
         try
-            syllables := parser.parse(m_composition_text);
+            syllables := get_effective_compact_pinyin_syllables(m_composition_text);
         finally
             parser.Free;
         end;
@@ -6554,6 +6807,7 @@ begin
         runtime_phrase_added := False;
         runtime_redup_added := False;
         raw_candidates_seeded_from_runtime_only := False;
+        trailing_prefix_rescue_applied := False;
         SetLength(relaxed_segment_candidates, 0);
         SetLength(explicit_apostrophe_aligned_candidates, 0);
         head_only_multi_syllable := m_config.enable_segment_candidates and
@@ -6592,6 +6846,14 @@ begin
                     merge_head_only_full_lookup_candidates(raw_candidates, lookup_text);
                 end;
             end
+            else if has_multi_syllable_input and
+                merge_incomplete_trailing_prefix_full_lookup_candidates(raw_candidates,
+                    lookup_text) then
+            begin
+                has_raw_candidates := True;
+                raw_from_dictionary := True;
+                trailing_prefix_rescue_applied := True;
+            end
             else if dictionary_lookup_cached(lookup_text, raw_candidates) then
             begin
                 has_raw_candidates := True;
@@ -6617,7 +6879,16 @@ begin
                     m_last_lookup_syllable_count := input_syllable_count;
                 end;
 
-                if m_config.enable_segment_candidates and
+                SetLength(raw_candidates, 0);
+                if has_multi_syllable_input and
+                    merge_incomplete_trailing_prefix_full_lookup_candidates(raw_candidates,
+                        lookup_text) then
+                begin
+                    has_raw_candidates := True;
+                    raw_from_dictionary := True;
+                    trailing_prefix_rescue_applied := True;
+                end
+                else if m_config.enable_segment_candidates and
                     build_segment_candidates_timed(segment_candidates,
                         (not all_initial_compact_query) and
                         (not c_suppress_nonlexicon_complete_long_candidates),
@@ -6713,7 +6984,17 @@ begin
             if m_config.enable_segment_candidates and raw_from_dictionary and
                 (not has_internal_dangling_initial) and (not all_initial_compact_query) then
             begin
-                if not has_segment_candidates then
+                if trailing_prefix_rescue_applied then
+                begin
+                    has_segment_candidates := False;
+                end
+                else if (input_syllable_count >= 4) and
+                    has_complete_phrase_candidate_for_syllable_count(raw_candidates,
+                        input_syllable_count) then
+                begin
+                    has_segment_candidates := False;
+                end
+                else if not has_segment_candidates then
                 begin
                     // When exact lexicon hits already exist, keep the extra segment pass cheap.
                     // The current product strategy prefers direct lexicon matches and only needs
@@ -6753,6 +7034,8 @@ begin
             end;
             filter_long_query_nonlexicon_complete_candidates(raw_candidates);
             merge_exact_long_full_lookup_candidates(raw_candidates, lookup_text);
+            merge_incomplete_trailing_prefix_full_lookup_candidates(raw_candidates,
+                lookup_text);
             sort_candidates_timed(raw_candidates);
             ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
@@ -6817,6 +7100,8 @@ begin
         phase_start_tick := GetTickCount64;
         merge_confirmed_prefix_user_extensions(m_candidates);
         merge_exact_long_full_lookup_candidates(m_candidates, lookup_text);
+        merge_incomplete_trailing_prefix_full_lookup_candidates(m_candidates,
+            lookup_text);
         apply_user_penalties(lookup_text, m_candidates);
         prioritize_complete_phrase_matches(m_candidates);
         apply_syllable_single_char_alignment_bonus(m_candidates);
@@ -10152,8 +10437,12 @@ var
     query_bonus: Integer;
     text_units: Integer;
     syllable_gap: Integer;
+    is_single_syllable_single_char_lookup: Boolean;
 begin
     Result := candidate.score;
+    text_units := get_candidate_text_unit_count(candidate.text);
+    is_single_syllable_single_char_lookup := (m_last_lookup_syllable_count = 1) and
+        (candidate.comment = '') and (text_units = 1);
     context_bonus := get_context_bonus(candidate.text);
     if m_last_lookup_normalized_from <> '' then
     begin
@@ -10161,8 +10450,16 @@ begin
         // reduce context influence so lexical score dominates.
         context_bonus := context_bonus div 4;
     end;
+    if is_single_syllable_single_char_lookup then
+    begin
+        context_bonus := 0;
+    end;
     Inc(Result, context_bonus);
     segment_path_context_bonus := get_segment_path_context_bonus(candidate);
+    if is_single_syllable_single_char_lookup then
+    begin
+        segment_path_context_bonus := 0;
+    end;
     Inc(Result, segment_path_context_bonus);
     query_bonus := get_session_query_bonus(candidate.text);
     if candidate.comment <> '' then
@@ -10175,12 +10472,15 @@ begin
     begin
         session_bonus := session_bonus div 2;
     end;
+    if is_single_syllable_single_char_lookup then
+    begin
+        session_bonus := 0;
+    end;
     Inc(Result, session_bonus);
 
     // For one-syllable full-pinyin lookups, keep single-char candidates ahead.
     if (m_last_lookup_syllable_count = 1) and (candidate.comment = '') then
     begin
-        text_units := get_candidate_text_unit_count(candidate.text);
         if text_units > 1 then
         begin
             Dec(Result, (text_units - 1) * 180);
@@ -10626,7 +10926,6 @@ var
     weak_chain_query_prepared: Boolean;
     weak_chain_normalized_query: string;
     candidate_path_score_hint: Integer;
-    partial_comment_parser: TncPinyinParser;
     partial_comment_syllable_cache: TDictionary<string, Integer>;
     best_one_plus_two_partial_score: Integer;
     best_two_plus_one_partial_score: Integer;
@@ -10732,9 +11031,6 @@ const
     function get_partial_comment_syllable_count(const comment_text: string): Integer;
     var
         normalized_comment: string;
-        parsed_comment: TncPinyinParseResult;
-        prefix_text: string;
-        tail_cluster: string;
     begin
         Result := 0;
         normalized_comment := normalize_pinyin_text(comment_text);
@@ -10746,18 +11042,7 @@ const
         begin
             Exit;
         end;
-        parsed_comment := partial_comment_parser.parse(normalized_comment);
-        Result := Length(parsed_comment);
-        if (Result > 1) and (Length(normalized_comment) >= 4) then
-        begin
-            tail_cluster := Copy(normalized_comment, Length(normalized_comment) - 1, 2);
-            prefix_text := Copy(normalized_comment, 1, Length(normalized_comment) - 2);
-            if ((tail_cluster = 'zh') or (tail_cluster = 'ch') or (tail_cluster = 'sh')) and
-                is_full_pinyin_key(prefix_text) then
-            begin
-                Dec(Result);
-            end;
-        end;
+        Result := get_effective_compact_pinyin_unit_count(normalized_comment);
         partial_comment_syllable_cache.AddOrSetValue(normalized_comment, Result);
     end;
     function is_exact_phrase_candidate_for_ranking(const candidate: TncCandidate): Boolean;
@@ -11274,7 +11559,6 @@ begin
     weak_chain_query_prepared := False;
     SetLength(weak_chain_query_syllables, 0);
     SetLength(weak_chain_preference_maps, 0);
-    partial_comment_parser := TncPinyinParser.Create;
     partial_comment_syllable_cache := TDictionary<string, Integer>.Create;
     best_one_plus_two_partial_score := Low(Integer);
     best_two_plus_one_partial_score := Low(Integer);
@@ -11622,15 +11906,21 @@ begin
 
                 if (left.candidate.comment = '') and (right.candidate.comment = '') then
                 begin
-                    if left.is_latest_context_query_choice and (not right.is_latest_context_query_choice) then
+                    if not ((m_last_lookup_syllable_count = 1) and
+                        (left.text_units = 1) and (right.text_units = 1)) then
                     begin
-                        Result := -1;
-                        Exit;
-                    end;
-                    if right.is_latest_context_query_choice and (not left.is_latest_context_query_choice) then
-                    begin
-                        Result := 1;
-                        Exit;
+                        if left.is_latest_context_query_choice and
+                            (not right.is_latest_context_query_choice) then
+                        begin
+                            Result := -1;
+                            Exit;
+                        end;
+                        if right.is_latest_context_query_choice and
+                            (not left.is_latest_context_query_choice) then
+                        begin
+                            Result := 1;
+                            Exit;
+                        end;
                     end;
                     if left.is_latest_query_choice and (not right.is_latest_query_choice) then
                     begin
@@ -11854,7 +12144,6 @@ begin
             end;
         end;
         partial_comment_syllable_cache.Free;
-        partial_comment_parser.Free;
         list.Free;
     end;
 end;
@@ -11954,6 +12243,177 @@ begin
     end;
 
     Result := SameText(reconstructed, value);
+end;
+
+function TncEngine.get_effective_compact_pinyin_syllables(const input_text: string;
+    const allow_relaxed_split: Boolean): TncPinyinParseResult;
+const
+    c_initials_local: array[0..22] of string = (
+        'zh', 'ch', 'sh',
+        'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h',
+        'j', 'q', 'x', 'r', 'z', 'c', 's', 'y', 'w'
+    );
+    c_finals_local: array[0..35] of string = (
+        'iang', 'iong', 'uang',
+        'uai', 'uan', 'iao', 'ian', 'ing', 'ang', 'eng', 'ong',
+        'ai', 'an', 'ao', 'ei', 'en', 'er', 'ou',
+        'ia', 'ie', 'in', 'iu', 'ua', 'ui', 'un', 'uo',
+        've', 'van', 'vn', 'ue',
+        'a', 'e', 'i', 'o', 'u', 'v'
+    );
+    c_finals_no_initial_local: array[0..11] of string = (
+        'ang', 'eng',
+        'ai', 'an', 'ao', 'ei', 'en', 'er', 'ou',
+        'a', 'e', 'o'
+    );
+var
+    parser: TncPinyinParser;
+    syllables: TncPinyinParseResult;
+    idx: Integer;
+    tail_text: string;
+    merged_count: Integer;
+    tail_idx: Integer;
+
+    function is_initial_final_compatible_local(const initial_value: string;
+        const final_value: string): Boolean;
+    begin
+        if (initial_value = 'zh') or (initial_value = 'ch') or (initial_value = 'sh') or
+            (initial_value = 'r') or (initial_value = 'z') or (initial_value = 'c') or
+            (initial_value = 's') then
+        begin
+            if (final_value = 'in') or (final_value = 'ing') or (final_value = 'iu') or
+                (final_value = 'ie') or (final_value = 'ian') or (final_value = 'iang') or
+                (final_value = 'iao') or (final_value = 'iong') or
+                (final_value = 'ue') or (final_value = 've') or (final_value = 'van') or
+                (final_value = 'vn') then
+            begin
+                Exit(False);
+            end;
+        end;
+
+        Result := True;
+    end;
+
+    function is_single_syllable_prefix_text(const value: string): Boolean;
+    var
+        lower_value: string;
+        initial_idx: Integer;
+        final_idx: Integer;
+        full_syllable: string;
+    begin
+        Result := False;
+        lower_value := LowerCase(Trim(value));
+        if lower_value = '' then
+        begin
+            Exit;
+        end;
+
+        for initial_idx := Low(c_initials_local) to High(c_initials_local) do
+        begin
+            for final_idx := Low(c_finals_local) to High(c_finals_local) do
+            begin
+                if not is_initial_final_compatible_local(c_initials_local[initial_idx],
+                    c_finals_local[final_idx]) then
+                begin
+                    Continue;
+                end;
+
+                full_syllable := c_initials_local[initial_idx] + c_finals_local[final_idx];
+                if Copy(full_syllable, 1, Length(lower_value)) = lower_value then
+                begin
+                    Exit(True);
+                end;
+            end;
+        end;
+
+        for final_idx := Low(c_finals_no_initial_local) to High(c_finals_no_initial_local) do
+        begin
+            full_syllable := c_finals_no_initial_local[final_idx];
+            if Copy(full_syllable, 1, Length(lower_value)) = lower_value then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+
+    function build_tail_text(const start_index: Integer): string;
+    var
+        tail_idx: Integer;
+    begin
+        Result := '';
+        if (start_index < 0) or (start_index > High(syllables)) then
+        begin
+            Exit;
+        end;
+
+        for tail_idx := start_index to High(syllables) do
+        begin
+            Result := Result + syllables[tail_idx].text;
+        end;
+    end;
+begin
+    SetLength(Result, 0);
+    if input_text = '' then
+    begin
+        Exit;
+    end;
+
+    parser := TncPinyinParser.create;
+    try
+        if allow_relaxed_split then
+        begin
+            syllables := parse_pinyin_with_relaxed_missing_apostrophe(input_text);
+        end
+        else
+        begin
+            syllables := parser.parse(input_text);
+        end;
+    finally
+        parser.Free;
+    end;
+
+    Result := syllables;
+    if Length(syllables) <= 1 then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(syllables) do
+    begin
+        tail_text := build_tail_text(idx);
+        if is_single_syllable_prefix_text(tail_text) then
+        begin
+            if idx = High(syllables) then
+            begin
+                Exit;
+            end;
+
+            merged_count := idx + 1;
+            SetLength(Result, merged_count);
+            for tail_idx := 0 to idx - 1 do
+            begin
+                Result[tail_idx] := syllables[tail_idx];
+            end;
+
+            Result[idx].text := tail_text;
+            Result[idx].start_index := syllables[idx].start_index;
+            Result[idx].length := 0;
+            for tail_idx := idx to High(syllables) do
+            begin
+                Inc(Result[idx].length, syllables[tail_idx].length);
+            end;
+            Exit;
+        end;
+    end;
+end;
+
+function TncEngine.get_effective_compact_pinyin_unit_count(const input_text: string;
+    const allow_relaxed_split: Boolean): Integer;
+var
+    syllables: TncPinyinParseResult;
+begin
+    syllables := get_effective_compact_pinyin_syllables(input_text, allow_relaxed_split);
+    Result := Length(syllables);
 end;
 
 function TncEngine.normalize_adjacent_swap_typo(const value: string): string;
@@ -12208,7 +12668,6 @@ const
     c_segment_alignment_missing_penalty = 60;
     c_segment_alignment_adjust_cap = 140;
 var
-    parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
     lookup_cache: TDictionary<string, TncCandidateList>;
     list: TList<TncCandidate>;
@@ -16213,16 +16672,9 @@ begin
     end;
 
     lookup_cache := TDictionary<string, TncCandidateList>.Create;
-    parser := TncPinyinParser.create;
     try
-        if allow_relaxed_missing_apostrophe then
-        begin
-            syllables := parse_pinyin_with_relaxed_missing_apostrophe(m_composition_text);
-        end
-        else
-        begin
-            syllables := parser.parse(m_composition_text);
-        end;
+        syllables := get_effective_compact_pinyin_syllables(m_composition_text,
+            allow_relaxed_missing_apostrophe);
         if Length(syllables) <= 1 then
         begin
             Exit;
@@ -16419,7 +16871,6 @@ begin
             list.Free;
         end;
     finally
-        parser.Free;
         lookup_cache.Free;
     end;
 end;
@@ -18334,6 +18785,45 @@ end;
 function TncEngine.get_confirmed_length: Integer;
 begin
     Result := Length(m_confirmed_text);
+end;
+
+function TncEngine.get_lookup_perf_info: string;
+var
+    perf_parts: TStringList;
+begin
+    if m_last_lookup_key = '' then
+    begin
+        Result := '';
+        Exit;
+    end;
+
+    perf_parts := TStringList.Create;
+    try
+        perf_parts.Delimiter := ' ';
+        perf_parts.StrictDelimiter := True;
+        if m_last_lookup_normalized_from <> '' then
+        begin
+            perf_parts.Add(Format('query_norm=[%s->%s]', [m_last_lookup_normalized_from, m_last_lookup_key]));
+        end
+        else
+        begin
+            perf_parts.Add(Format('query=[%s]', [m_last_lookup_key]));
+        end;
+
+        if m_last_lookup_syllable_count > 0 then
+        begin
+            perf_parts.Add(Format('syll=%d', [m_last_lookup_syllable_count]));
+        end;
+
+        if m_last_lookup_timing_info <> '' then
+        begin
+            perf_parts.Add(m_last_lookup_timing_info);
+        end;
+
+        Result := Trim(StringReplace(perf_parts.DelimitedText, '"', '', [rfReplaceAll]));
+    finally
+        perf_parts.Free;
+    end;
 end;
 
 function TncEngine.get_lookup_debug_info: string;

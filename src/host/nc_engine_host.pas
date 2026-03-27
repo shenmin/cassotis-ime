@@ -99,6 +99,7 @@ type
         m_last_user_dict_checkpoint_attempt_tick: UInt64;
         m_last_user_dict_checkpoint_activity_tick: UInt64;
         m_config: TncEngineConfig;
+        m_last_lookup_perf_info: string;
         function get_config_write_time: TDateTime;
         procedure maybe_checkpoint_user_dictionary;
         procedure persist_engine_config(const config: TncEngineConfig);
@@ -121,6 +122,7 @@ type
         function process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
             out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
+        function get_last_lookup_perf_info: string;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
         function get_dictionary_variant(const session_id: string; out dictionary_variant: TncDictionaryVariant): Boolean;
@@ -1621,6 +1623,7 @@ begin
         Exit;
     end;
 
+    m_last_lookup_perf_info := '';
     reload_config_if_needed;
     m_lock.Acquire;
     try
@@ -1720,6 +1723,7 @@ var
     global_state_changed: Boolean;
     config_to_save: TncEngineConfig;
     lookup_debug_info: string;
+    lookup_perf_info: string;
     total_start_tick: UInt64;
     reload_start_tick: UInt64;
     process_start_tick: UInt64;
@@ -1777,6 +1781,7 @@ begin
     total_start_tick := GetTickCount64;
     readback_elapsed_ms := 0;
     total_elapsed_ms := 0;
+    lookup_perf_info := '';
     caret_point := Point(0, 0);
     queue_candidate_apply := False;
     m_lock.Acquire;
@@ -1833,6 +1838,8 @@ begin
             page_count := session.engine.get_page_count;
             selected_index := session.engine.get_selected_index;
             preedit_text := session.engine.get_composition_text;
+            lookup_perf_info := session.engine.get_lookup_perf_info;
+            m_last_lookup_perf_info := lookup_perf_info;
             if debug_logging then
             begin
                 lookup_debug_info := session.engine.get_lookup_debug_info;
@@ -1943,11 +1950,22 @@ begin
     end
     else if total_elapsed_ms >= c_slow_host_process_key_ms then
     begin
-        host_log(Format(
-            '[PERF] process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d',
-            [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
-            Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
-            Ord(queue_candidate_apply)]));
+        if lookup_perf_info <> '' then
+        begin
+            host_log(Format(
+                '[PERF] process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d %s',
+                [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
+                Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
+                Ord(queue_candidate_apply), sanitize_log_text(lookup_perf_info)]));
+        end
+        else
+        begin
+            host_log(Format(
+                '[PERF] process_key session=%s key=%d reload=%d proc=%d read=%d total=%d handled=%d commit=%d display=%d hide=%d refresh=%d',
+                [session_id, key_code, reload_elapsed_ms, process_elapsed_ms, readback_elapsed_ms, total_elapsed_ms,
+                Ord(handled), Length(commit_text), Length(display_text), Ord(should_hide_candidates),
+                Ord(queue_candidate_apply)]));
+        end;
     end;
 
     if global_state_changed then
@@ -1956,6 +1974,11 @@ begin
     end;
 
     Result := has_result;
+end;
+
+function TncEngineHost.get_last_lookup_perf_info: string;
+begin
+    Result := m_last_lookup_perf_info;
 end;
 
 function TncEngineHost.get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
@@ -2825,7 +2848,7 @@ begin
             begin
                 Result := 'OK'#9 + bool_to_flag(handled) + #9 + encode_ipc_text(commit_text) + #9 +
                     encode_ipc_text(display_text) + #9 + IntToStr(Ord(input_mode)) + #9 + bool_to_flag(full_width_mode) +
-                    #9 + bool_to_flag(punctuation_full_width);
+                    #9 + bool_to_flag(punctuation_full_width) + #9 + encode_ipc_text(m_host.get_last_lookup_perf_info);
             end
             else
             begin

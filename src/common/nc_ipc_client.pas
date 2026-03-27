@@ -29,7 +29,7 @@ type
             out handled: Boolean): Boolean;
         function process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
-            out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
+            out full_width_mode: Boolean; out punctuation_full_width: Boolean; out lookup_perf_info: string): Boolean;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
         function get_dictionary_variant(const session_id: string; out dictionary_variant: TncDictionaryVariant): Boolean;
@@ -375,7 +375,7 @@ end;
 
 function TncIpcClient.process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
     out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
-    out full_width_mode: Boolean; out punctuation_full_width: Boolean): Boolean;
+    out full_width_mode: Boolean; out punctuation_full_width: Boolean; out lookup_perf_info: string): Boolean;
 var
     request_text: string;
     response_text: string;
@@ -388,6 +388,7 @@ begin
     input_mode := im_chinese;
     full_width_mode := False;
     punctuation_full_width := False;
+    lookup_perf_info := '';
     request_text := Format('PROCESS_KEY'#9'%s'#9'%d'#9'%d'#9'%d'#9'%d'#9'%d',
         [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down),
         Ord(key_state.alt_down), Ord(key_state.caps_lock)]);
@@ -425,6 +426,10 @@ begin
         if Length(fields) >= 7 then
         begin
             punctuation_full_width := flag_to_bool(fields[6]);
+        end;
+        if Length(fields) >= 8 then
+        begin
+            lookup_perf_info := decode_ipc_text(fields[7]);
         end;
         Result := True;
     end

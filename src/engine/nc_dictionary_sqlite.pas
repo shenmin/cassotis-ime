@@ -105,6 +105,8 @@ type
         procedure close;
         procedure prewarm_short_lookup_caches;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
+        function lookup_full_pinyin_prefix(const pinyin_prefix: string;
+            out results: TncCandidateList): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
         procedure begin_learning_batch; override;
         procedure commit_learning_batch; override;
@@ -1861,6 +1863,94 @@ end;
 function TncSqliteDictionary.get_last_lookup_debug_hint: string;
 begin
     Result := m_last_lookup_debug_hint;
+end;
+
+function TncSqliteDictionary.lookup_full_pinyin_prefix(const pinyin_prefix: string;
+    out results: TncCandidateList): Boolean;
+const
+    base_prefix_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base ' +
+        'WHERE pinyin >= ?1 AND pinyin < ?2 ' +
+        'ORDER BY pinyin ASC, weight DESC, text ASC LIMIT ?3';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    item: TncCandidate;
+    limit_value: Integer;
+    normalized_prefix: string;
+    upper_bound: string;
+begin
+    SetLength(results, 0);
+    Result := False;
+    if pinyin_prefix = '' then
+    begin
+        Exit;
+    end;
+    if not ensure_open or (not m_base_ready) then
+    begin
+        Exit;
+    end;
+
+    normalized_prefix := LowerCase(Trim(pinyin_prefix));
+    if normalized_prefix = '' then
+    begin
+        Exit;
+    end;
+
+    if Length(normalized_prefix) >= 12 then
+    begin
+        limit_value := 16;
+    end
+    else if Length(normalized_prefix) >= 8 then
+    begin
+        limit_value := 24;
+    end
+    else
+    begin
+        limit_value := Max(m_limit * 2, 16);
+        if limit_value > 48 then
+        begin
+            limit_value := 48;
+        end;
+    end;
+
+    upper_bound := build_prefix_upper_bound(normalized_prefix);
+    if upper_bound = '' then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_base_connection.prepare(base_prefix_sql, stmt) or
+            (not m_base_connection.bind_text(stmt, 1, normalized_prefix)) or
+            (not m_base_connection.bind_text(stmt, 2, upper_bound)) or
+            (not m_base_connection.bind_int(stmt, 3, limit_value)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(stmt);
+        while step_result = SQLITE_ROW do
+        begin
+            item.text := m_base_connection.column_text(stmt, 1);
+            item.comment := m_base_connection.column_text(stmt, 2);
+            item.dict_weight := m_base_connection.column_int(stmt, 3);
+            item.score := item.dict_weight;
+            item.source := cs_rule;
+            item.has_dict_weight := True;
+            SetLength(results, Length(results) + 1);
+            results[High(results)] := item;
+            step_result := m_base_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+
+    Result := Length(results) > 0;
 end;
 
 procedure TncSqliteDictionary.set_debug_mode(const enabled: Boolean);
@@ -4393,7 +4483,8 @@ var
             end;
             disable_long_full_query_jianpin := (full_query_syllable_count >= 3);
             full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
-            if (full_query_jianpin_key <> '') and
+            if (not disable_long_full_query_jianpin) and
+                (full_query_jianpin_key <> '') and
                 (not SameText(full_query_jianpin_key, query_key)) then
             begin
                 effective_jianpin_key := full_query_jianpin_key;
