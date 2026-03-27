@@ -5726,6 +5726,69 @@ var
         end;
     end;
 
+    procedure ensure_two_syllable_exact_phrase_precedes_matching_single_char_partial(
+        var candidates: TncCandidateList);
+    var
+        idx: Integer;
+        partial_index: Integer;
+        exact_index: Integer;
+        partial_text: string;
+        exact_units: TArray<string>;
+        exact_candidate: TncCandidate;
+    begin
+        if (input_syllable_count <> 2) or (Length(candidates) <= 1) then
+        begin
+            Exit;
+        end;
+
+        partial_index := -1;
+        partial_text := '';
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].comment <> '') and is_single_text_unit(Trim(candidates[idx].text)) then
+            begin
+                partial_index := idx;
+                partial_text := Trim(candidates[idx].text);
+                Break;
+            end;
+        end;
+        if (partial_index < 0) or (partial_text = '') then
+        begin
+            Exit;
+        end;
+
+        exact_index := -1;
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].comment <> '') or
+                (not (candidates[idx].has_dict_weight or (candidates[idx].source = cs_user))) then
+            begin
+                Continue;
+            end;
+
+            exact_units := split_text_units(Trim(candidates[idx].text));
+            if (Length(exact_units) < 2) or (exact_units[0] <> partial_text) then
+            begin
+                Continue;
+            end;
+
+            exact_index := idx;
+            Break;
+        end;
+
+        if (exact_index < 0) or (exact_index < partial_index) then
+        begin
+            Exit;
+        end;
+
+        exact_candidate := candidates[exact_index];
+        for idx := exact_index downto partial_index + 1 do
+        begin
+            candidates[idx] := candidates[idx - 1];
+        end;
+        candidates[partial_index] := exact_candidate;
+    end;
+
     procedure apply_user_penalties(const pinyin_key: string; var candidates: TncCandidateList);
     var
         idx: Integer;
@@ -6706,6 +6769,7 @@ begin
         ensure_redup_complete_candidate_visible(m_candidates, get_candidate_limit);
         ensure_hard_single_char_partial_visible(m_candidates);
         prefer_relaxed_missing_apostrophe_boundary_partial(m_candidates);
+        ensure_two_syllable_exact_phrase_precedes_matching_single_char_partial(m_candidates);
         finalize_lookup_timing_info;
         if m_config.debug_mode then
         begin
