@@ -10516,7 +10516,7 @@ const
     c_strong_exact_partial_shape_penalty = 240;
     c_complete_phrase_prefix_partial_rank_bonus = 420;
     c_complete_phrase_prefix_partial_override_gap = 120;
-    c_supported_head_phrase_partial_rank_bonus = 260;
+    c_supported_head_phrase_partial_rank_bonus = 420;
     c_supported_head_phrase_partial_override_gap = 0;
     c_supported_head_phrase_first_single_margin = 180;
     c_supported_head_phrase_tail_ratio_pct = 80;
@@ -13013,9 +13013,9 @@ var
         c_suffix_tail_conflict_penalty_cap_local = 480;
         c_segmented_prefix_strength_penalty_local = 520;
         c_head_phrase_first_unit_mismatch_penalty_local = 560;
-        c_head_phrase_first_unit_near_top_ratio_pct_local = 92;
-        c_head_phrase_first_unit_near_top_gap_local = 48;
-        c_head_phrase_first_unit_top_rank_window_local = 3;
+        c_head_phrase_first_unit_near_top_ratio_pct_local = 88;
+        c_head_phrase_first_unit_near_top_gap_local = 64;
+        c_head_phrase_first_unit_top_rank_window_local = 5;
         c_safe_trailing_initial_head_margin_local = 700;
     var
         first_single_text: string;
