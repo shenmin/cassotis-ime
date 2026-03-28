@@ -48,6 +48,7 @@ Name: "{localappdata}\CassotisIme\logs"
 
 [Files]
 Source: "{#SourceRoot}\cassotis_ime_yanquan.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\version.props"; DestDir: "{app}"; Flags: ignoreversion
 
 Source: "{#RuntimeDir}\cassotis_ime_host.exe"; DestDir: "{app}\out"; Flags: ignoreversion
 Source: "{#RuntimeDir}\cassotis_ime_tray_host.exe"; DestDir: "{app}\out"; Flags: ignoreversion

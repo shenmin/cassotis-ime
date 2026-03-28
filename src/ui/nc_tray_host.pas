@@ -50,6 +50,7 @@ type
         m_item_status_widget: TMenuItem;
         m_item_open_config: TMenuItem;
         m_item_reload: TMenuItem;
+        m_item_version: TMenuItem;
         m_item_exit: TMenuItem;
         m_timer: TTimer;
         m_config_path: string;
@@ -96,8 +97,13 @@ type
         m_inactive_state_event: TEvent;
         m_active_state_thread: TThread;
         m_active_state_shutdown: Boolean;
+        m_product_display_name: string;
+        m_product_version: string;
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
         function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
+        function get_version_menu_caption: string;
+        function get_status_logo_hint: string;
+        procedure load_runtime_identity;
         procedure status_logo_paint(Sender: TObject);
         procedure status_punct_paint(Sender: TObject);
         procedure handle_status_label_click(const source: TObject);
@@ -159,6 +165,7 @@ type
 implementation
 
 const
+    c_product_display_name = 'Cassotis IME－言泉输入法';
     c_ui_section = 'ui';
     c_status_widget_visible_key = 'status_widget_visible';
     c_status_widget_x_key = 'status_widget_x';
@@ -247,6 +254,122 @@ begin
     Result := value * effective_dpi / 96.0;
 end;
 
+function get_shared_version_props_path: string;
+begin
+    Result := TPath.GetFullPath(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), '..\version.props'));
+end;
+
+function extract_xml_tag_value(const text: string; const tag_name: string): string;
+var
+    open_tag: string;
+    close_tag: string;
+    start_pos: Integer;
+    end_pos: Integer;
+    body: string;
+begin
+    Result := '';
+    open_tag := '<' + tag_name + '>';
+    close_tag := '</' + tag_name + '>';
+    start_pos := Pos(open_tag, text);
+    if start_pos <= 0 then
+    begin
+        Exit;
+    end;
+
+    start_pos := start_pos + Length(open_tag);
+    body := Copy(text, start_pos, MaxInt);
+    end_pos := Pos(close_tag, body);
+    if end_pos <= 0 then
+    begin
+        Exit;
+    end;
+
+    Result := Trim(Copy(body, 1, end_pos - 1));
+end;
+
+function normalize_display_version(const raw_version: string): string;
+var
+    source: string;
+    trimmed: string;
+    part: string;
+    i: Integer;
+    dot_count: Integer;
+begin
+    trimmed := Trim(raw_version);
+    if trimmed = '' then
+    begin
+        Exit('');
+    end;
+
+    source := trimmed;
+    Result := '';
+    part := '';
+    dot_count := 0;
+    for i := 1 to Length(source) do
+    begin
+        if CharInSet(source[i], ['0'..'9']) then
+        begin
+            part := part + source[i];
+        end
+        else if source[i] = '.' then
+        begin
+            if part = '' then
+            begin
+                Break;
+            end;
+            if Result <> '' then
+            begin
+                Result := Result + '.';
+            end;
+            Result := Result + part;
+            part := '';
+            Inc(dot_count);
+            if dot_count >= 2 then
+            begin
+                Break;
+            end;
+        end
+        else
+        begin
+            Break;
+        end;
+    end;
+
+    if (part <> '') and (dot_count <= 2) then
+    begin
+        if Result <> '' then
+        begin
+            Result := Result + '.';
+        end;
+        Result := Result + part;
+    end;
+
+    if Result = '' then
+    begin
+        Result := trimmed;
+    end;
+end;
+
+function get_shared_product_version: string;
+var
+    version_props_path: string;
+    version_props_text: string;
+begin
+    Result := '';
+    version_props_path := get_shared_version_props_path;
+    if not FileExists(version_props_path) then
+    begin
+        Exit;
+    end;
+
+    try
+        version_props_text := TFile.ReadAllText(version_props_path, TEncoding.UTF8);
+        Result := normalize_display_version(extract_xml_tag_value(version_props_text, 'CassotisVersion'));
+    except
+        Result := '';
+    end;
+end;
+
 procedure set_canvas_font_point_size_for_dpi(const canvas: TCanvas; const point_size: Integer; const dpi: Integer);
 begin
     if canvas = nil then
@@ -302,6 +425,7 @@ begin
     m_status_label_punct := nil;
     m_status_btn_settings := nil;
     m_status_hint_window := nil;
+    m_item_version := nil;
     m_status_dragging := False;
     m_status_drag_moved := False;
     m_status_drag_cursor_origin := Point(0, 0);
@@ -323,6 +447,9 @@ begin
     m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
     m_active_state_thread := nil;
     m_active_state_shutdown := False;
+    m_product_display_name := c_product_display_name;
+    m_product_version := '';
+    load_runtime_identity;
     enforce_application_toolwindow_style;
     configure_tray;
     configure_menu;
@@ -330,6 +457,34 @@ begin
     load_config;
     load_status_widget_state;
     start_active_state_thread;
+end;
+
+procedure TncTrayHost.load_runtime_identity;
+begin
+    m_product_display_name := c_product_display_name;
+    m_product_version := get_shared_product_version;
+end;
+
+function TncTrayHost.get_version_menu_caption: string;
+begin
+    Result := '版本：';
+    if Trim(m_product_version) <> '' then
+    begin
+        Result := Result + m_product_version;
+    end
+    else
+    begin
+        Result := Result + '未知';
+    end;
+end;
+
+function TncTrayHost.get_status_logo_hint: string;
+begin
+    Result := m_product_display_name;
+    if Trim(m_product_version) <> '' then
+    begin
+        Result := Result + sLineBreak + '版本：' + m_product_version;
+    end;
 end;
 
 destructor TncTrayHost.Destroy;
@@ -740,6 +895,16 @@ begin
     separator.Enabled := False;
     m_menu.Items.Add(separator);
 
+    m_item_version := TMenuItem.Create(m_menu);
+    m_item_version.Caption := get_version_menu_caption;
+    m_item_version.Enabled := False;
+    m_menu.Items.Add(m_item_version);
+
+    separator := TMenuItem.Create(m_menu);
+    separator.Caption := '-';
+    separator.Enabled := False;
+    m_menu.Items.Add(separator);
+
     m_item_exit := TMenuItem.Create(m_menu);
     m_item_exit.Caption := '退出';
     m_item_exit.OnClick := on_exit_click;
@@ -793,6 +958,9 @@ begin
     m_status_logo.Top := 8;
     m_status_logo.Width := 22;
     m_status_logo.Height := 22;
+    m_status_logo.ParentShowHint := False;
+    m_status_logo.ShowHint := False;
+    m_status_logo.Hint := get_status_logo_hint;
     m_status_logo.OnPaint := status_logo_paint;
     icon_path := TPath.GetFullPath(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)),
         '..\cassotis_ime_yanquan.ico'));
@@ -927,6 +1095,8 @@ begin
     m_status_logo.OnMouseDown := status_mouse_down;
     m_status_logo.OnMouseMove := status_mouse_move;
     m_status_logo.OnMouseUp := status_mouse_up;
+    m_status_logo.OnMouseEnter := status_label_mouse_enter;
+    m_status_logo.OnMouseLeave := status_label_mouse_leave;
 
     m_status_label_mode.OnMouseDown := status_mouse_down;
     m_status_label_mode.OnMouseMove := status_mouse_move;
@@ -1684,6 +1854,10 @@ begin
     m_item_punct_mode.Caption := '中文标点';
     m_item_punct_mode.Checked := (m_engine_config.input_mode <> im_english) and
         m_engine_config.punctuation_full_width;
+    if m_item_version <> nil then
+    begin
+        m_item_version.Caption := get_version_menu_caption;
+    end;
 
     update_status_widget;
     apply_status_widget_visibility;

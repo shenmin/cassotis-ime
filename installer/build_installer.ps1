@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.1.0',
+    [string]$Version = '',
     [string]$SourceRoot = '..',
     [string]$ScriptPath = '.\CassotisIme.iss'
 )
@@ -37,13 +37,36 @@ function require-path {
     }
 }
 
+function get-shared-version {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionPropsPath
+    )
+
+    require-path $VersionPropsPath
+
+    [xml]$xml = Get-Content -LiteralPath $VersionPropsPath -Raw -Encoding UTF8
+    $versionText = [string]($xml.Project.PropertyGroup.CassotisVersion | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($versionText)) {
+        throw "CassotisVersion not found in $VersionPropsPath"
+    }
+
+    return $versionText.Trim()
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resolvedScriptPath = Resolve-Path -LiteralPath (Join-Path $scriptDir $ScriptPath)
 $resolvedSourceRoot = Resolve-Path -LiteralPath (Join-Path $scriptDir $SourceRoot)
+$versionPropsPath = Join-Path $resolvedSourceRoot 'version.props'
 $iscc = resolve-iscc
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = get-shared-version -VersionPropsPath $versionPropsPath
+}
 
 $requiredFiles = @(
     'cassotis_ime_yanquan.ico',
+    'version.props',
     'out\cassotis_ime_host.exe',
     'out\cassotis_ime_tray_host.exe',
     'out\cassotis_ime_svr.dll',
@@ -67,4 +90,3 @@ foreach ($relativePath in $requiredFiles) {
 if ($LASTEXITCODE -ne 0) {
     throw "ISCC failed with exit code $LASTEXITCODE"
 }
-
