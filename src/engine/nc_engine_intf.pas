@@ -11057,6 +11057,10 @@ const
         begin
             Result := string(Char($548C));
         end
+        else if normalized_query = 'qing' then
+        begin
+            Result := string(Char($8BF7));
+        end
     end;
     function get_partial_comment_syllable_count(const comment_text: string): Integer;
     var
