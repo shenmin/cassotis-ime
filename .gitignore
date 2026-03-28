@@ -32,3 +32,4 @@ out/config/
 out/data/
 out/models/
 out/_tmp_build/
+installer/dist/
