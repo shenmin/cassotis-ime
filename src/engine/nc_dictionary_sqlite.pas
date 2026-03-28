@@ -1872,6 +1872,10 @@ const
         'SELECT pinyin, text, comment, weight FROM dict_base ' +
         'WHERE pinyin >= ?1 AND pinyin < ?2 ' +
         'ORDER BY pinyin ASC, weight DESC, text ASC LIMIT ?3';
+    user_prefix_sql =
+        'SELECT pinyin, text, weight, last_used FROM dict_user ' +
+        'WHERE pinyin >= ?1 AND pinyin < ?2 ' +
+        'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?3';
 var
     stmt: Psqlite3_stmt;
     step_result: Integer;
@@ -1879,6 +1883,11 @@ var
     limit_value: Integer;
     normalized_prefix: string;
     upper_bound: string;
+    seen: TDictionary<string, Boolean>;
+    candidate_pinyin: string;
+    candidate_text: string;
+    candidate_comment: string;
+    seen_key: string;
 begin
     SetLength(results, 0);
     Result := False;
@@ -1921,33 +1930,88 @@ begin
     end;
 
     stmt := nil;
+    seen := TDictionary<string, Boolean>.Create;
     try
-        if not m_base_connection.prepare(base_prefix_sql, stmt) or
-            (not m_base_connection.bind_text(stmt, 1, normalized_prefix)) or
-            (not m_base_connection.bind_text(stmt, 2, upper_bound)) or
-            (not m_base_connection.bind_int(stmt, 3, limit_value)) then
-        begin
-            Exit;
+        try
+            if not m_base_connection.prepare(base_prefix_sql, stmt) or
+                (not m_base_connection.bind_text(stmt, 1, normalized_prefix)) or
+                (not m_base_connection.bind_text(stmt, 2, upper_bound)) or
+                (not m_base_connection.bind_int(stmt, 3, limit_value)) then
+            begin
+                Exit;
+            end;
+
+            step_result := m_base_connection.step(stmt);
+            while step_result = SQLITE_ROW do
+            begin
+                candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                candidate_text := m_base_connection.column_text(stmt, 1);
+                candidate_comment := m_base_connection.column_text(stmt, 2);
+                seen_key := candidate_pinyin + #0 + candidate_text + #0 + candidate_comment;
+                if seen.ContainsKey(seen_key) then
+                begin
+                    step_result := m_base_connection.step(stmt);
+                    Continue;
+                end;
+                seen.Add(seen_key, True);
+                item.text := candidate_text;
+                item.comment := candidate_comment;
+                item.dict_weight := m_base_connection.column_int(stmt, 3);
+                item.score := item.dict_weight;
+                item.source := cs_rule;
+                item.has_dict_weight := True;
+                SetLength(results, Length(results) + 1);
+                results[High(results)] := item;
+                step_result := m_base_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_base_connection.finalize(stmt);
+            end;
+            stmt := nil;
         end;
 
-        step_result := m_base_connection.step(stmt);
-        while step_result = SQLITE_ROW do
+        if m_user_ready then
         begin
-            item.text := m_base_connection.column_text(stmt, 1);
-            item.comment := m_base_connection.column_text(stmt, 2);
-            item.dict_weight := m_base_connection.column_int(stmt, 3);
-            item.score := item.dict_weight;
-            item.source := cs_rule;
-            item.has_dict_weight := True;
-            SetLength(results, Length(results) + 1);
-            results[High(results)] := item;
-            step_result := m_base_connection.step(stmt);
+            try
+                if m_user_connection.prepare(user_prefix_sql, stmt) and
+                    m_user_connection.bind_text(stmt, 1, normalized_prefix) and
+                    m_user_connection.bind_text(stmt, 2, upper_bound) and
+                    m_user_connection.bind_int(stmt, 3, limit_value) then
+                begin
+                    step_result := m_user_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        candidate_pinyin := m_user_connection.column_text(stmt, 0);
+                        candidate_text := m_user_connection.column_text(stmt, 1);
+                        seen_key := candidate_pinyin + #0 + candidate_text + #0;
+                        if seen.ContainsKey(seen_key) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        seen.Add(seen_key, True);
+                        item.text := candidate_text;
+                        item.comment := '';
+                        item.dict_weight := m_user_connection.column_int(stmt, 2);
+                        item.score := item.dict_weight;
+                        item.source := cs_user;
+                        item.has_dict_weight := False;
+                        SetLength(results, Length(results) + 1);
+                        results[High(results)] := item;
+                        step_result := m_user_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_user_connection.finalize(stmt);
+                end;
+            end;
         end;
     finally
-        if stmt <> nil then
-        begin
-            m_base_connection.finalize(stmt);
-        end;
+        seen.Free;
     end;
 
     Result := Length(results) > 0;

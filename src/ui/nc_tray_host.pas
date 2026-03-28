@@ -294,6 +294,9 @@ var
     part: string;
     i: Integer;
     part_count: Integer;
+    left_paren_pos: Integer;
+    suffix_value: string;
+    suffix_is_digits: Boolean;
 begin
     trimmed := Trim(raw_version);
     if trimmed = '' then
@@ -302,6 +305,34 @@ begin
     end;
 
     source := trimmed;
+    if (Length(source) >= 3) and (source[Length(source)] = ')') then
+    begin
+        left_paren_pos := LastDelimiter('(', source);
+        if left_paren_pos > 1 then
+        begin
+            suffix_value := Copy(source, left_paren_pos + 1, Length(source) - left_paren_pos - 1);
+            if (suffix_value <> '') and (suffix_value[Length(suffix_value)] = ')') then
+            begin
+                Delete(suffix_value, Length(suffix_value), 1);
+                if suffix_value <> '' then
+                begin
+                    suffix_is_digits := True;
+                    for i := 1 to Length(suffix_value) do
+                    begin
+                        if not CharInSet(suffix_value[i], ['0'..'9']) then
+                        begin
+                            suffix_is_digits := False;
+                            Break;
+                        end;
+                    end;
+                    if suffix_is_digits then
+                    begin
+                        source := Trim(Copy(source, 1, left_paren_pos - 1));
+                    end;
+                end;
+            end;
+        end;
+    end;
     Result := '';
     part := '';
     part_count := 0;
