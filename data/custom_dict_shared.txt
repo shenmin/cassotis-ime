@@ -1,3 +1,0 @@
-# Shared custom entries imported into both simplified and traditional databases.
-# Format: pinyin<TAB>text<TAB>weight
-yanquan	言泉	2400
