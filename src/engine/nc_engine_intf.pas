@@ -11027,6 +11027,18 @@ const
         begin
             Result := string(Char($7684));
         end
+        else if normalized_query = 'zhe' then
+        begin
+            Result := string(Char($8FD9));
+        end
+        else if normalized_query = 'er' then
+        begin
+            Result := string(Char($800C));
+        end
+        else if normalized_query = 'he' then
+        begin
+            Result := string(Char($548C));
+        end
     end;
     function get_partial_comment_syllable_count(const comment_text: string): Integer;
     var
