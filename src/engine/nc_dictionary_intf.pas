@@ -3,6 +3,7 @@ unit nc_dictionary_intf;
 interface
 
 uses
+    System.SysUtils,
     nc_types;
 
 type
@@ -11,6 +12,7 @@ type
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; virtual; abstract;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; virtual;
+        function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; virtual;
         procedure begin_learning_batch; virtual;
         procedure commit_learning_batch; virtual;
         procedure rollback_learning_batch; virtual;
@@ -40,6 +42,35 @@ function TncDictionaryProvider.lookup_full_pinyin_prefix(const pinyin_prefix: st
 begin
     SetLength(results, 0);
     Result := False;
+end;
+
+function TncDictionaryProvider.single_char_matches_pinyin(const pinyin: string;
+    const text_unit: string): Boolean;
+var
+    results: TncCandidateList;
+    idx: Integer;
+    candidate_text: string;
+begin
+    Result := False;
+    if (Trim(pinyin) = '') or (Trim(text_unit) = '') or (Length(Trim(text_unit)) <> 1) then
+    begin
+        Exit;
+    end;
+
+    if not lookup(pinyin, results) then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(results) do
+    begin
+        candidate_text := Trim(results[idx].text);
+        if (candidate_text <> '') and (Length(candidate_text) = 1) and
+            SameText(candidate_text, Trim(text_unit)) then
+        begin
+            Exit(True);
+        end;
+    end;
 end;
 
 procedure TncDictionaryProvider.begin_learning_batch;

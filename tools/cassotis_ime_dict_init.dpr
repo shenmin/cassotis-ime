@@ -94,6 +94,11 @@ function normalize_pinyin_key(const value: string): string;
 begin
     Result := LowerCase(Trim(value));
     Result := StringReplace(Result, ' ', '', [rfReplaceAll]);
+    Result := StringReplace(Result, '''', '', [rfReplaceAll]);
+{$IF FALSE}
+    Result := StringReplace(Result, '’', '', [rfReplaceAll]);
+end;
+{$ENDIF}
 end;
 
 function normalize_query_path_text(const value: string): string;

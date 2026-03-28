@@ -107,7 +107,7 @@ type
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; override;
-        function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean;
+        function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; override;
         procedure begin_learning_batch; override;
         procedure commit_learning_batch; override;
         procedure rollback_learning_batch; override;

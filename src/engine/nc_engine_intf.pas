@@ -10603,6 +10603,8 @@ var
     results: TncCandidateList;
     idx: Integer;
     candidate_text: string;
+    normalized_syllable: string;
+    normalized_unit: string;
     weight_value: Integer;
     top_weight_value: Integer;
     match_rank: Integer;
@@ -10610,7 +10612,9 @@ var
 begin
     Result := False;
     out_preferred := False;
-    if (m_dictionary = nil) or (Trim(syllable_text) = '') or (Trim(unit_text) = '') then
+    normalized_syllable := Trim(syllable_text);
+    normalized_unit := Trim(unit_text);
+    if (m_dictionary = nil) or (normalized_syllable = '') or (normalized_unit = '') then
     begin
         Exit;
     end;
@@ -10618,8 +10622,20 @@ begin
     begin
         Exit;
     end;
-    if not m_dictionary.lookup(Trim(syllable_text), results) then
+
+    // For explicit apostrophe alignment, exact single-char existence must not
+    // depend on whether the char happens to appear inside the short lookup
+    // shortlist for this syllable. Queries like "ji'an"/"ji'e" should still
+    // preserve complete phrases such as "季胺/吉安/饥饿" even when "季/饥/胺/饿"
+    // are not near the top of the bare single-char bucket.
+    if not m_dictionary.single_char_matches_pinyin(normalized_syllable, normalized_unit) then
     begin
+        Exit;
+    end;
+
+    if not m_dictionary.lookup(normalized_syllable, results) then
+    begin
+        Result := True;
         Exit;
     end;
 
@@ -10647,7 +10663,7 @@ begin
         begin
             top_weight_value := weight_value;
         end;
-        if not SameText(candidate_text, Trim(unit_text)) then
+        if not SameText(candidate_text, normalized_unit) then
         begin
             Continue;
         end;
@@ -10663,6 +10679,8 @@ begin
         Result := True;
         Exit;
     end;
+
+    Result := True;
 end;
 
 function TncEngine.is_weak_single_char_chain_candidate_for_query(const query_key: string;
@@ -12385,6 +12403,14 @@ begin
     end;
 
     Result := syllables;
+    // Explicit apostrophe input must preserve the user's syllable boundary.
+    // Queries like "ji'an" / "ji'e" should stay two-syllable here instead of
+    // being merged back into compact forms such as "jian" / "jie".
+    if Pos('''', input_text) > 0 then
+    begin
+        Exit;
+    end;
+
     if Length(syllables) <= 1 then
     begin
         Exit;
