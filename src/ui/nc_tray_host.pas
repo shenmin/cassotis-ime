@@ -293,7 +293,7 @@ var
     trimmed: string;
     part: string;
     i: Integer;
-    dot_count: Integer;
+    part_count: Integer;
 begin
     trimmed := Trim(raw_version);
     if trimmed = '' then
@@ -304,7 +304,7 @@ begin
     source := trimmed;
     Result := '';
     part := '';
-    dot_count := 0;
+    part_count := 0;
     for i := 1 to Length(source) do
     begin
         if CharInSet(source[i], ['0'..'9']) then
@@ -323,8 +323,8 @@ begin
             end;
             Result := Result + part;
             part := '';
-            Inc(dot_count);
-            if dot_count >= 2 then
+            Inc(part_count);
+            if part_count >= 3 then
             begin
                 Break;
             end;
@@ -335,7 +335,7 @@ begin
         end;
     end;
 
-    if (part <> '') and (dot_count <= 2) then
+    if (part <> '') and (part_count < 3) then
     begin
         if Result <> '' then
         begin
