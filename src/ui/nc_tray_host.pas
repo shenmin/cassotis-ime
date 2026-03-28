@@ -23,6 +23,7 @@ uses
     nc_config,
     nc_ipc_common,
     nc_ipc_client,
+    nc_log,
     nc_settings_form,
     nc_types;
 
@@ -311,24 +312,20 @@ begin
         if left_paren_pos > 1 then
         begin
             suffix_value := Copy(source, left_paren_pos + 1, Length(source) - left_paren_pos - 1);
-            if (suffix_value <> '') and (suffix_value[Length(suffix_value)] = ')') then
+            if suffix_value <> '' then
             begin
-                Delete(suffix_value, Length(suffix_value), 1);
-                if suffix_value <> '' then
+                suffix_is_digits := True;
+                for i := 1 to Length(suffix_value) do
                 begin
-                    suffix_is_digits := True;
-                    for i := 1 to Length(suffix_value) do
+                    if not CharInSet(suffix_value[i], ['0'..'9']) then
                     begin
-                        if not CharInSet(suffix_value[i], ['0'..'9']) then
-                        begin
-                            suffix_is_digits := False;
-                            Break;
-                        end;
+                        suffix_is_digits := False;
+                        Break;
                     end;
-                    if suffix_is_digits then
-                    begin
-                        source := Trim(Copy(source, 1, left_paren_pos - 1));
-                    end;
+                end;
+                if suffix_is_digits then
+                begin
+                    source := Trim(Copy(source, 1, left_paren_pos - 1));
                 end;
             end;
         end;
@@ -381,6 +378,63 @@ begin
     end;
 end;
 
+function try_get_numeric_xml_tag_value(const text: string; const tag_name: string; out value: string): Boolean;
+var
+    raw_value: string;
+    i: Integer;
+begin
+    Result := False;
+    value := '';
+    raw_value := Trim(extract_xml_tag_value(text, tag_name));
+    if raw_value = '' then
+    begin
+        Exit;
+    end;
+    for i := 1 to Length(raw_value) do
+    begin
+        if not CharInSet(raw_value[i], ['0'..'9']) then
+        begin
+            Exit;
+        end;
+    end;
+    value := raw_value;
+    Result := True;
+end;
+
+function build_display_version_from_props(const version_props_text: string): string;
+var
+    major_value: string;
+    minor_value: string;
+    release_value: string;
+    quad_value: string;
+    normalized_quad: string;
+    normalized_version: string;
+begin
+    Result := '';
+
+    if try_get_numeric_xml_tag_value(version_props_text, 'CassotisVersionMajor', major_value) and
+       try_get_numeric_xml_tag_value(version_props_text, 'CassotisVersionMinor', minor_value) and
+       try_get_numeric_xml_tag_value(version_props_text, 'CassotisVersionRelease', release_value) then
+    begin
+        Result := major_value + '.' + minor_value + '.' + release_value;
+        Exit;
+    end;
+
+    quad_value := extract_xml_tag_value(version_props_text, 'CassotisVersionQuad');
+    normalized_quad := normalize_display_version(quad_value);
+    if normalized_quad <> '' then
+    begin
+        Result := normalized_quad;
+        Exit;
+    end;
+
+    normalized_version := normalize_display_version(extract_xml_tag_value(version_props_text, 'CassotisVersion'));
+    if normalized_version <> '' then
+    begin
+        Result := normalized_version;
+    end;
+end;
+
 function get_shared_product_version: string;
 var
     version_props_path: string;
@@ -395,7 +449,7 @@ begin
 
     try
         version_props_text := TFile.ReadAllText(version_props_path, TEncoding.UTF8);
-        Result := normalize_display_version(extract_xml_tag_value(version_props_text, 'CassotisVersion'));
+        Result := build_display_version_from_props(version_props_text);
     except
         Result := '';
     end;
@@ -883,6 +937,7 @@ var
     separator: TMenuItem;
 begin
     m_menu := TPopupMenu.Create(Self);
+    m_menu.AutoHotkeys := maManual;
 
     m_item_input_mode := TMenuItem.Create(m_menu);
     m_item_input_mode.OnClick := on_input_mode_click;
@@ -927,6 +982,7 @@ begin
     m_menu.Items.Add(separator);
 
     m_item_version := TMenuItem.Create(m_menu);
+    m_item_version.AutoHotkeys := maManual;
     m_item_version.Caption := get_version_menu_caption;
     m_item_version.Enabled := False;
     m_menu.Items.Add(m_item_version);
