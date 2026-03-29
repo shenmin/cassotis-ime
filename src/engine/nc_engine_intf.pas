@@ -2600,16 +2600,82 @@ var
             (not is_runtime_redup_candidate(candidate))));
     end;
 
+    function is_supported_head_phrase_partial_for_visibility(
+        const candidate: TncCandidate): Boolean;
+    const
+        c_supported_head_phrase_first_single_margin_local = 180;
+        c_supported_head_phrase_tail_ratio_pct_local = 80;
+    var
+        candidate_text: string;
+        partial_comment_syllables: Integer;
+    begin
+        Result := False;
+        if (m_last_lookup_syllable_count <> 3) or (candidate.comment = '') then
+        begin
+            Exit;
+        end;
+
+        candidate_text := Trim(candidate.text);
+        if (candidate_text = '') or
+            (get_candidate_text_unit_count(candidate_text) < 2) then
+        begin
+            Exit;
+        end;
+
+        partial_comment_syllables := get_effective_compact_pinyin_unit_count(
+            normalize_pinyin_text(candidate.comment));
+        if partial_comment_syllables <> 1 then
+        begin
+            Exit;
+        end;
+
+        if (m_last_three_syllable_head_exact_text = '') or
+            (candidate_text <> m_last_three_syllable_head_exact_text) then
+        begin
+            Exit;
+        end;
+
+        if not is_strong_exact_partial_candidate_for_visibility(candidate) then
+        begin
+            Exit;
+        end;
+
+        if m_last_three_syllable_head_strength <= 0 then
+        begin
+            Exit;
+        end;
+        if m_last_three_syllable_head_strength >=
+            (m_last_three_syllable_first_single_strength +
+            c_supported_head_phrase_first_single_margin_local) then
+        begin
+            Exit(True);
+        end;
+
+        if m_last_three_syllable_head_path_bonus > 0 then
+        begin
+            Exit(True);
+        end;
+
+        if m_last_three_syllable_tail_strength <= 0 then
+        begin
+            Exit(True);
+        end;
+
+        Result := (m_last_three_syllable_head_strength * 100) >=
+            (m_last_three_syllable_tail_strength *
+            c_supported_head_phrase_tail_ratio_pct_local);
+    end;
+
     procedure ensure_strong_two_plus_one_partial_visible(var candidates: TncCandidateList;
         const visible_limit: Integer);
     var
         idx: Integer;
         partial_index: Integer;
+        fallback_partial_index: Integer;
         target_index: Integer;
         partial_candidate: TncCandidate;
     begin
         if (m_last_lookup_syllable_count <> 3) or
-            (m_last_three_syllable_partial_preference_kind <> 1) or
             (visible_limit <= 0) or (Length(candidates) = 0) then
         begin
             Exit;
@@ -2617,20 +2683,37 @@ var
 
         for idx := 0 to Min(visible_limit - 1, High(candidates)) do
         begin
-            if is_strong_exact_partial_candidate_for_visibility(candidates[idx]) then
+            if is_supported_head_phrase_partial_for_visibility(candidates[idx]) then
+            begin
+                Exit;
+            end;
+            if (m_last_three_syllable_partial_preference_kind = 1) and
+                is_strong_exact_partial_candidate_for_visibility(candidates[idx]) then
             begin
                 Exit;
             end;
         end;
 
         partial_index := -1;
+        fallback_partial_index := -1;
         for idx := 0 to High(candidates) do
         begin
-            if is_strong_exact_partial_candidate_for_visibility(candidates[idx]) then
+            if is_supported_head_phrase_partial_for_visibility(candidates[idx]) then
             begin
                 partial_index := idx;
                 Break;
             end;
+            if (fallback_partial_index < 0) and
+                (m_last_three_syllable_partial_preference_kind = 1) and
+                is_strong_exact_partial_candidate_for_visibility(candidates[idx]) then
+            begin
+                fallback_partial_index := idx;
+            end;
+        end;
+
+        if partial_index < 0 then
+        begin
+            partial_index := fallback_partial_index;
         end;
 
         if partial_index < 0 then
