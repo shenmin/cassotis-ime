@@ -250,6 +250,11 @@ begin
     Result := MulDiv(value, effective_dpi, 96);
 end;
 
+function has_popup_menu_window: Boolean;
+begin
+    Result := FindWindow(PChar('#32768'), nil) <> 0;
+end;
+
 function scale_float_for_dpi(const value: Single; const dpi: Integer): Single;
 var
     effective_dpi: Integer;
@@ -2089,6 +2094,11 @@ var
     style_refresh_interval: UInt64;
 begin
     now_tick := GetTickCount64;
+
+    if m_menu_popup_active and (not has_popup_menu_window) then
+    begin
+        m_menu_popup_active := False;
+    end;
 
     if m_profile_inactive_pending and (m_last_profile_inactive_tick <> 0) and
         (not m_menu_popup_active) and
