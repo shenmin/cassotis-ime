@@ -63,6 +63,11 @@
         <SanitizedProjectName>cassotis_ime_host</SanitizedProjectName>
         <DCC_Namespace>Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
         <DCC_UnitSearchPath>../src/common;../src/engine;../src/ui;../src/host;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
+        <VerInfo_MajorVer>$(CassotisVersionMajor)</VerInfo_MajorVer>
+        <VerInfo_MinorVer>$(CassotisVersionMinor)</VerInfo_MinorVer>
+        <VerInfo_Release>$(CassotisVersionRelease)</VerInfo_Release>
+        <VerInfo_Build>$(CassotisVersionBuild)</VerInfo_Build>
         <VerInfo_Locale>2052</VerInfo_Locale>
         <VerInfo_Keys>CompanyName=;FileDescription=;FileVersion=$(CassotisVersionQuad);InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=;ProductVersion=$(CassotisVersionQuad);Comments=;CFBundleName=</VerInfo_Keys>
         <DCC_DcpOutput>../dcu</DCC_DcpOutput>
@@ -948,4 +953,3 @@
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>
 </Project>
-

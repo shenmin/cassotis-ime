@@ -255,204 +255,55 @@ begin
     Result := value * effective_dpi / 96.0;
 end;
 
-function get_shared_version_props_path: string;
-begin
-    Result := TPath.GetFullPath(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), '..\version.props'));
-end;
-
-function extract_xml_tag_value(const text: string; const tag_name: string): string;
+function get_display_version_from_exe_file(const exe_path: string): string;
 var
-    open_tag: string;
-    close_tag: string;
-    start_pos: Integer;
-    end_pos: Integer;
-    body: string;
+    dummy_handle: DWORD;
+    info_size: DWORD;
+    info_buffer: TBytes;
+    fixed_info: PVSFixedFileInfo;
+    fixed_info_len: UINT;
+    major_ver: Word;
+    minor_ver: Word;
+    release_ver: Word;
 begin
     Result := '';
-    open_tag := '<' + tag_name + '>';
-    close_tag := '</' + tag_name + '>';
-    start_pos := Pos(open_tag, text);
-    if start_pos <= 0 then
+    if (exe_path = '') or (not FileExists(exe_path)) then
     begin
         Exit;
     end;
 
-    start_pos := start_pos + Length(open_tag);
-    body := Copy(text, start_pos, MaxInt);
-    end_pos := Pos(close_tag, body);
-    if end_pos <= 0 then
+    dummy_handle := 0;
+    info_size := GetFileVersionInfoSize(PChar(exe_path), dummy_handle);
+    if info_size = 0 then
     begin
         Exit;
     end;
 
-    Result := Trim(Copy(body, 1, end_pos - 1));
-end;
-
-function normalize_display_version(const raw_version: string): string;
-var
-    source: string;
-    trimmed: string;
-    part: string;
-    i: Integer;
-    part_count: Integer;
-    left_paren_pos: Integer;
-    suffix_value: string;
-    suffix_is_digits: Boolean;
-begin
-    trimmed := Trim(raw_version);
-    if trimmed = '' then
-    begin
-        Exit('');
-    end;
-
-    source := trimmed;
-    if (Length(source) >= 3) and (source[Length(source)] = ')') then
-    begin
-        left_paren_pos := LastDelimiter('(', source);
-        if left_paren_pos > 1 then
-        begin
-            suffix_value := Copy(source, left_paren_pos + 1, Length(source) - left_paren_pos - 1);
-            if suffix_value <> '' then
-            begin
-                suffix_is_digits := True;
-                for i := 1 to Length(suffix_value) do
-                begin
-                    if not CharInSet(suffix_value[i], ['0'..'9']) then
-                    begin
-                        suffix_is_digits := False;
-                        Break;
-                    end;
-                end;
-                if suffix_is_digits then
-                begin
-                    source := Trim(Copy(source, 1, left_paren_pos - 1));
-                end;
-            end;
-        end;
-    end;
-    Result := '';
-    part := '';
-    part_count := 0;
-    for i := 1 to Length(source) do
-    begin
-        if CharInSet(source[i], ['0'..'9']) then
-        begin
-            part := part + source[i];
-        end
-        else if source[i] = '.' then
-        begin
-            if part = '' then
-            begin
-                Break;
-            end;
-            if Result <> '' then
-            begin
-                Result := Result + '.';
-            end;
-            Result := Result + part;
-            part := '';
-            Inc(part_count);
-            if part_count >= 3 then
-            begin
-                Break;
-            end;
-        end
-        else
-        begin
-            Break;
-        end;
-    end;
-
-    if (part <> '') and (part_count < 3) then
-    begin
-        if Result <> '' then
-        begin
-            Result := Result + '.';
-        end;
-        Result := Result + part;
-    end;
-
-    if Result = '' then
-    begin
-        Result := trimmed;
-    end;
-end;
-
-function try_get_numeric_xml_tag_value(const text: string; const tag_name: string; out value: string): Boolean;
-var
-    raw_value: string;
-    i: Integer;
-begin
-    Result := False;
-    value := '';
-    raw_value := Trim(extract_xml_tag_value(text, tag_name));
-    if raw_value = '' then
+    SetLength(info_buffer, info_size);
+    if (Length(info_buffer) = 0) or
+       (not GetFileVersionInfo(PChar(exe_path), 0, info_size, @info_buffer[0])) then
     begin
         Exit;
     end;
-    for i := 1 to Length(raw_value) do
-    begin
-        if not CharInSet(raw_value[i], ['0'..'9']) then
-        begin
-            Exit;
-        end;
-    end;
-    value := raw_value;
-    Result := True;
-end;
 
-function build_display_version_from_props(const version_props_text: string): string;
-var
-    major_value: string;
-    minor_value: string;
-    release_value: string;
-    quad_value: string;
-    normalized_quad: string;
-    normalized_version: string;
-begin
-    Result := '';
-
-    if try_get_numeric_xml_tag_value(version_props_text, 'CassotisVersionMajor', major_value) and
-       try_get_numeric_xml_tag_value(version_props_text, 'CassotisVersionMinor', minor_value) and
-       try_get_numeric_xml_tag_value(version_props_text, 'CassotisVersionRelease', release_value) then
+    fixed_info := nil;
+    fixed_info_len := 0;
+    if (not VerQueryValue(@info_buffer[0], '\', Pointer(fixed_info), fixed_info_len)) or
+       (fixed_info = nil) or
+       (fixed_info_len < SizeOf(TVSFixedFileInfo)) then
     begin
-        Result := major_value + '.' + minor_value + '.' + release_value;
         Exit;
     end;
 
-    quad_value := extract_xml_tag_value(version_props_text, 'CassotisVersionQuad');
-    normalized_quad := normalize_display_version(quad_value);
-    if normalized_quad <> '' then
-    begin
-        Result := normalized_quad;
-        Exit;
-    end;
-
-    normalized_version := normalize_display_version(extract_xml_tag_value(version_props_text, 'CassotisVersion'));
-    if normalized_version <> '' then
-    begin
-        Result := normalized_version;
-    end;
+    major_ver := HiWord(fixed_info^.dwFileVersionMS);
+    minor_ver := LoWord(fixed_info^.dwFileVersionMS);
+    release_ver := HiWord(fixed_info^.dwFileVersionLS);
+    Result := Format('%d.%d.%d', [major_ver, minor_ver, release_ver]);
 end;
 
 function get_shared_product_version: string;
-var
-    version_props_path: string;
-    version_props_text: string;
 begin
-    Result := '';
-    version_props_path := get_shared_version_props_path;
-    if not FileExists(version_props_path) then
-    begin
-        Exit;
-    end;
-
-    try
-        version_props_text := TFile.ReadAllText(version_props_path, TEncoding.UTF8);
-        Result := build_display_version_from_props(version_props_text);
-    except
-        Result := '';
-    end;
+    Result := get_display_version_from_exe_file(ParamStr(0));
 end;
 
 procedure set_canvas_font_point_size_for_dpi(const canvas: TCanvas; const point_size: Integer; const dpi: Integer);
