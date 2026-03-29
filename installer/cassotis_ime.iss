@@ -55,35 +55,31 @@ Source: "{#RuntimeDir}\cassotis_ime_svr.dll"; DestDir: "{app}\out"; Flags: ignor
 Source: "{#RuntimeDir}\cassotis_ime_svr32.dll"; DestDir: "{app}\out"; Flags: ignoreversion
 Source: "{#RuntimeDir}\cassotis_ime_profile_reg.exe"; DestDir: "{app}\out"; Flags: ignoreversion
 Source: "{#RuntimeDir}\sqlite3_64.dll"; DestDir: "{app}\out"; Flags: ignoreversion
-Source: "{#RuntimeDir}\register_tsf.ps1"; DestDir: "{app}\out"; Flags: ignoreversion
-Source: "{#RuntimeDir}\unregister_tsf.ps1"; DestDir: "{app}\out"; Flags: ignoreversion
-Source: "{#RuntimeDir}\start_tsf.ps1"; DestDir: "{app}\out"; Flags: ignoreversion
-Source: "{#RuntimeDir}\stop_tsf.ps1"; DestDir: "{app}\out"; Flags: ignoreversion
 
 Source: "{#RuntimeDataSourceDir}\dict_sc.db"; DestDir: "{localappdata}\CassotisIme\data"; DestName: "dict_sc.db"; Flags: ignoreversion
 Source: "{#RuntimeDataSourceDir}\dict_tc.db"; DestDir: "{localappdata}\CassotisIme\data"; DestName: "dict_tc.db"; Flags: ignoreversion
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\out\stop_tsf.ps1"" -force_kill"; \
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "stop -force_kill -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
     Flags: runhidden waituntilterminated; \
     StatusMsg: "Stopping Text Services..."
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\out\register_tsf.ps1"" -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "register_tsf -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
     Flags: runhidden waituntilterminated; \
     StatusMsg: "Registering Cassotis IME..."
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\out\start_tsf.ps1"" -restart"; \
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "start -restart"; \
     Tasks: startime; \
     Flags: runhidden waituntilterminated; \
     StatusMsg: "Starting Cassotis IME..."
 
 [UninstallRun]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\out\stop_tsf.ps1"" -force_kill"; \
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "stop -force_kill -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
     Flags: runhidden waituntilterminated skipifdoesntexist; \
     RunOnceId: "StopTSF"
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\out\unregister_tsf.ps1"" -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "unregister_tsf -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
     Flags: runhidden waituntilterminated skipifdoesntexist; \
     RunOnceId: "UnregisterTSF"
 

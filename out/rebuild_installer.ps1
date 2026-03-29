@@ -77,11 +77,7 @@ $requiredFiles = @(
     'out\cassotis_ime_svr.dll',
     'out\cassotis_ime_svr32.dll',
     'out\cassotis_ime_profile_reg.exe',
-    'out\sqlite3_64.dll',
-    'out\register_tsf.ps1',
-    'out\unregister_tsf.ps1',
-    'out\start_tsf.ps1',
-    'out\stop_tsf.ps1'
+    'out\sqlite3_64.dll'
 )
 
 foreach ($relativePath in $requiredFiles) {
