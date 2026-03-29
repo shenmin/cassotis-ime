@@ -87,6 +87,7 @@ type
         m_engine_active: Boolean;
         m_profile_active: Boolean;
         m_profile_active_pending: Boolean;
+        m_profile_inactive_pending: Boolean;
         m_profile_event_seen: Boolean;
         m_active_sync_fail_count: Integer;
         m_last_state_poll_tick: UInt64;
@@ -94,6 +95,8 @@ type
         m_last_config_poll_tick: UInt64;
         m_last_style_refresh_tick: UInt64;
         m_last_profile_activate_tick: UInt64;
+        m_last_profile_inactive_tick: UInt64;
+        m_menu_popup_active: Boolean;
         m_active_state_event: TEvent;
         m_inactive_state_event: TEvent;
         m_active_state_thread: TThread;
@@ -152,10 +155,13 @@ type
         procedure on_open_config_click(Sender: TObject);
         procedure on_reload_click(Sender: TObject);
         procedure on_exit_click(Sender: TObject);
+        procedure on_menu_popup(Sender: TObject);
         procedure on_timer(Sender: TObject);
         procedure WMNcActiveStateChanged(var Message: TMessage); message WM_NC_ACTIVE_STATE_CHANGED;
         procedure WMNcInactiveStateChanged(var Message: TMessage); message WM_NC_INACTIVE_STATE_CHANGED;
         procedure WMNcOpenSettings(var Message: TMessage); message WM_NC_OPEN_SETTINGS;
+        procedure WMEnterMenuLoop(var Message: TMessage); message WM_ENTERMENULOOP;
+        procedure WMExitMenuLoop(var Message: TMessage); message WM_EXITMENULOOP;
     protected
         procedure CreateParams(var Params: TCreateParams); override;
     public
@@ -182,6 +188,7 @@ const
     c_style_refresh_interval_ms = 1500;
     c_style_refresh_interval_idle_ms = 3000;
     c_profile_activate_debounce_ms = 180;
+    c_profile_inactive_debounce_ms = 300;
 
 function get_window_dpi(const wnd: HWND): Integer;
 begin
@@ -372,6 +379,7 @@ begin
     m_engine_active := False;
     m_profile_active := False;
     m_profile_active_pending := False;
+    m_profile_inactive_pending := False;
     m_profile_event_seen := False;
     m_active_sync_fail_count := 0;
     m_last_state_poll_tick := 0;
@@ -379,6 +387,8 @@ begin
     m_last_config_poll_tick := 0;
     m_last_style_refresh_tick := 0;
     m_last_profile_activate_tick := 0;
+    m_last_profile_inactive_tick := 0;
+    m_menu_popup_active := False;
     m_active_state_event := TEvent.Create(nil, False, False, get_nc_active_event);
     m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
     m_active_state_thread := nil;
@@ -789,6 +799,7 @@ var
 begin
     m_menu := TPopupMenu.Create(Self);
     m_menu.AutoHotkeys := maManual;
+    m_menu.OnPopup := on_menu_popup;
 
     m_item_input_mode := TMenuItem.Create(m_menu);
     m_item_input_mode.OnClick := on_input_mode_click;
@@ -1067,6 +1078,8 @@ end;
 procedure TncTrayHost.enforce_application_toolwindow_style;
 var
     ex_style: NativeInt;
+    desired_ex_style: NativeInt;
+    style_changed: Boolean;
 begin
     if Application = nil then
     begin
@@ -1074,36 +1087,46 @@ begin
     end;
 
     ex_style := GetWindowLongPtr(Application.Handle, GWL_EXSTYLE);
-    ex_style := (ex_style or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
-    SetWindowLongPtr(Application.Handle, GWL_EXSTYLE, ex_style);
-    SetWindowPos(
-        Application.Handle,
-        0,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_NOZORDER or SWP_FRAMECHANGED
-    );
+    desired_ex_style := (ex_style or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
+    style_changed := ex_style <> desired_ex_style;
+    if style_changed then
+    begin
+        SetWindowLongPtr(Application.Handle, GWL_EXSTYLE, desired_ex_style);
+        SetWindowPos(
+            Application.Handle,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_NOZORDER or SWP_FRAMECHANGED
+        );
+    end;
 end;
 
 procedure TncTrayHost.enforce_host_form_toolwindow_style;
 var
     ex_style: NativeInt;
+    desired_ex_style: NativeInt;
+    style_changed: Boolean;
 begin
     HandleNeeded;
     ex_style := GetWindowLongPtr(Handle, GWL_EXSTYLE);
-    ex_style := (ex_style or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
-    SetWindowLongPtr(Handle, GWL_EXSTYLE, ex_style);
-    SetWindowPos(
-        Handle,
-        HWND_TOP,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_FRAMECHANGED
-    );
+    desired_ex_style := (ex_style or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
+    style_changed := ex_style <> desired_ex_style;
+    if style_changed then
+    begin
+        SetWindowLongPtr(Handle, GWL_EXSTYLE, desired_ex_style);
+        SetWindowPos(
+            Handle,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER or SWP_FRAMECHANGED
+        );
+    end;
 end;
 
 function TncTrayHost.get_config_write_time: TDateTime;
@@ -1586,6 +1609,8 @@ end;
 procedure TncTrayHost.WMNcActiveStateChanged(var Message: TMessage);
 begin
     m_profile_event_seen := True;
+    m_profile_inactive_pending := False;
+    m_last_profile_inactive_tick := 0;
     m_profile_active_pending := True;
     m_last_profile_activate_tick := GetTickCount64;
     m_last_variant_poll_tick := 0;
@@ -1597,14 +1622,9 @@ begin
     m_profile_event_seen := True;
     m_profile_active_pending := False;
     m_last_profile_activate_tick := 0;
-    m_profile_active := False;
+    m_profile_inactive_pending := True;
+    m_last_profile_inactive_tick := GetTickCount64;
     m_last_variant_poll_tick := 0;
-    if m_engine_active then
-    begin
-        m_engine_active := False;
-        apply_status_widget_visibility;
-    end;
-    m_last_state_poll_tick := 0;
     Message.Result := 0;
 end;
 
@@ -2056,6 +2076,11 @@ begin
     Application.Terminate;
 end;
 
+procedure TncTrayHost.on_menu_popup(Sender: TObject);
+begin
+    m_menu_popup_active := True;
+end;
+
 procedure TncTrayHost.on_timer(Sender: TObject);
 var
     current_write_time: TDateTime;
@@ -2065,11 +2090,29 @@ var
 begin
     now_tick := GetTickCount64;
 
+    if m_profile_inactive_pending and (m_last_profile_inactive_tick <> 0) and
+        (not m_menu_popup_active) and
+        (now_tick - m_last_profile_inactive_tick >= c_profile_inactive_debounce_ms) then
+    begin
+        m_profile_inactive_pending := False;
+        m_profile_active := False;
+        m_last_profile_inactive_tick := 0;
+        m_last_variant_poll_tick := 0;
+        if m_engine_active then
+        begin
+            m_engine_active := False;
+            apply_status_widget_visibility;
+        end;
+        m_last_state_poll_tick := 0;
+    end;
+
     if m_profile_active_pending and (m_last_profile_activate_tick <> 0) and
         (now_tick - m_last_profile_activate_tick >= c_profile_activate_debounce_ms) then
     begin
         m_profile_active_pending := False;
+        m_profile_inactive_pending := False;
         m_profile_active := True;
+        m_last_profile_inactive_tick := 0;
         m_last_state_poll_tick := 0;
         refresh_state_from_host;
     end;
@@ -2092,12 +2135,15 @@ begin
 
     if (m_last_style_refresh_tick = 0) or (now_tick - m_last_style_refresh_tick >= style_refresh_interval) then
     begin
-        enforce_application_toolwindow_style;
-        enforce_host_form_toolwindow_style;
-        if (m_status_form <> nil) and m_status_form.Visible then
+        if not m_menu_popup_active then
         begin
-            enforce_status_form_toolwindow_style;
-            refresh_status_widget_frame;
+            enforce_application_toolwindow_style;
+            enforce_host_form_toolwindow_style;
+            if (m_status_form <> nil) and m_status_form.Visible then
+            begin
+                enforce_status_form_toolwindow_style;
+                refresh_status_widget_frame;
+            end;
         end;
         m_last_style_refresh_tick := now_tick;
     end;
@@ -2114,9 +2160,26 @@ begin
 
     if (m_last_state_poll_tick = 0) or (now_tick - m_last_state_poll_tick >= state_poll_interval) then
     begin
-        refresh_state_from_host;
+        if (not m_menu_popup_active) and (not m_profile_inactive_pending) then
+        begin
+            refresh_state_from_host;
+        end;
         m_last_state_poll_tick := now_tick;
     end;
+end;
+
+procedure TncTrayHost.WMEnterMenuLoop(var Message: TMessage);
+begin
+    m_menu_popup_active := True;
+    inherited;
+end;
+
+procedure TncTrayHost.WMExitMenuLoop(var Message: TMessage);
+begin
+    m_menu_popup_active := False;
+    m_last_state_poll_tick := 0;
+    m_last_style_refresh_tick := 0;
+    inherited;
 end;
 
 end.
