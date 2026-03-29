@@ -190,12 +190,46 @@ const
     c_profile_activate_debounce_ms = 180;
     c_profile_inactive_debounce_ms = 300;
 
+type
+    TGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
+
+var
+    g_get_dpi_for_window: TGetDpiForWindow = nil;
+    g_get_dpi_for_window_ready: Boolean = False;
+
+function try_get_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
+var
+    module: HMODULE;
+begin
+    if not g_get_dpi_for_window_ready then
+    begin
+        module := GetModuleHandle('user32.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('user32.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_get_dpi_for_window := TGetDpiForWindow(GetProcAddress(module, 'GetDpiForWindow'));
+        end;
+        g_get_dpi_for_window_ready := True;
+    end;
+
+    dpi := 0;
+    Result := Assigned(g_get_dpi_for_window) and (wnd <> 0);
+    if Result then
+    begin
+        dpi := Integer(g_get_dpi_for_window(wnd));
+        Result := dpi > 0;
+    end;
+end;
+
 function get_window_dpi(const wnd: HWND): Integer;
 begin
     Result := 96;
-    if wnd <> 0 then
+    if not try_get_dpi_for_window(wnd, Result) then
     begin
-        Result := GetDpiForWindow(wnd);
+        Result := 96;
     end;
     if Result <= 0 then
     begin

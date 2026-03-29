@@ -21,6 +21,9 @@ const
     TF_E_ALREADY_EXISTS = HRESULT($80005006);
 
 type
+    TInstallLayoutOrTipUserReg = function(pszUserReg: LPCWSTR; pszSystemReg: LPCWSTR;
+        pszSoftwareReg: LPCWSTR; psz: LPCWSTR; dwFlags: DWORD): BOOL; stdcall;
+
     TncProcessInfo = record
         name: string;
         pid: Cardinal;
@@ -782,6 +785,68 @@ end;
 function register_profile: Boolean; forward;
 function unregister_profile: Boolean; forward;
 
+function system_dll_path(const dll_name: string): string;
+var
+    buffer: array[0..MAX_PATH - 1] of Char;
+    length: Cardinal;
+begin
+    length := GetSystemDirectory(buffer, MAX_PATH);
+    if length = 0 then
+    begin
+        Result := dll_name;
+        Exit;
+    end;
+    Result := IncludeTrailingPathDelimiter(string(buffer)) + dll_name;
+end;
+
+function apply_tip_user_registration(const enable: Boolean): Boolean;
+const
+    ILOT_UNINSTALL = $00000001;
+var
+    input_dll: HMODULE;
+    proc: TInstallLayoutOrTipUserReg;
+    layout_or_tip: WideString;
+    flags: DWORD;
+begin
+    Result := False;
+    input_dll := LoadLibrary(PChar(system_dll_path('input.dll')));
+    if input_dll = 0 then
+    begin
+        Writeln('LoadLibrary(input.dll) failed: ' + SysErrorMessage(GetLastError));
+        Exit;
+    end;
+    try
+        proc := TInstallLayoutOrTipUserReg(GetProcAddress(input_dll, 'InstallLayoutOrTipUserReg'));
+        if not Assigned(proc) then
+        begin
+            proc := TInstallLayoutOrTipUserReg(GetProcAddress(input_dll, 'InputLayoutOrTipUserReg'));
+        end;
+        if not Assigned(proc) then
+        begin
+            Writeln('GetProcAddress(InstallLayoutOrTipUserReg/InputLayoutOrTipUserReg) failed.');
+            Exit;
+        end;
+
+        layout_or_tip := WideString(Format('0x%.4x:%s%s',
+            [NC_LANG_ID_ZH_CN, GUIDToString(CLSID_NcTextService),
+             GUIDToString(GUID_NcTextServiceProfile)]));
+        if enable then
+        begin
+            flags := 0;
+        end
+        else
+        begin
+            flags := ILOT_UNINSTALL;
+        end;
+
+        Result := proc(nil, nil, nil, PWideChar(layout_or_tip), flags);
+        Writeln(Format('InputLayoutOrTipUserReg(%s) => %d',
+            [string(layout_or_tip), Ord(Result)]));
+    finally
+        FreeLibrary(input_dll);
+    end;
+end;
+
 function register_one_dll(const target_path: string; const clsid_text_service: string): Boolean;
 var
     regsvr32_path: string;
@@ -910,6 +975,12 @@ begin
         Exit(False);
     end;
 
+    if has_switch('skip_profile') then
+    begin
+        Result := True;
+        Exit;
+    end;
+
     Result := register_profile;
 end;
 
@@ -943,7 +1014,11 @@ begin
         Writeln('  ' + target_paths[idx]);
     end;
 
-    has_error := not unregister_profile;
+    has_error := False;
+    if not has_switch('skip_profile') then
+    begin
+        has_error := not unregister_profile;
+    end;
     clsid_text_service := GUIDToString(CLSID_NcTextService);
     for idx := 0 to High(target_paths) do
     begin
@@ -984,6 +1059,10 @@ begin
     if not start_one_process_if_missing(ctfmon_path, 'ctfmon') then
     begin
         Exit(False);
+    end;
+    if has_switch('ctfmon_only') then
+    begin
+        Exit(True);
     end;
 
     base_dir := ExtractFilePath(ParamStr(0));
@@ -1315,6 +1394,7 @@ var
     module_len: Cardinal;
     base_dir: string;
     candidate: string;
+    profile_enabled_flag: Integer;
 
     function resolve_profile_icon_path: WideString;
     begin
@@ -1351,6 +1431,15 @@ var
             Result := candidate;
             Exit;
         end;
+    end;
+
+    function is_profile_enabled: Boolean;
+    begin
+        profile_enabled_flag := 0;
+        hr := profiles.IsEnabledLanguageProfile(service_clsid, NC_LANG_ID_ZH_CN,
+            profile_guid, profile_enabled_flag);
+        print_hresult('IsEnabledLanguageProfile', hr);
+        Result := hr_succeeded(hr) and (profile_enabled_flag <> 0);
     end;
 begin
     Result := False;
@@ -1398,7 +1487,14 @@ begin
     hr := profiles.EnableLanguageProfile(service_clsid, NC_LANG_ID_ZH_CN,
         profile_guid, 1);
     print_hresult('Enable language profile', hr);
-    if not hr_succeeded(hr) then
+    if hr_succeeded(hr) then
+    begin
+        if not is_profile_enabled then
+        begin
+            Writeln('Language profile is not enabled after registration.');
+        end;
+    end
+    else
     begin
         Writeln('Enable language profile failed, continue with category update.');
     end;
@@ -1414,7 +1510,7 @@ begin
         Exit;
     end;
 
-    Result := True;
+    Result := is_profile_enabled and apply_tip_user_registration(True);
 end;
 
 function unregister_profile: Boolean;
@@ -1445,7 +1541,7 @@ begin
     hr := profiles.Unregister(service_clsid);
     print_hresult('Unregister text service', hr);
     unregister_categories(service_clsid);
-    Result := not Failed(hr);
+    Result := (not Failed(hr)) and apply_tip_user_registration(False);
 end;
 
 function run_action: Boolean;

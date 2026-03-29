@@ -103,8 +103,40 @@ type
 
 implementation
 
+type
+    TGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
+
 var
     g_vcl_initialized: Boolean = False;
+    g_get_dpi_for_window_ready: Boolean = False;
+    g_get_dpi_for_window: TGetDpiForWindow = nil;
+
+function try_get_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
+var
+    module: HMODULE;
+begin
+    if not g_get_dpi_for_window_ready then
+    begin
+        module := GetModuleHandle('user32.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('user32.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_get_dpi_for_window := TGetDpiForWindow(GetProcAddress(module, 'GetDpiForWindow'));
+        end;
+        g_get_dpi_for_window_ready := True;
+    end;
+
+    dpi := 0;
+    Result := Assigned(g_get_dpi_for_window) and (wnd <> 0);
+    if Result then
+    begin
+        dpi := Integer(g_get_dpi_for_window(wnd));
+        Result := dpi > 0;
+    end;
+end;
 
 function font_pixel_height_from_point_size(const point_size: Integer; const dpi: Integer): Integer;
 var
@@ -533,8 +565,7 @@ var
     dpi: Integer;
 begin
     HandleNeeded;
-    dpi := GetDpiForWindow(Handle);
-    if dpi <= 0 then
+    if not try_get_dpi_for_window(Handle, dpi) then
     begin
         dpi := 96;
     end;
@@ -615,7 +646,10 @@ begin
 
     if Result <= 0 then
     begin
-        Result := GetDpiForWindow(Handle);
+        if not try_get_dpi_for_window(Handle, Result) then
+        begin
+            Result := 0;
+        end;
     end;
     if Result <= 0 then
     begin

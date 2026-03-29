@@ -64,13 +64,25 @@ Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
     Flags: runhidden waituntilterminated; \
     StatusMsg: "Stopping Text Services..."
 Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
-    Parameters: "register_tsf -dll_path ""{app}\out\cassotis_ime_svr.dll"""; \
+    Parameters: "register_tsf -dll_path ""{app}\out\cassotis_ime_svr.dll"" -skip_profile"; \
     Flags: runhidden waituntilterminated; \
-    StatusMsg: "Registering Cassotis IME..."
+    StatusMsg: "Registering Cassotis IME components..."
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "register"; \
+    Flags: runhidden waituntilterminated; \
+    StatusMsg: "Registering Cassotis IME profile..."
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "start -restart -ctfmon_only"; \
+    Flags: runhidden waituntilterminated runasoriginaluser; \
+    StatusMsg: "Preparing text service session..."
+Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
+    Parameters: "register"; \
+    Flags: runhidden waituntilterminated runasoriginaluser; \
+    StatusMsg: "Registering Cassotis IME profile for current user..."
 Filename: "{app}\out\cassotis_ime_profile_reg.exe"; \
     Parameters: "start -restart"; \
     Tasks: startime; \
-    Flags: runhidden waituntilterminated; \
+    Flags: runhidden waituntilterminated runasoriginaluser; \
     StatusMsg: "Starting Cassotis IME..."
 
 [UninstallRun]

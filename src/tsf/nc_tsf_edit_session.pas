@@ -91,6 +91,7 @@ type
     TncGetWindowDpiAwarenessContext = function(hwnd: HWND): TDpiAwarenessContext; stdcall;
     TncGetAwarenessFromDpiAwarenessContext = function(value: TDpiAwarenessContext): Integer; stdcall;
     TncGetDpiForSystem = function: UINT; stdcall;
+    TncGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
 
 var
     g_logical_to_physical: TncLogicalToPhysicalPoint = nil;
@@ -100,6 +101,7 @@ var
     g_get_window_dpi_awareness_context: TncGetWindowDpiAwarenessContext = nil;
     g_get_awareness_from_dpi_awareness_context: TncGetAwarenessFromDpiAwarenessContext = nil;
     g_get_dpi_for_system: TncGetDpiForSystem = nil;
+    g_get_dpi_for_window: TncGetDpiForWindow = nil;
     g_dpi_awareness_ready: Boolean = False;
 
 function try_logical_to_physical(const hwnd: HWND; var point: TPoint): Boolean;
@@ -173,6 +175,7 @@ begin
             g_get_awareness_from_dpi_awareness_context := TncGetAwarenessFromDpiAwarenessContext(
                 GetProcAddress(module, 'GetAwarenessFromDpiAwarenessContext'));
             g_get_dpi_for_system := TncGetDpiForSystem(GetProcAddress(module, 'GetDpiForSystem'));
+            g_get_dpi_for_window := TncGetDpiForWindow(GetProcAddress(module, 'GetDpiForWindow'));
         end;
         g_dpi_awareness_ready := True;
     end;
@@ -217,7 +220,14 @@ begin
         end;
     end;
 
-    window_dpi := GetDpiForWindow(hwnd);
+    if Assigned(g_get_dpi_for_window) then
+    begin
+        window_dpi := g_get_dpi_for_window(hwnd);
+    end
+    else
+    begin
+        window_dpi := 0;
+    end;
     if (window_dpi > 0) and (Abs(Integer(window_dpi) - monitor_dpi) >= 12) then
     begin
         source_dpi := Integer(window_dpi);
