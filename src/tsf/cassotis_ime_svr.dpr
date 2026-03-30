@@ -1,5 +1,7 @@
 library cassotis_ime_svr;
 
+{$R 'cassotis_ime_svr.res'}
+
 uses
     System.SysUtils,
     System.Classes,

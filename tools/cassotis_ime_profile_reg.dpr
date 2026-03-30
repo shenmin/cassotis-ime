@@ -1,6 +1,7 @@
 program cassotis_ime_profile_reg;
 
 {$APPTYPE CONSOLE}
+{$R 'cassotis_ime_profile_reg.res'}
 
 uses
     System.SysUtils,

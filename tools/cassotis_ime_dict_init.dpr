@@ -1,6 +1,7 @@
 program cassotis_ime_dict_init;
 
 {$APPTYPE CONSOLE}
+{$R 'cassotis_ime_dict_init.res'}
 
 uses
     System.SysUtils,
