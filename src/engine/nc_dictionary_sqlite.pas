@@ -5676,9 +5676,12 @@ var
         begin
             Exit;
         end;
+        // Adjacent-swap typo recovery is intentionally limited to malformed/non-full
+        // inputs. For valid full-pinyin keys like "zuoshen", forcing swapped exact
+        // words such as "zoushen" is more harmful than helpful.
         if full_pinyin_query then
         begin
-            typo_min_query_len := c_typo_min_query_len_full;
+            Exit;
         end
         else
         begin

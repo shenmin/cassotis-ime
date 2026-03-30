@@ -6878,6 +6878,19 @@ begin
         begin
             input_syllable_count := get_input_syllable_count_for_text(lookup_text);
         end;
+        if (m_last_lookup_normalized_from <> '') and (not has_safe_trailing_initial_typing_state) and
+            is_full_pinyin_key(lookup_text) then
+        begin
+            // For malformed compact typos like "chagn" -> "chang", prefer the
+            // normalized full-pinyin lookup intent over raw pseudo-segmentation.
+            input_syllable_count := get_input_syllable_count_for_text(lookup_text);
+            if input_syllable_count <= 1 then
+            begin
+                has_multi_syllable_input := False;
+                fallback_comment := '';
+                relaxed_missing_apostrophe_comment := '';
+            end;
+        end;
         m_last_lookup_syllable_count := input_syllable_count;
         repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
         single_char_partial_min_count := 1;
