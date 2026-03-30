@@ -80,6 +80,7 @@ type
 implementation
 
 const
+    PROCESS_QUERY_LIMITED_INFORMATION = $1000;
     c_guid_prop_attribute: TGUID = '{34B45670-7526-11D2-A147-00105A2799B5}';
     c_guid_prop_composing: TGUID = '{E12AC060-AF15-11D0-97F0-00C04FD9C1B6}';
 
@@ -103,6 +104,9 @@ var
     g_get_dpi_for_system: TncGetDpiForSystem = nil;
     g_get_dpi_for_window: TncGetDpiForWindow = nil;
     g_dpi_awareness_ready: Boolean = False;
+
+function QueryFullProcessImageNameW(hProcess: THandle; dwFlags: DWORD; lpExeName: PWideChar;
+    var lpdwSize: DWORD): BOOL; stdcall; external kernel32 name 'QueryFullProcessImageNameW';
 
 function try_logical_to_physical(const hwnd: HWND; var point: TPoint): Boolean;
 var
@@ -445,7 +449,73 @@ begin
     end;
 end;
 
-procedure clear_composing_property(const context: ITfContext; const ec: TfEditCookie; const range: ITfRange);
+function get_active_view_hwnd(const context: ITfContext): HWND;
+var
+    view: ITfContextView;
+begin
+    Result := 0;
+    if (context = nil) or (context.GetActiveView(view) <> S_OK) or (view = nil) then
+    begin
+        Exit;
+    end;
+
+    view.GetWnd(Result);
+end;
+
+function get_window_process_name(const window_handle: HWND): string;
+var
+    process_id: DWORD;
+    process_handle: THandle;
+    path_buffer: array[0..MAX_PATH * 4 - 1] of Char;
+    path_len: DWORD;
+begin
+    Result := '';
+    if window_handle = 0 then
+    begin
+        Exit;
+    end;
+
+    process_id := 0;
+    GetWindowThreadProcessId(window_handle, @process_id);
+    if process_id = 0 then
+    begin
+        Exit;
+    end;
+
+    process_handle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id);
+    if process_handle = 0 then
+    begin
+        Exit;
+    end;
+    try
+        path_len := Length(path_buffer);
+        if QueryFullProcessImageNameW(process_handle, 0, path_buffer, path_len) then
+        begin
+            Result := LowerCase(ExtractFileName(path_buffer));
+        end;
+    finally
+        CloseHandle(process_handle);
+    end;
+end;
+
+function should_skip_display_attribute_for_context(const context: ITfContext): Boolean;
+var
+    view_hwnd: HWND;
+    process_name: string;
+begin
+    Result := False;
+    view_hwnd := get_active_view_hwnd(context);
+    if view_hwnd = 0 then
+    begin
+        Exit;
+    end;
+
+    process_name := get_window_process_name(view_hwnd);
+    Result := (process_name = 'weixin.exe') or (process_name = 'wechat.exe') or
+        (process_name = 'wxwork.exe');
+end;
+
+procedure clear_display_properties(const context: ITfContext; const ec: TfEditCookie; const range: ITfRange);
 var
     prop: ITfProperty;
     guid: TGUID;
@@ -457,6 +527,13 @@ begin
 
     prop := nil;
     guid := c_guid_prop_composing;
+    if context.GetProperty(guid, prop) = S_OK then
+    begin
+        prop.Clear(ec, range);
+    end;
+
+    prop := nil;
+    guid := c_guid_prop_attribute;
     if context.GetProperty(guid, prop) = S_OK then
     begin
         prop.Clear(ec, range);
@@ -1236,7 +1313,7 @@ begin
         hr := m_composition_ref^.GetRange(range);
         if (hr = S_OK) and (range <> nil) then
         begin
-            clear_composing_property(m_context, ec, range);
+            clear_display_properties(m_context, ec, range);
             hr := range.SetText(ec, 0, PWideChar(m_text), Length(m_text));
             if hr = S_OK then
             begin
@@ -1380,7 +1457,7 @@ begin
     hr := m_composition_ref^.GetRange(range);
     if (hr = S_OK) and (range <> nil) then
     begin
-        clear_composing_property(m_context, ec, range);
+        clear_display_properties(m_context, ec, range);
         range.SetText(ec, 0, PWideChar(''), 0);
     end;
 
@@ -2016,16 +2093,24 @@ begin
         Exit;
     end;
 
-    // Do not force a custom display-attribute property here.
-    // Some app controls (notably certain WeChat editors) may render composition
-    // text with reverse-video when GUID_PROP_ATTRIBUTE is present, even if the
-    // attribute itself is neutral. We keep only COMPOSING state.
-
     prop := nil;
     guid := c_guid_prop_composing;
     if m_context.GetProperty(guid, prop) = S_OK then
     begin
         value := 1;
+        prop.SetValue(ec, range, value);
+    end;
+
+    if (m_attr_input_atom = TF_INVALID_GUIDATOM) or should_skip_display_attribute_for_context(m_context) then
+    begin
+        Exit;
+    end;
+
+    prop := nil;
+    guid := c_guid_prop_attribute;
+    if m_context.GetProperty(guid, prop) = S_OK then
+    begin
+        value := Integer(m_attr_input_atom);
         prop.SetValue(ec, range, value);
     end;
 end;

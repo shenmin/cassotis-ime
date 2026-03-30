@@ -59,12 +59,12 @@ begin
     FillChar(m_attr, SizeOf(m_attr), 0);
     m_attr.crText.type_ := TF_CT_NONE;
     m_attr.crBk.type_ := TF_CT_NONE;
-    m_attr.crLine.type_ := TF_CT_NONE;
-    m_attr.crLine.nIndex := 0;
-    m_attr.lsStyle := TF_LS_NONE;
+    m_attr.crLine.type_ := TF_CT_SYSCOLOR;
+    m_attr.crLine.nIndex := COLOR_HOTLIGHT;
+    m_attr.lsStyle := TF_LS_DOT;
     m_attr.fBoldLine := 0;
-    // Use neutral input attribute to avoid app-specific reverse-video rendering
-    // seen in some controls (e.g. certain WeChat edit boxes).
+    // Prefer a visible but lightweight underline for preedit text. A small
+    // subset of apps may still need this suppressed at the caller side.
     m_attr.bAttr := TF_ATTR_INPUT;
 end;
 
