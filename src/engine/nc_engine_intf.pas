@@ -8619,9 +8619,7 @@ begin
         Exit(SameText(text_key, latest_text));
     end;
 
-    if (m_last_lookup_syllable_count <> 1) or
-        (get_candidate_text_unit_count(text_key) <> 1) or
-        (m_dictionary = nil) then
+    if m_dictionary = nil then
     begin
         Exit(False);
     end;
