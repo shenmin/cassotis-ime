@@ -7,6 +7,7 @@ uses
     Winapi.ActiveX,
     Winapi.Msctf,
     Winapi.ShellAPI,
+    Winapi.MultiMon,
     System.Classes,
     System.SyncObjs,
     System.SysUtils,
@@ -256,10 +257,24 @@ function TF_CreateLangBarItemMgr(out pplbim: ITfLangBarItemMgr): HRESULT; stdcal
 
 type
     TncLogicalToPhysicalPoint = function(hwnd: HWND; var point: TPoint): BOOL; stdcall;
+    TncGetDpiForMonitor = function(hmonitor: HMONITOR; dpiType: Integer; out dpiX: UINT;
+        out dpiY: UINT): HRESULT; stdcall;
+    TDpiAwarenessContext = THandle;
+    TncGetWindowDpiAwarenessContext = function(hwnd: HWND): TDpiAwarenessContext; stdcall;
+    TncGetAwarenessFromDpiAwarenessContext = function(value: TDpiAwarenessContext): Integer; stdcall;
+    TncGetDpiForSystem = function: UINT; stdcall;
+    TncGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
 
 var
     g_logical_to_physical: TncLogicalToPhysicalPoint = nil;
     g_logical_to_physical_ready: Boolean = False;
+    g_get_dpi_for_monitor: TncGetDpiForMonitor = nil;
+    g_get_dpi_for_monitor_ready: Boolean = False;
+    g_get_window_dpi_awareness_context: TncGetWindowDpiAwarenessContext = nil;
+    g_get_awareness_from_dpi_awareness_context: TncGetAwarenessFromDpiAwarenessContext = nil;
+    g_get_dpi_for_system: TncGetDpiForSystem = nil;
+    g_get_dpi_for_window: TncGetDpiForWindow = nil;
+    g_dpi_awareness_ready: Boolean = False;
 
 function try_logical_to_physical(const hwnd: HWND; var point: TPoint): Boolean;
 var
@@ -283,6 +298,310 @@ begin
     Result := Assigned(g_logical_to_physical) and (hwnd <> 0) and g_logical_to_physical(hwnd, point);
 end;
 
+function try_get_dpi_for_monitor(const monitor: HMONITOR; out dpi: Integer): Boolean;
+const
+    MDT_EFFECTIVE_DPI = 0;
+var
+    module: HMODULE;
+    dpi_x: UINT;
+    dpi_y: UINT;
+begin
+    if not g_get_dpi_for_monitor_ready then
+    begin
+        module := GetModuleHandle('Shcore.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('Shcore.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_get_dpi_for_monitor := TncGetDpiForMonitor(GetProcAddress(module, 'GetDpiForMonitor'));
+        end;
+        g_get_dpi_for_monitor_ready := True;
+    end;
+
+    dpi := 0;
+    Result := Assigned(g_get_dpi_for_monitor) and (monitor <> 0) and
+        (g_get_dpi_for_monitor(monitor, MDT_EFFECTIVE_DPI, dpi_x, dpi_y) = S_OK);
+    if Result then
+    begin
+        dpi := dpi_x;
+    end;
+end;
+
+function ensure_dpi_awareness_api: Boolean;
+var
+    module: HMODULE;
+begin
+    if not g_dpi_awareness_ready then
+    begin
+        module := GetModuleHandle('user32.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('user32.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_get_window_dpi_awareness_context := TncGetWindowDpiAwarenessContext(
+                GetProcAddress(module, 'GetWindowDpiAwarenessContext'));
+            g_get_awareness_from_dpi_awareness_context := TncGetAwarenessFromDpiAwarenessContext(
+                GetProcAddress(module, 'GetAwarenessFromDpiAwarenessContext'));
+            g_get_dpi_for_system := TncGetDpiForSystem(GetProcAddress(module, 'GetDpiForSystem'));
+            g_get_dpi_for_window := TncGetDpiForWindow(GetProcAddress(module, 'GetDpiForWindow'));
+        end;
+        g_dpi_awareness_ready := True;
+    end;
+
+    Result := Assigned(g_get_window_dpi_awareness_context) and Assigned(g_get_awareness_from_dpi_awareness_context);
+end;
+
+function try_get_logical_screen_source_dpi(const hwnd: HWND; const monitor_dpi: Integer; out source_dpi: Integer): Boolean;
+const
+    c_dpi_awareness_system_aware = 1;
+var
+    awareness: Integer;
+    system_dpi: UINT;
+    window_dpi: UINT;
+begin
+    source_dpi := 0;
+    if (hwnd = 0) or (monitor_dpi <= 96) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if ensure_dpi_awareness_api then
+    begin
+        awareness := g_get_awareness_from_dpi_awareness_context(g_get_window_dpi_awareness_context(hwnd));
+        if awareness <= c_dpi_awareness_system_aware then
+        begin
+            if Assigned(g_get_dpi_for_system) then
+            begin
+                system_dpi := g_get_dpi_for_system();
+                if system_dpi > 0 then
+                begin
+                    source_dpi := Integer(system_dpi);
+                    Result := Abs(source_dpi - monitor_dpi) >= 12;
+                    Exit;
+                end;
+            end;
+
+            source_dpi := 96;
+            Result := Abs(source_dpi - monitor_dpi) >= 12;
+            Exit;
+        end;
+    end;
+
+    if Assigned(g_get_dpi_for_window) then
+    begin
+        window_dpi := g_get_dpi_for_window(hwnd);
+    end
+    else
+    begin
+        window_dpi := 0;
+    end;
+    if (window_dpi > 0) and (Abs(Integer(window_dpi) - monitor_dpi) >= 12) then
+    begin
+        source_dpi := Integer(window_dpi);
+        Result := True;
+        Exit;
+    end;
+
+    Result := False;
+end;
+
+function try_scale_screen_point_between_dpi(const source_point: TPoint; const monitor_rect: Winapi.Windows.TRect;
+    const source_dpi: Integer; const target_dpi: Integer; out converted_point: TPoint): Boolean;
+begin
+    converted_point := source_point;
+    if (source_dpi <= 0) or (target_dpi <= 0) or (source_dpi = target_dpi) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    converted_point.X := monitor_rect.Left + MulDiv(source_point.X - monitor_rect.Left, target_dpi, source_dpi);
+    converted_point.Y := monitor_rect.Top + MulDiv(source_point.Y - monitor_rect.Top, target_dpi, source_dpi);
+    Result := True;
+end;
+
+function try_scale_screen_rect_between_dpi(const source_rect: Winapi.Windows.TRect; const monitor_rect: Winapi.Windows.TRect;
+    const source_dpi: Integer; const target_dpi: Integer; out converted_rect: Winapi.Windows.TRect): Boolean;
+begin
+    converted_rect := source_rect;
+    if (source_dpi <= 0) or (target_dpi <= 0) or (source_dpi = target_dpi) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    converted_rect.Left := monitor_rect.Left + MulDiv(source_rect.Left - monitor_rect.Left, target_dpi, source_dpi);
+    converted_rect.Top := monitor_rect.Top + MulDiv(source_rect.Top - monitor_rect.Top, target_dpi, source_dpi);
+    converted_rect.Right := monitor_rect.Left + MulDiv(source_rect.Right - monitor_rect.Left, target_dpi, source_dpi);
+    converted_rect.Bottom := monitor_rect.Top + MulDiv(source_rect.Bottom - monitor_rect.Top, target_dpi, source_dpi);
+    Result := True;
+end;
+
+function try_convert_screen_point_for_monitor_dpi(const hwnd: HWND; const source_point: TPoint;
+    out converted_point: TPoint): Boolean;
+var
+    monitor: HMONITOR;
+    monitor_info: MONITORINFO;
+    monitor_dpi: Integer;
+    source_dpi: Integer;
+begin
+    converted_point := source_point;
+    if hwnd = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    monitor := MonitorFromPoint(source_point, MONITOR_DEFAULTTONEAREST);
+    if monitor = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    monitor_info.cbSize := SizeOf(monitor_info);
+    if not GetMonitorInfo(monitor, @monitor_info) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not try_get_dpi_for_monitor(monitor, monitor_dpi) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not try_get_logical_screen_source_dpi(hwnd, monitor_dpi, source_dpi) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    Result := try_scale_screen_point_between_dpi(source_point, monitor_info.rcMonitor, source_dpi, monitor_dpi,
+        converted_point);
+end;
+
+function try_convert_screen_rect_for_monitor_dpi(const hwnd: HWND; const source_rect: Winapi.Windows.TRect;
+    out converted_rect: Winapi.Windows.TRect): Boolean;
+var
+    monitor: HMONITOR;
+    monitor_info: MONITORINFO;
+    monitor_dpi: Integer;
+    source_dpi: Integer;
+    anchor: TPoint;
+begin
+    converted_rect := source_rect;
+    if hwnd = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    anchor := Point(source_rect.Right, source_rect.Bottom);
+    monitor := MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    if monitor = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    monitor_info.cbSize := SizeOf(monitor_info);
+    if not GetMonitorInfo(monitor, @monitor_info) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not try_get_dpi_for_monitor(monitor, monitor_dpi) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not try_get_logical_screen_source_dpi(hwnd, monitor_dpi, source_dpi) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    Result := try_scale_screen_rect_between_dpi(source_rect, monitor_info.rcMonitor, source_dpi, monitor_dpi,
+        converted_rect);
+end;
+
+function try_screen_point_to_physical(const hwnd: HWND; const source_point: TPoint; out converted_point: TPoint): Boolean;
+begin
+    converted_point := source_point;
+    Result := (hwnd <> 0) and try_logical_to_physical(hwnd, converted_point);
+end;
+
+function try_screen_rect_to_physical(const hwnd: HWND; const source_rect: Winapi.Windows.TRect;
+    out converted_rect: Winapi.Windows.TRect): Boolean;
+var
+    top_left: TPoint;
+    bottom_right: TPoint;
+begin
+    converted_rect := source_rect;
+    if hwnd = 0 then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    top_left := Point(source_rect.Left, source_rect.Top);
+    bottom_right := Point(source_rect.Right, source_rect.Bottom);
+    if not try_logical_to_physical(hwnd, top_left) then
+    begin
+        Result := False;
+        Exit;
+    end;
+    if not try_logical_to_physical(hwnd, bottom_right) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    converted_rect := System.Types.Rect(top_left.X, top_left.Y, bottom_right.X, bottom_right.Y);
+    Result := True;
+end;
+
+function try_normalize_screen_point_for_hwnd(const hwnd: HWND; var point: TPoint): Boolean;
+var
+    converted_point: TPoint;
+begin
+    converted_point := point;
+    Result := try_convert_screen_point_for_monitor_dpi(hwnd, point, converted_point);
+    if not Result then
+    begin
+        Result := try_screen_point_to_physical(hwnd, point, converted_point);
+    end;
+    if Result then
+    begin
+        point := converted_point;
+    end;
+end;
+
+function try_normalize_screen_rect_for_hwnd(const hwnd: HWND; var rect: Winapi.Windows.TRect): Boolean;
+var
+    converted_rect: Winapi.Windows.TRect;
+begin
+    converted_rect := rect;
+    Result := try_convert_screen_rect_for_monitor_dpi(hwnd, rect, converted_rect);
+    if not Result then
+    begin
+        Result := try_screen_rect_to_physical(hwnd, rect, converted_rect);
+    end;
+    if Result then
+    begin
+        rect := converted_rect;
+    end;
+end;
+
 function try_client_point_to_screen_physical(const hwnd: HWND; var point: TPoint): Boolean;
 begin
     if hwnd = 0 then
@@ -291,8 +610,11 @@ begin
         Exit;
     end;
 
-    try_logical_to_physical(hwnd, point);
     Result := ClientToScreen(hwnd, point);
+    if Result then
+    begin
+        try_logical_to_physical(hwnd, point);
+    end;
 end;
 
 function sanitize_perf_log_text(const value: string): string;
@@ -1038,6 +1360,11 @@ begin
     m_context := context;
     m_has_caret_point := False;
     m_pending_caret_update := False;
+    invalidate_sent_caret;
+    if (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        push_caret_to_host(Point(0, 0), False, 0, False, casCursor, 0, True);
+    end;
     m_last_surrounding_request_tick := 0;
     m_last_context_activate_tick := GetTickCount64;
     m_surrounding_needs_refresh := True;
@@ -2749,9 +3076,11 @@ var
     caret_point: TPoint;
     gui_point: TPoint;
     converted_tsf_point: TPoint;
+    last_sent_point: TPoint;
     hwnd: Winapi.Windows.HWND;
     foreground_hwnd: Winapi.Windows.HWND;
     context_hwnd: Winapi.Windows.HWND;
+    base_anchor_hwnd: Winapi.Windows.HWND;
     tsf_point: TPoint;
     tsf_point_valid: Boolean;
     caret_point_valid: Boolean;
@@ -2771,6 +3100,7 @@ var
     foreground_class_name: string;
     terminal_like_context: Boolean;
     terminal_like_foreground: Boolean;
+    focus_outside_context: Boolean;
     cursor_point: TPoint;
     cursor_point_valid: Boolean;
     last_sent_point_valid: Boolean;
@@ -2847,6 +3177,10 @@ var
         end;
 
         has_window_rect := GetWindowRect(source_hwnd, window_rect);
+        if has_window_rect then
+        begin
+            try_normalize_screen_rect_for_hwnd(source_hwnd, window_rect);
+        end;
         if has_window_rect and point_in_rect(candidate, window_rect, 64) then
         begin
             Result := point_in_virtual_screen(candidate);
@@ -3058,6 +3392,7 @@ begin
     placement_line_height := m_last_caret_line_height;
     tsf_point := m_last_caret_point;
     tsf_point_valid := m_has_caret_point;
+    last_sent_point := m_last_sent_caret_point;
 
     gui_point_valid := False;
     gui_thread_id := 0;
@@ -3069,6 +3404,10 @@ begin
         if view.GetWnd(context_hwnd) = S_OK then
         begin
             has_context_rect := GetWindowRect(context_hwnd, context_rect);
+            if has_context_rect then
+            begin
+                try_normalize_screen_rect_for_hwnd(context_hwnd, context_rect);
+            end;
         end;
     end;
 
@@ -3092,6 +3431,29 @@ begin
     if foreground_hwnd <> 0 then
     begin
         has_foreground_rect := GetWindowRect(foreground_hwnd, foreground_rect);
+        if has_foreground_rect then
+        begin
+            try_normalize_screen_rect_for_hwnd(foreground_hwnd, foreground_rect);
+        end;
+    end;
+
+    base_anchor_hwnd := context_hwnd;
+    if base_anchor_hwnd = 0 then
+    begin
+        base_anchor_hwnd := hwnd;
+    end;
+    if base_anchor_hwnd = 0 then
+    begin
+        base_anchor_hwnd := foreground_hwnd;
+    end;
+
+    if tsf_point_valid and (base_anchor_hwnd <> 0) then
+    begin
+        try_normalize_screen_point_for_hwnd(base_anchor_hwnd, tsf_point);
+    end;
+    if m_last_sent_caret_valid and (base_anchor_hwnd <> 0) then
+    begin
+        try_normalize_screen_point_for_hwnd(base_anchor_hwnd, last_sent_point);
     end;
 
     context_class_name := get_window_class_name(context_hwnd);
@@ -3099,6 +3461,8 @@ begin
     terminal_like_context := is_terminal_like_class(context_class_name);
     terminal_like_foreground := is_terminal_like_class(foreground_class_name);
     terminal_like_target := terminal_like_context or terminal_like_foreground;
+    focus_outside_context := (context_hwnd <> 0) and (hwnd <> 0) and (hwnd <> context_hwnd) and
+        (not IsChild(context_hwnd, hwnd));
     cursor_point := System.Types.Point(0, 0);
     cursor_point_valid := GetCursorPos(cursor_point) and point_in_virtual_screen(cursor_point) and
         point_in_foreground(cursor_point);
@@ -3140,6 +3504,10 @@ begin
         begin
             m_logger.debug(Format('Caret foreground rect=(%d,%d,%d,%d)',
                 [foreground_rect.Left, foreground_rect.Top, foreground_rect.Right, foreground_rect.Bottom]));
+        end;
+        if focus_outside_context then
+        begin
+            m_logger.debug(Format('Caret focus outside context focus=%d context=%d', [hwnd, context_hwnd]));
         end;
     end;
 
@@ -3194,8 +3562,13 @@ begin
     end;
 
     tsf_point_valid := tsf_point_valid and point_in_foreground(tsf_point);
-    last_sent_point_valid := m_last_sent_caret_valid and point_in_virtual_screen(m_last_sent_caret_point) and
-        point_in_foreground(m_last_sent_caret_point);
+    last_sent_point_valid := m_last_sent_caret_valid and point_in_virtual_screen(last_sent_point) and
+        point_in_foreground(last_sent_point);
+    if focus_outside_context and (not terminal_like_target) then
+    begin
+        tsf_point_valid := False;
+        last_sent_point_valid := False;
+    end;
 
     if tsf_point_valid and (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
@@ -3212,14 +3585,14 @@ begin
     end;
     if last_sent_point_valid and (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
-        m_logger.debug(Format('Last sent caret point=(%d,%d)', [m_last_sent_caret_point.X, m_last_sent_caret_point.Y]));
+        m_logger.debug(Format('Last sent caret point=(%d,%d)', [last_sent_point.X, last_sent_point.Y]));
     end;
 
     observation_count := 0;
     add_observation(casTsf, tsf_point, tsf_point_valid);
     add_observation(casGui, gui_point, gui_point_valid);
     add_observation(casCaretPos, caret_point, caret_point_valid);
-    add_observation(casLastSent, m_last_sent_caret_point, last_sent_point_valid);
+    add_observation(casLastSent, last_sent_point, last_sent_point_valid);
     add_observation(casCursor, cursor_point, cursor_point_valid);
 
     FillChar(anchor_context, SizeOf(anchor_context), 0);
@@ -3232,7 +3605,7 @@ begin
     anchor_context.cursor_point_valid := cursor_point_valid;
     anchor_context.cursor_point := cursor_point;
     anchor_context.last_stable_valid := last_sent_point_valid;
-    anchor_context.last_stable_point := m_last_sent_caret_point;
+    anchor_context.last_stable_point := last_sent_point;
     tsf_suspicious := tsf_point_valid and is_origin_anchor_suspicious(tsf_point, foreground_rect, has_foreground_rect,
         cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
     if tsf_suspicious and should_relax_terminal_tsf_suspicion(tsf_point, tsf_point_valid, gui_point, gui_point_valid,
@@ -3245,7 +3618,7 @@ begin
         cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
     caret_suspicious := caret_point_valid and is_origin_anchor_suspicious(caret_point, foreground_rect, has_foreground_rect,
         cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
-    last_suspicious := last_sent_point_valid and is_origin_anchor_suspicious(m_last_sent_caret_point, foreground_rect,
+    last_suspicious := last_sent_point_valid and is_origin_anchor_suspicious(last_sent_point, foreground_rect,
         has_foreground_rect, cursor_point, cursor_point_valid, terminal_like_target, anchor_context.has_composition);
     gui_caret_pair := gui_point_valid and caret_point_valid and points_are_close(gui_point, caret_point, 96);
     gui_far_from_tsf := gui_caret_pair and tsf_point_valid and
@@ -3259,7 +3632,7 @@ begin
             format_anchor_point(tsf_point, tsf_point_valid),
             format_anchor_point(gui_point, gui_point_valid),
             format_anchor_point(caret_point, caret_point_valid),
-            format_anchor_point(m_last_sent_caret_point, last_sent_point_valid),
+            format_anchor_point(last_sent_point, last_sent_point_valid),
             format_anchor_point(cursor_point, cursor_point_valid),
             placement_line_height]));
         m_logger.debug(Format(
