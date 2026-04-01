@@ -1441,7 +1441,8 @@ begin
         end;
     end;
 
-    should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active;
+    should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active and
+        (m_engine_config.input_mode = im_chinese);
     if m_settings_dialog_open then
     begin
         should_show := False;
