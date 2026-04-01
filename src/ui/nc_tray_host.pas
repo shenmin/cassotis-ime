@@ -12,6 +12,7 @@ uses
     System.UITypes,
     Winapi.Windows,
     Winapi.Messages,
+    Winapi.MultiMon,
     Winapi.GDIPAPI,
     Winapi.GDIPOBJ,
     Vcl.Forms,
@@ -97,6 +98,7 @@ type
         m_last_profile_activate_tick: UInt64;
         m_last_profile_inactive_tick: UInt64;
         m_menu_popup_active: Boolean;
+        m_status_scaled_dpi: Integer;
         m_active_state_event: TEvent;
         m_inactive_state_event: TEvent;
         m_active_state_thread: TThread;
@@ -192,10 +194,14 @@ const
 
 type
     TGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
+    TGetDpiForMonitor = function(hmonitor: HMONITOR; dpiType: Integer; out dpiX: UINT;
+        out dpiY: UINT): HRESULT; stdcall;
 
 var
     g_get_dpi_for_window: TGetDpiForWindow = nil;
     g_get_dpi_for_window_ready: Boolean = False;
+    g_get_dpi_for_monitor: TGetDpiForMonitor = nil;
+    g_get_dpi_for_monitor_ready: Boolean = False;
 
 function try_get_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
 var
@@ -224,12 +230,61 @@ begin
     end;
 end;
 
+function try_get_dpi_for_monitor(const monitor: HMONITOR; out dpi: Integer): Boolean;
+const
+    MDT_EFFECTIVE_DPI = 0;
+var
+    module: HMODULE;
+    dpi_x: UINT;
+    dpi_y: UINT;
+begin
+    if not g_get_dpi_for_monitor_ready then
+    begin
+        module := GetModuleHandle('Shcore.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('Shcore.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_get_dpi_for_monitor := TGetDpiForMonitor(GetProcAddress(module, 'GetDpiForMonitor'));
+        end;
+        g_get_dpi_for_monitor_ready := True;
+    end;
+
+    dpi := 0;
+    Result := Assigned(g_get_dpi_for_monitor) and (monitor <> 0) and
+        (g_get_dpi_for_monitor(monitor, MDT_EFFECTIVE_DPI, dpi_x, dpi_y) = S_OK);
+    if Result then
+    begin
+        dpi := Integer(dpi_x);
+        Result := dpi > 0;
+    end;
+end;
+
+function try_get_monitor_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
+var
+    monitor: HMONITOR;
+begin
+    dpi := 0;
+    if wnd = 0 then
+    begin
+        Exit(False);
+    end;
+
+    monitor := MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
+    Result := try_get_dpi_for_monitor(monitor, dpi);
+end;
+
 function get_window_dpi(const wnd: HWND): Integer;
 begin
-    Result := 96;
+    Result := 0;
     if not try_get_dpi_for_window(wnd, Result) then
     begin
-        Result := 96;
+        if not try_get_monitor_dpi_for_window(wnd, Result) then
+        begin
+            Result := 0;
+        end;
     end;
     if Result <= 0 then
     begin
@@ -428,6 +483,7 @@ begin
     m_last_profile_activate_tick := 0;
     m_last_profile_inactive_tick := 0;
     m_menu_popup_active := False;
+    m_status_scaled_dpi := 96;
     m_active_state_event := TEvent.Create(nil, False, False, get_nc_active_event);
     m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
     m_active_state_thread := nil;
@@ -521,6 +577,8 @@ var
     paint_box: TPaintBox;
     draw_rect: TRect;
     graphics: TGPGraphics;
+    icon_width: Integer;
+    icon_height: Integer;
 begin
     if not (Sender is TPaintBox) then
     begin
@@ -530,13 +588,40 @@ begin
     paint_box := TPaintBox(Sender);
     paint_box.Canvas.Brush.Color := m_status_panel.Color;
     paint_box.Canvas.FillRect(paint_box.ClientRect);
+    draw_rect := paint_box.ClientRect;
+    InflateRect(draw_rect, -1, -1);
+
+    if (m_status_logo_icon <> nil) and (not m_status_logo_icon.Empty) and (m_status_logo_icon.Handle <> 0) then
+    begin
+        icon_width := draw_rect.Right - draw_rect.Left;
+        icon_height := draw_rect.Bottom - draw_rect.Top;
+        if icon_width < 1 then
+        begin
+            icon_width := 1;
+        end;
+        if icon_height < 1 then
+        begin
+            icon_height := 1;
+        end;
+        DrawIconEx(
+            paint_box.Canvas.Handle,
+            draw_rect.Left,
+            draw_rect.Top,
+            m_status_logo_icon.Handle,
+            icon_width,
+            icon_height,
+            0,
+            0,
+            DI_NORMAL
+        );
+        Exit;
+    end;
+
     if m_status_logo_bitmap = nil then
     begin
         Exit;
     end;
 
-    draw_rect := paint_box.ClientRect;
-    InflateRect(draw_rect, -1, -1);
     graphics := TGPGraphics.Create(paint_box.Canvas.Handle);
     try
         graphics.SetCompositingQuality(CompositingQualityHighQuality);
@@ -954,12 +1039,24 @@ begin
         '..\cassotis_ime_yanquan.ico'));
     if FileExists(icon_path) then
     begin
-        m_status_logo_bitmap := TGPBitmap.Create(icon_path);
+        try
+            m_status_logo_icon.LoadFromFile(icon_path);
+        except
+            m_status_logo_icon.Handle := 0;
+        end;
+        if (m_status_logo_icon = nil) or m_status_logo_icon.Empty or (m_status_logo_icon.Handle = 0) then
+        begin
+            m_status_logo_bitmap := TGPBitmap.Create(icon_path);
+        end;
     end
     else if (m_tray_icon <> nil) and (m_tray_icon.Icon <> nil) then
     begin
         m_status_logo_icon.Assign(m_tray_icon.Icon);
-        if not m_status_logo_icon.Empty then
+        if (m_status_logo_icon <> nil) and (not m_status_logo_icon.Empty) and (m_status_logo_icon.Handle <> 0) then
+        begin
+            // Prefer native icon drawing to preserve alpha on older shell/GDI paths.
+        end
+        else if not m_status_logo_icon.Empty then
         begin
             m_status_logo_bitmap := TGPBitmap.Create(m_status_logo_icon.Handle);
         end;
@@ -1343,7 +1440,10 @@ end;
 
 procedure TncTrayHost.refresh_status_widget_frame;
 var
+    dpi: Integer;
     inset: Integer;
+    desired_width: Integer;
+    desired_height: Integer;
     panel_width: Integer;
     panel_height: Integer;
 begin
@@ -1352,7 +1452,31 @@ begin
         Exit;
     end;
 
-    inset := 1;
+    m_status_form.HandleNeeded;
+    dpi := get_window_dpi(m_status_form.Handle);
+    if dpi <= 0 then
+    begin
+        dpi := 96;
+    end;
+
+    if m_status_scaled_dpi <> dpi then
+    begin
+        m_status_form.ScaleForPPI(dpi);
+        m_status_scaled_dpi := dpi;
+    end;
+
+    desired_width := scale_int_for_dpi(c_status_widget_default_width, dpi);
+    desired_height := scale_int_for_dpi(c_status_widget_default_height, dpi);
+    if (m_status_form.Width <> desired_width) or (m_status_form.Height <> desired_height) then
+    begin
+        m_status_form.SetBounds(m_status_form.Left, m_status_form.Top, desired_width, desired_height);
+    end;
+
+    inset := scale_int_for_dpi(1, dpi);
+    if inset < 1 then
+    begin
+        inset := 1;
+    end;
     panel_width := m_status_form.ClientWidth - inset * 2;
     panel_height := m_status_form.ClientHeight - inset * 2;
     if panel_width < 0 then
@@ -1441,8 +1565,7 @@ begin
         end;
     end;
 
-    should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active and
-        (m_engine_config.input_mode = im_chinese);
+    should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active;
     if m_settings_dialog_open then
     begin
         should_show := False;

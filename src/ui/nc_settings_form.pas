@@ -10,6 +10,7 @@ uses
     System.UITypes,
     Winapi.Windows,
     Winapi.Messages,
+    Winapi.MultiMon,
     Winapi.ShellAPI,
     Vcl.Forms,
     Vcl.Controls,
@@ -137,6 +138,7 @@ type
 
     TncSettingsForm = class(TForm)
     private
+        m_scaled_dpi: Integer;
         m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
         m_tab_logging: TTabSheet;
@@ -303,10 +305,14 @@ resourcestring
 
 type
     TGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
+    TGetDpiForMonitor = function(hmonitor: HMONITOR; dpiType: Integer;
+        out dpiX: UINT; out dpiY: UINT): HRESULT; stdcall;
 
 var
     g_get_dpi_for_window: TGetDpiForWindow = nil;
     g_get_dpi_for_window_ready: Boolean = False;
+    g_get_dpi_for_monitor: TGetDpiForMonitor = nil;
+    g_get_dpi_for_monitor_ready: Boolean = False;
 
 function try_get_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
 var
@@ -333,6 +339,56 @@ begin
         dpi := Integer(g_get_dpi_for_window(wnd));
         Result := dpi > 0;
     end;
+end;
+
+function try_get_dpi_for_monitor(const monitor: HMONITOR; out dpi: Integer): Boolean;
+const
+    MDT_EFFECTIVE_DPI = 0;
+var
+    module: HMODULE;
+    dpi_x: UINT;
+    dpi_y: UINT;
+begin
+    if not g_get_dpi_for_monitor_ready then
+    begin
+        module := GetModuleHandle('shcore.dll');
+        if module = 0 then
+        begin
+            module := LoadLibrary('shcore.dll');
+        end;
+        if module <> 0 then
+        begin
+            g_get_dpi_for_monitor := TGetDpiForMonitor(GetProcAddress(module, 'GetDpiForMonitor'));
+        end;
+        g_get_dpi_for_monitor_ready := True;
+    end;
+
+    dpi := 0;
+    Result := Assigned(g_get_dpi_for_monitor) and (monitor <> 0);
+    if Result then
+    begin
+        dpi_x := 0;
+        dpi_y := 0;
+        Result := Succeeded(g_get_dpi_for_monitor(monitor, MDT_EFFECTIVE_DPI, dpi_x, dpi_y));
+        if Result then
+        begin
+            dpi := Integer(dpi_x);
+            Result := dpi > 0;
+        end;
+    end;
+end;
+
+function try_get_monitor_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
+var
+    monitor: HMONITOR;
+begin
+    dpi := 0;
+    if wnd = 0 then
+    begin
+        Exit(False);
+    end;
+    monitor := MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
+    Result := try_get_dpi_for_monitor(monitor, dpi);
 end;
 
 function get_ui_scale_dpi: Integer; forward;
@@ -848,8 +904,8 @@ function create_label(const owner: TComponent; const parent: TWinControl; const 
 begin
     Result := TLabel.Create(owner);
     Result.Parent := parent;
-    Result.Left := c_label_left;
-    Result.Top := top + 4;
+    Result.Left := scale_ui(c_label_left);
+    Result.Top := top + scale_ui(4);
     Result.Caption := caption;
 end;
 
@@ -860,18 +916,18 @@ var
     title_label: TLabel;
     section_width: Integer;
 begin
-    section_width := c_section_width;
-    if (parent <> nil) and (parent.ClientWidth > (c_section_left * 2)) then
+    section_width := scale_ui(c_section_width);
+    if (parent <> nil) and (parent.ClientWidth > (scale_ui(c_section_left) * 2)) then
     begin
-        section_width := parent.ClientWidth - (c_section_left * 2);
+        section_width := parent.ClientWidth - (scale_ui(c_section_left) * 2);
     end;
 
     Result := TPanel.Create(owner);
     Result.Parent := parent;
-    Result.Left := c_section_left;
+    Result.Left := scale_ui(c_section_left);
     Result.Top := top;
     Result.Width := section_width;
-    Result.Height := height;
+    Result.Height := scale_ui(height);
     Result.BevelOuter := bvNone;
     Result.ParentBackground := False;
     Result.Color := clWhite;
@@ -881,15 +937,15 @@ begin
     accent := TPanel.Create(Result);
     accent.Parent := Result;
     accent.Align := alTop;
-    accent.Height := 3;
+    accent.Height := scale_ui(3);
     accent.BevelOuter := bvNone;
     accent.ParentBackground := False;
     accent.Color := RGB(50, 118, 255);
 
     title_label := TLabel.Create(Result);
     title_label.Parent := Result;
-    title_label.Left := c_label_left;
-    title_label.Top := 10;
+    title_label.Left := scale_ui(c_label_left);
+    title_label.Top := scale_ui(10);
     title_label.Caption := caption;
     title_label.Font.Style := [fsBold];
     title_label.Font.Color := RGB(34, 39, 46);
@@ -964,7 +1020,10 @@ begin
     Result := 96;
     if not try_get_dpi_for_window(wnd, Result) then
     begin
-        Result := 96;
+        if not try_get_monitor_dpi_for_window(wnd, Result) then
+        begin
+            Result := 96;
+        end;
     end;
     if Result <= 0 then
     begin
@@ -1065,12 +1124,12 @@ begin
     Result := TncModernCheckBox.Create(owner);
     Result.Parent := parent;
     Result.ParentFont := True;
-    Result.Left := c_label_left;
+    Result.Left := scale_ui(c_label_left);
     Result.Top := top;
-    Result.Width := c_check_width;
-    if (parent <> nil) and (parent.ClientWidth > (c_label_left * 2)) then
+    Result.Width := scale_ui(c_check_width);
+    if (parent <> nil) and (parent.ClientWidth > (scale_ui(c_label_left) * 2)) then
     begin
-        Result.Width := parent.ClientWidth - (c_label_left * 2);
+        Result.Width := parent.ClientWidth - (scale_ui(c_label_left) * 2);
     end;
     Result.Height := calculate_checkbox_height_for_dpi(Result.Font, get_control_scale_dpi(parent));
     if parent is TPanel then
@@ -1090,10 +1149,10 @@ function create_browse_button(const owner: TComponent; const parent: TWinControl
 begin
     Result := TncModernButton.Create(owner);
     Result.Parent := parent;
-    Result.Left := c_control_left + c_path_edit_width + c_browse_button_gap;
-    Result.Top := top - 1;
-    Result.Width := c_browse_button_width;
-    Result.Height := c_button_height;
+    Result.Left := scale_ui(c_control_left + c_path_edit_width + c_browse_button_gap);
+    Result.Top := top - scale_ui(1);
+    Result.Width := scale_ui(c_browse_button_width);
+    Result.Height := scale_ui(c_button_height);
     Result.Caption := SButtonBrowse;
     Result.OnClick := on_click;
     Result.VisualKind := mbkSecondary;
@@ -1106,8 +1165,8 @@ begin
     Result.Parent := parent;
     Result.Left := left;
     Result.Top := top;
-    Result.Width := c_action_button_width;
-    Result.Height := c_button_height;
+    Result.Width := scale_ui(c_action_button_width);
+    Result.Height := scale_ui(c_button_height);
     Result.Caption := caption;
     Result.OnClick := on_click;
     Result.VisualKind := mbkSubtle;
@@ -1150,6 +1209,7 @@ begin
     inherited CreateNew(AOwner);
     m_dirty := False;
     m_applied := False;
+    m_scaled_dpi := get_ui_scale_dpi;
     configure_form;
     configure_tabs;
     configure_buttons;
@@ -1186,8 +1246,8 @@ begin
     BorderStyle := bsDialog;
     BorderIcons := [biSystemMenu];
     Caption := SSettingsTitle;
-    ClientWidth := c_dialog_width;
-    ClientHeight := c_dialog_height;
+    ClientWidth := scale_ui(c_dialog_width);
+    ClientHeight := scale_ui(c_dialog_height);
     Position := poScreenCenter;
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
@@ -1202,9 +1262,14 @@ var
     tab_index: Integer;
     control_index: Integer;
     max_content_bottom: Integer;
+    max_content_right: Integer;
     tab_strip_height: Integer;
+    page_nonclient_width: Integer;
     desired_page_client_height: Integer;
+    desired_page_client_width: Integer;
     desired_client_height: Integer;
+    desired_client_width: Integer;
+    dpi: Integer;
 begin
     if m_page_control = nil then
     begin
@@ -1212,14 +1277,25 @@ begin
     end;
 
     m_page_control.HandleNeeded;
+    dpi := get_window_dpi(Handle);
+    if dpi <= 0 then
+    begin
+        dpi := 96;
+    end;
     display_rect := m_page_control.DisplayRect;
     tab_strip_height := m_page_control.Height - (display_rect.Bottom - display_rect.Top);
     if tab_strip_height < 0 then
     begin
         tab_strip_height := 0;
     end;
+    page_nonclient_width := m_page_control.Width - (display_rect.Right - display_rect.Left);
+    if page_nonclient_width < 0 then
+    begin
+        page_nonclient_width := 0;
+    end;
 
     max_content_bottom := 0;
+    max_content_right := 0;
     for tab_index := 0 to m_page_control.PageCount - 1 do
     begin
         tab_sheet := m_page_control.Pages[tab_index];
@@ -1237,17 +1313,31 @@ begin
                 begin
                     max_content_bottom := control.Top + control.Height;
                 end;
+                if (control.Left + control.Width) > max_content_right then
+                begin
+                    max_content_right := control.Left + control.Width;
+                end;
             end;
         end;
     end;
 
-    desired_page_client_height := max_content_bottom + 18;
-    desired_client_height := c_page_margin + tab_strip_height + desired_page_client_height + c_footer_height;
-    if desired_client_height < (c_footer_height + 220) then
+    desired_page_client_height := max_content_bottom + scale_ui_for_dpi(18, dpi);
+    desired_page_client_width := max_content_right + scale_ui_for_dpi(18, dpi);
+    desired_client_width := scale_ui_for_dpi(c_page_margin, dpi) * 2 + page_nonclient_width + desired_page_client_width;
+    desired_client_height := scale_ui_for_dpi(c_page_margin, dpi) + tab_strip_height + desired_page_client_height + scale_ui_for_dpi(c_footer_height, dpi);
+    if desired_client_width < scale_ui_for_dpi(c_dialog_width, dpi) then
     begin
-        desired_client_height := c_footer_height + 220;
+        desired_client_width := scale_ui_for_dpi(c_dialog_width, dpi);
+    end;
+    if desired_client_height < (scale_ui_for_dpi(c_footer_height, dpi) + scale_ui_for_dpi(220, dpi)) then
+    begin
+        desired_client_height := scale_ui_for_dpi(c_footer_height, dpi) + scale_ui_for_dpi(220, dpi);
     end;
 
+    if ClientWidth <> desired_client_width then
+    begin
+        ClientWidth := desired_client_width;
+    end;
     if ClientHeight <> desired_client_height then
     begin
         ClientHeight := desired_client_height;
@@ -1255,9 +1345,21 @@ begin
 end;
 
 procedure TncSettingsForm.DoShow;
+var
+    dpi: Integer;
 begin
     inherited;
     HandleNeeded;
+    dpi := get_window_dpi(Handle);
+    if dpi <= 0 then
+    begin
+        dpi := 96;
+    end;
+    if m_scaled_dpi <> dpi then
+    begin
+        ScaleForPPI(dpi);
+        m_scaled_dpi := dpi;
+    end;
     update_scaled_control_metrics;
     update_dialog_height_for_content;
     SetWindowPos(
@@ -1335,9 +1437,9 @@ begin
     m_page_control.Parent := Self;
     m_page_control.Align := alClient;
     m_page_control.AlignWithMargins := True;
-    m_page_control.Margins.Left := c_page_margin;
-    m_page_control.Margins.Top := c_page_margin;
-    m_page_control.Margins.Right := c_page_margin;
+    m_page_control.Margins.Left := scale_ui(c_page_margin);
+    m_page_control.Margins.Top := scale_ui(c_page_margin);
+    m_page_control.Margins.Right := scale_ui(c_page_margin);
     m_page_control.Margins.Bottom := 0;
     m_page_control.Style := tsFlatButtons;
     m_page_control.HotTrack := True;
@@ -1363,7 +1465,7 @@ begin
     footer_panel := TPanel.Create(Self);
     footer_panel.Parent := Self;
     footer_panel.Align := alBottom;
-    footer_panel.Height := c_footer_height;
+    footer_panel.Height := scale_ui(c_footer_height);
     footer_panel.BevelOuter := bvNone;
     footer_panel.ParentBackground := False;
     footer_panel.Color := RGB(250, 251, 252);
@@ -1372,34 +1474,37 @@ begin
     footer_line.Parent := footer_panel;
     footer_line.Align := alTop;
     footer_line.Shape := bsTopLine;
-    footer_line.Height := 2;
+    footer_line.Height := scale_ui(2);
 
     m_btn_reset := TncModernButton.Create(Self);
     m_btn_reset.Parent := footer_panel;
-    m_btn_reset.Left := 18;
-    m_btn_reset.Top := 10;
-    m_btn_reset.Width := 96;
-    m_btn_reset.Height := c_footer_button_height;
+    m_btn_reset.Left := scale_ui(18);
+    m_btn_reset.Top := scale_ui(10);
+    m_btn_reset.Width := scale_ui(96);
+    m_btn_reset.Height := scale_ui(c_footer_button_height);
+    m_btn_reset.Anchors := [akLeft, akTop];
     m_btn_reset.Caption := SButtonDefaults;
     m_btn_reset.OnClick := on_reset_click;
     m_btn_reset.VisualKind := mbkSubtle;
 
     m_btn_apply := TncModernButton.Create(Self);
     m_btn_apply.Parent := footer_panel;
-    m_btn_apply.Left := ClientWidth - 272;
-    m_btn_apply.Top := 10;
-    m_btn_apply.Width := 78;
-    m_btn_apply.Height := c_footer_button_height;
+    m_btn_apply.Left := ClientWidth - scale_ui(272);
+    m_btn_apply.Top := scale_ui(10);
+    m_btn_apply.Width := scale_ui(78);
+    m_btn_apply.Height := scale_ui(c_footer_button_height);
+    m_btn_apply.Anchors := [akTop, akRight];
     m_btn_apply.Caption := SButtonApply;
     m_btn_apply.OnClick := on_apply_click;
     m_btn_apply.VisualKind := mbkSecondary;
 
     m_btn_ok := TncModernButton.Create(Self);
     m_btn_ok.Parent := footer_panel;
-    m_btn_ok.Left := ClientWidth - 184;
-    m_btn_ok.Top := 10;
-    m_btn_ok.Width := 78;
-    m_btn_ok.Height := c_footer_button_height;
+    m_btn_ok.Left := ClientWidth - scale_ui(184);
+    m_btn_ok.Top := scale_ui(10);
+    m_btn_ok.Width := scale_ui(78);
+    m_btn_ok.Height := scale_ui(c_footer_button_height);
+    m_btn_ok.Anchors := [akTop, akRight];
     m_btn_ok.Caption := SButtonOK;
     m_btn_ok.Default := True;
     m_btn_ok.OnClick := on_ok_click;
@@ -1407,10 +1512,11 @@ begin
 
     m_btn_cancel := TncModernButton.Create(Self);
     m_btn_cancel.Parent := footer_panel;
-    m_btn_cancel.Left := ClientWidth - 96;
-    m_btn_cancel.Top := 10;
-    m_btn_cancel.Width := 78;
-    m_btn_cancel.Height := c_footer_button_height;
+    m_btn_cancel.Left := ClientWidth - scale_ui(96);
+    m_btn_cancel.Top := scale_ui(10);
+    m_btn_cancel.Width := scale_ui(78);
+    m_btn_cancel.Height := scale_ui(c_footer_button_height);
+    m_btn_cancel.Anchors := [akTop, akRight];
     m_btn_cancel.Caption := SButtonCancel;
     m_btn_cancel.Cancel := True;
     m_btn_cancel.OnClick := on_cancel_click;
@@ -1424,41 +1530,41 @@ var
     defaults_group: TPanel;
     appearance_group: TPanel;
 begin
-    section_top := 18;
+    section_top := scale_ui(18);
     defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 158);
 
-    top := c_section_inner_top;
+    top := scale_ui(c_section_inner_top);
     create_label(Self, defaults_group, SLabelInputMode, top);
     m_combo_input_mode := TComboBox.Create(Self);
     m_combo_input_mode.Parent := defaults_group;
-    m_combo_input_mode.Left := c_control_left;
+    m_combo_input_mode.Left := scale_ui(c_control_left);
     m_combo_input_mode.Top := top;
-    m_combo_input_mode.Width := c_combo_width;
+    m_combo_input_mode.Width := scale_ui(c_combo_width);
     m_combo_input_mode.Style := csDropDownList;
     m_combo_input_mode.Items.Add(SOptionSimplifiedChineseInput);
     m_combo_input_mode.Items.Add(SOptionTraditionalChineseInput);
     m_combo_input_mode.Items.Add(SOptionEnglishInput);
     m_combo_input_mode.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_general_row_gap);
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
     create_label(Self, defaults_group, SLabelPunctuationMode, top);
     m_combo_punctuation_mode := TComboBox.Create(Self);
     m_combo_punctuation_mode.Parent := defaults_group;
-    m_combo_punctuation_mode.Left := c_control_left;
+    m_combo_punctuation_mode.Left := scale_ui(c_control_left);
     m_combo_punctuation_mode.Top := top;
-    m_combo_punctuation_mode.Width := c_combo_width;
+    m_combo_punctuation_mode.Width := scale_ui(c_combo_width);
     m_combo_punctuation_mode.Style := csDropDownList;
     m_combo_punctuation_mode.Items.Add(SOptionChinese);
     m_combo_punctuation_mode.Items.Add(SOptionEnglish);
     m_combo_punctuation_mode.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_general_row_gap);
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
 
-    section_top := defaults_group.Top + defaults_group.Height + 10;
+    section_top := defaults_group.Top + defaults_group.Height + scale_ui(10);
     appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 76);
 
-    top := c_section_inner_top;
+    top := scale_ui(c_section_inner_top);
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
 end;
 
@@ -1469,19 +1575,19 @@ var
     logging_group: TPanel;
     files_group: TPanel;
 begin
-    section_top := 18;
+    section_top := scale_ui(18);
     logging_group := create_section_group(Self, m_tab_logging, SGroupLogging, section_top, 152);
 
-    top := c_section_inner_top;
+    top := scale_ui(c_section_inner_top);
     m_chk_log_enabled := create_check_box(Self, logging_group, top, SCheckEnableLogging, mark_dirty);
 
-    Inc(top, c_row_height + c_row_gap);
+    Inc(top, scale_ui(c_row_height + c_row_gap));
     create_label(Self, logging_group, SLabelLogLevel, top);
     m_combo_log_level := TComboBox.Create(Self);
     m_combo_log_level.Parent := logging_group;
-    m_combo_log_level.Left := c_control_left;
+    m_combo_log_level.Left := scale_ui(c_control_left);
     m_combo_log_level.Top := top;
-    m_combo_log_level.Width := c_combo_width;
+    m_combo_log_level.Width := scale_ui(c_combo_width);
     m_combo_log_level.Style := csDropDownList;
     m_combo_log_level.Items.Add(SOptionLogDebug);
     m_combo_log_level.Items.Add(SOptionLogInfo);
@@ -1489,34 +1595,34 @@ begin
     m_combo_log_level.Items.Add(SOptionLogError);
     m_combo_log_level.OnChange := mark_dirty;
 
-    Inc(top, c_row_height + c_row_gap);
+    Inc(top, scale_ui(c_row_height + c_row_gap));
     create_label(Self, logging_group, SLabelMaxLogSize, top);
     m_edit_log_max_size_kb := TEdit.Create(Self);
     m_edit_log_max_size_kb.Parent := logging_group;
-    m_edit_log_max_size_kb.Left := c_control_left;
+    m_edit_log_max_size_kb.Left := scale_ui(c_control_left);
     m_edit_log_max_size_kb.Top := top;
-    m_edit_log_max_size_kb.Width := c_edit_width;
+    m_edit_log_max_size_kb.Width := scale_ui(c_edit_width);
     configure_numeric_edit(m_edit_log_max_size_kb, '64..1048576');
     m_edit_log_max_size_kb.OnChange := mark_dirty;
 
-    section_top := logging_group.Top + logging_group.Height + c_section_gap;
+    section_top := logging_group.Top + logging_group.Height + scale_ui(c_section_gap);
     files_group := create_section_group(Self, m_tab_logging, SGroupLogFiles, section_top, 108);
 
-    top := c_section_inner_top;
+    top := scale_ui(c_section_inner_top);
     create_label(Self, files_group, SLabelLogPath, top);
     m_edit_log_path := TEdit.Create(Self);
     m_edit_log_path.Parent := files_group;
-    m_edit_log_path.Left := c_control_left;
+    m_edit_log_path.Left := scale_ui(c_control_left);
     m_edit_log_path.Top := top;
-    m_edit_log_path.Width := c_path_edit_width;
+    m_edit_log_path.Width := scale_ui(c_path_edit_width);
     configure_path_edit(m_edit_log_path, get_default_log_path);
     m_edit_log_path.OnChange := mark_dirty;
     m_btn_log_path := create_browse_button(Self, files_group, top, on_browse_log_path);
 
-    Inc(top, c_row_height + 2);
-    m_btn_open_log_folder := create_action_button(Self, files_group, c_control_left, top,
+    Inc(top, scale_ui(c_row_height + 2));
+    m_btn_open_log_folder := create_action_button(Self, files_group, scale_ui(c_control_left), top,
         SButtonOpenLogFolder, on_open_log_folder);
-    m_btn_log_defaults := create_action_button(Self, files_group, c_control_left + c_action_button_width + 12, top,
+    m_btn_log_defaults := create_action_button(Self, files_group, scale_ui(c_control_left + c_action_button_width + 12), top,
         SButtonUseDefaultLogging, on_log_defaults_click);
 
 end;
@@ -1528,23 +1634,23 @@ var
     debug_group: TPanel;
     tools_group: TPanel;
 begin
-    section_top := 18;
+    section_top := scale_ui(18);
     debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 116);
 
-    top := c_section_inner_top;
+    top := scale_ui(c_section_inner_top);
     m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
-    create_hint_label(Self, debug_group, SHintDebugMode, c_label_left, top + c_row_height + 4, c_hint_width);
+    create_hint_label(Self, debug_group, SHintDebugMode, scale_ui(c_label_left), top + scale_ui(c_row_height + 4), scale_ui(c_hint_width));
 
-    section_top := debug_group.Top + debug_group.Height + c_section_gap;
+    section_top := debug_group.Top + debug_group.Height + scale_ui(c_section_gap);
     tools_group := create_section_group(Self, m_tab_advanced, SGroupConfigTools, section_top, 134);
 
-    top := c_section_inner_top;
-    m_btn_open_config_folder := create_action_button(Self, tools_group, c_label_left, top,
+    top := scale_ui(c_section_inner_top);
+    m_btn_open_config_folder := create_action_button(Self, tools_group, scale_ui(c_label_left), top,
         SButtonOpenConfigFolder, on_open_config_folder);
-    m_btn_open_config_file := create_action_button(Self, tools_group, c_label_left + c_action_button_width + 12, top,
+    m_btn_open_config_file := create_action_button(Self, tools_group, scale_ui(c_label_left + c_action_button_width + 12), top,
         SButtonOpenConfigFile, on_open_config_file);
 
-    m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, c_label_left, top + c_row_height + 8, c_hint_width);
+    m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, scale_ui(c_label_left), top + scale_ui(c_row_height + 8), scale_ui(c_hint_width));
 end;
 
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
