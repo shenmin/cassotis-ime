@@ -74,8 +74,8 @@ For full build details, see `BUILD.md`.
 ## Dictionary Workflow
 Current base dictionary pipeline imports generated lexicon artifacts from sibling `cassotis_lexicon` / `cassotis_lexicon_public` repository:
 - lexicon inputs: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt`
-- generated DB files under `out/data/` (for example `dict_sc.db`, `dict_tc.db`)
-- user dictionary defaults to `out/data/user_dict.db`
+- runtime DB files are rebuilt under `%LOCALAPPDATA%\CassotisIme\data\` (for example `dict_sc.db`, `dict_tc.db`)
+- user dictionary defaults to `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 - `rebuild_dict.ps1` imports `pinyin<TAB>text<TAB>weight` and auto-builds `dict_jianpin` (including `z/c/s` and `zh/ch/sh` abbreviation variants)
 
 Main rebuild entry:
@@ -86,13 +86,14 @@ Main rebuild entry:
 
 ## Configuration
 Default config file:
-- `out/cassotis_ime.ini`
+- `%LOCALAPPDATA%\CassotisIme\cassotis_ime.ini`
 
 Important options include:
-- simplified/traditional variant switching
-- base DB paths (`db_path_sc`, `db_path_tc`)
-- user DB path (`user_db_path`)
-- logging and engine behavior toggles
+- simplified/traditional variant switching (`variant`)
+- full-width / punctuation mode
+- debug logging and log path
+
+Runtime dictionary paths are fixed under `%LOCALAPPDATA%\CassotisIme\data\` and are no longer configured through the INI file.
 
 ## Documentation
 - Chinese full documentation: `README.CN.md`
