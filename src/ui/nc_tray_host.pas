@@ -190,7 +190,7 @@ const
     c_style_refresh_interval_ms = 1500;
     c_style_refresh_interval_idle_ms = 3000;
     c_profile_activate_debounce_ms = 180;
-    c_profile_inactive_debounce_ms = 300;
+    c_profile_inactive_debounce_ms = 360;
 
 type
     TGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
@@ -1565,7 +1565,7 @@ begin
         end;
     end;
 
-    should_show := m_item_status_widget.Checked and m_engine_active and m_profile_active;
+    should_show := m_item_status_widget.Checked and m_engine_active;
     if m_settings_dialog_open then
     begin
         should_show := False;
@@ -1685,30 +1685,21 @@ begin
 
     current_tick := GetTickCount64;
 
-    if not m_profile_active then
-    begin
-        if (not m_profile_event_seen) and m_ipc_client.get_active(m_session_id, active_now) and active_now then
-        begin
-            m_active_sync_fail_count := 0;
-            m_profile_active := True;
-            m_profile_active_pending := False;
-            m_last_profile_activate_tick := 0;
-        end
-        else
-        begin
-            if m_engine_active then
-            begin
-                m_engine_active := False;
-                apply_status_widget_visibility;
-            end;
-            Exit;
-        end;
-    end;
-
     active_now := False;
     if m_ipc_client.get_active(m_session_id, active_now) then
     begin
         m_active_sync_fail_count := 0;
+        if active_now then
+        begin
+            m_profile_active := True;
+            m_profile_active_pending := False;
+            m_profile_inactive_pending := False;
+            m_last_profile_inactive_tick := 0;
+        end
+        else if not m_profile_active_pending then
+        begin
+            m_profile_active := False;
+        end;
         if m_engine_active <> active_now then
         begin
             m_engine_active := active_now;
@@ -1788,6 +1779,8 @@ begin
     m_profile_inactive_pending := True;
     m_last_profile_inactive_tick := GetTickCount64;
     m_last_variant_poll_tick := 0;
+    m_last_state_poll_tick := 0;
+    refresh_state_from_host;
     Message.Result := 0;
 end;
 
@@ -2263,15 +2256,14 @@ begin
         (now_tick - m_last_profile_inactive_tick >= c_profile_inactive_debounce_ms) then
     begin
         m_profile_inactive_pending := False;
-        m_profile_active := False;
         m_last_profile_inactive_tick := 0;
         m_last_variant_poll_tick := 0;
-        if m_engine_active then
-        begin
-            m_engine_active := False;
-            apply_status_widget_visibility;
-        end;
         m_last_state_poll_tick := 0;
+        refresh_state_from_host;
+        if not m_engine_active then
+        begin
+            m_profile_active := False;
+        end;
     end;
 
     if m_profile_active_pending and (m_last_profile_activate_tick <> 0) and
@@ -2285,7 +2277,12 @@ begin
         refresh_state_from_host;
     end;
 
-    if (m_status_form <> nil) and m_status_form.Visible then
+    if m_profile_inactive_pending or m_profile_active_pending then
+    begin
+        state_poll_interval := c_tray_timer_interval_ms;
+        style_refresh_interval := c_style_refresh_interval_ms;
+    end
+    else if (m_status_form <> nil) and m_status_form.Visible then
     begin
         state_poll_interval := c_tray_timer_interval_ms;
         style_refresh_interval := c_style_refresh_interval_ms;
@@ -2328,7 +2325,7 @@ begin
 
     if (m_last_state_poll_tick = 0) or (now_tick - m_last_state_poll_tick >= state_poll_interval) then
     begin
-        if (not m_menu_popup_active) and (not m_profile_inactive_pending) then
+        if not m_menu_popup_active then
         begin
             refresh_state_from_host;
         end;
