@@ -54,7 +54,6 @@ Source: "{#RuntimeDir}\cassotis_ime_svr.dll"; DestDir: "{app}"; Flags: ignorever
 Source: "{#RuntimeDir}\cassotis_ime_svr32.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RuntimeDir}\cassotis_ime_profile_reg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RuntimeDir}\cassotis_ime_profile_reg.exe"; Flags: dontcopy
-Source: "{#SourceRoot}\installer\force_stop_runtime.ps1"; Flags: dontcopy
 Source: "{#RuntimeDir}\sqlite3_64.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 Source: "{#RuntimeDataSourceDir}\dict_sc.db"; DestDir: "{localappdata}\CassotisIme\data"; DestName: "dict_sc.db"; Flags: ignoreversion
@@ -84,6 +83,11 @@ Filename: "{app}\cassotis_ime_profile_reg.exe"; \
     Parameters: "start -restart"; \
     Flags: runhidden waituntilterminated runasoriginaluser; \
     StatusMsg: "Starting Cassotis IME..."
+Filename: "{sys}\cmd.exe"; \
+    Parameters: "/c start """" explorer.exe"; \
+    Flags: runhidden nowait runasoriginaluser; \
+    Check: ShouldRestartExplorer; \
+    StatusMsg: "Restarting Windows shell..."
 
 [UninstallRun]
 Filename: "{app}\cassotis_ime_profile_reg.exe"; \
@@ -122,13 +126,14 @@ const
     c_invalid_handle_value = -1;
     c_runtime_unlock_wait_attempts = 40;
     c_runtime_unlock_wait_ms = 250;
+    c_runtime_retry_force_stop_attempt = 20;
 
 var
     RuntimePrepPage: TOutputProgressWizardPage;
     InstallerProfileRegPath: string;
-    ForceStopScriptPath: string;
     ForceStopTargetsPath: string;
     ForceStopApprovalGranted: Boolean;
+    ExplorerRestartNeeded: Boolean;
 
 function CreateFileW(lpFileName: string; dwDesiredAccess, dwShareMode: Cardinal;
     lpSecurityAttributes: Integer; dwCreationDisposition, dwFlagsAndAttributes: Cardinal;
@@ -156,9 +161,17 @@ begin
         ExpandConstant('{cm:PreparingStopRuntime}')
     );
     InstallerProfileRegPath := '';
-    ForceStopScriptPath := '';
     ForceStopTargetsPath := ExpandConstant('{tmp}\cassotis_force_stop_targets.txt');
     ForceStopApprovalGranted := False;
+    ExplorerRestartNeeded := False;
+end;
+
+procedure UpdateExplorerRestartNeeded(const TargetsText: string);
+begin
+    if Pos(LowerCase('explorer.exe'), LowerCase(TargetsText)) > 0 then
+    begin
+        ExplorerRestartNeeded := True;
+    end;
 end;
 
 function GetInstallerProfileRegPath: string;
@@ -174,23 +187,9 @@ begin
     Result := InstallerProfileRegPath;
 end;
 
-function GetForceStopScriptPath: string;
-begin
-    if ForceStopScriptPath <> '' then
-    begin
-        Result := ForceStopScriptPath;
-        Exit;
-    end;
-
-    ExtractTemporaryFile('force_stop_runtime.ps1');
-    ForceStopScriptPath := ExpandConstant('{tmp}\force_stop_runtime.ps1');
-    Result := ForceStopScriptPath;
-end;
-
 function GetForceStopTargetsText(const RuntimeDir: string): string;
 var
-    ScriptPath: string;
-    PowerShellPath: string;
+    ProfileRegPath: string;
     ResultCode: Integer;
     LoadedLines: TArrayOfString;
     Index: Integer;
@@ -201,19 +200,12 @@ begin
         Exit;
     end;
 
-    ScriptPath := GetForceStopScriptPath;
-    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-    if not FileExists(PowerShellPath) then
-    begin
-        Exit;
-    end;
-
+    ProfileRegPath := GetInstallerProfileRegPath;
     DeleteFile(ForceStopTargetsPath);
     if not Exec(
-        PowerShellPath,
-        '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
-            '" -Mode list -RuntimeDir "' + RuntimeDir + '" -DataDir "' + GetRuntimeDataDir +
-            '" -OutputPath "' + ForceStopTargetsPath + '"',
+        ProfileRegPath,
+        'list_force_stop_targets -runtime_dir "' + RuntimeDir + '" -data_dir "' + GetRuntimeDataDir +
+            '" -output_path "' + ForceStopTargetsPath + '"',
         '',
         SW_HIDE,
         ewWaitUntilTerminated,
@@ -246,12 +238,18 @@ begin
         if Result <> '' then
         begin
             Log('Force-stop target list:' + #13#10 + Result);
+            UpdateExplorerRestartNeeded(Result);
         end
         else
         begin
             Log('Force-stop target list is empty.');
         end;
     end;
+end;
+
+function ShouldRestartExplorer: Boolean;
+begin
+    Result := ExplorerRestartNeeded;
 end;
 
 function ConfirmForceStopProcesses(const RuntimeDir: string): Boolean;
@@ -487,8 +485,7 @@ end;
 
 procedure TryForceStopProcessesUsingImeModules(const RuntimeDir: string);
 var
-    ScriptPath: string;
-    PowerShellPath: string;
+    ProfileRegPath: string;
     ResultCode: Integer;
 begin
     if RuntimeDir = '' then
@@ -507,19 +504,11 @@ begin
         0
     );
 
-    ScriptPath := GetForceStopScriptPath;
-    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-    if not FileExists(PowerShellPath) then
-    begin
-        Log('PowerShell not found, skipping installer-side force-stop pass.');
-        Exit;
-    end;
-
+    ProfileRegPath := GetInstallerProfileRegPath;
     Log('Running installer-side force-stop pass for processes using IME runtime files.');
     if Exec(
-        PowerShellPath,
-        '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
-            '" -RuntimeDir "' + RuntimeDir + '" -DataDir "' + GetRuntimeDataDir + '"',
+        ProfileRegPath,
+        'force_stop_runtime -runtime_dir "' + RuntimeDir + '" -data_dir "' + GetRuntimeDataDir + '"',
         '',
         SW_HIDE,
         ewWaitUntilTerminated,
@@ -574,8 +563,9 @@ begin
         begin
             Log(Format('Waiting for locked file to be released: %s', [LockedFile]));
         end;
-        if (Attempt mod 4) = 0 then
+        if Attempt = c_runtime_retry_force_stop_attempt then
         begin
+            Log(Format('Retrying cleanup while waiting for runtime release: %s', [RuntimeDir]));
             TryForceStopProcessesUsingImeModules(RuntimeDir);
             if not TryUnregisterExistingRuntime(RuntimeDir) then
             begin
@@ -594,57 +584,51 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
     RootRuntimeDir: string;
     LegacyRuntimeDir: string;
+    ActiveRuntimeDir: string;
 begin
     NeedsRestart := False;
     RootRuntimeDir := ExpandConstant('{app}');
     LegacyRuntimeDir := ExpandConstant('{app}\out');
+    ActiveRuntimeDir := '';
+    if RuntimeDirHasManagedFiles(RootRuntimeDir) then
+    begin
+        ActiveRuntimeDir := RootRuntimeDir;
+    end
+    else if (CompareText(LegacyRuntimeDir, RootRuntimeDir) <> 0) and RuntimeDirHasManagedFiles(LegacyRuntimeDir) then
+    begin
+        ActiveRuntimeDir := LegacyRuntimeDir;
+    end;
+
+    if ActiveRuntimeDir = '' then
+    begin
+        HidePreparingStatus;
+        Result := '';
+        Exit;
+    end;
+
     UpdatePreparingStatus(
         ExpandConstant('{cm:PreparingStopRuntime}'),
-        RootRuntimeDir,
+        ActiveRuntimeDir,
         0,
         0
     );
-    if RuntimeDirHasManagedFiles(RootRuntimeDir) then
+    if not ConfirmForceStopProcesses(ActiveRuntimeDir) then
     begin
-        if not ConfirmForceStopProcesses(RootRuntimeDir) then
-        begin
-            Result := ExpandConstant('{cm:ForceCloseRuntimeCanceled}');
-            Exit;
-        end;
-        TryForceStopProcessesUsingImeModules(RootRuntimeDir);
-        TryStopExistingRuntime(RootRuntimeDir);
-        if not TryUnregisterExistingRuntime(RootRuntimeDir) then
-        begin
-            Log(Format('Initial unregister_tsf did not fully succeed: %s', [RootRuntimeDir]));
-        end;
-        TryStopExistingRuntime(RootRuntimeDir);
-        if not WaitForRuntimeRelease(RootRuntimeDir) then
-        begin
-            HidePreparingStatus;
-            Result := ExpandConstant('{cm:RuntimeReleaseFailed}');
-            Exit;
-        end;
+        Result := ExpandConstant('{cm:ForceCloseRuntimeCanceled}');
+        Exit;
     end;
-    if (CompareText(LegacyRuntimeDir, RootRuntimeDir) <> 0) and RuntimeDirHasManagedFiles(LegacyRuntimeDir) then
+    TryForceStopProcessesUsingImeModules(ActiveRuntimeDir);
+    TryStopExistingRuntime(ActiveRuntimeDir);
+    if not TryUnregisterExistingRuntime(ActiveRuntimeDir) then
     begin
-        if not ConfirmForceStopProcesses(LegacyRuntimeDir) then
-        begin
-            Result := ExpandConstant('{cm:ForceCloseRuntimeCanceled}');
-            Exit;
-        end;
-        TryForceStopProcessesUsingImeModules(LegacyRuntimeDir);
-        TryStopExistingRuntime(LegacyRuntimeDir);
-        if not TryUnregisterExistingRuntime(LegacyRuntimeDir) then
-        begin
-            Log(Format('Initial unregister_tsf did not fully succeed: %s', [LegacyRuntimeDir]));
-        end;
-        TryStopExistingRuntime(LegacyRuntimeDir);
-        if not WaitForRuntimeRelease(LegacyRuntimeDir) then
-        begin
-            HidePreparingStatus;
-            Result := ExpandConstant('{cm:RuntimeReleaseFailed}');
-            Exit;
-        end;
+        Log(Format('Initial unregister_tsf did not fully succeed: %s', [ActiveRuntimeDir]));
+    end;
+    TryStopExistingRuntime(ActiveRuntimeDir);
+    if not WaitForRuntimeRelease(ActiveRuntimeDir) then
+    begin
+        HidePreparingStatus;
+        Result := ExpandConstant('{cm:RuntimeReleaseFailed}');
+        Exit;
     end;
 
     HidePreparingStatus;

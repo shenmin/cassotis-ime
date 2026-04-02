@@ -9,6 +9,7 @@ uses
     System.StrUtils,
     System.IOUtils,
     System.Generics.Collections,
+    System.Generics.Defaults,
     System.Win.Registry,
     Winapi.Windows,
     Winapi.ShellAPI,
@@ -20,19 +21,47 @@ uses
 
 const
     TF_E_ALREADY_EXISTS = HRESULT($80005006);
+    CCH_RM_SESSION_KEY = 32;
+    ERROR_MORE_DATA = 234;
 
 type
     TInstallLayoutOrTipUserReg = function(pszUserReg: LPCWSTR; pszSystemReg: LPCWSTR;
         pszSoftwareReg: LPCWSTR; psz: LPCWSTR; dwFlags: DWORD): BOOL; stdcall;
+
+    TRmUniqueProcess = record
+        dwProcessId: DWORD;
+        ProcessStartTime: TFileTime;
+    end;
+
+    TRmProcessInfo = record
+        Process: TRmUniqueProcess;
+        strAppName: array[0..255] of WideChar;
+        strServiceShortName: array[0..63] of WideChar;
+        ApplicationType: Cardinal;
+        AppStatus: Cardinal;
+        TSSessionId: DWORD;
+        bRestartable: BOOL;
+    end;
 
     TncProcessInfo = record
         name: string;
         pid: Cardinal;
     end;
 
+function RmStartSession(out session_handle: DWORD; session_flags: DWORD; session_key: PWideChar): DWORD;
+    stdcall; external 'rstrtmgr.dll';
+function RmEndSession(session_handle: DWORD): DWORD;
+    stdcall; external 'rstrtmgr.dll';
+function RmRegisterResources(session_handle: DWORD; file_count: UINT; files: PPWideChar;
+    app_count: UINT; apps: Pointer; service_count: UINT; services: PPWideChar): DWORD;
+    stdcall; external 'rstrtmgr.dll';
+function RmGetList(session_handle: DWORD; out proc_info_needed: UINT; var proc_info_count: UINT;
+    proc_infos: Pointer; var reboot_reasons: DWORD): DWORD;
+    stdcall; external 'rstrtmgr.dll';
+
 procedure print_usage;
 begin
-    Writeln('Usage: cassotis_ime_profile_reg register|unregister|register_tsf|unregister_tsf|start|stop');
+    Writeln('Usage: cassotis_ime_profile_reg register|unregister|register_tsf|unregister_tsf|start|stop|list_force_stop_targets|force_stop_runtime');
 end;
 
 function hr_succeeded(const hr: HRESULT): Boolean;
@@ -620,6 +649,141 @@ begin
     end;
 end;
 
+function get_process_name_by_pid(const process_id: Cardinal): string;
+var
+    snapshot: THandle;
+    entry: TProcessEntry32;
+begin
+    Result := '';
+    if process_id = 0 then
+    begin
+        Exit;
+    end;
+
+    snapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if snapshot = INVALID_HANDLE_VALUE then
+    begin
+        Exit;
+    end;
+    try
+        FillChar(entry, SizeOf(entry), 0);
+        entry.dwSize := SizeOf(entry);
+        if not Process32First(snapshot, entry) then
+        begin
+            Exit;
+        end;
+        repeat
+            if entry.th32ProcessID = process_id then
+            begin
+                Result := string(entry.szExeFile);
+                Exit;
+            end;
+        until not Process32Next(snapshot, entry);
+    finally
+        CloseHandle(snapshot);
+    end;
+end;
+
+procedure add_process_info_if_missing(const list: TList<TncProcessInfo>;
+    const seen: TDictionary<Cardinal, Boolean>; const process_name: string; const process_id: Cardinal);
+var
+    info: TncProcessInfo;
+begin
+    if (process_id = 0) or seen.ContainsKey(process_id) then
+    begin
+        Exit;
+    end;
+
+    info.pid := process_id;
+    info.name := Trim(process_name);
+    if info.name = '' then
+    begin
+        info.name := Format('PID %d', [process_id]);
+    end;
+    list.Add(info);
+    seen.Add(process_id, True);
+end;
+
+function get_processes_locking_path(const file_path: string): TArray<TncProcessInfo>;
+var
+    session_handle: DWORD;
+    session_key: array[0..CCH_RM_SESSION_KEY] of WideChar;
+    register_file: PWideChar;
+    register_rc: DWORD;
+    get_list_rc: DWORD;
+    proc_info_needed: UINT;
+    proc_info_count: UINT;
+    reboot_reasons: DWORD;
+    proc_infos: TArray<TRmProcessInfo>;
+    idx: Integer;
+    app_name: string;
+    list: TList<TncProcessInfo>;
+    seen: TDictionary<Cardinal, Boolean>;
+begin
+    list := TList<TncProcessInfo>.Create;
+    seen := TDictionary<Cardinal, Boolean>.Create;
+    try
+        if (file_path = '') or (not FileExists(file_path)) then
+        begin
+            Exit(list.ToArray);
+        end;
+
+        FillChar(session_key, SizeOf(session_key), 0);
+        session_handle := 0;
+        if RmStartSession(session_handle, 0, @session_key[0]) <> 0 then
+        begin
+            Exit(list.ToArray);
+        end;
+        try
+            register_file := PWideChar(file_path);
+            register_rc := RmRegisterResources(session_handle, 1, @register_file, 0, nil, 0, nil);
+            if register_rc <> 0 then
+            begin
+                Exit(list.ToArray);
+            end;
+
+            proc_info_needed := 0;
+            proc_info_count := 0;
+            reboot_reasons := 0;
+            get_list_rc := RmGetList(session_handle, proc_info_needed, proc_info_count, nil, reboot_reasons);
+            if (get_list_rc = 0) and (proc_info_needed = 0) then
+            begin
+                Exit(list.ToArray);
+            end;
+            if (get_list_rc <> ERROR_MORE_DATA) and (proc_info_needed = 0) then
+            begin
+                Exit(list.ToArray);
+            end;
+
+            SetLength(proc_infos, proc_info_needed);
+            proc_info_count := proc_info_needed;
+            reboot_reasons := 0;
+            get_list_rc := RmGetList(session_handle, proc_info_needed, proc_info_count, @proc_infos[0], reboot_reasons);
+            if get_list_rc <> 0 then
+            begin
+                Exit(list.ToArray);
+            end;
+
+            for idx := 0 to Integer(proc_info_count) - 1 do
+            begin
+                app_name := get_process_name_by_pid(proc_infos[idx].Process.dwProcessId);
+                if app_name = '' then
+                begin
+                    app_name := Trim(string(PWideChar(@proc_infos[idx].strAppName[0])));
+                end;
+                add_process_info_if_missing(list, seen, app_name, proc_infos[idx].Process.dwProcessId);
+            end;
+        finally
+            RmEndSession(session_handle);
+        end;
+
+        Result := list.ToArray;
+    finally
+        seen.Free;
+        list.Free;
+    end;
+end;
+
 function get_processes_using_dll(const dll_name: string): TArray<TncProcessInfo>;
 var
     output_text: string;
@@ -762,6 +926,235 @@ begin
     finally
         processes.Free;
         dll_names.Free;
+    end;
+end;
+
+function get_force_stop_target_files(const runtime_dir: string; const data_dir: string): TArray<string>;
+var
+    files: TList<string>;
+begin
+    files := TList<string>.Create;
+    try
+        if runtime_dir <> '' then
+        begin
+            files.Add(TPath.Combine(runtime_dir, 'cassotis_ime_svr.dll'));
+            files.Add(TPath.Combine(runtime_dir, 'cassotis_ime_svr32.dll'));
+        end;
+        if data_dir <> '' then
+        begin
+            files.Add(TPath.Combine(data_dir, 'dict_sc.db'));
+            files.Add(TPath.Combine(data_dir, 'dict_tc.db'));
+        end;
+        Result := files.ToArray;
+    finally
+        files.Free;
+    end;
+end;
+
+function collect_force_stop_targets(const runtime_dir: string; const data_dir: string): TArray<TncProcessInfo>;
+var
+    list: TList<TncProcessInfo>;
+    seen: TDictionary<Cardinal, Boolean>;
+    processes: TArray<TncProcessInfo>;
+    files: TArray<string>;
+    idx: Integer;
+    proc_idx: Integer;
+    file_name: string;
+    current_pid: Cardinal;
+begin
+    list := TList<TncProcessInfo>.Create;
+    seen := TDictionary<Cardinal, Boolean>.Create;
+    try
+        current_pid := GetCurrentProcessId;
+
+        processes := enumerate_processes_by_name('ctfmon');
+        for proc_idx := 0 to High(processes) do
+        begin
+            if processes[proc_idx].pid <> current_pid then
+            begin
+                add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
+            end;
+        end;
+        processes := enumerate_processes_by_name('cassotis_ime_host');
+        for proc_idx := 0 to High(processes) do
+        begin
+            if processes[proc_idx].pid <> current_pid then
+            begin
+                add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
+            end;
+        end;
+        processes := enumerate_processes_by_name('cassotis_ime_tray_host');
+        for proc_idx := 0 to High(processes) do
+        begin
+            if processes[proc_idx].pid <> current_pid then
+            begin
+                add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
+            end;
+        end;
+
+        files := get_force_stop_target_files(runtime_dir, data_dir);
+        for idx := 0 to High(files) do
+        begin
+            file_name := ExtractFileName(files[idx]);
+            if SameText(file_name, 'cassotis_ime_svr.dll') or SameText(file_name, 'cassotis_ime_svr32.dll') then
+            begin
+                processes := get_processes_using_dll(file_name);
+                for proc_idx := 0 to High(processes) do
+                begin
+                    if processes[proc_idx].pid <> current_pid then
+                    begin
+                        add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
+                    end;
+                end;
+            end;
+
+            processes := get_processes_locking_path(files[idx]);
+            for proc_idx := 0 to High(processes) do
+            begin
+                if processes[proc_idx].pid <> current_pid then
+                begin
+                    add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
+                end;
+            end;
+        end;
+
+        Result := list.ToArray;
+    finally
+        seen.Free;
+        list.Free;
+    end;
+end;
+
+procedure sort_process_infos_by_pid(var processes: TArray<TncProcessInfo>);
+begin
+    TArray.Sort<TncProcessInfo>(processes,
+        TComparer<TncProcessInfo>.Construct(
+            function(const Left, Right: TncProcessInfo): Integer
+            begin
+                if Left.pid < Right.pid then
+                begin
+                    Result := -1;
+                end
+                else if Left.pid > Right.pid then
+                begin
+                    Result := 1;
+                end
+                else
+                begin
+                    Result := 0;
+                end;
+            end
+        )
+    );
+end;
+
+function format_force_stop_target_lines(const processes: TArray<TncProcessInfo>): TArray<string>;
+var
+    lines: TArray<string>;
+    idx: Integer;
+begin
+    SetLength(lines, Length(processes));
+    for idx := 0 to High(processes) do
+    begin
+        lines[idx] := Format('%s (PID %d)', [processes[idx].name, processes[idx].pid]);
+    end;
+    Result := lines;
+end;
+
+function write_force_stop_target_lines(const output_path: string; const lines: TArray<string>): Boolean;
+var
+    text: TStringList;
+    idx: Integer;
+begin
+    if output_path = '' then
+    begin
+        Exit(True);
+    end;
+
+    if ExtractFileDir(output_path) <> '' then
+    begin
+        ForceDirectories(ExtractFileDir(output_path));
+    end;
+    text := TStringList.Create;
+    try
+        for idx := 0 to High(lines) do
+        begin
+            text.Add(lines[idx]);
+        end;
+        text.SaveToFile(output_path, TEncoding.UTF8);
+        Result := True;
+    finally
+        text.Free;
+    end;
+end;
+
+function run_list_force_stop_targets_action: Boolean;
+var
+    runtime_dir: string;
+    data_dir: string;
+    output_path: string;
+    processes: TArray<TncProcessInfo>;
+    lines: TArray<string>;
+    idx: Integer;
+begin
+    runtime_dir := '';
+    data_dir := '';
+    output_path := '';
+    get_param_value('runtime_dir', runtime_dir);
+    get_param_value('data_dir', data_dir);
+    get_param_value('output_path', output_path);
+
+    processes := collect_force_stop_targets(runtime_dir, data_dir);
+    sort_process_infos_by_pid(processes);
+    lines := format_force_stop_target_lines(processes);
+    Result := write_force_stop_target_lines(output_path, lines);
+    for idx := 0 to High(lines) do
+    begin
+        Writeln(lines[idx]);
+    end;
+end;
+
+function run_force_stop_runtime_action: Boolean;
+var
+    runtime_dir: string;
+    data_dir: string;
+    output_path: string;
+    processes: TArray<TncProcessInfo>;
+    remaining: TArray<TncProcessInfo>;
+    lines: TArray<string>;
+    idx: Integer;
+begin
+    runtime_dir := '';
+    data_dir := '';
+    output_path := '';
+    get_param_value('runtime_dir', runtime_dir);
+    get_param_value('data_dir', data_dir);
+    get_param_value('output_path', output_path);
+
+    processes := collect_force_stop_targets(runtime_dir, data_dir);
+    sort_process_infos_by_pid(processes);
+    lines := format_force_stop_target_lines(processes);
+    Result := True;
+    Result := write_force_stop_target_lines(output_path, lines) and Result;
+    for idx := 0 to High(processes) do
+    begin
+        if not terminate_process_id(processes[idx].pid) then
+        begin
+            Result := False;
+        end;
+    end;
+
+    Sleep(500);
+
+    remaining := collect_force_stop_targets(runtime_dir, data_dir);
+    sort_process_infos_by_pid(remaining);
+    if Length(remaining) > 0 then
+    begin
+        Result := False;
+        for idx := 0 to High(remaining) do
+        begin
+            Writeln(Format('Still running: %s (PID %d)', [remaining[idx].name, remaining[idx].pid]));
+        end;
     end;
 end;
 
@@ -1590,6 +1983,18 @@ begin
     if action = 'stop' then
     begin
         Result := run_stop_action;
+        Exit;
+    end;
+
+    if action = 'list_force_stop_targets' then
+    begin
+        Result := run_list_force_stop_targets_action;
+        Exit;
+    end;
+
+    if action = 'force_stop_runtime' then
+    begin
+        Result := run_force_stop_runtime_action;
         Exit;
     end;
 

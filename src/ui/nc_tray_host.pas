@@ -13,6 +13,7 @@ uses
     Winapi.Windows,
     Winapi.Messages,
     Winapi.MultiMon,
+    Winapi.ActiveX,
     Winapi.GDIPAPI,
     Winapi.GDIPOBJ,
     Vcl.Forms,
@@ -32,6 +33,8 @@ const
     WM_NC_ACTIVE_STATE_CHANGED = WM_APP + 101;
     WM_NC_INACTIVE_STATE_CHANGED = WM_APP + 102;
     WM_NC_OPEN_SETTINGS = WM_APP + 103;
+    WM_NC_STATUS_FORM_METRICS_CHANGED = WM_APP + 104;
+    c_status_logo_mark_resource_name = 'YANQUAN_MARK_PNG';
 
 type
     TncTrayHost = class;
@@ -39,6 +42,8 @@ type
     TncStatusForm = class(TForm)
     protected
         procedure CreateParams(var Params: TCreateParams); override;
+        procedure WMDpiChanged(var Message: TMessage); message WM_DPICHANGED;
+        procedure WMWindowPosChanged(var Message: TMessage); message WM_WINDOWPOSCHANGED;
     end;
 
     TncTrayHost = class(TForm)
@@ -105,10 +110,14 @@ type
         m_active_state_shutdown: Boolean;
         m_product_display_name: string;
         m_product_version: string;
+        m_status_metrics_refresh_pending: Boolean;
         function create_mode_icon(const text: string; const background_color: TColor): TIcon;
+        function create_status_logo_bitmap_from_icon(const icon: TIcon; const target_size: Integer): TGPBitmap;
+        function create_status_logo_bitmap_from_resource(const resource_name: string; const target_size: Integer): TGPBitmap;
         function status_point_in_control(const control: TControl; const screen_point: TPoint): Boolean;
         function get_version_menu_caption: string;
         function get_status_logo_hint: string;
+        procedure rebuild_status_logo_bitmap;
         procedure load_runtime_identity;
         procedure status_logo_paint(Sender: TObject);
         procedure status_punct_paint(Sender: TObject);
@@ -125,6 +134,7 @@ type
         procedure save_status_widget_state;
         procedure update_status_widget;
         procedure refresh_status_widget_frame;
+        procedure queue_status_widget_metrics_refresh;
         procedure enforce_status_form_toolwindow_style;
         procedure apply_status_widget_visibility;
         procedure refresh_state_from_host;
@@ -162,6 +172,7 @@ type
         procedure WMNcActiveStateChanged(var Message: TMessage); message WM_NC_ACTIVE_STATE_CHANGED;
         procedure WMNcInactiveStateChanged(var Message: TMessage); message WM_NC_INACTIVE_STATE_CHANGED;
         procedure WMNcOpenSettings(var Message: TMessage); message WM_NC_OPEN_SETTINGS;
+        procedure WMNcStatusFormMetricsChanged(var Message: TMessage); message WM_NC_STATUS_FORM_METRICS_CHANGED;
         procedure WMEnterMenuLoop(var Message: TMessage); message WM_ENTERMENULOOP;
         procedure WMExitMenuLoop(var Message: TMessage); message WM_EXITMENULOOP;
     protected
@@ -426,6 +437,24 @@ begin
     end;
 end;
 
+procedure TncStatusForm.WMDpiChanged(var Message: TMessage);
+begin
+    inherited;
+    if Owner is TncTrayHost then
+    begin
+        TncTrayHost(Owner).queue_status_widget_metrics_refresh;
+    end;
+end;
+
+procedure TncStatusForm.WMWindowPosChanged(var Message: TMessage);
+begin
+    inherited;
+    if Owner is TncTrayHost then
+    begin
+        TncTrayHost(Owner).queue_status_widget_metrics_refresh;
+    end;
+end;
+
 procedure TncTrayHost.CreateParams(var Params: TCreateParams);
 begin
     inherited;
@@ -484,6 +513,7 @@ begin
     m_last_profile_inactive_tick := 0;
     m_menu_popup_active := False;
     m_status_scaled_dpi := 96;
+    m_status_metrics_refresh_pending := False;
     m_active_state_event := TEvent.Create(nil, False, False, get_nc_active_event);
     m_inactive_state_event := TEvent.Create(nil, False, False, get_nc_inactive_event);
     m_active_state_thread := nil;
@@ -526,6 +556,154 @@ begin
     begin
         Result := Result + sLineBreak + '版本：' + m_product_version;
     end;
+end;
+
+function TncTrayHost.create_status_logo_bitmap_from_icon(const icon: TIcon; const target_size: Integer): TGPBitmap;
+var
+    bitmap_size: Integer;
+    graphics: TGPGraphics;
+    hdc: THandle;
+begin
+    Result := nil;
+    if (icon = nil) or icon.Empty or (icon.Handle = 0) then
+    begin
+        Exit;
+    end;
+
+    bitmap_size := target_size;
+    if bitmap_size < 1 then
+    begin
+        bitmap_size := icon.Width;
+        if icon.Height > bitmap_size then
+        begin
+            bitmap_size := icon.Height;
+        end;
+    end;
+    if bitmap_size < 16 then
+    begin
+        bitmap_size := 16;
+    end;
+
+    Result := TGPBitmap.Create(bitmap_size, bitmap_size, PixelFormat32bppPARGB);
+    graphics := TGPGraphics.Create(Result);
+    try
+        graphics.Clear(MakeColor(0, 0, 0, 0));
+        hdc := graphics.GetHDC;
+        try
+            DrawIconEx(
+                hdc,
+                0,
+                0,
+                icon.Handle,
+                bitmap_size,
+                bitmap_size,
+                0,
+                0,
+                DI_NORMAL
+            );
+        finally
+            graphics.ReleaseHDC(hdc);
+        end;
+    except
+        graphics.Free;
+        Result.Free;
+        Result := nil;
+        Exit;
+    end;
+    graphics.Free;
+end;
+
+function TncTrayHost.create_status_logo_bitmap_from_resource(const resource_name: string;
+    const target_size: Integer): TGPBitmap;
+var
+    resource_stream: TResourceStream;
+    resource_adapter: IStream;
+    source_bitmap: TGPBitmap;
+    graphics: TGPGraphics;
+    bitmap_size: Integer;
+begin
+    Result := nil;
+    if Trim(resource_name) = '' then
+    begin
+        Exit;
+    end;
+
+    bitmap_size := target_size;
+    if bitmap_size < 16 then
+    begin
+        bitmap_size := 16;
+    end;
+
+    resource_stream := nil;
+    resource_adapter := nil;
+    source_bitmap := nil;
+    try
+        resource_stream := TResourceStream.Create(HInstance, resource_name, RT_RCDATA);
+        resource_adapter := TStreamAdapter.Create(resource_stream, soReference) as IStream;
+        source_bitmap := TGPBitmap.Create(resource_adapter);
+        Result := TGPBitmap.Create(bitmap_size, bitmap_size, PixelFormat32bppPARGB);
+        graphics := TGPGraphics.Create(Result);
+        try
+            graphics.Clear(MakeColor(0, 0, 0, 0));
+            graphics.SetCompositingQuality(CompositingQualityHighQuality);
+            graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+            graphics.SetSmoothingMode(SmoothingModeHighQuality);
+            graphics.DrawImage(source_bitmap, 0, 0, bitmap_size, bitmap_size);
+        finally
+            graphics.Free;
+        end;
+    except
+        if Result <> nil then
+        begin
+            Result.Free;
+            Result := nil;
+        end;
+    end;
+    if source_bitmap <> nil then
+    begin
+        source_bitmap.Free;
+    end;
+    resource_adapter := nil;
+    if resource_stream <> nil then
+    begin
+        resource_stream.Free;
+    end;
+end;
+
+procedure TncTrayHost.rebuild_status_logo_bitmap;
+var
+    target_size: Integer;
+begin
+    if m_status_logo_bitmap <> nil then
+    begin
+        m_status_logo_bitmap.Free;
+        m_status_logo_bitmap := nil;
+    end;
+
+    if m_status_logo = nil then
+    begin
+        Exit;
+    end;
+
+    target_size := m_status_logo.Width - 2;
+    if m_status_logo.Height - 2 < target_size then
+    begin
+        target_size := m_status_logo.Height - 2;
+    end;
+    if target_size < 16 then
+    begin
+        target_size := 16;
+    end;
+
+    m_status_logo_bitmap := create_status_logo_bitmap_from_resource(c_status_logo_mark_resource_name, target_size);
+
+    if (m_status_logo_bitmap = nil) and (m_status_logo_icon <> nil) and
+        (not m_status_logo_icon.Empty) and (m_status_logo_icon.Handle <> 0) then
+    begin
+        m_status_logo_bitmap := create_status_logo_bitmap_from_icon(m_status_logo_icon, target_size);
+    end;
+
 end;
 
 destructor TncTrayHost.Destroy;
@@ -591,6 +769,38 @@ begin
     draw_rect := paint_box.ClientRect;
     InflateRect(draw_rect, -1, -1);
 
+    if m_status_logo_bitmap = nil then
+    begin
+        rebuild_status_logo_bitmap;
+    end;
+
+    if m_status_logo_bitmap <> nil then
+    begin
+        icon_width := m_status_logo_bitmap.GetWidth;
+        icon_height := m_status_logo_bitmap.GetHeight;
+        if icon_width > (draw_rect.Right - draw_rect.Left) then
+        begin
+            icon_width := draw_rect.Right - draw_rect.Left;
+        end;
+        if icon_height > (draw_rect.Bottom - draw_rect.Top) then
+        begin
+            icon_height := draw_rect.Bottom - draw_rect.Top;
+        end;
+        draw_rect.Left := draw_rect.Left + (((draw_rect.Right - draw_rect.Left) - icon_width) div 2);
+        draw_rect.Top := draw_rect.Top + (((draw_rect.Bottom - draw_rect.Top) - icon_height) div 2);
+        graphics := TGPGraphics.Create(paint_box.Canvas.Handle);
+        try
+            graphics.SetCompositingQuality(CompositingQualityHighQuality);
+            graphics.SetInterpolationMode(InterpolationModeNearestNeighbor);
+            graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
+            graphics.SetSmoothingMode(SmoothingModeHighQuality);
+            graphics.DrawImage(m_status_logo_bitmap, draw_rect.Left, draw_rect.Top, icon_width, icon_height);
+        finally
+            graphics.Free;
+        end;
+        Exit;
+    end;
+
     if (m_status_logo_icon <> nil) and (not m_status_logo_icon.Empty) and (m_status_logo_icon.Handle <> 0) then
     begin
         icon_width := draw_rect.Right - draw_rect.Left;
@@ -614,24 +824,6 @@ begin
             0,
             DI_NORMAL
         );
-        Exit;
-    end;
-
-    if m_status_logo_bitmap = nil then
-    begin
-        Exit;
-    end;
-
-    graphics := TGPGraphics.Create(paint_box.Canvas.Handle);
-    try
-        graphics.SetCompositingQuality(CompositingQualityHighQuality);
-        graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-        graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-        graphics.SetSmoothingMode(SmoothingModeHighQuality);
-        graphics.DrawImage(m_status_logo_bitmap, draw_rect.Left, draw_rect.Top,
-            draw_rect.Right - draw_rect.Left, draw_rect.Bottom - draw_rect.Top);
-    finally
-        graphics.Free;
     end;
 end;
 
@@ -994,7 +1186,6 @@ end;
 procedure TncTrayHost.configure_status_widget;
 var
     divider: TBevel;
-    icon_path: string;
 begin
     m_status_form := TncStatusForm.CreateNew(Self);
     m_status_form.BorderStyle := bsNone;
@@ -1035,32 +1226,16 @@ begin
     m_status_logo.ShowHint := False;
     m_status_logo.Hint := get_status_logo_hint;
     m_status_logo.OnPaint := status_logo_paint;
-    icon_path := TPath.GetFullPath(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)),
-        '..\cassotis_ime_yanquan.ico'));
-    if FileExists(icon_path) then
+    if (Application <> nil) and (Application.Icon <> nil) and (not Application.Icon.Empty) and
+        (Application.Icon.Handle <> 0) then
     begin
-        try
-            m_status_logo_icon.LoadFromFile(icon_path);
-        except
-            m_status_logo_icon.Handle := 0;
-        end;
-        if (m_status_logo_icon = nil) or m_status_logo_icon.Empty or (m_status_logo_icon.Handle = 0) then
-        begin
-            m_status_logo_bitmap := TGPBitmap.Create(icon_path);
-        end;
+        m_status_logo_icon.Assign(Application.Icon);
     end
     else if (m_tray_icon <> nil) and (m_tray_icon.Icon <> nil) then
     begin
         m_status_logo_icon.Assign(m_tray_icon.Icon);
-        if (m_status_logo_icon <> nil) and (not m_status_logo_icon.Empty) and (m_status_logo_icon.Handle <> 0) then
-        begin
-            // Prefer native icon drawing to preserve alpha on older shell/GDI paths.
-        end
-        else if not m_status_logo_icon.Empty then
-        begin
-            m_status_logo_bitmap := TGPBitmap.Create(m_status_logo_icon.Handle);
-        end;
     end;
+    rebuild_status_logo_bitmap;
 
     m_status_label_mode := TLabel.Create(m_status_panel);
     m_status_label_mode.Parent := m_status_panel;
@@ -1499,6 +1674,29 @@ begin
             m_status_label_punct.Invalidate;
         end;
     end;
+
+    rebuild_status_logo_bitmap;
+    if m_status_logo <> nil then
+    begin
+        m_status_logo.Invalidate;
+    end;
+end;
+
+procedure TncTrayHost.queue_status_widget_metrics_refresh;
+begin
+    if m_status_form = nil then
+    begin
+        Exit;
+    end;
+
+    HandleNeeded;
+    if m_status_metrics_refresh_pending then
+    begin
+        Exit;
+    end;
+
+    m_status_metrics_refresh_pending := True;
+    PostMessage(Handle, WM_NC_STATUS_FORM_METRICS_CHANGED, 0, 0);
 end;
 
 procedure TncTrayHost.enforce_status_form_toolwindow_style;
@@ -1800,6 +1998,18 @@ begin
         m_last_state_poll_tick := 0;
         refresh_state_from_host;
     end;
+    Message.Result := 0;
+end;
+
+procedure TncTrayHost.WMNcStatusFormMetricsChanged(var Message: TMessage);
+begin
+    m_status_metrics_refresh_pending := False;
+    if m_status_form <> nil then
+    begin
+        refresh_status_widget_frame;
+        sync_status_widget_origin_from_window;
+    end;
+    m_last_style_refresh_tick := GetTickCount64;
     Message.Result := 0;
 end;
 

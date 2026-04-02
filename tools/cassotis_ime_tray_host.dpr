@@ -11,6 +11,7 @@ uses
   nc_types in '..\src\common\nc_types.pas';
 
 {$R 'cassotis_ime_tray_host.res'}
+{$R 'cassotis_ime_tray_host_mark.res'}
 
 var
     tray_host: TncTrayHost;
