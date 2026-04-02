@@ -44,7 +44,6 @@ The project focus is:
 - `tools/` utility projects and helper executables
 - `data/` schema and sample dictionary import data
 - `out/` scripts for build/register/rebuild/test
-- `tests/` unit/perf test projects
 - `third_party/` vendored third-party binaries/sources (for example sqlite runtime package files)
 
 ## Key Binaries
