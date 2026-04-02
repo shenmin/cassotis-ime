@@ -115,6 +115,7 @@ type
         m_last_three_syllable_head_path_bonus: Integer;
         m_last_three_syllable_tail_path_bonus: Integer;
         m_last_three_syllable_partial_debug_info: string;
+        m_last_full_path_debug_info: string;
         m_last_lookup_debug_extra: string;
         m_last_lookup_timing_info: string;
         m_last_ranked_query_key: string;
@@ -303,6 +304,7 @@ type
         source: TncCandidateSource;
         has_multi_segment: Boolean;
         prev_text: string;
+        prev_pinyin_text: string;
         prev_prev_text: string;
         path_text: string;
     end;
@@ -325,6 +327,8 @@ const
     c_session_query_path_history_limit = 384;
     c_session_ranked_query_path_history_limit = 192;
     c_session_context_query_history_limit = 384;
+    c_long_sentence_full_path_min_syllables = 5;
+    c_long_sentence_head_only_bypass_min_syllables = 8;
     c_full_width_offset = $FEE0;
     c_segment_surname_bonus = 110;
     c_session_query_path_separator = #4;
@@ -429,6 +433,7 @@ begin
     m_last_three_syllable_head_path_bonus := 0;
     m_last_three_syllable_tail_path_bonus := 0;
     m_last_three_syllable_partial_debug_info := '';
+    m_last_full_path_debug_info := '';
     m_last_lookup_debug_extra := '';
     m_last_lookup_timing_info := '';
     m_last_ranked_query_key := '';
@@ -1322,6 +1327,7 @@ begin
     m_last_three_syllable_head_path_bonus := 0;
     m_last_three_syllable_tail_path_bonus := 0;
     m_last_three_syllable_partial_debug_info := '';
+    m_last_full_path_debug_info := '';
     m_last_lookup_debug_extra := '';
     m_last_lookup_timing_info := '';
     m_last_ranked_query_key := '';
@@ -1988,6 +1994,94 @@ var
         end;
     end;
 
+    procedure sort_candidates_lightweight(var candidates: TncCandidateList);
+    var
+        left_idx: Integer;
+        right_idx: Integer;
+        left_units: Integer;
+        right_units: Integer;
+        left_score: Integer;
+        right_score: Integer;
+        tmp: TncCandidate;
+
+        function get_lightweight_rank(const candidate: TncCandidate;
+            const text_units: Integer): Integer;
+        begin
+            Result := candidate.score;
+            if candidate.source = cs_user then
+            begin
+                Inc(Result, 1200);
+            end;
+            if candidate.comment = '' then
+            begin
+                Inc(Result, 320);
+                if (input_syllable_count >= 4) and (text_units = input_syllable_count) then
+                begin
+                    Inc(Result, 1400);
+                end
+                else if text_units >= 2 then
+                begin
+                    Inc(Result, 220);
+                end;
+            end
+            else if text_units >= 2 then
+            begin
+                Inc(Result, 80);
+            end;
+
+            if candidate.has_dict_weight then
+            begin
+                Inc(Result, Min(360, candidate.dict_weight div 3));
+            end;
+        end;
+    begin
+        if Length(candidates) <= 1 then
+        begin
+            Exit;
+        end;
+
+        for left_idx := 0 to High(candidates) - 1 do
+        begin
+            left_units := get_candidate_text_unit_count(Trim(candidates[left_idx].text));
+            left_score := get_lightweight_rank(candidates[left_idx], left_units);
+            for right_idx := left_idx + 1 to High(candidates) do
+            begin
+                right_units := get_candidate_text_unit_count(Trim(candidates[right_idx].text));
+                right_score := get_lightweight_rank(candidates[right_idx], right_units);
+                if right_score > left_score then
+                begin
+                    tmp := candidates[left_idx];
+                    candidates[left_idx] := candidates[right_idx];
+                    candidates[right_idx] := tmp;
+                    left_units := right_units;
+                    left_score := right_score;
+                    Continue;
+                end;
+
+                if right_score = left_score then
+                begin
+                    if right_units > left_units then
+                    begin
+                        tmp := candidates[left_idx];
+                        candidates[left_idx] := candidates[right_idx];
+                        candidates[right_idx] := tmp;
+                        left_units := right_units;
+                        Continue;
+                    end;
+
+                    if (right_units = left_units) and
+                        (CompareText(candidates[right_idx].text, candidates[left_idx].text) < 0) then
+                    begin
+                        tmp := candidates[left_idx];
+                        candidates[left_idx] := candidates[right_idx];
+                        candidates[right_idx] := tmp;
+                        Continue;
+                    end;
+                end;
+            end;
+        end;
+    end;
+
     procedure filter_short_dictionary_hits_for_explicit_apostrophe(var candidates: TncCandidateList;
         const min_char_count: Integer);
     var
@@ -2339,6 +2433,7 @@ var
         idx: Integer;
         out_idx: Integer;
         candidate_text_units: Integer;
+        segment_path: string;
     begin
         if (input_syllable_count < 2) or
             (not c_suppress_nonlexicon_complete_long_candidates) then
@@ -2369,8 +2464,33 @@ var
                 Inc(out_idx);
                 Continue;
             end;
+
+            if input_syllable_count >= c_long_sentence_full_path_min_syllables then
+            begin
+                segment_path := get_segment_path_for_candidate(candidates[idx]);
+                if (get_encoded_path_segment_count_local(segment_path) > 1) and
+                    (not is_runtime_chain_candidate(candidates[idx])) and
+                    (not is_runtime_common_pattern_candidate(candidates[idx])) and
+                    (not is_runtime_redup_candidate(candidates[idx])) then
+                begin
+                    if out_idx <> idx then
+                    begin
+                        candidates[out_idx] := candidates[idx];
+                    end;
+                    Inc(out_idx);
+                    Continue;
+                end;
+            end;
         end;
         SetLength(candidates, out_idx);
+    end;
+
+    function should_enable_long_sentence_full_path_search_local: Boolean;
+    begin
+        Result := m_config.enable_segment_candidates and has_multi_syllable_input and
+            (input_syllable_count >= c_long_sentence_full_path_min_syllables) and
+            (not all_initial_compact_query) and
+            (not has_internal_dangling_initial);
     end;
 
     function is_single_initial_token_local(const token_text: string): Boolean;
@@ -2800,6 +2920,36 @@ var
         end;
         Inc(lookup_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
         lookup_cache.AddOrSetValue(pinyin_key, out_results);
+        Result := Length(out_results) > 0;
+    end;
+
+    function dictionary_exact_lookup_cached(const pinyin_key: string;
+        out out_results: TncCandidateList): Boolean;
+    var
+        cache_key: string;
+        phase_start_tick: UInt64;
+    begin
+        SetLength(out_results, 0);
+        if (m_dictionary = nil) or (pinyin_key = '') then
+        begin
+            Exit(False);
+        end;
+
+        cache_key := '#exact#' + pinyin_key;
+        if lookup_cache.TryGetValue(cache_key, out_results) then
+        begin
+            Inc(lookup_cache_hits);
+            Exit(Length(out_results) > 0);
+        end;
+
+        Inc(lookup_cache_misses);
+        phase_start_tick := GetTickCount64;
+        if not m_dictionary.lookup_exact_full_pinyin(pinyin_key, out_results) then
+        begin
+            SetLength(out_results, 0);
+        end;
+        Inc(lookup_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+        lookup_cache.AddOrSetValue(cache_key, out_results);
         Result := Length(out_results) > 0;
     end;
 
@@ -3347,7 +3497,15 @@ var
             Exit;
         end;
 
-        if not dictionary_lookup_cached(pinyin_key, full_lookup_candidates) then
+        input_syllables := get_input_syllable_count_for_text(pinyin_key);
+        if (input_syllables >= 4) and is_full_pinyin_key(pinyin_key) then
+        begin
+            if not dictionary_exact_lookup_cached(pinyin_key, full_lookup_candidates) then
+            begin
+                Exit;
+            end;
+        end
+        else if not dictionary_lookup_cached(pinyin_key, full_lookup_candidates) then
         begin
             Exit;
         end;
@@ -3358,7 +3516,6 @@ var
         end;
 
         clear_candidate_comments(full_lookup_candidates);
-        input_syllables := get_input_syllable_count_for_text(pinyin_key);
         SetLength(filtered, 0);
         non_user_count := 0;
         for idx := 0 to High(full_lookup_candidates) do
@@ -3447,7 +3604,14 @@ var
             Exit;
         end;
 
-        if not dictionary_lookup_cached(pinyin_key, lookup_results) then
+        if is_full_pinyin_key(pinyin_key) then
+        begin
+            if not dictionary_exact_lookup_cached(pinyin_key, lookup_results) then
+            begin
+                Exit;
+            end;
+        end
+        else if not dictionary_lookup_cached(pinyin_key, lookup_results) then
         begin
             Exit;
         end;
@@ -3485,6 +3649,1132 @@ var
 
         clear_candidate_comments(exact_matches);
         candidates := merge_candidate_lists(candidates, exact_matches, 0);
+    end;
+
+    procedure merge_long_sentence_exact_candidates(var candidates: TncCandidateList;
+        const pinyin_key: string);
+    const
+        c_long_sentence_state_limit = 48;
+        c_long_sentence_single_top_n = 1;
+        c_long_sentence_multi_top_n = 3;
+        c_long_sentence_complete_non_user_limit = 4;
+        c_long_sentence_max_segment_len = 3;
+        c_long_sentence_single_penalty = 120;
+        c_long_sentence_multi_bonus = 260;
+        c_long_sentence_completion_bonus = 420;
+        c_long_sentence_continuation_bonus = 40;
+        c_long_sentence_candidate_visible_bonus = 1320;
+        c_long_sentence_top_exact_bonus = 220;
+        c_long_sentence_exact_rank_step = 52;
+        c_long_sentence_bridge_bonus_low = 120;
+        c_long_sentence_bridge_bonus_mid = 220;
+        c_long_sentence_bridge_bonus_high = 340;
+        c_long_sentence_bridge_bonus_top = 520;
+        c_long_sentence_phrase_query_latest_bonus = 420;
+        c_long_sentence_single_query_latest_bonus = 180;
+    var
+        exact_states: TArray<TList<TncSegmentPathState>>;
+        exact_dedup: TArray<TDictionary<string, Integer>>;
+        exact_sorted_states: TArray<TncSegmentPathState>;
+        exact_bridge_bonus_cache: TDictionary<string, Integer>;
+        exact_syllables: TncPinyinParseResult;
+        seed_prev_prev_text: string;
+        seed_prev_text: string;
+        exact_state: TncSegmentPathState;
+        exact_new_state: TncSegmentPathState;
+        exact_existing_state: TncSegmentPathState;
+        exact_lookup_results: TncCandidateList;
+        exact_matches: TncCandidateList;
+        exact_candidate: TncCandidate;
+        exact_segment_text: string;
+        exact_candidate_text: string;
+        exact_key: string;
+        exact_state_pos: Integer;
+        exact_segment_len: Integer;
+        exact_next_pos: Integer;
+        exact_state_index: Integer;
+        exact_candidate_index: Integer;
+        exact_existing_state_index: Integer;
+        exact_keep_count: Integer;
+        exact_non_user_added: Integer;
+        exact_candidate_limit: Integer;
+        exact_units: Integer;
+        exact_segment_count: Integer;
+        exact_multi_char_segment_count: Integer;
+        exact_effective_weight: Integer;
+        exact_transition_bonus: Integer;
+        exact_pair_bonus: Integer;
+        exact_bridge_bonus: Integer;
+        exact_rank_bonus: Integer;
+        exact_path_bonus: Integer;
+        exact_path_confidence: Integer;
+        exact_idx: Integer;
+        exact_debug_path: string;
+        exact_is_preferred: Boolean;
+
+        function merge_source_rank(const left: TncCandidateSource;
+            const right: TncCandidateSource): TncCandidateSource;
+        begin
+            if (left = cs_user) or (right = cs_user) then
+            begin
+                Result := cs_user;
+            end
+            else
+            begin
+                Result := cs_rule;
+            end;
+        end;
+
+        function build_state_key(const value: TncSegmentPathState): string;
+        begin
+            Result := LowerCase(Trim(value.text)) + #1 + LowerCase(Trim(value.prev_text)) +
+                #1 + LowerCase(Trim(value.prev_pinyin_text)) + #1 +
+                LowerCase(Trim(value.prev_prev_text)) + #1 +
+                IntToStr(Ord(value.has_multi_segment));
+        end;
+
+        function get_encoded_path_segment_count_local(const encoded_path: string): Integer;
+        var
+            local_idx: Integer;
+        begin
+            Result := 0;
+            if Trim(encoded_path) = '' then
+            begin
+                Exit;
+            end;
+
+            Result := 1;
+            for local_idx := 1 to Length(encoded_path) do
+            begin
+                if encoded_path[local_idx] = c_segment_path_separator then
+                begin
+                    Inc(Result);
+                end;
+            end;
+        end;
+
+        function get_multi_char_segment_count(const encoded_path: string): Integer;
+        var
+            segment_parts: TArray<string>;
+            part: string;
+        begin
+            Result := 0;
+            if Trim(encoded_path) = '' then
+            begin
+                Exit;
+            end;
+
+            segment_parts := encoded_path.Split([c_segment_path_separator]);
+            for part in segment_parts do
+            begin
+                if get_candidate_text_unit_count(Trim(part)) >= 2 then
+                begin
+                    Inc(Result);
+                end;
+            end;
+        end;
+
+        function is_long_sentence_allowed_single_char_text_local(const value: string): Boolean;
+        begin
+            Result := (value = '我') or (value = '你') or (value = '他') or (value = '她') or
+                (value = '它') or (value = '们') or (value = '和') or (value = '跟') or
+                (value = '与') or (value = '同') or (value = '去') or (value = '来') or
+                (value = '在') or (value = '是') or (value = '有') or (value = '要') or
+                (value = '想') or (value = '会') or (value = '能') or (value = '把') or
+                (value = '被') or (value = '让') or (value = '给') or (value = '向') or
+                (value = '到') or (value = '对') or (value = '从') or (value = '比') or
+                (value = '就') or (value = '还') or (value = '再') or (value = '也') or
+                (value = '都') or (value = '很') or (value = '不') or (value = '的') or
+                (value = '了') or (value = '着') or (value = '过') or (value = '将') or
+                (value = '为') or (value = '于') or (value = '中');
+        end;
+
+        function is_long_sentence_allowed_single_char_text_codepoint_local(
+            const value: string): Boolean;
+        begin
+            Result := False;
+            if Length(value) <> 1 then
+            begin
+                Exit;
+            end;
+
+            case Ord(value[1]) of
+                $6211, $4F60, $4ED6, $5979, $5B83, $548C, $53BB, $6765, $5728,
+                $662F, $6709, $8981, $60F3, $4F1A, $80FD, $628A, $88AB, $8BA9,
+                $7ED9, $5411, $5BF9, $4E8E, $8DDF, $540C, $4ECE, $4E0E, $5C31,
+                $4E5F, $90FD, $8FD8, $53C8, $518D, $4E0D, $5F88, $592A, $6700,
+                $5DF2, $5C06, $5230, $7740, $8FC7, $4E86:
+                    Result := True;
+            end;
+        end;
+
+        function get_candidate_effective_weight_local(const local_candidate: TncCandidate): Integer;
+        begin
+            Result := local_candidate.score;
+            if Result <= 0 then
+            begin
+                if local_candidate.has_dict_weight then
+                begin
+                    Result := local_candidate.dict_weight;
+                end
+                else
+                begin
+                    Result := 0;
+                end;
+            end
+            else if local_candidate.has_dict_weight then
+            begin
+                Result := Max(Result, local_candidate.dict_weight div 2);
+            end;
+        end;
+
+        function get_exact_phrase_bridge_bonus_local(const left_pinyin: string;
+            const left_text: string; const right_pinyin: string;
+            const right_text: string): Integer;
+        var
+            cache_key: string;
+            combined_pinyin: string;
+            combined_text: string;
+            bridge_results: TncCandidateList;
+            bridge_idx: Integer;
+            bridge_effective_weight: Integer;
+        begin
+            Result := 0;
+            if (Trim(left_pinyin) = '') or (Trim(left_text) = '') or
+                (Trim(right_pinyin) = '') or (Trim(right_text) = '') then
+            begin
+                Exit;
+            end;
+
+            combined_pinyin := normalize_pinyin_text(left_pinyin + right_pinyin);
+            combined_text := Trim(left_text) + Trim(right_text);
+            if (combined_pinyin = '') or (combined_text = '') then
+            begin
+                Exit;
+            end;
+
+            cache_key := combined_pinyin + #1 + combined_text;
+            if (exact_bridge_bonus_cache <> nil) and
+                exact_bridge_bonus_cache.TryGetValue(cache_key, Result) then
+            begin
+                Exit;
+            end;
+
+            if dictionary_exact_lookup_cached(combined_pinyin, bridge_results) then
+            begin
+                for bridge_idx := 0 to High(bridge_results) do
+                begin
+                    if bridge_results[bridge_idx].comment <> '' then
+                    begin
+                        Continue;
+                    end;
+                    if not SameText(Trim(bridge_results[bridge_idx].text), combined_text) then
+                    begin
+                        Continue;
+                    end;
+
+                    if bridge_results[bridge_idx].source = cs_user then
+                    begin
+                        Result := c_long_sentence_bridge_bonus_top;
+                    end
+                    else
+                    begin
+                        bridge_effective_weight := get_candidate_effective_weight_local(
+                            bridge_results[bridge_idx]);
+                        if bridge_effective_weight >= 760 then
+                        begin
+                            Result := c_long_sentence_bridge_bonus_top;
+                        end
+                        else if bridge_effective_weight >= 560 then
+                        begin
+                            Result := c_long_sentence_bridge_bonus_high;
+                        end
+                        else if bridge_effective_weight >= 360 then
+                        begin
+                            Result := c_long_sentence_bridge_bonus_mid;
+                        end
+                        else
+                        begin
+                            Result := c_long_sentence_bridge_bonus_low;
+                        end;
+                    end;
+                    Break;
+                end;
+            end;
+
+            if exact_bridge_bonus_cache <> nil then
+            begin
+                exact_bridge_bonus_cache.AddOrSetValue(cache_key, Result);
+            end;
+        end;
+
+        function get_exact_query_choice_bonus_local(const query_key: string;
+            const candidate_text: string): Integer;
+        const
+            c_single_query_base = 44;
+            c_single_query_step = 34;
+            c_single_query_cap = 176;
+            c_multi_query_base = 96;
+            c_multi_query_step = 56;
+            c_multi_query_cap = 980;
+            c_query_recent_latest = 900;
+            c_query_recent_top = 180;
+            c_query_recent_mid = 96;
+            c_query_recent_tail = 52;
+        var
+            key: string;
+            count: Integer;
+            last_seen_serial: Int64;
+            recent_bonus: Integer;
+            serial_gap: Int64;
+            text_units: Integer;
+        begin
+            Result := 0;
+            key := build_session_query_choice_key(normalize_pinyin_text(query_key), candidate_text);
+            if (key = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            count := 0;
+            last_seen_serial := 0;
+            serial_gap := High(Int64);
+            if (m_session_query_choice_counts <> nil) and
+                m_session_query_choice_counts.TryGetValue(key, count) and (count > 0) then
+            begin
+                if (m_session_query_choice_last_seen <> nil) and
+                    m_session_query_choice_last_seen.TryGetValue(key, last_seen_serial) and
+                    (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+                begin
+                    serial_gap := m_session_commit_serial - last_seen_serial;
+                end;
+
+                recent_bonus := 0;
+                if serial_gap = 0 then
+                begin
+                    recent_bonus := c_query_recent_latest;
+                end
+                else if serial_gap <= 1 then
+                begin
+                    recent_bonus := c_query_recent_top;
+                end
+                else if serial_gap <= 3 then
+                begin
+                    recent_bonus := c_query_recent_mid;
+                end
+                else if serial_gap <= 6 then
+                begin
+                    recent_bonus := c_query_recent_tail;
+                end;
+
+                text_units := get_candidate_text_unit_count(Trim(candidate_text));
+                if text_units <= 1 then
+                begin
+                    Result := c_single_query_base + ((count - 1) * c_single_query_step) +
+                        (recent_bonus div 3);
+                    if count >= 3 then
+                    begin
+                        Inc(Result, 18);
+                    end;
+                    if Result > c_single_query_cap then
+                    begin
+                        Result := c_single_query_cap;
+                    end;
+                end
+                else
+                begin
+                    Result := c_multi_query_base + ((count - 1) * c_multi_query_step) +
+                        recent_bonus;
+                    if (count >= 2) and (serial_gap <= 2) then
+                    begin
+                        Inc(Result, 56);
+                    end;
+                    if (count >= 3) and (serial_gap <= 4) then
+                    begin
+                        Inc(Result, 32);
+                    end;
+                    if Result > c_multi_query_cap then
+                    begin
+                        Result := c_multi_query_cap;
+                    end;
+                end;
+                Exit;
+            end;
+
+            if m_dictionary <> nil then
+            begin
+                Result := m_dictionary.get_query_choice_bonus(normalize_pinyin_text(query_key),
+                    candidate_text);
+            end;
+        end;
+
+        function is_exact_latest_query_choice_local(const query_key: string;
+            const candidate_text: string): Boolean;
+        var
+            latest_text: string;
+            normalized_query: string;
+        begin
+            Result := False;
+            normalized_query := normalize_pinyin_text(query_key);
+            if (normalized_query = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            latest_text := '';
+            if (m_session_query_latest_text <> nil) and
+                m_session_query_latest_text.TryGetValue(normalized_query, latest_text) then
+            begin
+                Result := SameText(Trim(candidate_text), Trim(latest_text));
+                if Result then
+                begin
+                    Exit;
+                end;
+            end;
+
+            if m_dictionary <> nil then
+            begin
+                latest_text := Trim(m_dictionary.get_query_latest_choice_text(normalized_query));
+                Result := SameText(Trim(candidate_text), latest_text);
+            end;
+        end;
+
+        function get_exact_context_pair_bonus(const left_text: string;
+            const candidate_text: string): Integer;
+        const
+            c_segment_pair_context_cap = 520;
+            c_segment_pair_bonus_scale = 75;
+        var
+            pair_key: string;
+            local_bonus: Integer;
+            persistent_bonus: Integer;
+            secondary_bonus: Integer;
+            count: Integer;
+        begin
+            Result := 0;
+            if (left_text = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            local_bonus := 0;
+            persistent_bonus := 0;
+            if m_context_pairs <> nil then
+            begin
+                pair_key := left_text + #1 + candidate_text;
+                if m_context_pairs.TryGetValue(pair_key, count) and (count > 0) then
+                begin
+                    local_bonus := count * c_context_score_bonus;
+                    if local_bonus > c_context_score_bonus_max then
+                    begin
+                        local_bonus := c_context_score_bonus_max;
+                    end;
+                end;
+            end;
+
+            if m_dictionary <> nil then
+            begin
+                persistent_bonus := m_dictionary.get_context_bonus(left_text, candidate_text);
+            end;
+
+            if local_bonus >= persistent_bonus then
+            begin
+                Result := local_bonus;
+                secondary_bonus := persistent_bonus;
+            end
+            else
+            begin
+                Result := persistent_bonus;
+                secondary_bonus := local_bonus;
+            end;
+
+            if secondary_bonus > 0 then
+            begin
+                Inc(Result, secondary_bonus div 2);
+            end;
+            if Result > c_segment_pair_context_cap then
+            begin
+                Result := c_segment_pair_context_cap;
+            end;
+            Result := (Result * c_segment_pair_bonus_scale) div 100;
+        end;
+
+        function get_phrase_trigram_transition_bonus(const prev_prev_text: string;
+            const prev_text: string; const candidate_text: string): Integer;
+        const
+            c_segment_trigram_step = 96;
+            c_segment_trigram_cap = 300;
+            c_segment_trigram_recent_top = 140;
+            c_segment_trigram_recent_mid = 84;
+            c_segment_trigram_recent_tail = 40;
+        var
+            trigram_key: string;
+            trigram_count: Integer;
+            last_seen_serial: Int64;
+            serial_gap: Int64;
+        begin
+            Result := 0;
+            if (prev_prev_text = '') or (prev_text = '') or (candidate_text = '') or
+                (m_phrase_context_pairs = nil) then
+            begin
+                Exit;
+            end;
+
+            trigram_key := prev_prev_text + #2 + prev_text + #1 + candidate_text;
+            if (not m_phrase_context_pairs.TryGetValue(trigram_key, trigram_count)) or
+                (trigram_count <= 0) then
+            begin
+                Exit;
+            end;
+
+            Result := trigram_count * c_segment_trigram_step;
+            if Result > c_segment_trigram_cap then
+            begin
+                Result := c_segment_trigram_cap;
+            end;
+
+            if (m_phrase_context_last_seen <> nil) and
+                m_phrase_context_last_seen.TryGetValue(trigram_key, last_seen_serial) and
+                (last_seen_serial > 0) and (m_session_commit_serial >= last_seen_serial) then
+            begin
+                serial_gap := m_session_commit_serial - last_seen_serial;
+                if serial_gap <= 1 then
+                begin
+                    Inc(Result, c_segment_trigram_recent_top);
+                end
+                else if serial_gap <= 3 then
+                begin
+                    Inc(Result, c_segment_trigram_recent_mid);
+                end
+                else if serial_gap <= 6 then
+                begin
+                    Inc(Result, c_segment_trigram_recent_tail);
+                end;
+            end;
+        end;
+
+        function get_compound_prev_trigram_bonus(const combined_prev_text: string;
+            const candidate_text: string): Integer;
+        var
+            combined_units: TArray<string>;
+            split_idx: Integer;
+            unit_idx: Integer;
+            left_part: string;
+            right_part: string;
+            local_session_bonus: Integer;
+            local_persistent_bonus: Integer;
+            local_secondary_bonus: Integer;
+            local_bonus: Integer;
+        begin
+            Result := 0;
+            if (combined_prev_text = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            combined_units := split_text_units(combined_prev_text);
+            if Length(combined_units) < 2 then
+            begin
+                Exit;
+            end;
+
+            for split_idx := 1 to High(combined_units) do
+            begin
+                left_part := '';
+                for unit_idx := 0 to split_idx - 1 do
+                begin
+                    left_part := left_part + combined_units[unit_idx];
+                end;
+
+                right_part := '';
+                for unit_idx := split_idx to High(combined_units) do
+                begin
+                    right_part := right_part + combined_units[unit_idx];
+                end;
+
+                if (left_part = '') or (right_part = '') then
+                begin
+                    Continue;
+                end;
+
+                local_session_bonus := get_phrase_trigram_transition_bonus(
+                    left_part, right_part, candidate_text);
+                local_persistent_bonus := 0;
+                if m_dictionary <> nil then
+                begin
+                    local_persistent_bonus := m_dictionary.get_context_trigram_bonus(
+                        left_part, right_part, candidate_text);
+                end;
+
+                if local_session_bonus >= local_persistent_bonus then
+                begin
+                    local_bonus := local_session_bonus;
+                    local_secondary_bonus := local_persistent_bonus;
+                end
+                else
+                begin
+                    local_bonus := local_persistent_bonus;
+                    local_secondary_bonus := local_session_bonus;
+                end;
+
+                if local_secondary_bonus > 0 then
+                begin
+                    Inc(local_bonus, local_secondary_bonus div 2);
+                end;
+
+                if local_bonus > Result then
+                begin
+                    Result := local_bonus;
+                end;
+            end;
+        end;
+
+        function get_path_transition_bonus(const prev_prev_text: string;
+            const prev_text: string; const candidate_text: string): Integer;
+        var
+            pair_bonus: Integer;
+            trigram_bonus: Integer;
+            persistent_trigram_bonus: Integer;
+            compound_prev_trigram_bonus: Integer;
+            secondary_bonus: Integer;
+        begin
+            Result := 0;
+            if (prev_text = '') or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            pair_bonus := get_exact_context_pair_bonus(prev_text, candidate_text);
+            trigram_bonus := get_phrase_trigram_transition_bonus(prev_prev_text, prev_text,
+                candidate_text);
+            persistent_trigram_bonus := 0;
+            if (prev_prev_text <> '') and (m_dictionary <> nil) then
+            begin
+                persistent_trigram_bonus := m_dictionary.get_context_trigram_bonus(
+                    prev_prev_text, prev_text, candidate_text);
+            end;
+            compound_prev_trigram_bonus := 0;
+            if prev_prev_text = '' then
+            begin
+                compound_prev_trigram_bonus := get_compound_prev_trigram_bonus(
+                    prev_text, candidate_text);
+            end;
+
+            if trigram_bonus >= persistent_trigram_bonus then
+            begin
+                Result := trigram_bonus;
+                secondary_bonus := persistent_trigram_bonus;
+            end
+            else
+            begin
+                Result := persistent_trigram_bonus;
+                secondary_bonus := trigram_bonus;
+            end;
+
+            if secondary_bonus > 0 then
+            begin
+                Inc(Result, secondary_bonus div 2);
+            end;
+            if compound_prev_trigram_bonus > Result then
+            begin
+                Result := compound_prev_trigram_bonus;
+            end;
+
+            if Result > 0 then
+            begin
+                Inc(Result, pair_bonus div 2);
+            end
+            else
+            begin
+                Result := pair_bonus;
+            end;
+        end;
+
+        function compare_state(const left: TncSegmentPathState; const right: TncSegmentPathState): Integer;
+        var
+            left_segment_count: Integer;
+            right_segment_count: Integer;
+            text_compare: Integer;
+        begin
+            if left.score <> right.score then
+            begin
+                Result := right.score - left.score;
+                Exit;
+            end;
+
+            if left.path_confidence_score <> right.path_confidence_score then
+            begin
+                Result := right.path_confidence_score - left.path_confidence_score;
+                Exit;
+            end;
+
+            left_segment_count := get_encoded_path_segment_count_local(left.path_text);
+            right_segment_count := get_encoded_path_segment_count_local(right.path_text);
+            if left_segment_count <> right_segment_count then
+            begin
+                Result := left_segment_count - right_segment_count;
+                Exit;
+            end;
+
+            if left.source <> right.source then
+            begin
+                if left.source = cs_user then
+                begin
+                    Exit(-1);
+                end;
+                if right.source = cs_user then
+                begin
+                    Exit(1);
+                end;
+            end;
+
+            text_compare := CompareText(left.text, right.text);
+            if text_compare <> 0 then
+            begin
+                Result := text_compare;
+                Exit;
+            end;
+
+            Result := CompareText(left.path_text, right.path_text);
+        end;
+
+        procedure sort_state_array(var values: TArray<TncSegmentPathState>);
+        var
+            left_idx: Integer;
+            right_idx: Integer;
+            temp_state: TncSegmentPathState;
+        begin
+            if Length(values) <= 1 then
+            begin
+                Exit;
+            end;
+
+            for left_idx := 0 to High(values) - 1 do
+            begin
+                for right_idx := left_idx + 1 to High(values) do
+                begin
+                    if compare_state(values[left_idx], values[right_idx]) > 0 then
+                    begin
+                        temp_state := values[left_idx];
+                        values[left_idx] := values[right_idx];
+                        values[right_idx] := temp_state;
+                    end;
+                end;
+            end;
+        end;
+
+        procedure append_exact_state(const position: Integer; const value: TncSegmentPathState);
+        begin
+            exact_key := build_state_key(value);
+            if exact_dedup[position].TryGetValue(exact_key, exact_existing_state_index) then
+            begin
+                if (exact_existing_state_index >= 0) and
+                    (exact_existing_state_index < exact_states[position].Count) then
+                begin
+                    exact_existing_state := exact_states[position][exact_existing_state_index];
+                    if compare_state(value, exact_existing_state) < 0 then
+                    begin
+                        exact_existing_state := value;
+                    end;
+                    exact_existing_state.source := merge_source_rank(
+                        exact_existing_state.source, value.source);
+                    exact_states[position][exact_existing_state_index] := exact_existing_state;
+                end;
+                Exit;
+            end;
+
+            exact_states[position].Add(value);
+            exact_dedup[position].Add(exact_key, exact_states[position].Count - 1);
+        end;
+
+        procedure trim_exact_state(const position: Integer);
+        var
+            idx: Integer;
+        begin
+            if exact_states[position].Count <= c_long_sentence_state_limit then
+            begin
+                Exit;
+            end;
+
+            SetLength(exact_sorted_states, exact_states[position].Count);
+            for idx := 0 to exact_states[position].Count - 1 do
+            begin
+                exact_sorted_states[idx] := exact_states[position][idx];
+            end;
+            sort_state_array(exact_sorted_states);
+            exact_keep_count := c_long_sentence_state_limit;
+
+            exact_states[position].Clear;
+            exact_dedup[position].Clear;
+            for idx := 0 to exact_keep_count - 1 do
+            begin
+                exact_states[position].Add(exact_sorted_states[idx]);
+                exact_dedup[position].Add(build_state_key(exact_sorted_states[idx]), idx);
+            end;
+        end;
+
+    begin
+        if (m_dictionary = nil) or (pinyin_key = '') or
+            (not c_suppress_nonlexicon_complete_long_candidates) or
+            (not is_full_pinyin_key(pinyin_key)) or
+            all_initial_compact_query or has_internal_dangling_initial then
+        begin
+            Exit;
+        end;
+
+        exact_syllables := get_effective_compact_pinyin_syllables(pinyin_key,
+            allow_relaxed_missing_apostrophe);
+        if Length(exact_syllables) < c_long_sentence_head_only_bypass_min_syllables then
+        begin
+            Exit;
+        end;
+
+        exact_bridge_bonus_cache := TDictionary<string, Integer>.Create;
+        SetLength(exact_states, Length(exact_syllables) + 1);
+        SetLength(exact_dedup, Length(exact_syllables) + 1);
+        try
+            for exact_state_pos := 0 to High(exact_states) do
+            begin
+                exact_states[exact_state_pos] := TList<TncSegmentPathState>.Create;
+                exact_dedup[exact_state_pos] := TDictionary<string, Integer>.Create;
+            end;
+
+            exact_state.text := '';
+            exact_state.score := 0;
+            exact_state.path_preference_score := 0;
+            exact_state.path_confidence_score := 0;
+            exact_state.source := cs_rule;
+            exact_state.has_multi_segment := False;
+            get_recent_path_context_seed(seed_prev_prev_text, seed_prev_text);
+            exact_state.prev_prev_text := seed_prev_prev_text;
+            exact_state.prev_text := seed_prev_text;
+            exact_state.prev_pinyin_text := '';
+            exact_state.path_text := '';
+            exact_states[0].Add(exact_state);
+            exact_dedup[0].Add(build_state_key(exact_state), 0);
+
+            for exact_state_pos := 0 to High(exact_syllables) do
+            begin
+                if exact_states[exact_state_pos].Count = 0 then
+                begin
+                    Continue;
+                end;
+
+                for exact_segment_len := 1 to c_long_sentence_max_segment_len do
+                begin
+                    if (exact_state_pos = 0) and (exact_segment_len = 1) then
+                    begin
+                        Continue;
+                    end;
+
+                    exact_next_pos := exact_state_pos + exact_segment_len;
+                    if exact_next_pos > Length(exact_syllables) then
+                    begin
+                        Break;
+                    end;
+
+                    exact_segment_text := '';
+                    for exact_idx := exact_state_pos to exact_next_pos - 1 do
+                    begin
+                        exact_segment_text := exact_segment_text + exact_syllables[exact_idx].text;
+                    end;
+                    if exact_segment_text = '' then
+                    begin
+                        Continue;
+                    end;
+
+                    if exact_segment_len = 1 then
+                    begin
+                        if not dictionary_exact_lookup_cached(exact_segment_text,
+                            exact_lookup_results) then
+                        begin
+                            Continue;
+                        end;
+                    end
+                    else if exact_segment_len = 2 then
+                    begin
+                        if not dictionary_lookup_cached(exact_segment_text,
+                            exact_lookup_results) then
+                        begin
+                            Continue;
+                        end;
+                    end
+                    else if not dictionary_exact_lookup_cached(exact_segment_text,
+                        exact_lookup_results) then
+                    begin
+                        Continue;
+                    end;
+
+                    if exact_segment_len = 1 then
+                    begin
+                        exact_candidate_limit := c_long_sentence_single_top_n;
+                    end
+                    else if exact_segment_len >= 3 then
+                    begin
+                        exact_candidate_limit := Max(2, c_long_sentence_multi_top_n - 1);
+                    end
+                    else
+                    begin
+                        exact_candidate_limit := c_long_sentence_multi_top_n;
+                    end;
+
+                    for exact_state_index := 0 to exact_states[exact_state_pos].Count - 1 do
+                    begin
+                        exact_state := exact_states[exact_state_pos][exact_state_index];
+                        for exact_candidate_index := 0 to High(exact_lookup_results) do
+                        begin
+                            if exact_candidate_index >= exact_candidate_limit then
+                            begin
+                                Break;
+                            end;
+
+                            exact_candidate := exact_lookup_results[exact_candidate_index];
+                            exact_candidate_text := Trim(exact_candidate.text);
+                            if (exact_candidate.comment <> '') or (exact_candidate_text = '') then
+                            begin
+                                Continue;
+                            end;
+
+                            exact_units := get_candidate_text_unit_count(exact_candidate_text);
+                            if exact_units <= 0 then
+                            begin
+                                Continue;
+                            end;
+
+                            if exact_segment_len = 1 then
+                            begin
+                                if (exact_units <> 1) or
+                                    (not is_long_sentence_allowed_single_char_text_codepoint_local(
+                                    exact_candidate_text)) or
+                                    (not match_single_char_candidate_for_syllable(
+                                    exact_syllables[exact_state_pos].text, exact_candidate_text,
+                                    exact_is_preferred)) or
+                                    (not exact_is_preferred) then
+                                begin
+                                    Continue;
+                                end;
+                            end
+                            else
+                            begin
+                                if exact_units <> exact_segment_len then
+                                begin
+                                    Continue;
+                                end;
+                            end;
+
+                            exact_new_state.text := exact_state.text + exact_candidate_text;
+                            exact_new_state.score := exact_state.score;
+                            exact_effective_weight := get_candidate_effective_weight_local(exact_candidate);
+                            Inc(exact_new_state.score, exact_effective_weight);
+
+                            exact_rank_bonus := c_long_sentence_top_exact_bonus -
+                                (exact_candidate_index * c_long_sentence_exact_rank_step);
+                            if exact_rank_bonus > 0 then
+                            begin
+                                Inc(exact_new_state.score, exact_rank_bonus);
+                            end;
+
+                            exact_path_bonus := get_exact_query_choice_bonus_local(
+                                exact_segment_text, exact_candidate_text);
+                            if exact_path_bonus <> 0 then
+                            begin
+                                Inc(exact_new_state.score, exact_path_bonus);
+                            end;
+
+                            if is_exact_latest_query_choice_local(exact_segment_text,
+                                exact_candidate_text) then
+                            begin
+                                if exact_segment_len = 1 then
+                                begin
+                                    Inc(exact_new_state.score,
+                                        c_long_sentence_single_query_latest_bonus);
+                                end
+                                else
+                                begin
+                                    Inc(exact_new_state.score,
+                                        c_long_sentence_phrase_query_latest_bonus);
+                                end;
+                            end;
+
+                            exact_transition_bonus := 0;
+                            exact_pair_bonus := 0;
+                            exact_bridge_bonus := 0;
+
+                            if exact_state.prev_pinyin_text <> '' then
+                            begin
+                                exact_bridge_bonus := get_exact_phrase_bridge_bonus_local(
+                                    exact_state.prev_pinyin_text, exact_state.prev_text,
+                                    exact_segment_text, exact_candidate_text);
+                                if exact_bridge_bonus <> 0 then
+                                begin
+                                    Inc(exact_new_state.score, exact_bridge_bonus);
+                                end;
+                            end;
+
+                            if exact_segment_len = 1 then
+                            begin
+                                Dec(exact_new_state.score, c_long_sentence_single_penalty);
+                            end
+                            else
+                            begin
+                                Inc(exact_new_state.score,
+                                    c_long_sentence_multi_bonus + (exact_segment_len * 24));
+                            end;
+
+                            if exact_next_pos = Length(exact_syllables) then
+                            begin
+                                Inc(exact_new_state.score, c_long_sentence_completion_bonus);
+                            end
+                            else
+                            begin
+                                Inc(exact_new_state.score, c_long_sentence_continuation_bonus);
+                            end;
+
+                            exact_new_state.source := merge_source_rank(exact_state.source,
+                                exact_candidate.source);
+                            exact_new_state.prev_prev_text := exact_state.prev_text;
+                            exact_new_state.prev_text := exact_candidate_text;
+                            exact_new_state.prev_pinyin_text := exact_segment_text;
+                            exact_new_state.path_text := exact_state.path_text;
+                            if exact_new_state.path_text <> '' then
+                            begin
+                                exact_new_state.path_text := exact_new_state.path_text +
+                                    c_segment_path_separator;
+                            end;
+                            exact_new_state.path_text := exact_new_state.path_text +
+                                exact_candidate_text;
+                            exact_new_state.has_multi_segment :=
+                                get_encoded_path_segment_count_local(exact_new_state.path_text) > 1;
+
+                            exact_path_bonus := exact_transition_bonus + exact_pair_bonus +
+                                exact_bridge_bonus + exact_rank_bonus;
+
+                            exact_new_state.path_preference_score :=
+                                exact_state.path_preference_score + exact_path_bonus;
+                            exact_path_confidence := exact_new_state.path_preference_score;
+                            if exact_path_confidence < 0 then
+                            begin
+                                exact_path_confidence := 0;
+                            end;
+                            exact_new_state.path_confidence_score := exact_path_confidence;
+                            append_exact_state(exact_next_pos, exact_new_state);
+                        end;
+                    end;
+
+                    trim_exact_state(exact_next_pos);
+                end;
+
+            end;
+            if exact_states[Length(exact_syllables)].Count <= 0 then
+            begin
+                Exit;
+            end;
+
+            SetLength(exact_sorted_states, exact_states[Length(exact_syllables)].Count);
+            for exact_state_pos := 0 to exact_states[Length(exact_syllables)].Count - 1 do
+            begin
+                exact_sorted_states[exact_state_pos] :=
+                    exact_states[Length(exact_syllables)][exact_state_pos];
+                exact_path_bonus := get_session_query_path_bonus(pinyin_key,
+                    exact_sorted_states[exact_state_pos].path_text);
+                if m_dictionary <> nil then
+                begin
+                    Inc(exact_path_bonus, m_dictionary.get_query_segment_path_bonus(pinyin_key,
+                        exact_sorted_states[exact_state_pos].path_text));
+                    Dec(exact_path_bonus, m_dictionary.get_query_segment_path_penalty(
+                        pinyin_key, exact_sorted_states[exact_state_pos].path_text));
+                end;
+                Inc(exact_path_bonus, get_persistent_query_path_prefix_support(
+                    exact_sorted_states[exact_state_pos].path_text));
+                if exact_path_bonus <> 0 then
+                begin
+                    Inc(exact_sorted_states[exact_state_pos].score, exact_path_bonus);
+                    Inc(exact_sorted_states[exact_state_pos].path_preference_score,
+                        exact_path_bonus);
+                    exact_path_confidence := exact_sorted_states[exact_state_pos].path_confidence_score +
+                        exact_path_bonus;
+                    if exact_path_confidence < 0 then
+                    begin
+                        exact_path_confidence := 0;
+                    end;
+                    exact_sorted_states[exact_state_pos].path_confidence_score :=
+                        exact_path_confidence;
+                end;
+            end;
+            sort_state_array(exact_sorted_states);
+
+            SetLength(exact_matches, 0);
+            exact_non_user_added := 0;
+            for exact_state_pos := 0 to High(exact_sorted_states) do
+            begin
+                exact_state := exact_sorted_states[exact_state_pos];
+                exact_segment_count := get_encoded_path_segment_count_local(exact_state.path_text);
+                exact_multi_char_segment_count := get_multi_char_segment_count(exact_state.path_text);
+                if (exact_segment_count <= 1) or
+                    (get_candidate_text_unit_count(exact_state.text) <> Length(exact_syllables)) then
+                begin
+                    Continue;
+                end;
+                if (Length(exact_syllables) >= 8) and (exact_segment_count < 4) then
+                begin
+                    Continue;
+                end;
+                if exact_multi_char_segment_count < 3 then
+                begin
+                    Continue;
+                end;
+                if (exact_multi_char_segment_count * 2) < exact_segment_count then
+                begin
+                    Continue;
+                end;
+                if (exact_state.source <> cs_user) and
+                    (exact_non_user_added >= c_long_sentence_complete_non_user_limit) then
+                begin
+                    Continue;
+                end;
+
+                SetLength(exact_matches, Length(exact_matches) + 1);
+                exact_matches[High(exact_matches)].text := exact_state.text;
+                exact_matches[High(exact_matches)].comment := '';
+                exact_matches[High(exact_matches)].score :=
+                    exact_state.score + c_long_sentence_candidate_visible_bonus;
+                exact_matches[High(exact_matches)].source := exact_state.source;
+                exact_matches[High(exact_matches)].has_dict_weight := False;
+                exact_matches[High(exact_matches)].dict_weight := 0;
+                remember_segment_path_for_candidate(exact_state.text, '',
+                    exact_state.path_text, exact_matches[High(exact_matches)].score);
+                if exact_state.source <> cs_user then
+                begin
+                    Inc(exact_non_user_added);
+                end;
+            end;
+
+            if Length(exact_matches) > 0 then
+            begin
+                candidates := merge_candidate_lists(candidates, exact_matches, 0);
+                if m_config.debug_mode then
+                begin
+                    exact_debug_path := get_segment_path_for_candidate(exact_matches[0]);
+                    m_last_full_path_debug_info := Format(
+                        ' longmerge=[n=%d top=%s path=%s]',
+                        [Length(exact_matches), exact_matches[0].text,
+                        Copy(exact_debug_path, 1, 120)]);
+                end;
+            end;
+        finally
+            exact_bridge_bonus_cache.Free;
+            for exact_state_pos := 0 to High(exact_states) do
+            begin
+                if exact_states[exact_state_pos] <> nil then
+                begin
+                    exact_states[exact_state_pos].Free;
+                end;
+                if exact_dedup[exact_state_pos] <> nil then
+                begin
+                    exact_dedup[exact_state_pos].Free;
+                end;
+            end;
+        end;
     end;
 
     function merge_incomplete_trailing_prefix_full_lookup_candidates(
@@ -3550,7 +4840,7 @@ var
                 Exit;
             end;
 
-            if not dictionary_lookup_cached(value, lookup_results) then
+            if not dictionary_exact_lookup_cached(value, lookup_results) then
             begin
                 Exit;
             end;
@@ -6802,6 +8092,7 @@ begin
         m_last_three_syllable_head_path_bonus := 0;
         m_last_three_syllable_tail_path_bonus := 0;
         m_last_three_syllable_partial_debug_info := '';
+        m_last_full_path_debug_info := '';
         m_last_lookup_debug_extra := '';
         m_last_lookup_timing_info := '';
         m_runtime_chain_text := '';
@@ -6909,7 +8200,10 @@ begin
         head_only_multi_syllable := m_config.enable_segment_candidates and
             has_multi_syllable_input and
             (all_initial_compact_query or
-                (m_config.segment_head_only_multi_syllable and (not has_internal_dangling_initial)));
+                (m_config.segment_head_only_multi_syllable and
+                    (not has_internal_dangling_initial) and
+                    ((input_syllable_count < c_long_sentence_head_only_bypass_min_syllables) or
+                    should_enable_long_sentence_full_path_search_local)));
         if m_dictionary <> nil then
         begin
             if head_only_multi_syllable then
@@ -6987,7 +8281,8 @@ begin
                 else if m_config.enable_segment_candidates and
                     build_segment_candidates_timed(segment_candidates,
                         (not all_initial_compact_query) and
-                        (not c_suppress_nonlexicon_complete_long_candidates),
+                        ((not c_suppress_nonlexicon_complete_long_candidates) or
+                        should_enable_long_sentence_full_path_search_local),
                         allow_relaxed_missing_apostrophe) then
                 begin
                     has_raw_candidates := True;
@@ -7044,7 +8339,8 @@ begin
                 if m_config.enable_segment_candidates then
                 begin
                     build_segment_candidates_timed(explicit_apostrophe_aligned_candidates,
-                        not c_suppress_nonlexicon_complete_long_candidates);
+                        (not c_suppress_nonlexicon_complete_long_candidates) or
+                        should_enable_long_sentence_full_path_search_local);
                 end;
                 filter_complete_candidates_for_explicit_apostrophe_boundary(raw_candidates,
                     explicit_apostrophe_aligned_candidates);
@@ -7095,9 +8391,10 @@ begin
                     // When exact lexicon hits already exist, keep the extra segment pass cheap.
                     // The current product strategy prefers direct lexicon matches and only needs
                     // lightweight partial/anchor assistance here, not a second full-path search.
-                    if c_suppress_nonlexicon_complete_long_candidates then
+                    if c_suppress_nonlexicon_complete_long_candidates and
+                        (not should_enable_long_sentence_full_path_search_local) then
                     begin
-                has_segment_candidates := build_segment_candidates_timed(segment_candidates, False);
+                        has_segment_candidates := build_segment_candidates_timed(segment_candidates, False);
                     end
                     else
                     begin
@@ -7128,11 +8425,24 @@ begin
                 merge_runtime_constructed_candidates(raw_candidates);
                 Inc(runtime_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
             end;
+            if should_enable_long_sentence_full_path_search_local then
+            begin
+                phase_start_tick := GetTickCount64;
+                merge_long_sentence_exact_candidates(raw_candidates, lookup_text);
+                Inc(path_search_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+            end;
             filter_long_query_nonlexicon_complete_candidates(raw_candidates);
             merge_exact_long_full_lookup_candidates(raw_candidates, lookup_text);
             merge_incomplete_trailing_prefix_full_lookup_candidates(raw_candidates,
                 lookup_text);
-            sort_candidates_timed(raw_candidates);
+            if input_syllable_count >= c_long_sentence_full_path_min_syllables then
+            begin
+                sort_candidates_lightweight(raw_candidates);
+            end
+            else
+            begin
+                sort_candidates_timed(raw_candidates);
+            end;
             ensure_partial_fallback_visible(raw_candidates, get_candidate_limit);
             ensure_single_char_partial_visible(raw_candidates, get_candidate_limit,
                 single_char_partial_min_count);
@@ -7193,13 +8503,13 @@ begin
             m_candidates := raw_candidates;
         end;
 
-        phase_start_tick := GetTickCount64;
         merge_confirmed_prefix_user_extensions(m_candidates);
         merge_exact_long_full_lookup_candidates(m_candidates, lookup_text);
         merge_incomplete_trailing_prefix_full_lookup_candidates(m_candidates,
             lookup_text);
         apply_user_penalties(lookup_text, m_candidates);
         prioritize_complete_phrase_matches(m_candidates);
+        phase_start_tick := GetTickCount64;
         apply_syllable_single_char_alignment_bonus(m_candidates);
         note_post_phase_elapsed(phase_start_tick);
         sort_candidates_timed(m_candidates);
@@ -7230,6 +8540,11 @@ begin
             begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra +
                     m_last_three_syllable_partial_debug_info;
+            end;
+            if m_last_full_path_debug_info <> '' then
+            begin
+                m_last_lookup_debug_extra := m_last_lookup_debug_extra +
+                    m_last_full_path_debug_info;
             end;
             if Length(m_candidates) > 0 then
             begin
@@ -7265,6 +8580,11 @@ begin
                 [Ord(has_multi_syllable_input), Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
                 Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
                 Format(' allinit=%d', [Ord(all_initial_compact_query)]);
+            if m_last_full_path_debug_info <> '' then
+            begin
+                m_last_lookup_debug_extra := m_last_lookup_debug_extra +
+                    m_last_full_path_debug_info;
+            end;
             if Length(m_candidates) > 0 then
             begin
                 m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
@@ -11413,9 +12733,28 @@ const
         SetLength(weak_chain_preference_maps, Length(weak_chain_query_syllables));
     end;
     function is_weighted_complete_phrase_candidate(const candidate: TncCandidate): Boolean;
+    var
+        encoded_path: string;
     begin
         Result := (candidate.comment = '') and candidate.has_dict_weight and
             (get_candidate_text_unit_count(candidate.text) >= 2);
+        if Result then
+        begin
+            Exit;
+        end;
+
+        if (candidate.comment <> '') or
+            (m_last_lookup_syllable_count < c_long_sentence_full_path_min_syllables) or
+            (get_candidate_text_unit_count(candidate.text) < 2) or
+            is_runtime_chain_candidate(candidate) or
+            is_runtime_common_pattern_candidate(candidate) or
+            is_runtime_redup_candidate(candidate) then
+        begin
+            Exit(False);
+        end;
+
+        encoded_path := get_segment_path_for_candidate(candidate);
+        Result := get_encoded_path_segment_count_local(encoded_path) > 1;
     end;
     function is_runtime_constructed_complete_phrase_candidate(const candidate: TncCandidate): Boolean;
     begin
@@ -12790,8 +14129,11 @@ const
     c_segment_full_preferred_single_penalty = 24;
     c_segment_full_leading_multi_penalty = 42;
     c_segment_full_path_budget_ms = 18;
+    c_segment_full_path_budget_ms_long = 280;
     c_segment_full_path_budget_probe_interval = 64;
     c_segment_full_path_non_user_limit = 4;
+    c_segment_full_path_non_user_limit_long = 6;
+    c_segment_full_state_limit_long = 768;
     c_segment_full_partial_remaining_limit = 2;
     c_segment_full_partial_non_user_limit = 3;
     c_segment_full_partial_penalty = 90;
@@ -14842,6 +16184,9 @@ var
         full_non_user_added: Integer;
         full_head_top_n: Integer;
         full_path_non_user_limit: Integer;
+        full_path_budget_ms_limit: Integer;
+        full_state_limit_limit: Integer;
+        long_sentence_full_path_mode: Boolean;
         local_state: TncSegmentPathState;
         local_candidate: TncCandidate;
         local_new_state: TncSegmentPathState;
@@ -14875,11 +16220,17 @@ var
         full_path_budget_start_tick: UInt64;
         full_path_budget_work_counter: Integer;
         full_path_budget_exhausted: Boolean;
+        final_complete_state_count: Integer;
+        final_complete_multiseg_state_count: Integer;
+        final_complete_debug_paths: string;
+        final_position_debug_counts: string;
 
         function build_state_key(const value: TncSegmentPathState): string;
         begin
             Result := LowerCase(Trim(value.text)) + #1 + LowerCase(Trim(value.prev_text)) +
-                #1 + LowerCase(Trim(value.prev_prev_text)) + #1 + IntToStr(Ord(value.has_multi_segment));
+                #1 + LowerCase(Trim(value.prev_pinyin_text)) + #1 +
+                LowerCase(Trim(value.prev_prev_text)) + #1 +
+                IntToStr(Ord(value.has_multi_segment));
         end;
 
         function compare_state(const left: TncSegmentPathState; const right: TncSegmentPathState): Integer;
@@ -15529,8 +16880,34 @@ var
 
             full_path_budget_work_counter := 0;
             full_path_budget_exhausted :=
-                Int64(GetTickCount64 - full_path_budget_start_tick) >= c_segment_full_path_budget_ms;
+                Int64(GetTickCount64 - full_path_budget_start_tick) >= full_path_budget_ms_limit;
             Result := full_path_budget_exhausted;
+        end;
+
+        procedure record_final_debug_path(const value: string);
+        begin
+            if Trim(value) = '' then
+            begin
+                Exit;
+            end;
+
+            if final_complete_debug_paths = '' then
+            begin
+                final_complete_debug_paths := value;
+            end
+            else if Pos(value, final_complete_debug_paths) <= 0 then
+            begin
+                final_complete_debug_paths := final_complete_debug_paths + ' || ' + value;
+            end;
+        end;
+
+        procedure append_position_debug_count(const position: Integer; const count: Integer);
+        begin
+            if final_position_debug_counts <> '' then
+            begin
+                final_position_debug_counts := final_position_debug_counts + ',';
+            end;
+            final_position_debug_counts := final_position_debug_counts + IntToStr(position) + ':' + IntToStr(count);
         end;
 
         procedure trim_state(const position: Integer);
@@ -15544,7 +16921,7 @@ var
             dynamic_keep_count: Integer;
             idx: Integer;
         begin
-            if states[position].Count <= c_segment_full_state_limit then
+            if states[position].Count <= full_state_limit_limit then
             begin
                 Exit;
             end;
@@ -15555,8 +16932,8 @@ var
                 sorted_states[idx] := states[position][idx];
             end;
             sort_state_array(sorted_states);
-            keep_count := c_segment_full_state_limit;
-            if keep_count > c_segment_full_state_min_keep then
+            keep_count := full_state_limit_limit;
+            if (not long_sentence_full_path_mode) and (keep_count > c_segment_full_state_min_keep) then
             begin
                 best_score := sorted_states[0].score;
                 best_path_confidence := sorted_states[0].path_confidence_score;
@@ -15580,6 +16957,618 @@ var
             begin
                 states[position].Add(sorted_states[idx]);
                 state_dedup[position].Add(build_state_key(sorted_states[idx]), idx);
+            end;
+        end;
+
+        procedure append_long_sentence_exact_aligned_complete_candidates;
+        const
+            c_exact_state_limit = 64;
+            c_exact_single_top_n = 2;
+            c_exact_multi_top_n = 4;
+            c_exact_complete_non_user_limit = 6;
+            c_exact_single_penalty = 220;
+            c_exact_multi_bonus = 260;
+            c_exact_completion_bonus = 420;
+            c_exact_continuation_bonus = 24;
+        var
+            exact_states: TArray<TList<TncSegmentPathState>>;
+            exact_dedup: TArray<TDictionary<string, Integer>>;
+            exact_sorted_states: TArray<TncSegmentPathState>;
+            exact_state: TncSegmentPathState;
+            exact_new_state: TncSegmentPathState;
+            exact_existing_state: TncSegmentPathState;
+            exact_candidate: TncCandidate;
+            exact_lookup_results: TncCandidateList;
+            exact_state_pos: Integer;
+            exact_next_pos: Integer;
+            exact_segment_len: Integer;
+            exact_state_index: Integer;
+            exact_candidate_index: Integer;
+            exact_existing_state_index: Integer;
+            exact_keep_count: Integer;
+            exact_non_user_added: Integer;
+            exact_segment_text: string;
+            exact_candidate_text: string;
+            exact_key: string;
+            exact_units: Integer;
+            exact_segment_count: Integer;
+            exact_effective_weight: Integer;
+            exact_transition_bonus: Integer;
+            exact_pair_bonus: Integer;
+            exact_candidate_limit: Integer;
+            exact_is_preferred: Boolean;
+            exact_multi_char_segment_count: Integer;
+
+            function get_multi_char_segment_count(const encoded_path: string): Integer;
+            var
+                segment_parts: TArray<string>;
+                part: string;
+            begin
+                Result := 0;
+                if Trim(encoded_path) = '' then
+                begin
+                    Exit;
+                end;
+
+                segment_parts := encoded_path.Split([c_segment_path_separator]);
+                for part in segment_parts do
+                begin
+                    if get_text_unit_count(Trim(part)) >= 2 then
+                    begin
+                        Inc(Result);
+                    end;
+                end;
+            end;
+
+            function is_long_sentence_allowed_single_char_text(const value: string): Boolean;
+            begin
+                Result := (value = '我') or (value = '你') or (value = '他') or (value = '她') or
+                    (value = '它') or (value = '们') or (value = '和') or (value = '跟') or
+                    (value = '与') or (value = '同') or (value = '去') or (value = '来') or
+                    (value = '在') or (value = '是') or (value = '有') or (value = '要') or
+                    (value = '想') or (value = '会') or (value = '能') or (value = '把') or
+                    (value = '被') or (value = '让') or (value = '给') or (value = '向') or
+                    (value = '到') or (value = '对') or (value = '从') or (value = '比') or
+                    (value = '就') or (value = '还') or (value = '再') or (value = '也') or
+                    (value = '都') or (value = '很') or (value = '不') or (value = '的') or
+                    (value = '了') or (value = '着') or (value = '过') or (value = '将') or
+                    (value = '为') or (value = '于') or (value = '中');
+            end;
+
+            procedure append_exact_state(const position: Integer; const value: TncSegmentPathState);
+            begin
+                exact_key := build_state_key(value);
+                if exact_dedup[position].TryGetValue(exact_key, exact_existing_state_index) then
+                begin
+                    if (exact_existing_state_index >= 0) and
+                        (exact_existing_state_index < exact_states[position].Count) then
+                    begin
+                        exact_existing_state := exact_states[position][exact_existing_state_index];
+                        if compare_state(value, exact_existing_state) < 0 then
+                        begin
+                            exact_existing_state := value;
+                        end;
+                        exact_existing_state.source := merge_source_rank(
+                            exact_existing_state.source, value.source);
+                        exact_states[position][exact_existing_state_index] := exact_existing_state;
+                    end;
+                    Exit;
+                end;
+
+                exact_states[position].Add(value);
+                exact_dedup[position].Add(exact_key, exact_states[position].Count - 1);
+            end;
+
+            procedure trim_exact_state(const position: Integer);
+            var
+                idx: Integer;
+            begin
+                if exact_states[position].Count <= c_exact_state_limit then
+                begin
+                    Exit;
+                end;
+
+                SetLength(exact_sorted_states, exact_states[position].Count);
+                for idx := 0 to exact_states[position].Count - 1 do
+                begin
+                    exact_sorted_states[idx] := exact_states[position][idx];
+                end;
+                sort_state_array(exact_sorted_states);
+                exact_keep_count := c_exact_state_limit;
+
+                exact_states[position].Clear;
+                exact_dedup[position].Clear;
+                for idx := 0 to exact_keep_count - 1 do
+                begin
+                    exact_states[position].Add(exact_sorted_states[idx]);
+                    exact_dedup[position].Add(build_state_key(exact_sorted_states[idx]), idx);
+                end;
+            end;
+        begin
+            SetLength(exact_states, Length(syllables) + 1);
+            SetLength(exact_dedup, Length(syllables) + 1);
+            try
+                for exact_state_pos := 0 to High(exact_states) do
+                begin
+                    exact_states[exact_state_pos] := TList<TncSegmentPathState>.Create;
+                    exact_dedup[exact_state_pos] := TDictionary<string, Integer>.Create;
+                end;
+
+                exact_state.text := '';
+                exact_state.score := 0;
+                exact_state.path_preference_score := 0;
+                exact_state.path_confidence_score := 0;
+                exact_state.source := cs_rule;
+                exact_state.has_multi_segment := False;
+                get_recent_path_context_seed(exact_state.prev_prev_text, exact_state.prev_text);
+                exact_state.prev_pinyin_text := '';
+                exact_state.path_text := '';
+                exact_states[0].Add(exact_state);
+                exact_dedup[0].Add(build_state_key(exact_state), 0);
+
+                for exact_state_pos := 0 to High(syllables) do
+                begin
+                    if exact_states[exact_state_pos].Count = 0 then
+                    begin
+                        Continue;
+                    end;
+
+                    for exact_segment_len := 1 to Min(4, max_word_len) do
+                    begin
+                        if (exact_state_pos = 0) and (exact_segment_len = 1) then
+                        begin
+                            Continue;
+                        end;
+                        exact_next_pos := exact_state_pos + exact_segment_len;
+                        if exact_next_pos > Length(syllables) then
+                        begin
+                            Break;
+                        end;
+
+                        exact_segment_text := build_syllable_text(exact_state_pos, exact_segment_len);
+                        if (exact_segment_text = '') or
+                            (not dictionary_lookup_cached(exact_segment_text, exact_lookup_results)) then
+                        begin
+                            Continue;
+                        end;
+
+                        if exact_segment_len = 1 then
+                        begin
+                            exact_candidate_limit := c_exact_single_top_n;
+                        end
+                        else
+                        begin
+                            exact_candidate_limit := c_exact_multi_top_n;
+                        end;
+
+                        for exact_state_index := 0 to exact_states[exact_state_pos].Count - 1 do
+                        begin
+                            exact_state := exact_states[exact_state_pos][exact_state_index];
+                            for exact_candidate_index := 0 to High(exact_lookup_results) do
+                            begin
+                                if exact_candidate_index >= exact_candidate_limit then
+                                begin
+                                    Break;
+                                end;
+
+                                exact_candidate := exact_lookup_results[exact_candidate_index];
+                                exact_candidate_text := Trim(exact_candidate.text);
+                                if (exact_candidate_text = '') or
+                                    (not contains_non_ascii(exact_candidate_text)) then
+                                begin
+                                    Continue;
+                                end;
+
+                                exact_units := get_text_unit_count(exact_candidate_text);
+                                if exact_units <= 0 then
+                                begin
+                                    Continue;
+                                end;
+
+                                if exact_segment_len = 1 then
+                                begin
+                                    if (not is_single_text_unit(exact_candidate_text)) or
+                                        (not is_long_sentence_allowed_single_char_text(exact_candidate_text)) or
+                                        (not match_single_char_candidate_for_syllable(
+                                        syllables[exact_state_pos].text, exact_candidate_text,
+                                        exact_is_preferred)) or
+                                        (not exact_is_preferred) then
+                                    begin
+                                        Continue;
+                                    end;
+                                end
+                                else
+                                begin
+                                    if (not is_multi_char_word(exact_candidate_text)) or
+                                        (exact_units <> exact_segment_len) then
+                                    begin
+                                        Continue;
+                                    end;
+                                end;
+
+                                exact_new_state.text := exact_state.text + exact_candidate_text;
+                                exact_new_state.score := exact_state.score;
+                                exact_effective_weight := get_candidate_effective_weight_local(exact_candidate);
+                                Inc(exact_new_state.score, exact_effective_weight);
+                                exact_transition_bonus := get_path_transition_bonus(
+                                    exact_state.prev_prev_text, exact_state.prev_text,
+                                    exact_candidate_text);
+                                if exact_transition_bonus <> 0 then
+                                begin
+                                    Inc(exact_new_state.score, exact_transition_bonus);
+                                end;
+                                exact_pair_bonus := get_exact_context_pair_bonus(
+                                    exact_state.prev_text, exact_candidate_text);
+                                if exact_pair_bonus <> 0 then
+                                begin
+                                    Inc(exact_new_state.score, exact_pair_bonus);
+                                end;
+
+                                if exact_segment_len = 1 then
+                                begin
+                                    Dec(exact_new_state.score, c_exact_single_penalty);
+                                end
+                                else
+                                begin
+                                    Inc(exact_new_state.score,
+                                        c_exact_multi_bonus + (exact_segment_len * 24));
+                                end;
+
+                                if exact_next_pos = Length(syllables) then
+                                begin
+                                    Inc(exact_new_state.score, c_exact_completion_bonus);
+                                end
+                                else
+                                begin
+                                    Inc(exact_new_state.score, c_exact_continuation_bonus);
+                                end;
+
+                                exact_new_state.source := merge_source_rank(
+                                    exact_state.source, exact_candidate.source);
+                                exact_new_state.prev_prev_text := exact_state.prev_text;
+                                exact_new_state.prev_text := exact_candidate_text;
+                                exact_new_state.prev_pinyin_text := exact_segment_text;
+                                exact_new_state.path_text := exact_state.path_text;
+                                if exact_new_state.path_text <> '' then
+                                begin
+                                    exact_new_state.path_text := exact_new_state.path_text +
+                                        c_segment_path_separator;
+                                end;
+                                exact_new_state.path_text := exact_new_state.path_text +
+                                    exact_candidate_text;
+                                exact_new_state.has_multi_segment :=
+                                    get_encoded_path_segment_count_local(exact_new_state.path_text) > 1;
+                                exact_new_state.path_preference_score := exact_transition_bonus + exact_pair_bonus;
+                                exact_new_state.path_confidence_score := exact_new_state.path_preference_score;
+                                if exact_new_state.path_confidence_score < 0 then
+                                begin
+                                    exact_new_state.path_confidence_score := 0;
+                                end;
+                                append_exact_state(exact_next_pos, exact_new_state);
+                            end;
+                        end;
+
+                        trim_exact_state(exact_next_pos);
+                    end;
+                end;
+
+                if exact_states[Length(syllables)].Count <= 0 then
+                begin
+                    Exit;
+                end;
+
+                SetLength(exact_sorted_states, exact_states[Length(syllables)].Count);
+                for exact_state_pos := 0 to exact_states[Length(syllables)].Count - 1 do
+                begin
+                    exact_sorted_states[exact_state_pos] := exact_states[Length(syllables)][exact_state_pos];
+                end;
+                sort_state_array(exact_sorted_states);
+
+                exact_non_user_added := 0;
+                for exact_state_pos := 0 to High(exact_sorted_states) do
+                begin
+                    exact_state := exact_sorted_states[exact_state_pos];
+                    exact_segment_count := get_encoded_path_segment_count_local(exact_state.path_text);
+                    exact_multi_char_segment_count :=
+                        get_multi_char_segment_count(exact_state.path_text);
+                    if (exact_segment_count <= 1) or
+                        (get_candidate_text_unit_count(exact_state.text) < 4) then
+                    begin
+                        Continue;
+                    end;
+                    if exact_multi_char_segment_count < 3 then
+                    begin
+                        Continue;
+                    end;
+                    if (exact_multi_char_segment_count * 2) < exact_segment_count then
+                    begin
+                        Continue;
+                    end;
+                    if (exact_state.source <> cs_user) and
+                        (exact_non_user_added >= c_exact_complete_non_user_limit) then
+                    begin
+                        Continue;
+                    end;
+
+                    append_candidate(exact_state.text, exact_state.score + 1200,
+                        exact_state.source, '');
+                    remember_segment_path_for_candidate(exact_state.text, '',
+                        exact_state.path_text, exact_state.score + 1200);
+                    if exact_state.source <> cs_user then
+                    begin
+                        Inc(exact_non_user_added);
+                    end;
+                end;
+            finally
+                for exact_state_pos := 0 to High(exact_states) do
+                begin
+                    if exact_states[exact_state_pos] <> nil then
+                    begin
+                        exact_states[exact_state_pos].Free;
+                    end;
+                    if exact_dedup[exact_state_pos] <> nil then
+                    begin
+                        exact_dedup[exact_state_pos].Free;
+                    end;
+                end;
+            end;
+        end;
+
+        procedure append_long_sentence_best_exact_candidate;
+        type
+            TLongSentenceOption = record
+                text: string;
+                path_text: string;
+                score: Integer;
+                source: TncCandidateSource;
+                segment_count: Integer;
+                multi_segment_count: Integer;
+                found: Boolean;
+            end;
+        const
+            c_search_multi_top_n = 3;
+            c_search_single_top_n = 1;
+            c_search_max_segment_len = 4;
+            c_search_single_penalty = 120;
+            c_search_multi_bonus = 260;
+            c_search_completion_bonus = 420;
+        var
+            result_cache: TDictionary<string, TLongSentenceOption>;
+            seed_prev_prev_text: string;
+            seed_prev_text: string;
+
+            function is_long_sentence_allowed_single_char_text_local(const value: string): Boolean;
+            begin
+                Result := (value = '我') or (value = '你') or (value = '他') or (value = '她') or
+                    (value = '它') or (value = '们') or (value = '和') or (value = '跟') or
+                    (value = '与') or (value = '同') or (value = '去') or (value = '来') or
+                    (value = '在') or (value = '是') or (value = '有') or (value = '要') or
+                    (value = '想') or (value = '会') or (value = '能') or (value = '把') or
+                    (value = '被') or (value = '让') or (value = '给') or (value = '向') or
+                    (value = '到') or (value = '对') or (value = '从') or (value = '比') or
+                    (value = '就') or (value = '还') or (value = '再') or (value = '也') or
+                    (value = '都') or (value = '很') or (value = '不') or (value = '的') or
+                    (value = '了') or (value = '着') or (value = '过') or (value = '将') or
+                    (value = '为') or (value = '于') or (value = '中');
+            end;
+
+            function is_better_long_sentence_option(const left: TLongSentenceOption;
+                const right: TLongSentenceOption): Boolean;
+            begin
+                if not right.found then
+                begin
+                    Result := left.found;
+                    Exit;
+                end;
+                if not left.found then
+                begin
+                    Result := False;
+                    Exit;
+                end;
+
+                if left.score <> right.score then
+                begin
+                    Result := left.score > right.score;
+                    Exit;
+                end;
+                if left.multi_segment_count <> right.multi_segment_count then
+                begin
+                    Result := left.multi_segment_count > right.multi_segment_count;
+                    Exit;
+                end;
+                if left.segment_count <> right.segment_count then
+                begin
+                    Result := left.segment_count < right.segment_count;
+                    Exit;
+                end;
+                Result := Length(left.text) > Length(right.text);
+            end;
+
+            function solve_long_sentence(const position: Integer; const prev_prev_text: string;
+                const prev_text: string): TLongSentenceOption;
+            var
+                cache_key: string;
+                best_option: TLongSentenceOption;
+                suffix_option: TLongSentenceOption;
+                candidate_option: TLongSentenceOption;
+                lookup_results_local: TncCandidateList;
+                candidate_local: TncCandidate;
+                candidate_text_local: string;
+                segment_text_local: string;
+                segment_len_local: Integer;
+                next_pos_local: Integer;
+                candidate_index_local: Integer;
+                candidate_limit_local: Integer;
+                candidate_units_local: Integer;
+                is_preferred_local: Boolean;
+                candidate_weight_local: Integer;
+                transition_bonus_local: Integer;
+                pair_bonus_local: Integer;
+            begin
+                cache_key := IntToStr(position) + #1 + prev_prev_text + #1 + prev_text;
+                if result_cache.TryGetValue(cache_key, Result) then
+                begin
+                    Exit;
+                end;
+
+                FillChar(best_option, SizeOf(best_option), 0);
+                best_option.found := False;
+
+                if position >= Length(syllables) then
+                begin
+                    best_option.found := True;
+                    result_cache.AddOrSetValue(cache_key, best_option);
+                    Result := best_option;
+                    Exit;
+                end;
+
+                for segment_len_local := 1 to Min(c_search_max_segment_len, max_word_len) do
+                begin
+                    if (position = 0) and (segment_len_local = 1) then
+                    begin
+                        Continue;
+                    end;
+
+                    next_pos_local := position + segment_len_local;
+                    if next_pos_local > Length(syllables) then
+                    begin
+                        Break;
+                    end;
+
+                    segment_text_local := build_syllable_text(position, segment_len_local);
+                    if (segment_text_local = '') or
+                        (not dictionary_lookup_cached(segment_text_local, lookup_results_local)) then
+                    begin
+                        Continue;
+                    end;
+
+                    if segment_len_local = 1 then
+                    begin
+                        candidate_limit_local := c_search_single_top_n;
+                    end
+                    else
+                    begin
+                        candidate_limit_local := c_search_multi_top_n;
+                    end;
+
+                    for candidate_index_local := 0 to High(lookup_results_local) do
+                    begin
+                        if candidate_index_local >= candidate_limit_local then
+                        begin
+                            Break;
+                        end;
+
+                        candidate_local := lookup_results_local[candidate_index_local];
+                        candidate_text_local := Trim(candidate_local.text);
+                        if (candidate_text_local = '') or
+                            (not contains_non_ascii(candidate_text_local)) then
+                        begin
+                            Continue;
+                        end;
+
+                        candidate_units_local := get_text_unit_count(candidate_text_local);
+                        if candidate_units_local <= 0 then
+                        begin
+                            Continue;
+                        end;
+
+                        if segment_len_local = 1 then
+                        begin
+                            if (not is_single_text_unit(candidate_text_local)) or
+                                (not is_long_sentence_allowed_single_char_text_local(candidate_text_local)) or
+                                (not match_single_char_candidate_for_syllable(
+                                syllables[position].text, candidate_text_local, is_preferred_local)) or
+                                (not is_preferred_local) then
+                            begin
+                                Continue;
+                            end;
+                        end
+                        else
+                        begin
+                            if (not is_multi_char_word(candidate_text_local)) or
+                                (candidate_units_local <> segment_len_local) then
+                            begin
+                                Continue;
+                            end;
+                        end;
+
+                        suffix_option := solve_long_sentence(next_pos_local, prev_text, candidate_text_local);
+                        if not suffix_option.found then
+                        begin
+                            Continue;
+                        end;
+
+                        candidate_option.found := True;
+                        candidate_option.text := candidate_text_local + suffix_option.text;
+                        candidate_option.path_text := candidate_text_local;
+                        if suffix_option.path_text <> '' then
+                        begin
+                            candidate_option.path_text := candidate_option.path_text +
+                                c_segment_path_separator + suffix_option.path_text;
+                        end;
+                        candidate_option.source := merge_source_rank(candidate_local.source,
+                            suffix_option.source);
+                        candidate_option.segment_count := suffix_option.segment_count + 1;
+                        candidate_option.multi_segment_count := suffix_option.multi_segment_count;
+                        if segment_len_local >= 2 then
+                        begin
+                            Inc(candidate_option.multi_segment_count);
+                        end;
+
+                        candidate_weight_local := get_candidate_effective_weight_local(candidate_local);
+                        transition_bonus_local := get_path_transition_bonus(prev_prev_text, prev_text,
+                            candidate_text_local);
+                        pair_bonus_local := get_exact_context_pair_bonus(prev_text, candidate_text_local);
+
+                        candidate_option.score := suffix_option.score + candidate_weight_local +
+                            transition_bonus_local + pair_bonus_local;
+                        if segment_len_local = 1 then
+                        begin
+                            Dec(candidate_option.score, c_search_single_penalty);
+                        end
+                        else
+                        begin
+                            Inc(candidate_option.score, c_search_multi_bonus + (segment_len_local * 24));
+                        end;
+                        if next_pos_local = Length(syllables) then
+                        begin
+                            Inc(candidate_option.score, c_search_completion_bonus);
+                        end;
+
+                        if is_better_long_sentence_option(candidate_option, best_option) then
+                        begin
+                            best_option := candidate_option;
+                        end;
+                    end;
+                end;
+
+                result_cache.AddOrSetValue(cache_key, best_option);
+                Result := best_option;
+            end;
+        var
+            best_option: TLongSentenceOption;
+        begin
+            result_cache := TDictionary<string, TLongSentenceOption>.Create;
+            try
+                get_recent_path_context_seed(seed_prev_prev_text, seed_prev_text);
+                best_option := solve_long_sentence(0, seed_prev_prev_text, seed_prev_text);
+                m_last_full_path_debug_info := Format(
+                    ' longsent_best=[found=%d score=%d seg=%d multi=%d path=%s text=%s]',
+                    [Ord(best_option.found), best_option.score, best_option.segment_count,
+                    best_option.multi_segment_count, best_option.path_text, best_option.text]);
+                if (not best_option.found) or
+                    (best_option.multi_segment_count < 3) or
+                    ((best_option.multi_segment_count * 2) < best_option.segment_count) or
+                    (Trim(best_option.text) = '') then
+                begin
+                    Exit;
+                end;
+
+                append_candidate(best_option.text, best_option.score + 1200, best_option.source, '');
+                remember_segment_path_for_candidate(best_option.text, '', best_option.path_text,
+                    best_option.score + 1200);
+            finally
+                result_cache.Free;
             end;
         end;
 
@@ -15880,6 +17869,7 @@ var
             out_state.has_multi_segment := False;
             out_state.prev_prev_text := '';
             out_state.prev_text := '';
+            out_state.prev_pinyin_text := '';
             out_state.path_text := '';
             if (position < 0) or (position > High(states)) or (states[position].Count <= 0) then
             begin
@@ -16234,7 +18224,17 @@ var
                 Exit;
             end;
 
-        if Length(syllables) >= 6 then
+        long_sentence_full_path_mode := Length(syllables) >= c_long_sentence_full_path_min_syllables;
+        full_path_budget_ms_limit := c_segment_full_path_budget_ms;
+        full_state_limit_limit := c_segment_full_state_limit;
+        if long_sentence_full_path_mode then
+        begin
+            full_head_top_n := 4;
+            full_path_non_user_limit := c_segment_full_path_non_user_limit_long;
+            full_path_budget_ms_limit := c_segment_full_path_budget_ms_long;
+            full_state_limit_limit := c_segment_full_state_limit_long;
+        end
+        else if Length(syllables) >= 6 then
         begin
             full_head_top_n := 2;
             full_path_non_user_limit := 3;
@@ -16267,6 +18267,7 @@ var
             local_state.source := cs_rule;
             local_state.has_multi_segment := False;
             get_recent_path_context_seed(local_state.prev_prev_text, local_state.prev_text);
+            local_state.prev_pinyin_text := '';
             local_state.path_text := '';
             states[0].Add(local_state);
             state_dedup[0].Add(build_state_key(local_state), 0);
@@ -16279,6 +18280,15 @@ var
             full_path_budget_start_tick := GetTickCount64;
             full_path_budget_work_counter := 0;
             full_path_budget_exhausted := False;
+            final_complete_state_count := 0;
+            final_complete_multiseg_state_count := 0;
+            final_complete_debug_paths := '';
+            final_position_debug_counts := '';
+            if Length(syllables) >= c_long_sentence_head_only_bypass_min_syllables then
+            begin
+                m_last_full_path_debug_info := ' longsent_skip_legacy=1';
+                Exit;
+            end;
             for state_pos := 0 to High(syllables) do
             begin
                 if full_path_budget_reached(True) then
@@ -16391,6 +18401,10 @@ var
                             candidate_has_non_ascii := contains_non_ascii(local_candidate_text);
                             candidate_text_units := get_text_unit_count(local_candidate_text);
                             if candidate_text_units <= 0 then
+                            begin
+                                Continue;
+                            end;
+                            if not candidate_has_non_ascii then
                             begin
                                 Continue;
                             end;
@@ -16543,10 +18557,9 @@ var
                             end;
 
                             local_new_state.source := merge_source_rank(local_state.source, local_candidate.source);
-                            local_new_state.has_multi_segment := local_state.has_multi_segment or
-                                (local_segment_len > 1);
                             local_new_state.prev_prev_text := local_state.prev_text;
                             local_new_state.prev_text := local_candidate_text;
+                            local_new_state.prev_pinyin_text := local_segment_text;
                             local_new_state.path_text := local_state.path_text;
                             if local_candidate_text <> '' then
                             begin
@@ -16556,6 +18569,8 @@ var
                                 end;
                                 local_new_state.path_text := local_new_state.path_text + local_candidate_text;
                             end;
+                            local_new_state.has_multi_segment :=
+                                get_encoded_path_segment_count_local(local_new_state.path_text) > 1;
                             local_new_state.path_preference_score := 0;
                             local_new_state.path_confidence_score := 0;
                             if get_encoded_path_segment_count_local(local_new_state.path_text) > 1 then
@@ -16673,16 +18688,33 @@ var
 
                     trim_state(next_pos);
                 end;
+                if long_sentence_full_path_mode then
+                begin
+                    append_position_debug_count(state_pos, states[state_pos].Count);
+                end;
             end;
 
             if states[Length(syllables)].Count > 0 then
             begin
+                final_complete_state_count := states[Length(syllables)].Count;
                 SetLength(sorted_states, states[Length(syllables)].Count);
                 for final_index := 0 to states[Length(syllables)].Count - 1 do
                 begin
                     sorted_states[final_index] := states[Length(syllables)][final_index];
                 end;
                 sort_state_array(sorted_states);
+
+                for final_index := 0 to High(sorted_states) do
+                begin
+                    if get_encoded_path_segment_count_local(sorted_states[final_index].path_text) > 1 then
+                    begin
+                        Inc(final_complete_multiseg_state_count);
+                        if final_complete_multiseg_state_count <= 5 then
+                        begin
+                            record_final_debug_path(sorted_states[final_index].path_text);
+                        end;
+                    end;
+                end;
 
                 full_non_user_added := 0;
                 for final_index := 0 to High(sorted_states) do
@@ -16774,6 +18806,19 @@ var
 
             append_three_syllable_anchor_partial_candidates;
         finally
+            if final_complete_state_count > 0 then
+            begin
+                m_last_full_path_debug_info := Format(
+                    ' fullpath_end=[states=%d multiseg=%d pos=%s sample=%s]',
+                    [final_complete_state_count, final_complete_multiseg_state_count,
+                    Copy(final_position_debug_counts, 1, 180),
+                    Copy(Trim(final_complete_debug_paths), 1, 180)]);
+            end
+            else
+            begin
+                m_last_full_path_debug_info := Format(' fullpath_end=[states=0 multiseg=0 pos=%s]',
+                    [Copy(final_position_debug_counts, 1, 180)]);
+            end;
             for state_pos := 0 to High(states) do
             begin
                 if states[state_pos] <> nil then
@@ -16824,6 +18869,11 @@ begin
         is_first_overall_segment := (m_confirmed_segments = nil) or (m_confirmed_segments.Count = 0);
 
         max_word_len := c_segment_word_max_syllables;
+        if (not include_full_path) and
+            (Length(syllables) >= c_long_sentence_head_only_bypass_min_syllables) then
+        begin
+            max_word_len := Min(max_word_len, 2);
+        end;
         if max_word_len > Length(syllables) then
         begin
             max_word_len := Length(syllables);
@@ -16957,9 +19007,12 @@ begin
                 end;
             end;
 
-            update_three_syllable_partial_preference_kind_local;
-            append_three_syllable_head_only_anchor_partial_candidates;
-            append_long_prefix_phrase_anchor_partial_candidates;
+            if Length(syllables) < c_long_sentence_head_only_bypass_min_syllables then
+            begin
+                update_three_syllable_partial_preference_kind_local;
+                append_three_syllable_head_only_anchor_partial_candidates;
+                append_long_prefix_phrase_anchor_partial_candidates;
+            end;
 
             if list.Count = 0 then
             begin

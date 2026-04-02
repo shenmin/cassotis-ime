@@ -10,6 +10,8 @@ type
     TncDictionaryProvider = class
     public
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; virtual; abstract;
+        function lookup_exact_full_pinyin(const pinyin: string;
+            out results: TncCandidateList): Boolean; virtual;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; virtual;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; virtual;
@@ -36,6 +38,12 @@ type
     end;
 
 implementation
+
+function TncDictionaryProvider.lookup_exact_full_pinyin(const pinyin: string;
+    out results: TncCandidateList): Boolean;
+begin
+    Result := lookup(pinyin, results);
+end;
 
 function TncDictionaryProvider.lookup_full_pinyin_prefix(const pinyin_prefix: string;
     out results: TncCandidateList): Boolean;

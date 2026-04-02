@@ -105,6 +105,8 @@ type
         procedure close;
         procedure prewarm_short_lookup_caches;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
+        function lookup_exact_full_pinyin(const pinyin: string;
+            out results: TncCandidateList): Boolean; override;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; override;
@@ -4112,6 +4114,207 @@ begin
         begin
             m_base_connection.finalize(stmt);
         end;
+    end;
+end;
+
+function TncSqliteDictionary.lookup_exact_full_pinyin(const pinyin: string;
+    out results: TncCandidateList): Boolean;
+const
+    base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
+        'ORDER BY weight DESC, text ASC LIMIT ?2';
+    user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
+        'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
+var
+    stmt: Psqlite3_stmt;
+    list: TList<TncCandidate>;
+    seen: TDictionary<string, Integer>;
+    step_result: Integer;
+    item: TncCandidate;
+    query_key: string;
+    limit_value: Integer;
+    idx: Integer;
+    key: string;
+    text_value: string;
+    comment_value: string;
+    score_value: Integer;
+
+    procedure add_or_merge_candidate(const candidate_text: string; const candidate_comment: string;
+        const candidate_score: Integer; const candidate_source: TncCandidateSource);
+    var
+        local_idx: Integer;
+        local_item: TncCandidate;
+    begin
+        key := Trim(candidate_text);
+        if key = '' then
+        begin
+            Exit;
+        end;
+
+        if seen.TryGetValue(key, local_idx) then
+        begin
+            local_item := list[local_idx];
+            if candidate_comment <> '' then
+            begin
+                local_item.comment := candidate_comment;
+            end;
+            if candidate_score > local_item.score then
+            begin
+                local_item.score := candidate_score;
+            end;
+            if (candidate_source = cs_user) or (local_item.source = cs_user) then
+            begin
+                local_item.source := cs_user;
+            end;
+            if candidate_score > local_item.dict_weight then
+            begin
+                local_item.dict_weight := candidate_score;
+            end;
+            local_item.has_dict_weight := True;
+            list[local_idx] := local_item;
+            Exit;
+        end;
+
+        item.text := key;
+        item.comment := candidate_comment;
+        item.score := candidate_score;
+        item.source := candidate_source;
+        item.has_dict_weight := True;
+        item.dict_weight := candidate_score;
+        seen.Add(key, list.Count);
+        list.Add(item);
+    end;
+
+    function compare_candidate(const left: TncCandidate; const right: TncCandidate): Integer;
+    begin
+        if left.score <> right.score then
+        begin
+            Exit(right.score - left.score);
+        end;
+        if left.source <> right.source then
+        begin
+            if left.source = cs_user then
+            begin
+                Exit(-1);
+            end;
+            if right.source = cs_user then
+            begin
+                Exit(1);
+            end;
+        end;
+        if left.dict_weight <> right.dict_weight then
+        begin
+            Exit(right.dict_weight - left.dict_weight);
+        end;
+        Result := CompareText(left.text, right.text);
+    end;
+
+    procedure sort_results;
+    var
+        left_idx: Integer;
+        right_idx: Integer;
+        temp: TncCandidate;
+    begin
+        if Length(results) <= 1 then
+        begin
+            Exit;
+        end;
+
+        for left_idx := 0 to High(results) - 1 do
+        begin
+            for right_idx := left_idx + 1 to High(results) do
+            begin
+                if compare_candidate(results[left_idx], results[right_idx]) > 0 then
+                begin
+                    temp := results[left_idx];
+                    results[left_idx] := results[right_idx];
+                    results[right_idx] := temp;
+                end;
+            end;
+        end;
+    end;
+begin
+    SetLength(results, 0);
+    Result := False;
+    query_key := normalize_compact_pinyin_key(Trim(pinyin));
+    if query_key = '' then
+    begin
+        Exit;
+    end;
+    if not is_full_pinyin_key(query_key) then
+    begin
+        Exit(lookup(query_key, results));
+    end;
+    if not ensure_open then
+    begin
+        Exit;
+    end;
+
+    limit_value := Max(m_limit * 3, 24);
+    if limit_value > 96 then
+    begin
+        limit_value := 96;
+    end;
+
+    list := TList<TncCandidate>.Create;
+    seen := TDictionary<string, Integer>.Create;
+    try
+        if m_user_ready then
+        begin
+            stmt := nil;
+            if m_user_connection.prepare(user_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, query_key) and
+                m_user_connection.bind_int(stmt, 2, limit_value) then
+            begin
+                repeat
+                    step_result := m_user_connection.step(stmt);
+                    if step_result = SQLITE_ROW then
+                    begin
+                        text_value := Trim(m_user_connection.column_text(stmt, 0));
+                        score_value := m_user_connection.column_int(stmt, 1);
+                        add_or_merge_candidate(text_value, '', score_value, cs_user);
+                    end;
+                until step_result <> SQLITE_ROW;
+            end;
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+
+        if m_base_ready then
+        begin
+            stmt := nil;
+            if m_base_connection.prepare(base_sql, stmt) and
+                m_base_connection.bind_text(stmt, 1, query_key) and
+                m_base_connection.bind_int(stmt, 2, limit_value) then
+            begin
+                repeat
+                    step_result := m_base_connection.step(stmt);
+                    if step_result = SQLITE_ROW then
+                    begin
+                        text_value := Trim(m_base_connection.column_text(stmt, 1));
+                        comment_value := Trim(m_base_connection.column_text(stmt, 2));
+                        score_value := m_base_connection.column_int(stmt, 3);
+                        add_or_merge_candidate(text_value, comment_value, score_value, cs_rule);
+                    end;
+                until step_result <> SQLITE_ROW;
+            end;
+            if stmt <> nil then
+            begin
+                m_base_connection.finalize(stmt);
+            end;
+        end;
+
+        SetLength(results, list.Count);
+        for idx := 0 to list.Count - 1 do
+        begin
+            results[idx] := list[idx];
+        end;
+        sort_results;
+        Result := Length(results) > 0;
+    finally
+        seen.Free;
+        list.Free;
     end;
 end;
 
