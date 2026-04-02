@@ -141,6 +141,8 @@ function CreateFileW(lpFileName: string; dwDesiredAccess, dwShareMode: Cardinal;
 external 'CreateFileW@kernel32.dll stdcall';
 function CloseHandle(hObject: Integer): Boolean;
 external 'CloseHandle@kernel32.dll stdcall';
+function GetCurrentProcessId: DWORD;
+external 'GetCurrentProcessId@kernel32.dll stdcall';
 
 function GetRuntimeRoot: string;
 begin
@@ -193,6 +195,7 @@ var
     ResultCode: Integer;
     LoadedLines: TArrayOfString;
     Index: Integer;
+    InstallerPid: DWORD;
 begin
     Result := '';
     if RuntimeDir = '' then
@@ -201,11 +204,12 @@ begin
     end;
 
     ProfileRegPath := GetInstallerProfileRegPath;
+    InstallerPid := GetCurrentProcessId;
     DeleteFile(ForceStopTargetsPath);
     if not Exec(
         ProfileRegPath,
         'list_force_stop_targets -runtime_dir "' + RuntimeDir + '" -data_dir "' + GetRuntimeDataDir +
-            '" -output_path "' + ForceStopTargetsPath + '"',
+            '" -output_path "' + ForceStopTargetsPath + '" -exclude_pid "' + IntToStr(Integer(InstallerPid)) + '"',
         '',
         SW_HIDE,
         ewWaitUntilTerminated,
@@ -487,6 +491,7 @@ procedure TryForceStopProcessesUsingImeModules(const RuntimeDir: string);
 var
     ProfileRegPath: string;
     ResultCode: Integer;
+    InstallerPid: DWORD;
 begin
     if RuntimeDir = '' then
     begin
@@ -505,10 +510,12 @@ begin
     );
 
     ProfileRegPath := GetInstallerProfileRegPath;
+    InstallerPid := GetCurrentProcessId;
     Log('Running installer-side force-stop pass for processes using IME runtime files.');
     if Exec(
         ProfileRegPath,
-        'force_stop_runtime -runtime_dir "' + RuntimeDir + '" -data_dir "' + GetRuntimeDataDir + '"',
+        'force_stop_runtime -runtime_dir "' + RuntimeDir + '" -data_dir "' + GetRuntimeDataDir +
+            '" -exclude_pid "' + IntToStr(Integer(InstallerPid)) + '"',
         '',
         SW_HIDE,
         ewWaitUntilTerminated,

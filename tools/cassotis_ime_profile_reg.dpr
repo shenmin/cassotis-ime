@@ -277,6 +277,34 @@ begin
     end;
 end;
 
+procedure add_excluded_pid_if_valid(const value_text: string; const excluded_pids: TDictionary<Cardinal, Boolean>);
+var
+    parsed_pid: Integer;
+begin
+    if (excluded_pids = nil) or (Trim(value_text) = '') then
+    begin
+        Exit;
+    end;
+    if TryStrToInt(Trim(value_text), parsed_pid) and (parsed_pid > 0) and
+        (not excluded_pids.ContainsKey(Cardinal(parsed_pid))) then
+    begin
+        excluded_pids.Add(Cardinal(parsed_pid), True);
+    end;
+end;
+
+function build_excluded_pid_set: TDictionary<Cardinal, Boolean>;
+var
+    installer_pid_text: string;
+begin
+    Result := TDictionary<Cardinal, Boolean>.Create;
+    Result.Add(GetCurrentProcessId, True);
+    installer_pid_text := '';
+    if get_param_value('exclude_pid', installer_pid_text) then
+    begin
+        add_excluded_pid_if_valid(installer_pid_text, Result);
+    end;
+end;
+
 function is_running_as_admin: Boolean;
 var
     token: THandle;
@@ -955,22 +983,21 @@ function collect_force_stop_targets(const runtime_dir: string; const data_dir: s
 var
     list: TList<TncProcessInfo>;
     seen: TDictionary<Cardinal, Boolean>;
+    excluded_pids: TDictionary<Cardinal, Boolean>;
     processes: TArray<TncProcessInfo>;
     files: TArray<string>;
     idx: Integer;
     proc_idx: Integer;
     file_name: string;
-    current_pid: Cardinal;
 begin
     list := TList<TncProcessInfo>.Create;
     seen := TDictionary<Cardinal, Boolean>.Create;
+    excluded_pids := build_excluded_pid_set;
     try
-        current_pid := GetCurrentProcessId;
-
         processes := enumerate_processes_by_name('ctfmon');
         for proc_idx := 0 to High(processes) do
         begin
-            if processes[proc_idx].pid <> current_pid then
+            if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
             begin
                 add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
             end;
@@ -978,7 +1005,7 @@ begin
         processes := enumerate_processes_by_name('cassotis_ime_host');
         for proc_idx := 0 to High(processes) do
         begin
-            if processes[proc_idx].pid <> current_pid then
+            if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
             begin
                 add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
             end;
@@ -986,7 +1013,7 @@ begin
         processes := enumerate_processes_by_name('cassotis_ime_tray_host');
         for proc_idx := 0 to High(processes) do
         begin
-            if processes[proc_idx].pid <> current_pid then
+            if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
             begin
                 add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
             end;
@@ -1001,7 +1028,7 @@ begin
                 processes := get_processes_using_dll(file_name);
                 for proc_idx := 0 to High(processes) do
                 begin
-                    if processes[proc_idx].pid <> current_pid then
+                    if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
                     begin
                         add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
                     end;
@@ -1011,7 +1038,7 @@ begin
             processes := get_processes_locking_path(files[idx]);
             for proc_idx := 0 to High(processes) do
             begin
-                if processes[proc_idx].pid <> current_pid then
+                if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
                 begin
                     add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
                 end;
@@ -1020,6 +1047,7 @@ begin
 
         Result := list.ToArray;
     finally
+        excluded_pids.Free;
         seen.Free;
         list.Free;
     end;
