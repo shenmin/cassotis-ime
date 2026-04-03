@@ -1763,7 +1763,15 @@ begin
         end;
     end;
 
-    should_show := m_item_status_widget.Checked and m_engine_active;
+    should_show := m_item_status_widget.Checked and m_engine_active and
+        (m_profile_active or m_profile_active_pending);
+    if m_profile_inactive_pending and (not m_menu_popup_active) then
+    begin
+        // Hide promptly on focus loss unless a tray menu popup is active.
+        // The widget will be restored after debounce if the new focus is
+        // still using Cassotis.
+        should_show := False;
+    end;
     if m_settings_dialog_open then
     begin
         should_show := False;
@@ -1887,14 +1895,7 @@ begin
     if m_ipc_client.get_active(m_session_id, active_now) then
     begin
         m_active_sync_fail_count := 0;
-        if active_now then
-        begin
-            m_profile_active := True;
-            m_profile_active_pending := False;
-            m_profile_inactive_pending := False;
-            m_last_profile_inactive_tick := 0;
-        end
-        else if not m_profile_active_pending then
+        if not active_now and (not m_profile_active_pending) then
         begin
             m_profile_active := False;
         end;
@@ -1966,6 +1967,7 @@ begin
     m_profile_active_pending := True;
     m_last_profile_activate_tick := GetTickCount64;
     m_last_variant_poll_tick := 0;
+    apply_status_widget_visibility;
     Message.Result := 0;
 end;
 
@@ -1975,10 +1977,12 @@ begin
     m_profile_active_pending := False;
     m_last_profile_activate_tick := 0;
     m_profile_inactive_pending := True;
+    m_profile_active := False;
     m_last_profile_inactive_tick := GetTickCount64;
     m_last_variant_poll_tick := 0;
     m_last_state_poll_tick := 0;
     refresh_state_from_host;
+    apply_status_widget_visibility;
     Message.Result := 0;
 end;
 
@@ -2470,10 +2474,13 @@ begin
         m_last_variant_poll_tick := 0;
         m_last_state_poll_tick := 0;
         refresh_state_from_host;
-        if not m_engine_active then
-        begin
-            m_profile_active := False;
-        end;
+        // Only an actual active-profile signal should restore the status
+        // widget after focus loss. The host's global active state can remain
+        // temporarily true across IME switches (for example when switching to
+        // ENG in Chrome), so do not infer profile-active from m_engine_active
+        // here.
+        m_profile_active := False;
+        apply_status_widget_visibility;
     end;
 
     if m_profile_active_pending and (m_last_profile_activate_tick <> 0) and
@@ -2485,6 +2492,7 @@ begin
         m_last_profile_inactive_tick := 0;
         m_last_state_poll_tick := 0;
         refresh_state_from_host;
+        apply_status_widget_visibility;
     end;
 
     if m_profile_inactive_pending or m_profile_active_pending then
