@@ -9,6 +9,7 @@ type
     TncCandidate = record
         text: string;
         comment: string;
+        pinyin: string;
         score: Integer;
         source: TncCandidateSource;
         has_dict_weight: Boolean;

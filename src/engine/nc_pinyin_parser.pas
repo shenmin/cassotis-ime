@@ -81,7 +81,7 @@ var
             (initial_value = 's') then
         begin
             if (final_value = 'in') or (final_value = 'ing') or (final_value = 'iu') or
-                (final_value = 'ie') or (final_value = 'ian') or (final_value = 'iang') or
+                (final_value = 'ia') or (final_value = 'ie') or (final_value = 'ian') or (final_value = 'iang') or
                 (final_value = 'iao') or (final_value = 'iong') or
                 (final_value = 'ue') or (final_value = 've') or (final_value = 'van') or
                 (final_value = 'vn') then

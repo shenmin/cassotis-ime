@@ -14,6 +14,10 @@ type
             out results: TncCandidateList): Boolean; virtual;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; virtual;
+        function lookup_full_pinyin_followup_prefix(const pinyin_prefix: string;
+            out results: TncCandidateList): Boolean; virtual;
+        function lookup_full_pinyin_followup_prefix_limit(const pinyin_prefix: string;
+            const max_results: Integer; out results: TncCandidateList): Boolean; virtual;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; virtual;
         procedure begin_learning_batch; virtual;
         procedure commit_learning_batch; virtual;
@@ -33,6 +37,8 @@ type
         function get_query_latest_choice_text(const query_key: string): string; virtual;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; virtual;
+        function get_text_prefix_popularity(const prefix_text: string): Integer; virtual;
+        function get_text_contains_popularity(const token_text: string): Integer; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
     end;
@@ -50,6 +56,25 @@ function TncDictionaryProvider.lookup_full_pinyin_prefix(const pinyin_prefix: st
 begin
     SetLength(results, 0);
     Result := False;
+end;
+
+function TncDictionaryProvider.lookup_full_pinyin_followup_prefix(const pinyin_prefix: string;
+    out results: TncCandidateList): Boolean;
+begin
+    Result := lookup_full_pinyin_followup_prefix_limit(pinyin_prefix, 0, results);
+end;
+
+function TncDictionaryProvider.lookup_full_pinyin_followup_prefix_limit(
+    const pinyin_prefix: string; const max_results: Integer;
+    out results: TncCandidateList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.get_text_contains_popularity(const token_text: string): Integer;
+begin
+    Result := 0;
 end;
 
 function TncDictionaryProvider.single_char_matches_pinyin(const pinyin: string;
@@ -153,6 +178,11 @@ end;
 
 function TncDictionaryProvider.get_query_segment_path_penalty(const query_key: string;
     const encoded_path: string): Integer;
+begin
+    Result := 0;
+end;
+
+function TncDictionaryProvider.get_text_prefix_popularity(const prefix_text: string): Integer;
 begin
     Result := 0;
 end;

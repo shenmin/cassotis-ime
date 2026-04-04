@@ -109,6 +109,10 @@ type
             out results: TncCandidateList): Boolean; override;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; override;
+        function lookup_full_pinyin_followup_prefix(const pinyin_prefix: string;
+            out results: TncCandidateList): Boolean; override;
+        function lookup_full_pinyin_followup_prefix_limit(const pinyin_prefix: string;
+            const max_results: Integer; out results: TncCandidateList): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; override;
         procedure begin_learning_batch; override;
         procedure commit_learning_batch; override;
@@ -128,6 +132,8 @@ type
         function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
+        function get_text_prefix_popularity(const prefix_text: string): Integer; override;
+        function get_text_contains_popularity(const token_text: string): Integer; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
@@ -1956,6 +1962,7 @@ begin
                     Continue;
                 end;
                 seen.Add(seen_key, True);
+                item.pinyin := candidate_pinyin;
                 item.text := candidate_text;
                 item.comment := candidate_comment;
                 item.dict_weight := m_base_connection.column_int(stmt, 3);
@@ -1994,6 +2001,172 @@ begin
                             Continue;
                         end;
                         seen.Add(seen_key, True);
+                        item.pinyin := candidate_pinyin;
+                        item.text := candidate_text;
+                        item.comment := '';
+                        item.dict_weight := m_user_connection.column_int(stmt, 2);
+                        item.score := item.dict_weight;
+                        item.source := cs_user;
+                        item.has_dict_weight := False;
+                        SetLength(results, Length(results) + 1);
+                        results[High(results)] := item;
+                        step_result := m_user_connection.step(stmt);
+                    end;
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_user_connection.finalize(stmt);
+                end;
+            end;
+        end;
+    finally
+        seen.Free;
+    end;
+
+    Result := Length(results) > 0;
+end;
+
+function TncSqliteDictionary.lookup_full_pinyin_followup_prefix(const pinyin_prefix: string;
+    out results: TncCandidateList): Boolean;
+begin
+    Result := lookup_full_pinyin_followup_prefix_limit(pinyin_prefix, 0, results);
+end;
+
+function TncSqliteDictionary.lookup_full_pinyin_followup_prefix_limit(
+    const pinyin_prefix: string; const max_results: Integer;
+    out results: TncCandidateList): Boolean;
+const
+    base_prefix_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base ' +
+        'WHERE pinyin >= ?1 AND pinyin < ?2 AND pinyin <> ?1 ' +
+        'ORDER BY weight DESC, pinyin ASC, text ASC LIMIT ?3';
+    user_prefix_sql =
+        'SELECT pinyin, text, weight, last_used FROM dict_user ' +
+        'WHERE pinyin >= ?1 AND pinyin < ?2 AND pinyin <> ?1 ' +
+        'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?3';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    item: TncCandidate;
+    limit_value: Integer;
+    normalized_prefix: string;
+    upper_bound: string;
+    seen: TDictionary<string, Boolean>;
+    candidate_pinyin: string;
+    candidate_text: string;
+    candidate_comment: string;
+    seen_key: string;
+begin
+    SetLength(results, 0);
+    Result := False;
+    if pinyin_prefix = '' then
+    begin
+        Exit;
+    end;
+    if not ensure_open or (not m_base_ready) then
+    begin
+        Exit;
+    end;
+
+    normalized_prefix := LowerCase(Trim(pinyin_prefix));
+    if normalized_prefix = '' then
+    begin
+        Exit;
+    end;
+
+    if max_results > 0 then
+    begin
+        limit_value := max_results;
+        if limit_value > 256 then
+        begin
+            limit_value := 256;
+        end;
+    end
+    else if Length(normalized_prefix) >= 6 then
+    begin
+        limit_value := 24;
+    end
+    else if Length(normalized_prefix) >= 3 then
+    begin
+        limit_value := 40;
+    end
+    else
+    begin
+        limit_value := 64;
+    end;
+
+    upper_bound := build_prefix_upper_bound(normalized_prefix);
+    if upper_bound = '' then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    seen := TDictionary<string, Boolean>.Create;
+    try
+        try
+            if not m_base_connection.prepare(base_prefix_sql, stmt) or
+                (not m_base_connection.bind_text(stmt, 1, normalized_prefix)) or
+                (not m_base_connection.bind_text(stmt, 2, upper_bound)) or
+                (not m_base_connection.bind_int(stmt, 3, limit_value)) then
+            begin
+                Exit;
+            end;
+
+            step_result := m_base_connection.step(stmt);
+            while step_result = SQLITE_ROW do
+            begin
+                candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                candidate_text := m_base_connection.column_text(stmt, 1);
+                candidate_comment := m_base_connection.column_text(stmt, 2);
+                seen_key := candidate_pinyin + #0 + candidate_text + #0 + candidate_comment;
+                if seen.ContainsKey(seen_key) then
+                begin
+                    step_result := m_base_connection.step(stmt);
+                    Continue;
+                end;
+                seen.Add(seen_key, True);
+                item.pinyin := candidate_pinyin;
+                item.text := candidate_text;
+                item.comment := candidate_comment;
+                item.dict_weight := m_base_connection.column_int(stmt, 3);
+                item.score := item.dict_weight;
+                item.source := cs_rule;
+                item.has_dict_weight := True;
+                SetLength(results, Length(results) + 1);
+                results[High(results)] := item;
+                step_result := m_base_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_base_connection.finalize(stmt);
+            end;
+            stmt := nil;
+        end;
+
+        if m_user_ready then
+        begin
+            try
+                if m_user_connection.prepare(user_prefix_sql, stmt) and
+                    m_user_connection.bind_text(stmt, 1, normalized_prefix) and
+                    m_user_connection.bind_text(stmt, 2, upper_bound) and
+                    m_user_connection.bind_int(stmt, 3, limit_value) then
+                begin
+                    step_result := m_user_connection.step(stmt);
+                    while step_result = SQLITE_ROW do
+                    begin
+                        candidate_pinyin := m_user_connection.column_text(stmt, 0);
+                        candidate_text := m_user_connection.column_text(stmt, 1);
+                        seen_key := candidate_pinyin + #0 + candidate_text + #0;
+                        if seen.ContainsKey(seen_key) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        seen.Add(seen_key, True);
+                        item.pinyin := candidate_pinyin;
                         item.text := candidate_text;
                         item.comment := '';
                         item.dict_weight := m_user_connection.column_int(stmt, 2);
@@ -2933,6 +3106,35 @@ var
     syllables: TArray<string>;
     text_units: TArray<string>;
     idx: Integer;
+    prefix_pinyin: string;
+    prefix_text: string;
+    tail_text: string;
+    base_phrase_exists: Boolean;
+
+    function is_weak_constructed_tail_text(const value: string): Boolean;
+    begin
+        Result := False;
+        if Length(value) <> 1 then
+        begin
+            Exit;
+        end;
+
+        case Ord(value[1]) of
+            $7684, // 的
+            $5730, // 地
+            $5F97, // 得
+            $4E86, // 了
+            $7740, // 着
+            $8FC7, // 过
+            $554A, // 啊
+            $5440, // 呀
+            $5427, // 吧
+            $5417, // 吗
+            $5462, // 呢
+            $561B: // 嘛
+                Result := True;
+        end;
+    end;
 begin
     Result := False;
     pinyin_key := LowerCase(Trim(pinyin));
@@ -2949,15 +3151,12 @@ begin
     begin
         Exit;
     end;
-    if not has_any_base_phrase_for_pinyin(pinyin_key) then
-    begin
-        Exit;
-    end;
+    base_phrase_exists := has_any_base_phrase_for_pinyin(pinyin_key);
     if normalized_base_entry_exists(pinyin_key, text_key) then
     begin
         Exit;
     end;
-    if (commit_count > 1) or (user_weight > 1) then
+    if (commit_count > 4) or (user_weight > 8) then
     begin
         Exit;
     end;
@@ -2977,7 +3176,29 @@ begin
         end;
     end;
 
-    Result := True;
+    if base_phrase_exists then
+    begin
+        Exit(True);
+    end;
+
+    if Length(syllables) >= 3 then
+    begin
+        prefix_pinyin := '';
+        prefix_text := '';
+        for idx := 0 to High(syllables) - 1 do
+        begin
+            prefix_pinyin := prefix_pinyin + syllables[idx];
+            prefix_text := prefix_text + text_units[idx];
+        end;
+
+        tail_text := text_units[High(text_units)];
+        if (prefix_pinyin <> '') and (prefix_text <> '') and
+            normalized_base_entry_exists(prefix_pinyin, prefix_text) and
+            is_weak_constructed_tail_text(tail_text) then
+        begin
+            Exit(True);
+        end;
+    end;
 end;
 
 function TncSqliteDictionary.get_contains_popularity_score(const token: string): Integer;
@@ -4176,6 +4397,7 @@ var
 
         item.text := key;
         item.comment := candidate_comment;
+        item.pinyin := query_key;
         item.score := candidate_score;
         item.source := candidate_source;
         item.has_dict_weight := True;
@@ -4271,6 +4493,11 @@ begin
                     begin
                         text_value := Trim(m_user_connection.column_text(stmt, 0));
                         score_value := m_user_connection.column_int(stmt, 1);
+                        if is_likely_noisy_constructed_phrase(query_key, text_value, 0,
+                            score_value) then
+                        begin
+                            Continue;
+                        end;
                         add_or_merge_candidate(text_value, '', score_value, cs_user);
                     end;
                 until step_result <> SQLITE_ROW;
@@ -4887,6 +5114,7 @@ var
 
         item.text := text;
         item.comment := comment;
+        item.pinyin := candidate_pinyin_key;
         item.score := score_with_bonus;
         item.source := source;
         item.has_dict_weight := (source = cs_rule) and has_dict_weight;
@@ -6175,8 +6403,7 @@ begin
                             Continue;
                         end;
                         score_value := m_user_connection.column_int(stmt, 1);
-                        if (last_used_value <= 0) and
-                            is_likely_noisy_constructed_phrase(query_key, text_value, 0, score_value) then
+                        if is_likely_noisy_constructed_phrase(query_key, text_value, 0, score_value) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -6231,8 +6458,7 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        if (last_used_value <= 0) and
-                            is_likely_noisy_constructed_phrase(candidate_pinyin, text_value, 0, score_value) then
+                        if is_likely_noisy_constructed_phrase(candidate_pinyin, text_value, 0, score_value) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -6801,8 +7027,8 @@ begin
                 // erase a valid recent choice due to transient validation
                 // disagreement or lexicon normalization differences.
             end
-            else if (last_used_value <= 0) and
-                is_likely_noisy_constructed_phrase(pinyin_value, text_value, commit_count, user_weight) then
+            else if is_likely_noisy_constructed_phrase(pinyin_value, text_value, commit_count,
+                user_weight) then
             begin
                 purge_user_entry_internal(pinyin_value, text_value, False, True);
             end;
@@ -6839,6 +7065,7 @@ var
     cache_key: string;
     full_pinyin_input: Boolean;
     base_entry_exists: Boolean;
+    noisy_constructed_phrase: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     cache_key := pinyin_key + #1 + Trim(text);
@@ -6867,6 +7094,14 @@ begin
         // Ignore invalid single-char learning, but do not erase any existing
         // persisted choice here. Runtime lookup already filters mismatched
         // single-char rows, so destructive purge is unnecessary.
+        Exit;
+    end;
+
+    noisy_constructed_phrase := full_pinyin_input and is_valid_user_text(text) and
+        is_likely_noisy_constructed_phrase(pinyin_key, text, 1, 1);
+    if noisy_constructed_phrase then
+    begin
+        purge_user_entry_internal(pinyin_key, text, False, True);
         Exit;
     end;
 
@@ -7918,6 +8153,16 @@ begin
             m_user_connection.clear_bindings(m_stmt_query_path_penalty);
         end;
     end;
+end;
+
+function TncSqliteDictionary.get_text_prefix_popularity(const prefix_text: string): Integer;
+begin
+    Result := get_prefix_popularity_score(Trim(prefix_text));
+end;
+
+function TncSqliteDictionary.get_text_contains_popularity(const token_text: string): Integer;
+begin
+    Result := get_contains_popularity_score(Trim(token_text));
 end;
 
 function TncSqliteDictionary.get_candidate_penalty(const pinyin: string; const text: string): Integer;
