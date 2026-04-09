@@ -86,6 +86,7 @@ type
         function has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
+        function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
         function is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
             const commit_count: Integer = 0; const user_weight: Integer = 0): Boolean;
         procedure configure_user_connection;
@@ -2819,6 +2820,66 @@ begin
             m_base_connection.finalize(stmt);
         end;
     end;
+end;
+
+function TncSqliteDictionary.is_suppressible_nonbase_exact_phrase(const pinyin: string;
+    const text: string): Boolean;
+const
+    c_suppressible_phrase_min_units = 2;
+    c_suppressible_phrase_max_units = 4;
+var
+    pinyin_key: string;
+    text_key: string;
+    syllables: TArray<string>;
+    text_units: TArray<string>;
+    idx: Integer;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') then
+    begin
+        Exit;
+    end;
+    if (not is_full_pinyin_key(pinyin_key)) or (not is_valid_user_text(text_key)) then
+    begin
+        Exit;
+    end;
+    if is_whitelisted_constructed_phrase(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+    if not has_any_base_phrase_for_pinyin(pinyin_key) then
+    begin
+        Exit;
+    end;
+    if normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+
+    text_units := split_text_units_local(text_key);
+    if (Length(text_units) < c_suppressible_phrase_min_units) or
+        (Length(text_units) > c_suppressible_phrase_max_units) then
+    begin
+        Exit;
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
+    if Length(syllables) <> Length(text_units) then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(text_units) do
+    begin
+        if not single_char_matches_pinyin(syllables[idx], text_units[idx]) then
+        begin
+            Exit;
+        end;
+    end;
+
+    Result := True;
 end;
 
 function TncSqliteDictionary.split_full_pinyin_syllables(const pinyin: string): TArray<string>;
@@ -6125,6 +6186,12 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
+                        if is_suppressible_nonbase_exact_phrase(query_key, text_value) then
+                        begin
+                            Inc(skipped_noisy_user_count);
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
                         if is_likely_noisy_constructed_phrase(query_key, text_value, commit_count, 0) then
                         begin
                             Inc(skipped_noisy_user_count);
@@ -6171,6 +6238,12 @@ begin
                         if normalized_base_entry_exists(query_key, text_value) then
                         begin
                             Inc(skipped_base_dup_user_count);
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        if is_suppressible_nonbase_exact_phrase(query_key, text_value) then
+                        begin
+                            Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
@@ -6228,6 +6301,12 @@ begin
                         if normalized_base_entry_exists(candidate_pinyin, text_value) then
                         begin
                             Inc(skipped_base_dup_user_count);
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        if is_suppressible_nonbase_exact_phrase(candidate_pinyin, text_value) then
+                        begin
+                            Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
@@ -6801,6 +6880,10 @@ begin
                 // erase a valid recent choice due to transient validation
                 // disagreement or lexicon normalization differences.
             end
+            else if is_suppressible_nonbase_exact_phrase(pinyin_value, text_value) then
+            begin
+                purge_user_entry_internal(pinyin_value, text_value, False, False);
+            end
             else if (last_used_value <= 0) and
                 is_likely_noisy_constructed_phrase(pinyin_value, text_value, commit_count, user_weight) then
             begin
@@ -6839,6 +6922,7 @@ var
     cache_key: string;
     full_pinyin_input: Boolean;
     base_entry_exists: Boolean;
+    suppress_nonbase_exact_learning: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     cache_key := pinyin_key + #1 + Trim(text);
@@ -6871,6 +6955,14 @@ begin
     end;
 
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
+    suppress_nonbase_exact_learning := full_pinyin_input and
+        is_suppressible_nonbase_exact_phrase(pinyin_key, text);
+
+    if suppress_nonbase_exact_learning then
+    begin
+        purge_user_entry_internal(pinyin_key, text, False, False);
+        Exit;
+    end;
 
     // A positive explicit selection for the same query/text pair should
     // cancel any earlier "remove candidate" feedback for that exact pair.
@@ -7479,6 +7571,11 @@ begin
         Exit;
     end;
 
+    if is_suppressible_nonbase_exact_phrase(normalized_query, text_key) then
+    begin
+        Exit;
+    end;
+
     if get_candidate_penalty(normalized_query, text_key) > 0 then
     begin
         Exit;
@@ -7615,6 +7712,7 @@ var
     last_used_unix: Int64;
     now_unix: Int64;
     age_seconds: Int64;
+    use_fallback_scan: Boolean;
 begin
     Result := '';
     normalized_query := LowerCase(Trim(query_key));
@@ -7629,6 +7727,8 @@ begin
     begin
         Exit;
     end;
+
+    use_fallback_scan := False;
 
     try
         if m_stmt_query_latest_choice_text = nil then
@@ -7648,20 +7748,69 @@ begin
         step_result := m_user_connection.step(m_stmt_query_latest_choice_text);
         if step_result <> SQLITE_ROW then
         begin
-            stmt := nil;
-            try
-                if not m_user_connection.prepare(fallback_query_sql, stmt) or
-                    (not m_user_connection.bind_text(stmt, 1, normalized_query)) then
+            use_fallback_scan := True;
+        end;
+        if not use_fallback_scan then
+        begin
+            candidate_text := Trim(m_user_connection.column_text(m_stmt_query_latest_choice_text, 0));
+            last_used_unix := m_user_connection.column_int(m_stmt_query_latest_choice_text, 1);
+            if last_used_unix > 0 then
+            begin
+                now_unix := get_unix_time_now;
+                if now_unix > 0 then
                 begin
-                    Exit;
+                    age_seconds := now_unix - last_used_unix;
+                    if age_seconds < 0 then
+                    begin
+                        age_seconds := 0;
+                    end;
+                    if age_seconds > c_sec_per_180_days then
+                    begin
+                        use_fallback_scan := True;
+                    end;
                 end;
+            end;
 
+            if (not use_fallback_scan) and
+                ((candidate_text = '') or
+                is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text) or
+                (get_candidate_penalty(normalized_query, candidate_text) > 0)) then
+            begin
+                use_fallback_scan := True;
+            end;
+
+            if not use_fallback_scan then
+            begin
+                Result := candidate_text;
+            end;
+        end;
+    finally
+        if m_stmt_query_latest_choice_text <> nil then
+        begin
+            m_user_connection.reset(m_stmt_query_latest_choice_text);
+            m_user_connection.clear_bindings(m_stmt_query_latest_choice_text);
+        end;
+    end;
+
+    if use_fallback_scan then
+    begin
+        stmt := nil;
+        try
+            if m_user_connection.prepare(fallback_query_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, normalized_query) then
+            begin
                 step_result := m_user_connection.step(stmt);
                 while step_result = SQLITE_ROW do
                 begin
                     candidate_text := Trim(m_user_connection.column_text(stmt, 0));
                     if candidate_text <> '' then
                     begin
+                        if is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+
                         last_used_unix := m_user_connection.column_int(stmt, 2);
                         if last_used_unix > 0 then
                         begin
@@ -7683,49 +7832,17 @@ begin
                         if get_candidate_penalty(normalized_query, candidate_text) <= 0 then
                         begin
                             Result := candidate_text;
-                            Exit;
+                            Break;
                         end;
                     end;
                     step_result := m_user_connection.step(stmt);
                 end;
-                Exit;
-            finally
-                if stmt <> nil then
-                begin
-                    m_user_connection.finalize(stmt);
-                end;
             end;
-        end;
-
-        candidate_text := Trim(m_user_connection.column_text(m_stmt_query_latest_choice_text, 0));
-        last_used_unix := m_user_connection.column_int(m_stmt_query_latest_choice_text, 1);
-        if last_used_unix > 0 then
-        begin
-            now_unix := get_unix_time_now;
-            if now_unix > 0 then
+        finally
+            if stmt <> nil then
             begin
-                age_seconds := now_unix - last_used_unix;
-                if age_seconds < 0 then
-                begin
-                    age_seconds := 0;
-                end;
-                if age_seconds > c_sec_per_180_days then
-                begin
-                    Exit;
-                end;
+                m_user_connection.finalize(stmt);
             end;
-        end;
-
-        if (candidate_text <> '') and
-            (get_candidate_penalty(normalized_query, candidate_text) <= 0) then
-        begin
-            Result := candidate_text;
-        end;
-    finally
-        if m_stmt_query_latest_choice_text <> nil then
-        begin
-            m_user_connection.reset(m_stmt_query_latest_choice_text);
-            m_user_connection.clear_bindings(m_stmt_query_latest_choice_text);
         end;
     end;
 
