@@ -180,6 +180,7 @@ type
             out out_text: string): Boolean;
         function get_raw_composition_commit_text: string;
         function get_candidate_text_unit_count(const text: string): Integer;
+        function is_nonlexicon_long_segment_path_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_chain_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_common_pattern_candidate(const candidate: TncCandidate): Boolean;
         function is_runtime_redup_candidate(const candidate: TncCandidate): Boolean;
@@ -1975,6 +1976,8 @@ var
     explicit_apostrophe_query_syllables: TncPinyinParseResult;
     explicit_apostrophe_query_parsed: Boolean;
     lightweight_sentence_applied: Boolean;
+    short_full_exact_query: Boolean;
+    latest_query_choice_text: string;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -1997,6 +2000,34 @@ var
             begin
                 Exit(True);
             end;
+        end;
+    end;
+
+    function has_short_exact_complete_anchor(
+        const candidates: TncCandidateList): Boolean;
+    var
+        idx: Integer;
+    begin
+        Result := False;
+        if (input_syllable_count < 2) or (input_syllable_count > 4) or
+            (not is_full_pinyin_key(lookup_text)) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(candidates) do
+        begin
+            if (Trim(candidates[idx].comment) <> '') or
+                (not candidates[idx].has_dict_weight) then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(candidates[idx].text)) <>
+                input_syllable_count then
+            begin
+                Continue;
+            end;
+            Exit(True);
         end;
     end;
 
@@ -3374,6 +3405,7 @@ var
     var
         candidate_text_units: Integer;
         encoded_path: string;
+        path_segment_count: Integer;
     begin
         Result := False;
         if (candidate.comment <> '') or candidate.has_dict_weight or
@@ -3389,7 +3421,8 @@ var
         end;
 
         encoded_path := get_segment_path_for_candidate(candidate);
-        if get_encoded_path_segment_count_local(encoded_path) < 4 then
+        path_segment_count := get_encoded_path_segment_count_local(encoded_path);
+        if path_segment_count < 2 then
         begin
             Exit;
         end;
@@ -3402,6 +3435,10 @@ var
         best_index: Integer;
         best_score_hint: Integer;
         top_score_hint: Integer;
+        best_segment_count: Integer;
+        top_segment_count: Integer;
+        best_candidate_score: Integer;
+        top_candidate_score: Integer;
         idx: Integer;
         picked: TncCandidate;
     begin
@@ -3412,6 +3449,8 @@ var
 
         best_index := -1;
         best_score_hint := Low(Integer);
+        best_segment_count := MaxInt;
+        best_candidate_score := Low(Integer);
         for idx := 0 to High(candidates) do
         begin
             if not is_lightweight_sentence_complete_candidate_for_visibility(candidates[idx]) then
@@ -3419,9 +3458,21 @@ var
                 Continue;
             end;
 
-            if get_candidate_segment_path_score_hint(candidates[idx]) > best_score_hint then
+            top_score_hint := get_candidate_segment_path_score_hint(candidates[idx]);
+            top_segment_count := get_encoded_path_segment_count_local(
+                get_segment_path_for_candidate(candidates[idx]));
+            top_candidate_score := candidates[idx].score;
+            if (best_index < 0) or
+                (top_segment_count < best_segment_count) or
+                ((top_segment_count = best_segment_count) and
+                (top_candidate_score > best_candidate_score)) or
+                ((top_segment_count = best_segment_count) and
+                (top_candidate_score = best_candidate_score) and
+                (top_score_hint > best_score_hint)) then
             begin
-                best_score_hint := get_candidate_segment_path_score_hint(candidates[idx]);
+                best_score_hint := top_score_hint;
+                best_segment_count := top_segment_count;
+                best_candidate_score := top_candidate_score;
                 best_index := idx;
             end;
         end;
@@ -3434,10 +3485,123 @@ var
         if is_lightweight_sentence_complete_candidate_for_visibility(candidates[0]) then
         begin
             top_score_hint := get_candidate_segment_path_score_hint(candidates[0]);
-            if top_score_hint >= best_score_hint then
+            top_segment_count := get_encoded_path_segment_count_local(
+                get_segment_path_for_candidate(candidates[0]));
+            top_candidate_score := candidates[0].score;
+            if (top_segment_count < best_segment_count) or
+                ((top_segment_count = best_segment_count) and
+                (top_candidate_score >= best_candidate_score)) or
+                ((top_segment_count = best_segment_count) and
+                (top_candidate_score + 160 >= best_candidate_score) and
+                (top_score_hint >= best_score_hint)) then
             begin
                 Exit;
             end;
+        end;
+
+        picked := candidates[best_index];
+        for idx := best_index downto 1 do
+        begin
+            candidates[idx] := candidates[idx - 1];
+        end;
+        candidates[0] := picked;
+    end;
+
+    procedure ensure_best_user_complete_candidate_visible(var candidates: TncCandidateList);
+    var
+        best_index: Integer;
+        best_bonus: Integer;
+        current_top_bonus: Integer;
+        latest_query_choice_text: string;
+        normalized_query: string;
+        idx: Integer;
+        local_bonus: Integer;
+        picked: TncCandidate;
+    begin
+        if Length(candidates) <= 1 then
+        begin
+            Exit;
+        end;
+        if m_last_lookup_syllable_count < 2 then
+        begin
+            Exit;
+        end;
+
+        normalized_query := normalize_pinyin_text(m_last_lookup_key);
+        latest_query_choice_text := '';
+        if (normalized_query <> '') and (m_dictionary <> nil) then
+        begin
+            latest_query_choice_text := Trim(
+                m_dictionary.get_query_latest_choice_text(normalized_query));
+        end;
+
+        best_index := -1;
+        best_bonus := Low(Integer);
+        for idx := 0 to High(candidates) do
+        begin
+            if (candidates[idx].source <> cs_user) or (candidates[idx].comment <> '') or
+                (get_candidate_text_unit_count(Trim(candidates[idx].text)) <>
+                m_last_lookup_syllable_count) then
+            begin
+                Continue;
+            end;
+
+            local_bonus := 0;
+            if is_latest_session_query_choice(candidates[idx].text) then
+            begin
+                Inc(local_bonus, 800);
+            end;
+            if (latest_query_choice_text <> '') and
+                SameText(Trim(candidates[idx].text), latest_query_choice_text) then
+            begin
+                Inc(local_bonus, 720);
+            end;
+            if (normalized_query <> '') and (m_dictionary <> nil) then
+            begin
+                Inc(local_bonus,
+                    m_dictionary.get_query_choice_bonus(normalized_query, candidates[idx].text));
+            end;
+
+            if (best_index < 0) or (local_bonus > best_bonus) or
+                ((local_bonus = best_bonus) and (candidates[idx].score > candidates[best_index].score)) then
+            begin
+                best_index := idx;
+                best_bonus := local_bonus;
+            end;
+        end;
+
+        if best_index <= 0 then
+        begin
+            Exit;
+        end;
+
+        current_top_bonus := 0;
+        if (candidates[0].source = cs_user) and (candidates[0].comment = '') and
+            (get_candidate_text_unit_count(Trim(candidates[0].text)) = m_last_lookup_syllable_count) then
+        begin
+            if is_latest_session_query_choice(candidates[0].text) then
+            begin
+                Inc(current_top_bonus, 800);
+            end;
+            if (latest_query_choice_text <> '') and
+                SameText(Trim(candidates[0].text), latest_query_choice_text) then
+            begin
+                Inc(current_top_bonus, 720);
+            end;
+            if (normalized_query <> '') and (m_dictionary <> nil) then
+            begin
+                Inc(current_top_bonus,
+                    m_dictionary.get_query_choice_bonus(normalized_query, candidates[0].text));
+            end;
+        end;
+
+        if (best_bonus <= 0) and (candidates[0].source = cs_user) then
+        begin
+            Exit;
+        end;
+        if (best_bonus <= current_top_bonus) and (candidates[0].source = cs_user) then
+        begin
+            Exit;
         end;
 
         picked := candidates[best_index];
@@ -4381,6 +4545,7 @@ var
         c_light_sentence_emit_limit = 3;
         c_light_sentence_exact_top_n = 3;
         c_light_sentence_tail_completion_top_n = 4;
+        c_light_sentence_additional_segment_penalty = 120;
         c_light_sentence_single_penalty = 180;
         c_light_sentence_multi_bonus = 280;
         c_light_sentence_tail_partial_bonus = 140;
@@ -4394,6 +4559,7 @@ var
             path: string;
             prev_text: string;
             prev_prev_text: string;
+            last_segment_syllable_count: Integer;
         end;
         TLightSentenceStateArray = TArray<TLightSentenceState>;
     var
@@ -4467,6 +4633,116 @@ var
             end;
 
             Result := text_units >= 2;
+        end;
+
+        function has_exact_merged_phrase_for_recent_transition(
+            const base_state: TLightSentenceState; const current_pos: Integer;
+            const current_seg_len: Integer): Boolean;
+        const
+            c_merged_phrase_probe_limit = 4;
+        var
+            merged_start: Integer;
+            merged_len: Integer;
+            merged_key: string;
+            merged_results: TncCandidateList;
+            probe_idx: Integer;
+            merged_units: Integer;
+        begin
+            Result := False;
+            if (base_state.last_segment_syllable_count < 2) or (current_seg_len <> 1) then
+            begin
+                Exit;
+            end;
+
+            merged_start := current_pos - base_state.last_segment_syllable_count;
+            if merged_start < 0 then
+            begin
+                Exit;
+            end;
+
+            merged_len := base_state.last_segment_syllable_count + current_seg_len;
+            if merged_len < 3 then
+            begin
+                Exit;
+            end;
+
+            merged_key := build_syllable_query_key(merged_start, merged_len);
+            if (merged_key = '') or (not dictionary_exact_lookup_cached(merged_key, merged_results)) then
+            begin
+                Exit;
+            end;
+
+            for probe_idx := 0 to High(merged_results) do
+            begin
+                if probe_idx >= c_merged_phrase_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(merged_results[probe_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                if not is_allowed_sentence_segment_candidate(merged_results[probe_idx], merged_len) then
+                begin
+                    Continue;
+                end;
+                merged_units := get_candidate_text_unit_count(Trim(merged_results[probe_idx].text));
+                if merged_units >= 2 then
+                begin
+                    Exit(True);
+                end;
+            end;
+        end;
+
+        function has_exact_merged_phrase_for_single_bridge(
+            const base_state: TLightSentenceState; const current_pos: Integer;
+            const current_seg_len: Integer): Boolean;
+        const
+            c_merged_phrase_probe_limit = 4;
+        var
+            merged_key: string;
+            merged_results: TncCandidateList;
+            probe_idx: Integer;
+            merged_units: Integer;
+        begin
+            Result := False;
+            if (base_state.last_segment_syllable_count <> 1) or (current_seg_len <> 1) then
+            begin
+                Exit;
+            end;
+
+            if current_pos <= 0 then
+            begin
+                Exit;
+            end;
+
+            merged_key := build_syllable_query_key(current_pos - 1, 2);
+            if (merged_key = '') or (not dictionary_exact_lookup_cached(merged_key, merged_results)) then
+            begin
+                Exit;
+            end;
+
+            for probe_idx := 0 to High(merged_results) do
+            begin
+                if probe_idx >= c_merged_phrase_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(merged_results[probe_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                if not is_allowed_sentence_segment_candidate(merged_results[probe_idx], 2) then
+                begin
+                    Continue;
+                end;
+                merged_units := get_candidate_text_unit_count(
+                    Trim(merged_results[probe_idx].text));
+                if merged_units >= 2 then
+                begin
+                    Exit(True);
+                end;
+            end;
         end;
 
         procedure add_state(var states: TLightSentenceStateArray;
@@ -4698,6 +4974,7 @@ var
         state_map[0][0].path := '';
         state_map[0][0].prev_text := '';
         state_map[0][0].prev_prev_text := '';
+        state_map[0][0].last_segment_syllable_count := 0;
 
         for pos := 0 to head_syllable_count - 1 do
         begin
@@ -4734,10 +5011,18 @@ var
                         Inc(candidate_state.score,
                             (c_light_sentence_exact_top_n - result_idx) *
                             c_light_sentence_exact_rank_step);
+                        if base_state.text <> '' then
+                        begin
+                            Dec(candidate_state.score, c_light_sentence_additional_segment_penalty);
+                        end;
 
                         if candidate_units >= 2 then
                         begin
                             Inc(candidate_state.score, c_light_sentence_multi_bonus + (seg_len * 24));
+                            if seg_len >= 3 then
+                            begin
+                                Inc(candidate_state.score, 560 + ((seg_len - 3) * 160));
+                            end;
                         end
                         else
                         begin
@@ -4749,6 +5034,14 @@ var
                             if get_candidate_text_unit_count(base_state.prev_prev_text) = 1 then
                             begin
                                 Dec(candidate_state.score, 120);
+                            end;
+                            if has_exact_merged_phrase_for_recent_transition(base_state, pos, seg_len) then
+                            begin
+                                Dec(candidate_state.score, 1680);
+                            end;
+                            if has_exact_merged_phrase_for_single_bridge(base_state, pos, seg_len) then
+                            begin
+                                Dec(candidate_state.score, 1120);
                             end;
                         end;
 
@@ -4775,6 +5068,7 @@ var
                         end;
                         candidate_state.prev_prev_text := base_state.prev_text;
                         candidate_state.prev_text := candidate_text;
+                        candidate_state.last_segment_syllable_count := seg_len;
                         add_state(state_map[next_pos], candidate_state);
                         Inc(accepted_count);
                     end;
@@ -10492,6 +10786,9 @@ begin
             end;
         end;
         m_last_lookup_syllable_count := input_syllable_count;
+        short_full_exact_query := has_multi_syllable_input and
+            (input_syllable_count >= 2) and (input_syllable_count <= 4) and
+            is_full_pinyin_key(lookup_text);
         repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
         single_char_partial_min_count := 1;
         if repeated_two_syllable_query then
@@ -10505,12 +10802,14 @@ begin
         raw_candidates_seeded_from_runtime_only := False;
         trailing_prefix_rescue_applied := False;
         has_strong_long_sentence_prediction := False;
+        latest_query_choice_text := '';
         SetLength(relaxed_segment_candidates, 0);
         SetLength(explicit_apostrophe_aligned_candidates, 0);
         SetLength(lightweight_sentence_candidates, 0);
         lightweight_sentence_applied := False;
         head_only_multi_syllable := m_config.enable_segment_candidates and
             has_multi_syllable_input and
+            (not short_full_exact_query) and
             (all_initial_compact_query or
                 (m_config.segment_head_only_multi_syllable and
                     (not has_internal_dangling_initial) and
@@ -10555,6 +10854,12 @@ begin
                 raw_from_dictionary := True;
                 trailing_prefix_rescue_applied := True;
             end
+            else if short_full_exact_query and
+                dictionary_exact_lookup_cached(lookup_text, raw_candidates) then
+            begin
+                has_raw_candidates := True;
+                raw_from_dictionary := True;
+            end
             else if dictionary_lookup_cached(lookup_text, raw_candidates) then
             begin
                 has_raw_candidates := True;
@@ -10588,6 +10893,12 @@ begin
                     has_raw_candidates := True;
                     raw_from_dictionary := True;
                     trailing_prefix_rescue_applied := True;
+                end
+                else if short_full_exact_query and
+                    dictionary_exact_lookup_cached(lookup_text, raw_candidates) then
+                begin
+                    has_raw_candidates := True;
+                    raw_from_dictionary := True;
                 end
                 else if has_multi_syllable_input and
                     should_enable_long_sentence_exact_search_local and
@@ -10629,8 +10940,103 @@ begin
             m_runtime_common_pattern_text := compact_runtime_candidate.text;
         end;
 
+        if has_raw_candidates and raw_from_dictionary and
+            has_short_exact_complete_anchor(raw_candidates) then
+        begin
+            if m_dictionary <> nil then
+            begin
+                latest_query_choice_text := Trim(
+                    m_dictionary.get_query_latest_choice_text(normalize_pinyin_text(lookup_text)));
+            end;
+
+            sort_candidates_lightweight(raw_candidates);
+            filter_non_bmp_single_char_candidates(raw_candidates);
+
+            limit := get_total_candidate_limit;
+            if limit > get_candidate_limit * 3 then
+            begin
+                limit := get_candidate_limit * 3;
+            end;
+            if limit > c_candidate_total_limit_max then
+            begin
+                limit := c_candidate_total_limit_max;
+            end;
+
+            if Length(raw_candidates) > limit then
+            begin
+                SetLength(m_candidates, limit);
+                for i := 0 to limit - 1 do
+                begin
+                    m_candidates[i] := raw_candidates[i];
+                end;
+                raw_candidates := m_candidates;
+            end
+            else
+            begin
+                m_candidates := raw_candidates;
+            end;
+
+            merge_confirmed_prefix_user_extensions(m_candidates);
+            for i := 0 to High(m_candidates) do
+            begin
+                if Trim(m_candidates[i].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                if is_latest_session_query_choice(m_candidates[i].text) then
+                begin
+                    Inc(m_candidates[i].score, 820);
+                end;
+                if (latest_query_choice_text <> '') and
+                    SameText(Trim(m_candidates[i].text), latest_query_choice_text) then
+                begin
+                    Inc(m_candidates[i].score, 760);
+                end;
+                if m_dictionary <> nil then
+                begin
+                    Inc(m_candidates[i].score,
+                        m_dictionary.get_query_choice_bonus(
+                        normalize_pinyin_text(lookup_text), m_candidates[i].text));
+                end;
+            end;
+
+            ensure_forced_single_char_partial(m_candidates);
+            prioritize_complete_phrase_matches(m_candidates);
+            apply_user_penalties(lookup_text, m_candidates);
+            sort_candidates_lightweight(m_candidates);
+            ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
+            ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
+                single_char_partial_min_count);
+            ensure_two_syllable_exact_phrase_precedes_matching_single_char_partial(m_candidates);
+            filter_short_query_nonlexicon_complete_noise(m_candidates);
+            ensure_exact_dict_complete_candidate_visible(m_candidates);
+            ensure_best_user_complete_candidate_visible(m_candidates);
+            finalize_lookup_timing_info;
+            if m_config.debug_mode then
+            begin
+                m_last_lookup_debug_extra := Format(
+                    'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=0 shortfast=1',
+                    [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
+                    Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+                    Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
+                    Format(' allinit=%d', [Ord(all_initial_compact_query)]);
+                if Length(m_candidates) > 0 then
+                begin
+                    m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                        get_candidate_debug_summary(m_candidates[0]);
+                end;
+            end;
+            refresh_candidate_segment_paths;
+            note_ranked_top_candidate;
+            m_page_index := 0;
+            m_selected_index := 0;
+            Exit;
+        end;
+
         if has_multi_syllable_input and (not all_initial_compact_query) and
             (not has_internal_dangling_initial) and
+            (not (has_raw_candidates and raw_from_dictionary and
+            has_short_exact_complete_anchor(raw_candidates))) and
             build_lightweight_sentence_candidates(lookup_text, lightweight_sentence_candidates) then
         begin
             if has_raw_candidates then
@@ -10709,6 +11115,7 @@ begin
             filter_short_query_nonlexicon_complete_noise(m_candidates);
             ensure_best_lightweight_sentence_candidate_visible(m_candidates);
             ensure_exact_dict_complete_candidate_visible(m_candidates);
+            ensure_best_user_complete_candidate_visible(m_candidates);
             finalize_lookup_timing_info;
             if m_config.debug_mode then
             begin
@@ -11001,6 +11408,7 @@ begin
         filter_short_query_nonlexicon_complete_noise(m_candidates);
         ensure_best_lightweight_sentence_candidate_visible(m_candidates);
         ensure_exact_dict_complete_candidate_visible(m_candidates);
+        ensure_best_user_complete_candidate_visible(m_candidates);
         finalize_lookup_timing_info;
         if m_config.debug_mode then
         begin
@@ -12697,6 +13105,25 @@ begin
         SameText(candidate.text, m_runtime_redup_text);
 end;
 
+function TncEngine.is_nonlexicon_long_segment_path_candidate(
+    const candidate: TncCandidate): Boolean;
+var
+    encoded_path: string;
+begin
+    Result := False;
+    if (candidate.comment <> '') or candidate.has_dict_weight or
+        (candidate.source = cs_user) or is_runtime_chain_candidate(candidate) or
+        is_runtime_common_pattern_candidate(candidate) or
+        is_runtime_redup_candidate(candidate) or
+        (get_candidate_text_unit_count(candidate.text) < 5) then
+    begin
+        Exit;
+    end;
+
+    encoded_path := get_segment_path_for_candidate(candidate);
+    Result := get_encoded_path_segment_count_local(encoded_path) > 1;
+end;
+
 function TncEngine.get_runtime_candidate_kind(const candidate: TncCandidate): string;
 begin
     Result := '';
@@ -12770,6 +13197,11 @@ var
     cache_key: string;
 begin
     Result := 0;
+    if is_nonlexicon_long_segment_path_candidate(candidate) then
+    begin
+        Exit;
+    end;
+
     encoded_path := get_segment_path_for_candidate(candidate);
     if get_encoded_path_segment_count_local(encoded_path) <= 1 then
     begin
@@ -13798,6 +14230,11 @@ var
 begin
     Result := 0;
     if m_dictionary = nil then
+    begin
+        Exit;
+    end;
+
+    if is_nonlexicon_long_segment_path_candidate(candidate) then
     begin
         Exit;
     end;
@@ -14907,6 +15344,10 @@ const
         begin
             Result := string(Char($54E6));
         end
+        else if normalized_query = 'ai' then
+        begin
+            Result := string(Char($5509));
+        end
         else if normalized_query = 'ha' then
         begin
             Result := string(Char($54C8));
@@ -15273,6 +15714,12 @@ const
             Exit;
         end;
 
+        if (candidate.source = cs_user) and
+            (get_candidate_text_unit_count(candidate.text) >= 2) then
+        begin
+            Exit(False);
+        end;
+
         prepare_weak_chain_query_cache;
         if Length(weak_chain_query_syllables) < 2 then
         begin
@@ -15313,10 +15760,10 @@ const
             Exit;
         end;
 
-        if (not is_runtime_chain_candidate(candidate)) and
-            (candidate.source <> cs_user) then
+        if (candidate.source = cs_user) and
+            (get_candidate_text_unit_count(candidate.text) >= 2) then
         begin
-            Exit;
+            Exit(False);
         end;
 
         prepare_weak_chain_query_cache;
@@ -15328,6 +15775,12 @@ const
         if is_weak_single_char_chain_candidate_cached(candidate) then
         begin
             Exit(True);
+        end;
+
+        if (not is_runtime_chain_candidate(candidate)) and
+            (candidate.source <> cs_user) then
+        begin
+            Exit(False);
         end;
 
         if not is_runtime_chain_candidate(candidate) then
@@ -15460,6 +15913,13 @@ const
         margin: Integer;
         score_gap: Integer;
         path_gap: Integer;
+        function is_nonlex_full_complete_item(const sort_item: TncCandidateSortItem): Boolean;
+        begin
+            Result := (sort_item.candidate.comment = '') and
+                (sort_item.text_units = m_last_lookup_syllable_count) and
+                (sort_item.candidate.source <> cs_user) and
+                (not sort_item.candidate.has_dict_weight);
+        end;
     begin
         if list.Count < 2 then
         begin
@@ -15467,7 +15927,13 @@ const
         end;
 
         top_item := list[0];
-        if top_item.is_latest_context_query_choice or top_item.is_latest_query_choice or
+        if is_nonlex_full_complete_item(top_item) then
+        begin
+            Exit;
+        end;
+        if top_item.is_prioritized_user_phrase or
+            (top_item.candidate.source = cs_user) or
+            top_item.is_latest_context_query_choice or top_item.is_latest_query_choice or
             (top_item.candidate.comment <> '') or
             (top_item.confidence_rank <= 1) then
         begin
@@ -15477,6 +15943,10 @@ const
         for alt_idx := 1 to Min(list.Count - 1, 4) do
         begin
             alt_item := list[alt_idx];
+            if is_nonlex_full_complete_item(alt_item) then
+            begin
+                Continue;
+            end;
             if alt_item.candidate.comment <> '' then
             begin
                 Continue;
@@ -15799,6 +16269,10 @@ begin
                 right_exact_dict_complete: Boolean;
                 left_nonlex_complete: Boolean;
                 right_nonlex_complete: Boolean;
+                left_nonlex_full_complete: Boolean;
+                right_nonlex_full_complete: Boolean;
+                left_path_segment_count: Integer;
+                right_path_segment_count: Integer;
             begin
                 if left.is_fixed_top_single_char and (not right.is_fixed_top_single_char) then
                 begin
@@ -15837,6 +16311,39 @@ begin
                     (right.text_units >= 2) and
                     (not right.candidate.has_dict_weight) and
                     (right.path_confidence_score > 0);
+                left_nonlex_full_complete := (left.candidate.comment = '') and
+                    (left.text_units = m_last_lookup_syllable_count) and
+                    (left.candidate.source <> cs_user) and
+                    (not left.candidate.has_dict_weight);
+                right_nonlex_full_complete := (right.candidate.comment = '') and
+                    (right.text_units = m_last_lookup_syllable_count) and
+                    (right.candidate.source <> cs_user) and
+                    (not right.candidate.has_dict_weight);
+
+                if left_nonlex_full_complete and right_nonlex_full_complete then
+                begin
+                    left_path_segment_count := get_encoded_path_segment_count_local(
+                        get_segment_path_for_candidate(left.candidate));
+                    right_path_segment_count := get_encoded_path_segment_count_local(
+                        get_segment_path_for_candidate(right.candidate));
+
+                    if (left_path_segment_count <> right_path_segment_count) and
+                        (Abs(left.candidate.score - right.candidate.score) >= 64) then
+                    begin
+                        if (left.candidate.score > right.candidate.score) and
+                            (left_path_segment_count < right_path_segment_count) then
+                        begin
+                            Result := -1;
+                            Exit;
+                        end;
+                        if (right.candidate.score > left.candidate.score) and
+                            (right_path_segment_count < left_path_segment_count) then
+                        begin
+                            Result := 1;
+                            Exit;
+                        end;
+                    end;
+                end;
 
                 if has_competing_exact_phrase and (m_last_lookup_syllable_count <= 6) then
                 begin

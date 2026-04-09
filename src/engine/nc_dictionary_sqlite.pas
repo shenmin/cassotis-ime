@@ -83,6 +83,7 @@ type
         procedure migrate_user_entries;
         function exact_base_entry_exists(const pinyin: string; const text: string): Boolean;
         function normalized_base_entry_exists(const pinyin: string; const text: string): Boolean;
+        function exact_user_entry_exists(const pinyin: string; const text: string): Boolean;
         function has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
@@ -2791,6 +2792,40 @@ begin
     end;
 end;
 
+function TncSqliteDictionary.exact_user_entry_exists(const pinyin: string; const text: string): Boolean;
+const
+    user_sql = 'SELECT 1 FROM dict_user WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    pinyin_key: string;
+    text_key: string;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(user_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) then
+        begin
+            step_result := m_user_connection.step(stmt);
+            Result := step_result = SQLITE_ROW;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
 function TncSqliteDictionary.has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
 const
     base_phrase_sql = 'SELECT 1 FROM dict_base WHERE pinyin = ?1 AND length(text) >= 2 LIMIT 1';
@@ -2827,6 +2862,7 @@ function TncSqliteDictionary.is_suppressible_nonbase_exact_phrase(const pinyin: 
 const
     c_suppressible_phrase_min_units = 2;
     c_suppressible_phrase_max_units = 4;
+    c_suppressible_long_phrase_min_units = 5;
 var
     pinyin_key: string;
     text_key: string;
@@ -2849,24 +2885,42 @@ begin
     begin
         Exit;
     end;
-    if not has_any_base_phrase_for_pinyin(pinyin_key) then
-    begin
-        Exit;
-    end;
-    if normalized_base_entry_exists(pinyin_key, text_key) then
-    begin
-        Exit;
-    end;
 
     text_units := split_text_units_local(text_key);
-    if (Length(text_units) < c_suppressible_phrase_min_units) or
-        (Length(text_units) > c_suppressible_phrase_max_units) then
+    if (Length(text_units) < c_suppressible_phrase_min_units) then
     begin
         Exit;
     end;
 
     syllables := split_full_pinyin_syllables(pinyin_key);
     if Length(syllables) <> Length(text_units) then
+    begin
+        Exit;
+    end;
+
+    if normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+
+    if Length(text_units) >= c_suppressible_long_phrase_min_units then
+    begin
+        for idx := 0 to High(text_units) do
+        begin
+            if not single_char_matches_pinyin(syllables[idx], text_units[idx]) then
+            begin
+                Exit;
+            end;
+        end;
+        Exit(True);
+    end;
+
+    if not has_any_base_phrase_for_pinyin(pinyin_key) then
+    begin
+        Exit;
+    end;
+
+    if Length(text_units) > c_suppressible_phrase_max_units then
     begin
         Exit;
     end;
@@ -6186,7 +6240,8 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        if is_suppressible_nonbase_exact_phrase(query_key, text_value) then
+                        if is_suppressible_nonbase_exact_phrase(query_key, text_value) and
+                            (not exact_user_entry_exists(query_key, text_value)) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -6238,12 +6293,6 @@ begin
                         if normalized_base_entry_exists(query_key, text_value) then
                         begin
                             Inc(skipped_base_dup_user_count);
-                            step_result := m_user_connection.step(stmt);
-                            Continue;
-                        end;
-                        if is_suppressible_nonbase_exact_phrase(query_key, text_value) then
-                        begin
-                            Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
@@ -6304,7 +6353,8 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        if is_suppressible_nonbase_exact_phrase(candidate_pinyin, text_value) then
+                        if is_suppressible_nonbase_exact_phrase(candidate_pinyin, text_value) and
+                            (not exact_user_entry_exists(candidate_pinyin, text_value)) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -6880,7 +6930,8 @@ begin
                 // erase a valid recent choice due to transient validation
                 // disagreement or lexicon normalization differences.
             end
-            else if is_suppressible_nonbase_exact_phrase(pinyin_value, text_value) then
+            else if is_suppressible_nonbase_exact_phrase(pinyin_value, text_value) and
+                (not exact_user_entry_exists(pinyin_value, text_value)) then
             begin
                 purge_user_entry_internal(pinyin_value, text_value, False, False);
             end
@@ -6922,7 +6973,6 @@ var
     cache_key: string;
     full_pinyin_input: Boolean;
     base_entry_exists: Boolean;
-    suppress_nonbase_exact_learning: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     cache_key := pinyin_key + #1 + Trim(text);
@@ -6955,14 +7005,6 @@ begin
     end;
 
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
-    suppress_nonbase_exact_learning := full_pinyin_input and
-        is_suppressible_nonbase_exact_phrase(pinyin_key, text);
-
-    if suppress_nonbase_exact_learning then
-    begin
-        purge_user_entry_internal(pinyin_key, text, False, False);
-        Exit;
-    end;
 
     // A positive explicit selection for the same query/text pair should
     // cancel any earlier "remove candidate" feedback for that exact pair.
@@ -7571,7 +7613,8 @@ begin
         Exit;
     end;
 
-    if is_suppressible_nonbase_exact_phrase(normalized_query, text_key) then
+    if is_suppressible_nonbase_exact_phrase(normalized_query, text_key) and
+        (not exact_user_entry_exists(normalized_query, text_key)) then
     begin
         Exit;
     end;
@@ -7773,7 +7816,8 @@ begin
 
             if (not use_fallback_scan) and
                 ((candidate_text = '') or
-                is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text) or
+                ((is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text) and
+                (not exact_user_entry_exists(normalized_query, candidate_text)))) or
                 (get_candidate_penalty(normalized_query, candidate_text) > 0)) then
             begin
                 use_fallback_scan := True;
@@ -7805,7 +7849,8 @@ begin
                     candidate_text := Trim(m_user_connection.column_text(stmt, 0));
                     if candidate_text <> '' then
                     begin
-                        if is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text) then
+                        if is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text) and
+                            (not exact_user_entry_exists(normalized_query, candidate_text)) then
                         begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
