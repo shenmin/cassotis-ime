@@ -15412,6 +15412,10 @@ const
         begin
             Result := string(Char($548C));
         end
+        else if normalized_query = 'shi' then
+        begin
+            Result := string(Char($662F));
+        end
         else if normalized_query = 'qing' then
         begin
             Result := string(Char($8BF7));
