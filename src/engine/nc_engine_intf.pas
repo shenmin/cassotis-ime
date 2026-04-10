@@ -1976,8 +1976,11 @@ var
     explicit_apostrophe_query_syllables: TncPinyinParseResult;
     explicit_apostrophe_query_parsed: Boolean;
     lightweight_sentence_applied: Boolean;
+    delayed_long_decode_mode: Boolean;
+    delayed_long_decode_strong_candidate: Boolean;
     short_full_exact_query: Boolean;
     latest_query_choice_text: string;
+    exact_head_partial_candidates: TncCandidateList;
 
     procedure clear_candidate_comments(var candidates: TncCandidateList);
     var
@@ -2031,6 +2034,15 @@ var
         end;
     end;
 
+    function should_use_delayed_long_decode_mode_local: Boolean;
+    begin
+        Result := m_config.enable_segment_candidates and has_multi_syllable_input and
+            (input_syllable_count >= c_long_sentence_full_path_min_syllables) and
+            (not all_initial_compact_query) and
+            (not has_internal_dangling_initial) and
+            (not has_explicit_apostrophe_input);
+    end;
+
     procedure sort_candidates_lightweight(var candidates: TncCandidateList);
     var
         left_idx: Integer;
@@ -2041,6 +2053,14 @@ var
         right_score: Integer;
         tmp: TncCandidate;
         has_exact_complete_phrase_candidate: Boolean;
+        lightweight_query_syllables: TncPinyinParseResult;
+        lightweight_query_prepared: Boolean;
+        best_two_syllable_exact_texts: TArray<string>;
+        best_two_syllable_exact_weights: TArray<Integer>;
+        best_two_syllable_exact_known: TArray<Boolean>;
+        best_three_syllable_exact_texts: TArray<string>;
+        best_three_syllable_exact_weights: TArray<Integer>;
+        best_three_syllable_exact_known: TArray<Boolean>;
 
         function get_display_text_unit_count(const text: string): Integer;
         var
@@ -2087,6 +2107,446 @@ var
                 (candidate.source <> cs_user);
         end;
 
+        function get_fixed_sentence_single_char_local(
+            const syllable_text: string): string;
+        var
+            normalized_syllable: string;
+        begin
+            Result := '';
+            normalized_syllable := normalize_pinyin_text(syllable_text);
+            if normalized_syllable = 'wo' then
+            begin
+                Result := string(Char($6211));
+            end
+            else if normalized_syllable = 'ni' then
+            begin
+                Result := string(Char($4F60));
+            end
+            else if normalized_syllable = 'ta' then
+            begin
+                Result := string(Char($4ED6));
+            end
+            else if normalized_syllable = 'he' then
+            begin
+                Result := string(Char($548C));
+            end
+            else if normalized_syllable = 'shi' then
+            begin
+                Result := string(Char($662F));
+            end
+            else if normalized_syllable = 'ye' then
+            begin
+                Result := string(Char($4E5F));
+            end
+            else if normalized_syllable = 'hui' then
+            begin
+                Result := string(Char($4F1A));
+            end
+            else if normalized_syllable = 'de' then
+            begin
+                Result := string(Char($7684));
+            end
+            else if normalized_syllable = 'zhe' then
+            begin
+                Result := string(Char($8FD9));
+            end
+            else if normalized_syllable = 'qing' then
+            begin
+                Result := string(Char($8BF7));
+            end;
+        end;
+
+        procedure prepare_lightweight_query_cache;
+        var
+            parser: TncPinyinParser;
+            idx: Integer;
+        begin
+            if lightweight_query_prepared then
+            begin
+                Exit;
+            end;
+            lightweight_query_prepared := True;
+            SetLength(lightweight_query_syllables, 0);
+            if normalize_pinyin_text(m_last_lookup_key) = '' then
+            begin
+                Exit;
+            end;
+            parser := TncPinyinParser.Create;
+            try
+                lightweight_query_syllables := parser.parse(normalize_pinyin_text(m_last_lookup_key));
+            finally
+                parser.Free;
+            end;
+
+            if Length(lightweight_query_syllables) <> input_syllable_count then
+            begin
+                SetLength(lightweight_query_syllables, 0);
+                Exit;
+            end;
+
+            for idx := 0 to High(lightweight_query_syllables) do
+            begin
+                if Length(Trim(lightweight_query_syllables[idx].text)) <= 1 then
+                begin
+                    SetLength(lightweight_query_syllables, 0);
+                    Exit;
+                end;
+            end;
+
+            if Length(lightweight_query_syllables) >= 3 then
+            begin
+                SetLength(best_three_syllable_exact_texts, Length(lightweight_query_syllables) - 2);
+                SetLength(best_three_syllable_exact_weights, Length(lightweight_query_syllables) - 2);
+                SetLength(best_three_syllable_exact_known, Length(lightweight_query_syllables) - 2);
+            end;
+            if Length(lightweight_query_syllables) >= 2 then
+            begin
+                SetLength(best_two_syllable_exact_texts, Length(lightweight_query_syllables) - 1);
+                SetLength(best_two_syllable_exact_weights, Length(lightweight_query_syllables) - 1);
+                SetLength(best_two_syllable_exact_known, Length(lightweight_query_syllables) - 1);
+            end;
+        end;
+
+        function build_lightweight_query_key(const start_idx: Integer;
+            const syllable_count_local: Integer): string;
+        var
+            idx: Integer;
+        begin
+            Result := '';
+            prepare_lightweight_query_cache;
+            if (start_idx < 0) or (syllable_count_local <= 0) or
+                (start_idx + syllable_count_local - 1 > High(lightweight_query_syllables)) then
+            begin
+                Exit;
+            end;
+            for idx := start_idx to start_idx + syllable_count_local - 1 do
+            begin
+                Result := Result + normalize_pinyin_text(lightweight_query_syllables[idx].text);
+            end;
+        end;
+
+        function try_get_best_exact_two_syllable_text_local(const start_idx: Integer;
+            out out_text: string; out out_weight: Integer): Boolean;
+        const
+            c_probe_limit = 8;
+        var
+            query_key: string;
+            exact_results: TncCandidateList;
+            result_idx: Integer;
+            candidate_text: string;
+            weight_value: Integer;
+        begin
+            Result := False;
+            out_text := '';
+            out_weight := 0;
+            prepare_lightweight_query_cache;
+            if (start_idx < 0) or (start_idx > High(best_two_syllable_exact_known)) then
+            begin
+                Exit;
+            end;
+
+            if best_two_syllable_exact_known[start_idx] then
+            begin
+                out_text := best_two_syllable_exact_texts[start_idx];
+                out_weight := best_two_syllable_exact_weights[start_idx];
+                Exit(out_text <> '');
+            end;
+
+            best_two_syllable_exact_known[start_idx] := True;
+            query_key := build_lightweight_query_key(start_idx, 2);
+            if (query_key = '') or (m_dictionary = nil) or
+                (not m_dictionary.lookup(query_key, exact_results)) then
+            begin
+                Exit;
+            end;
+
+            for result_idx := 0 to High(exact_results) do
+            begin
+                if result_idx >= c_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(exact_results[result_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                candidate_text := Trim(exact_results[result_idx].text);
+                if get_candidate_text_unit_count(candidate_text) <> 2 then
+                begin
+                    Continue;
+                end;
+                weight_value := exact_results[result_idx].score;
+                if (weight_value <= 0) and exact_results[result_idx].has_dict_weight then
+                begin
+                    weight_value := exact_results[result_idx].dict_weight;
+                end;
+                if weight_value > out_weight then
+                begin
+                    out_text := candidate_text;
+                    out_weight := weight_value;
+                    Result := True;
+                end;
+            end;
+
+            if Result then
+            begin
+                best_two_syllable_exact_texts[start_idx] := out_text;
+                best_two_syllable_exact_weights[start_idx] := out_weight;
+            end;
+        end;
+
+        function try_get_best_exact_three_syllable_text_local(const start_idx: Integer;
+            out out_text: string; out out_weight: Integer): Boolean;
+        const
+            c_probe_limit = 8;
+        var
+            query_key: string;
+            exact_results: TncCandidateList;
+            result_idx: Integer;
+            candidate_text: string;
+            weight_value: Integer;
+        begin
+            Result := False;
+            out_text := '';
+            out_weight := 0;
+            prepare_lightweight_query_cache;
+            if (start_idx < 0) or (start_idx > High(best_three_syllable_exact_known)) then
+            begin
+                Exit;
+            end;
+
+            if best_three_syllable_exact_known[start_idx] then
+            begin
+                out_text := best_three_syllable_exact_texts[start_idx];
+                out_weight := best_three_syllable_exact_weights[start_idx];
+                Exit(out_text <> '');
+            end;
+
+            best_three_syllable_exact_known[start_idx] := True;
+            query_key := build_lightweight_query_key(start_idx, 3);
+            if (query_key = '') or (m_dictionary = nil) or
+                (not m_dictionary.lookup(query_key, exact_results)) then
+            begin
+                Exit;
+            end;
+
+            for result_idx := 0 to High(exact_results) do
+            begin
+                if result_idx >= c_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(exact_results[result_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                candidate_text := Trim(exact_results[result_idx].text);
+                if get_candidate_text_unit_count(candidate_text) <> 3 then
+                begin
+                    Continue;
+                end;
+                weight_value := exact_results[result_idx].score;
+                if (weight_value <= 0) and exact_results[result_idx].has_dict_weight then
+                begin
+                    weight_value := exact_results[result_idx].dict_weight;
+                end;
+                if weight_value > out_weight then
+                begin
+                    out_text := candidate_text;
+                    out_weight := weight_value;
+                    Result := True;
+                end;
+            end;
+
+            if Result then
+            begin
+                best_three_syllable_exact_texts[start_idx] := out_text;
+                best_three_syllable_exact_weights[start_idx] := out_weight;
+            end;
+        end;
+
+        function get_lightweight_sentence_path_adjustment(const candidate: TncCandidate;
+            const text_units: Integer): Integer;
+        var
+            encoded_path: string;
+            segment_parts: TArray<string>;
+            segment_idx: Integer;
+            syllable_idx: Integer;
+            segment_text: string;
+            next_segment_text: string;
+            segment_units: Integer;
+            next_segment_units: Integer;
+            fixed_left: string;
+            fixed_right: string;
+            combined_text: string;
+            exact_two_text: string;
+            exact_two_weight: Integer;
+            exact_three_text: string;
+            exact_three_weight: Integer;
+        begin
+            Result := 0;
+            if (candidate.comment <> '') or candidate.has_dict_weight or
+                (candidate.source = cs_user) or (text_units < 2) then
+            begin
+                Exit;
+            end;
+
+            prepare_lightweight_query_cache;
+            if Length(lightweight_query_syllables) <> input_syllable_count then
+            begin
+                Exit;
+            end;
+
+            encoded_path := get_segment_path_for_candidate(candidate);
+            if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+            begin
+                Exit;
+            end;
+
+            segment_parts := encoded_path.Split([c_segment_path_separator]);
+            syllable_idx := 0;
+            for segment_idx := 0 to High(segment_parts) do
+            begin
+                segment_text := Trim(segment_parts[segment_idx]);
+                segment_units := get_candidate_text_unit_count(segment_text);
+                if (segment_units = 2) and (syllable_idx + 1 <= High(lightweight_query_syllables)) then
+                begin
+                    if try_get_best_exact_two_syllable_text_local(
+                        syllable_idx, exact_two_text, exact_two_weight) and
+                        (exact_two_weight >= 520) then
+                    begin
+                        if segment_text = exact_two_text then
+                        begin
+                            Inc(Result, 720);
+                        end
+                        else
+                        begin
+                            Dec(Result, 960);
+                        end;
+                    end;
+
+                    fixed_left := get_fixed_sentence_single_char_local(
+                        lightweight_query_syllables[syllable_idx].text);
+                    fixed_right := get_fixed_sentence_single_char_local(
+                        lightweight_query_syllables[syllable_idx + 1].text);
+                    if (fixed_left <> '') and (fixed_right <> '') and
+                        (segment_text <> fixed_left + fixed_right) then
+                    begin
+                        Dec(Result, 1600);
+                    end;
+
+                    if (segment_idx < High(segment_parts)) and
+                        (syllable_idx + 2 <= High(lightweight_query_syllables)) then
+                    begin
+                        next_segment_text := Trim(segment_parts[segment_idx + 1]);
+                        next_segment_units := get_candidate_text_unit_count(next_segment_text);
+                        if next_segment_units >= 1 then
+                        begin
+                            combined_text := segment_text + split_text_units(next_segment_text)[0];
+                            if try_get_best_exact_three_syllable_text_local(
+                                syllable_idx, exact_three_text, exact_three_weight) and
+                                (exact_three_weight >= 520) then
+                            begin
+                                if combined_text = exact_three_text then
+                                begin
+                                    Inc(Result, 520);
+                                end
+                                else
+                                begin
+                                    Dec(Result, 880);
+                                end;
+                            end;
+                        end;
+                    end;
+                end;
+                Inc(syllable_idx, segment_units);
+            end;
+        end;
+
+        function get_complete_sentence_modal_tail_adjustment(
+            const candidate: TncCandidate; const text_units: Integer): Integer;
+        var
+            encoded_path: string;
+            segment_parts: TArray<string>;
+            last_segment_text: string;
+            expected_text: string;
+            last_syllable_key: string;
+        begin
+            Result := 0;
+            if (candidate.comment <> '') or (text_units < 4) then
+            begin
+                Exit;
+            end;
+
+            prepare_lightweight_query_cache;
+            if Length(lightweight_query_syllables) <> input_syllable_count then
+            begin
+                Exit;
+            end;
+
+            encoded_path := get_segment_path_for_candidate(candidate);
+            if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+            begin
+                Exit;
+            end;
+
+            segment_parts := encoded_path.Split([c_segment_path_separator]);
+            if Length(segment_parts) <= 1 then
+            begin
+                Exit;
+            end;
+
+            last_segment_text := Trim(segment_parts[High(segment_parts)]);
+            if get_candidate_text_unit_count(last_segment_text) <> 1 then
+            begin
+                Exit;
+            end;
+
+            last_syllable_key := normalize_pinyin_text(
+                lightweight_query_syllables[High(lightweight_query_syllables)].text);
+            expected_text := '';
+            if last_syllable_key = 'ba' then
+            begin
+                expected_text := string(Char($5427));
+            end
+            else if last_syllable_key = 'ma' then
+            begin
+                expected_text := string(Char($5417));
+            end
+            else if last_syllable_key = 'ne' then
+            begin
+                expected_text := string(Char($5462));
+            end
+            else if last_syllable_key = 'a' then
+            begin
+                expected_text := string(Char($554A));
+            end
+            else if last_syllable_key = 'ya' then
+            begin
+                expected_text := string(Char($5440));
+            end
+            else if last_syllable_key = 'la' then
+            begin
+                expected_text := string(Char($5566));
+            end
+            else if last_syllable_key = 'wa' then
+            begin
+                expected_text := string(Char($54C7));
+            end;
+
+            if expected_text = '' then
+            begin
+                Exit;
+            end;
+
+            if last_segment_text = expected_text then
+            begin
+                Exit(980);
+            end;
+
+            Exit(-920);
+        end;
+
         function get_lightweight_rank(const candidate: TncCandidate;
             const text_units: Integer): Integer;
         begin
@@ -2127,6 +2587,9 @@ var
             begin
                 Dec(Result, 1800);
             end;
+
+            Inc(Result, get_lightweight_sentence_path_adjustment(candidate, text_units));
+            Inc(Result, get_complete_sentence_modal_tail_adjustment(candidate, text_units));
         end;
     begin
         if Length(candidates) <= 1 then
@@ -3431,6 +3894,8 @@ var
     end;
 
     procedure ensure_best_lightweight_sentence_candidate_visible(var candidates: TncCandidateList);
+    const
+        c_lightweight_segment_tiebreak_margin = 160;
     var
         best_index: Integer;
         best_score_hint: Integer;
@@ -3439,18 +3904,230 @@ var
         top_segment_count: Integer;
         best_candidate_score: Integer;
         top_candidate_score: Integer;
+        best_visibility_adjustment: Integer;
+        top_visibility_adjustment: Integer;
         idx: Integer;
         picked: TncCandidate;
+        visibility_syllables: TncPinyinParseResult;
+
+        function get_fixed_bridge_single_char_local(
+            const syllable_text: string): string;
+        var
+            normalized_syllable: string;
+        begin
+            Result := '';
+            normalized_syllable := normalize_pinyin_text(syllable_text);
+            if normalized_syllable = 'wo' then
+            begin
+                Result := string(Char($6211));
+            end
+            else if normalized_syllable = 'ni' then
+            begin
+                Result := string(Char($4F60));
+            end
+            else if normalized_syllable = 'ta' then
+            begin
+                Result := string(Char($4ED6));
+            end
+            else if normalized_syllable = 'he' then
+            begin
+                Result := string(Char($548C));
+            end
+            else if normalized_syllable = 'shi' then
+            begin
+                Result := string(Char($662F));
+            end
+            else if normalized_syllable = 'ye' then
+            begin
+                Result := string(Char($4E5F));
+            end
+            else if normalized_syllable = 'hui' then
+            begin
+                Result := string(Char($4F1A));
+            end
+            else if normalized_syllable = 'de' then
+            begin
+                Result := string(Char($7684));
+            end
+            else if normalized_syllable = 'zhe' then
+            begin
+                Result := string(Char($8FD9));
+            end
+            else if normalized_syllable = 'qing' then
+            begin
+                Result := string(Char($8BF7));
+            end;
+        end;
+
+        function build_visibility_query_key(const start_idx: Integer;
+            const syllable_count_local: Integer): string;
+        var
+            local_idx: Integer;
+        begin
+            Result := '';
+            if (start_idx < 0) or (syllable_count_local <= 0) or
+                (start_idx + syllable_count_local - 1 > High(visibility_syllables)) then
+            begin
+                Exit;
+            end;
+            for local_idx := start_idx to start_idx + syllable_count_local - 1 do
+            begin
+                Result := Result + normalize_pinyin_text(visibility_syllables[local_idx].text);
+            end;
+        end;
+
+        function try_get_best_exact_three_syllable_text_local(const start_idx: Integer;
+            out out_text: string; out out_weight: Integer): Boolean;
+        const
+            c_probe_limit = 8;
+        var
+            query_key: string;
+            exact_results: TncCandidateList;
+            result_idx: Integer;
+            candidate_text: string;
+            candidate_units: Integer;
+            weight_value: Integer;
+        begin
+            Result := False;
+            out_text := '';
+            out_weight := 0;
+            query_key := build_visibility_query_key(start_idx, 3);
+            if (query_key = '') or (m_dictionary = nil) or
+                (not m_dictionary.lookup_exact_full_pinyin(query_key, exact_results)) then
+            begin
+                Exit;
+            end;
+
+            for result_idx := 0 to High(exact_results) do
+            begin
+                if result_idx >= c_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(exact_results[result_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                candidate_text := Trim(exact_results[result_idx].text);
+                candidate_units := get_candidate_text_unit_count(candidate_text);
+                if candidate_units <> 3 then
+                begin
+                    Continue;
+                end;
+
+                if exact_results[result_idx].has_dict_weight then
+                begin
+                    weight_value := exact_results[result_idx].dict_weight;
+                end
+                else
+                begin
+                    weight_value := exact_results[result_idx].score;
+                end;
+                if weight_value > out_weight then
+                begin
+                    out_text := candidate_text;
+                    out_weight := weight_value;
+                    Result := True;
+                end;
+            end;
+        end;
+
+        function get_sentence_visibility_adjustment_local(
+            const candidate: TncCandidate): Integer;
+        var
+            encoded_path: string;
+            segment_parts: TArray<string>;
+            segment_text: string;
+            next_segment_text: string;
+            segment_units: Integer;
+            next_segment_units: Integer;
+            segment_idx: Integer;
+            syllable_idx: Integer;
+            left_fixed: string;
+            right_fixed: string;
+            combined_text: string;
+            exact_three_text: string;
+            exact_three_weight: Integer;
+        begin
+            Result := 0;
+            if candidate.comment <> '' then
+            begin
+                Exit;
+            end;
+
+            encoded_path := get_segment_path_for_candidate(candidate);
+            if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+            begin
+                Exit;
+            end;
+
+            if Length(visibility_syllables) <> m_last_lookup_syllable_count then
+            begin
+                Exit;
+            end;
+
+            segment_parts := encoded_path.Split([c_segment_path_separator]);
+            syllable_idx := 0;
+            for segment_idx := 0 to High(segment_parts) do
+            begin
+                segment_text := Trim(segment_parts[segment_idx]);
+                segment_units := get_candidate_text_unit_count(segment_text);
+                if (segment_units = 2) and
+                    (syllable_idx + 1 <= High(visibility_syllables)) then
+                begin
+                    left_fixed := get_fixed_bridge_single_char_local(
+                        visibility_syllables[syllable_idx].text);
+                    right_fixed := get_fixed_bridge_single_char_local(
+                        visibility_syllables[syllable_idx + 1].text);
+                    if (left_fixed <> '') and (right_fixed <> '') and
+                        (segment_text <> left_fixed + right_fixed) then
+                    begin
+                        Dec(Result, 1600);
+                    end;
+
+                    if (segment_idx < High(segment_parts)) and
+                        (syllable_idx + 2 <= High(visibility_syllables)) then
+                    begin
+                        next_segment_text := Trim(segment_parts[segment_idx + 1]);
+                        next_segment_units := get_candidate_text_unit_count(next_segment_text);
+                        if next_segment_units >= 1 then
+                        begin
+                            combined_text := segment_text + split_text_units(next_segment_text)[0];
+                            if try_get_best_exact_three_syllable_text_local(
+                                syllable_idx, exact_three_text, exact_three_weight) and
+                                (exact_three_weight >= 520) then
+                            begin
+                                if combined_text = exact_three_text then
+                                begin
+                                    Inc(Result, 520);
+                                end
+                                else
+                                begin
+                                    Dec(Result, 880);
+                                end;
+                            end;
+                        end;
+                    end;
+                end;
+                Inc(syllable_idx, segment_units);
+            end;
+        end;
     begin
         if Length(candidates) <= 1 then
         begin
             Exit;
         end;
 
+        Exit;
+
+        visibility_syllables := get_effective_compact_pinyin_syllables(
+            normalize_pinyin_text(m_last_lookup_key));
+
         best_index := -1;
         best_score_hint := Low(Integer);
         best_segment_count := MaxInt;
         best_candidate_score := Low(Integer);
+        best_visibility_adjustment := Low(Integer);
         for idx := 0 to High(candidates) do
         begin
             if not is_lightweight_sentence_complete_candidate_for_visibility(candidates[idx]) then
@@ -3462,17 +4139,29 @@ var
             top_segment_count := get_encoded_path_segment_count_local(
                 get_segment_path_for_candidate(candidates[idx]));
             top_candidate_score := candidates[idx].score;
+            top_visibility_adjustment := get_sentence_visibility_adjustment_local(candidates[idx]);
             if (best_index < 0) or
-                (top_segment_count < best_segment_count) or
-                ((top_segment_count = best_segment_count) and
+                (top_visibility_adjustment > best_visibility_adjustment) or
+                ((top_visibility_adjustment = best_visibility_adjustment) and
                 (top_candidate_score > best_candidate_score)) or
-                ((top_segment_count = best_segment_count) and
+                ((Abs(top_candidate_score - best_candidate_score) <=
+                c_lightweight_segment_tiebreak_margin) and
+                (top_visibility_adjustment = best_visibility_adjustment) and
+                (top_segment_count < best_segment_count)) or
+                ((top_visibility_adjustment = best_visibility_adjustment) and
+                (Abs(top_candidate_score - best_candidate_score) <=
+                c_lightweight_segment_tiebreak_margin) and
+                (top_segment_count = best_segment_count) and
+                (top_score_hint > best_score_hint)) or
+                ((top_visibility_adjustment = best_visibility_adjustment) and
                 (top_candidate_score = best_candidate_score) and
+                (top_segment_count = best_segment_count) and
                 (top_score_hint > best_score_hint)) then
             begin
                 best_score_hint := top_score_hint;
                 best_segment_count := top_segment_count;
                 best_candidate_score := top_candidate_score;
+                best_visibility_adjustment := top_visibility_adjustment;
                 best_index := idx;
             end;
         end;
@@ -3488,11 +4177,18 @@ var
             top_segment_count := get_encoded_path_segment_count_local(
                 get_segment_path_for_candidate(candidates[0]));
             top_candidate_score := candidates[0].score;
-            if (top_segment_count < best_segment_count) or
-                ((top_segment_count = best_segment_count) and
-                (top_candidate_score >= best_candidate_score)) or
-                ((top_segment_count = best_segment_count) and
-                (top_candidate_score + 160 >= best_candidate_score) and
+            top_visibility_adjustment := get_sentence_visibility_adjustment_local(candidates[0]);
+            if (top_visibility_adjustment > best_visibility_adjustment) or
+                ((top_visibility_adjustment = best_visibility_adjustment) and
+                (top_candidate_score > best_candidate_score)) or
+                ((top_visibility_adjustment = best_visibility_adjustment) and
+                ((top_candidate_score + c_lightweight_segment_tiebreak_margin >=
+                best_candidate_score) and
+                (top_segment_count <= best_segment_count))) or
+                ((top_visibility_adjustment = best_visibility_adjustment) and
+                (top_candidate_score + c_lightweight_segment_tiebreak_margin >=
+                best_candidate_score) and
+                (top_segment_count = best_segment_count) and
                 (top_score_hint >= best_score_hint)) then
             begin
                 Exit;
@@ -4601,6 +5297,125 @@ var
             end;
         end;
 
+        function get_fixed_sentence_single_char(
+            const syllable_text: string): string;
+        var
+            normalized_syllable: string;
+        begin
+            Result := '';
+            normalized_syllable := normalize_pinyin_text(syllable_text);
+            if normalized_syllable = 'wo' then
+            begin
+                Result := string(Char($6211));
+            end
+            else if normalized_syllable = 'ni' then
+            begin
+                Result := string(Char($4F60));
+            end
+            else if normalized_syllable = 'ta' then
+            begin
+                Result := string(Char($4ED6));
+            end
+            else if normalized_syllable = 'he' then
+            begin
+                Result := string(Char($548C));
+            end
+            else if normalized_syllable = 'shi' then
+            begin
+                Result := string(Char($662F));
+            end
+            else if normalized_syllable = 'ye' then
+            begin
+                Result := string(Char($4E5F));
+            end
+            else if normalized_syllable = 'de' then
+            begin
+                Result := string(Char($7684));
+            end
+            else if normalized_syllable = 'zhe' then
+            begin
+                Result := string(Char($8FD9));
+            end
+            else if normalized_syllable = 'ya' then
+            begin
+                Result := string(Char($5440));
+            end
+            else if normalized_syllable = 'ba' then
+            begin
+                Result := string(Char($5427));
+            end
+            else if normalized_syllable = 'ai' then
+            begin
+                Result := string(Char($5509));
+            end
+            else if normalized_syllable = 'qing' then
+            begin
+                Result := string(Char($8BF7));
+            end;
+        end;
+
+        function get_sentence_final_modal_particle_adjustment(
+            const syllable_key: string; const candidate_text: string;
+            const is_final_segment: Boolean): Integer;
+        var
+            normalized_key: string;
+            expected_text: string;
+            normalized_text: string;
+        begin
+            Result := 0;
+            if (not is_final_segment) or (candidate_text = '') then
+            begin
+                Exit;
+            end;
+
+            normalized_key := normalize_pinyin_text(syllable_key);
+            expected_text := '';
+            if normalized_key = 'ba' then
+            begin
+                expected_text := string(Char($5427));
+            end
+            else if normalized_key = 'ma' then
+            begin
+                expected_text := string(Char($5417));
+            end
+            else if normalized_key = 'ne' then
+            begin
+                expected_text := string(Char($5462));
+            end
+            else if normalized_key = 'a' then
+            begin
+                expected_text := string(Char($554A));
+            end
+            else if normalized_key = 'ya' then
+            begin
+                expected_text := string(Char($5440));
+            end
+            else if normalized_key = 'la' then
+            begin
+                expected_text := string(Char($5566));
+            end
+            else if normalized_key = 'wa' then
+            begin
+                expected_text := string(Char($54C7));
+            end;
+
+            if expected_text = '' then
+            begin
+                Exit;
+            end;
+
+            normalized_text := Trim(candidate_text);
+            if normalized_text = expected_text then
+            begin
+                Exit(760);
+            end;
+
+            if get_candidate_text_unit_count(normalized_text) = 1 then
+            begin
+                Exit(-720);
+            end;
+        end;
+
         function is_allowed_sentence_segment_candidate(const candidate: TncCandidate;
             const segment_syllables: Integer): Boolean;
         var
@@ -4741,6 +5556,198 @@ var
                 if merged_units >= 2 then
                 begin
                     Exit(True);
+                end;
+            end;
+        end;
+
+        function try_get_best_sentence_single_char(const syllable_key: string;
+            out out_text: string; out out_weight: Integer): Boolean;
+        const
+            c_probe_limit = 6;
+        var
+            single_results: TncCandidateList;
+            single_idx: Integer;
+            single_text: string;
+            is_preferred: Boolean;
+            weight_value: Integer;
+            fixed_text: string;
+        begin
+            Result := False;
+            out_text := '';
+            out_weight := 0;
+            if syllable_key = '' then
+            begin
+                Exit;
+            end;
+
+            fixed_text := get_fixed_sentence_single_char(syllable_key);
+            if (fixed_text <> '') and is_allowed_single_char_for_sentence(fixed_text) then
+            begin
+                out_text := fixed_text;
+                out_weight := 960;
+                Exit(True);
+            end;
+
+            if not dictionary_exact_lookup_cached(syllable_key, single_results) then
+            begin
+                Exit;
+            end;
+
+            for single_idx := 0 to High(single_results) do
+            begin
+                if single_idx >= c_probe_limit then
+                begin
+                    Break;
+                end;
+                single_text := Trim(single_results[single_idx].text);
+                if (single_results[single_idx].comment <> '') or
+                    (get_candidate_text_unit_count(single_text) <> 1) then
+                begin
+                    Continue;
+                end;
+                if (not is_allowed_single_char_for_sentence(single_text)) or
+                    (not match_single_char_candidate_for_syllable(
+                    syllable_key, single_text, is_preferred)) or
+                    (not is_preferred) then
+                begin
+                    Continue;
+                end;
+
+                if single_results[single_idx].has_dict_weight then
+                begin
+                    weight_value := single_results[single_idx].dict_weight;
+                end
+                else
+                begin
+                    weight_value := single_results[single_idx].score;
+                end;
+                if weight_value > out_weight then
+                begin
+                    out_text := single_text;
+                    out_weight := weight_value;
+                    Result := True;
+                end;
+            end;
+        end;
+
+        function get_weak_two_syllable_phrase_penalty(const segment_start: Integer;
+            const segment_syllables: Integer; const candidate_text: string;
+            const candidate_weight: Integer): Integer;
+        const
+            c_weak_phrase_weight_limit = 360;
+        var
+            left_text: string;
+            right_text: string;
+            left_weight: Integer;
+            right_weight: Integer;
+            split_weight: Integer;
+        begin
+            Result := 0;
+            if (segment_syllables <> 2) or
+                (get_candidate_text_unit_count(candidate_text) <> 2) or
+                (candidate_weight >= c_weak_phrase_weight_limit) or
+                (segment_start < 0) or (segment_start + 1 > High(syllables)) then
+            begin
+                Exit;
+            end;
+
+            if (not try_get_best_sentence_single_char(
+                normalize_pinyin_text(syllables[segment_start].text), left_text, left_weight)) or
+                (not try_get_best_sentence_single_char(
+                normalize_pinyin_text(syllables[segment_start + 1].text), right_text, right_weight)) then
+            begin
+                Exit;
+            end;
+
+            split_weight := left_weight + right_weight;
+            if split_weight >= candidate_weight + 700 then
+            begin
+                Result := 980;
+            end
+            else if split_weight >= candidate_weight + 500 then
+            begin
+                Result := 760;
+            end
+            else if split_weight >= candidate_weight + 320 then
+            begin
+                Result := 520;
+            end;
+        end;
+
+        function get_exact_phrase_lookahead_bonus(const segment_start: Integer;
+            const segment_syllables: Integer; const candidate_text: string): Integer;
+        const
+            c_probe_limit = 6;
+        var
+            combined_key: string;
+            combined_results: TncCandidateList;
+            combined_idx: Integer;
+            combined_text: string;
+            combined_units: Integer;
+            candidate_units: Integer;
+            combined_weight: Integer;
+            candidate_prefix: string;
+        begin
+            Result := 0;
+            if (segment_syllables < 2) or
+                (segment_start < 0) or
+                (segment_start + segment_syllables > High(syllables)) then
+            begin
+                Exit;
+            end;
+
+            candidate_units := get_candidate_text_unit_count(candidate_text);
+            if candidate_units < 2 then
+            begin
+                Exit;
+            end;
+            candidate_prefix := candidate_text;
+
+            combined_key := build_syllable_query_key(segment_start, segment_syllables + 1);
+            if (combined_key = '') or
+                (not dictionary_exact_lookup_cached(combined_key, combined_results)) then
+            begin
+                Exit;
+            end;
+
+            for combined_idx := 0 to High(combined_results) do
+            begin
+                if combined_idx >= c_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(combined_results[combined_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+
+                combined_text := Trim(combined_results[combined_idx].text);
+                combined_units := get_candidate_text_unit_count(combined_text);
+                if (combined_units <> candidate_units + 1) or
+                    (Copy(combined_text, 1, Length(candidate_prefix)) <> candidate_prefix) then
+                begin
+                    Continue;
+                end;
+
+                if combined_results[combined_idx].has_dict_weight then
+                begin
+                    combined_weight := combined_results[combined_idx].dict_weight;
+                end
+                else
+                begin
+                    combined_weight := combined_results[combined_idx].score;
+                end;
+                if combined_weight >= 760 then
+                begin
+                    Exit(420);
+                end
+                else if combined_weight >= 560 then
+                begin
+                    Exit(320);
+                end
+                else if combined_weight >= 360 then
+                begin
+                    Exit(220);
                 end;
             end;
         end;
@@ -4919,6 +5926,9 @@ var
         candidate_state: TLightSentenceState;
         candidate_text: string;
         candidate_units: Integer;
+        exact_effective_weight: Integer;
+        weak_phrase_penalty: Integer;
+        lookahead_bonus: Integer;
         tail_text: string;
     begin
         SetLength(out_candidates, 0);
@@ -5004,6 +6014,14 @@ var
 
                         candidate_text := Trim(exact_results[result_idx].text);
                         candidate_units := get_candidate_text_unit_count(candidate_text);
+                        if exact_results[result_idx].has_dict_weight then
+                        begin
+                            exact_effective_weight := exact_results[result_idx].dict_weight;
+                        end
+                        else
+                        begin
+                            exact_effective_weight := exact_results[result_idx].score;
+                        end;
                         candidate_state.score := base_state.score + exact_results[result_idx].score;
                         candidate_state.lexical_rank_score := base_state.lexical_rank_score +
                             ((c_light_sentence_exact_top_n - result_idx) *
@@ -5022,6 +6040,26 @@ var
                             if seg_len >= 3 then
                             begin
                                 Inc(candidate_state.score, 560 + ((seg_len - 3) * 160));
+                            end;
+
+                            weak_phrase_penalty := get_weak_two_syllable_phrase_penalty(
+                                pos, seg_len, candidate_text, exact_effective_weight);
+                            if (seg_len = 2) and (candidate_units = 2) and
+                                (weak_phrase_penalty >= 760) and
+                                (exact_effective_weight <= 360) then
+                            begin
+                                Continue;
+                            end;
+                            if weak_phrase_penalty > 0 then
+                            begin
+                                Dec(candidate_state.score, weak_phrase_penalty);
+                            end;
+
+                            lookahead_bonus := get_exact_phrase_lookahead_bonus(
+                                pos, seg_len, candidate_text);
+                            if lookahead_bonus > 0 then
+                            begin
+                                Inc(candidate_state.score, lookahead_bonus);
                             end;
                         end
                         else
@@ -5055,6 +6093,10 @@ var
                                     base_state.prev_prev_text, base_state.prev_text, candidate_text));
                             end;
                         end;
+
+                        Inc(candidate_state.score,
+                            get_sentence_final_modal_particle_adjustment(
+                            seg_key, candidate_text, next_pos = head_syllable_count));
 
                         if base_state.text <> '' then
                         begin
@@ -5188,6 +6230,576 @@ var
         Result := Length(out_candidates) > 0;
     end;
 
+    function build_exact_head_modal_tail_complete_candidates(const query_text: string;
+        out out_candidates: TncCandidateList): Boolean;
+    const
+        c_head_modal_complete_limit = 3;
+        c_head_modal_complete_bonus = 1280;
+    var
+        normalized_query: string;
+        syllables_local: TncPinyinParseResult;
+        head_key: string;
+        tail_key: string;
+        tail_text: string;
+        idx: Integer;
+        head_results: TncCandidateList;
+        candidate: TncCandidate;
+        accepted_count: Integer;
+        score_value: Integer;
+        path_hint: Integer;
+    begin
+        SetLength(out_candidates, 0);
+        Result := False;
+        if m_dictionary = nil then
+        begin
+            Exit;
+        end;
+
+        normalized_query := normalize_pinyin_text(query_text);
+        if normalized_query = '' then
+        begin
+            Exit;
+        end;
+
+        syllables_local := get_effective_compact_pinyin_syllables(normalized_query);
+        if Length(syllables_local) < 3 then
+        begin
+            Exit;
+        end;
+
+        tail_key := normalize_pinyin_text(syllables_local[High(syllables_local)].text);
+        tail_text := '';
+        if tail_key = 'ba' then
+        begin
+            tail_text := string(Char($5427));
+        end
+        else if tail_key = 'ma' then
+        begin
+            tail_text := string(Char($5417));
+        end
+        else if tail_key = 'ne' then
+        begin
+            tail_text := string(Char($5462));
+        end
+        else if tail_key = 'a' then
+        begin
+            tail_text := string(Char($554A));
+        end
+        else if tail_key = 'ya' then
+        begin
+            tail_text := string(Char($5440));
+        end
+        else if tail_key = 'la' then
+        begin
+            tail_text := string(Char($5566));
+        end
+        else if tail_key = 'wa' then
+        begin
+            tail_text := string(Char($54C7));
+        end;
+        if tail_text = '' then
+        begin
+            Exit;
+        end;
+
+        head_key := '';
+        for idx := 0 to High(syllables_local) - 1 do
+        begin
+            head_key := head_key + normalize_pinyin_text(syllables_local[idx].text);
+        end;
+        if head_key = '' then
+        begin
+            Exit;
+        end;
+
+        if not dictionary_exact_lookup_cached(head_key, head_results) then
+        begin
+            Exit;
+        end;
+
+        accepted_count := 0;
+        for idx := 0 to High(head_results) do
+        begin
+            if accepted_count >= c_head_modal_complete_limit then
+            begin
+                Break;
+            end;
+            if Trim(head_results[idx].comment) <> '' then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(head_results[idx].text)) <>
+                (Length(syllables_local) - 1) then
+            begin
+                Continue;
+            end;
+
+            candidate := head_results[idx];
+            score_value := candidate.score;
+            if candidate.has_dict_weight and (candidate.dict_weight > score_value) then
+            begin
+                score_value := candidate.dict_weight;
+            end;
+
+            candidate.text := Trim(candidate.text) + tail_text;
+            candidate.comment := '';
+            candidate.source := cs_rule;
+            candidate.has_dict_weight := False;
+            candidate.dict_weight := 0;
+            candidate.score := score_value + c_head_modal_complete_bonus;
+            path_hint := score_value + c_head_modal_complete_bonus;
+            remember_segment_path_for_candidate(candidate.text, '',
+                Trim(head_results[idx].text) + c_segment_path_separator + tail_text,
+                path_hint);
+
+            SetLength(out_candidates, Length(out_candidates) + 1);
+            out_candidates[High(out_candidates)] := candidate;
+            Inc(accepted_count);
+        end;
+
+        sort_candidates_lightweight(out_candidates);
+        Result := Length(out_candidates) > 0;
+    end;
+
+    procedure ensure_modal_tail_sentence_candidate_visible(var candidates: TncCandidateList);
+    const
+        c_modal_tail_correction_bonus = 980;
+    var
+        syllables_local: TncPinyinParseResult;
+        tail_key: string;
+        expected_text: string;
+        idx: Integer;
+        best_index: Integer;
+        best_score: Integer;
+        existing_index: Integer;
+        segment_path: string;
+        corrected_path: string;
+        corrected_text: string;
+        segment_parts: TArray<string>;
+        corrected_candidate: TncCandidate;
+        part_idx: Integer;
+    begin
+        if (Length(candidates) = 0) or (input_syllable_count < 4) or
+            (not is_full_pinyin_key(lookup_text)) then
+        begin
+            Exit;
+        end;
+
+        syllables_local := get_effective_compact_pinyin_syllables(lookup_text);
+        if Length(syllables_local) <> input_syllable_count then
+        begin
+            Exit;
+        end;
+
+        tail_key := normalize_pinyin_text(syllables_local[High(syllables_local)].text);
+        expected_text := '';
+        if tail_key = 'ba' then
+        begin
+            expected_text := string(Char($5427));
+        end
+        else if tail_key = 'ma' then
+        begin
+            expected_text := string(Char($5417));
+        end
+        else if tail_key = 'ne' then
+        begin
+            expected_text := string(Char($5462));
+        end
+        else if tail_key = 'a' then
+        begin
+            expected_text := string(Char($554A));
+        end
+        else if tail_key = 'ya' then
+        begin
+            expected_text := string(Char($5440));
+        end
+        else if tail_key = 'la' then
+        begin
+            expected_text := string(Char($5566));
+        end
+        else if tail_key = 'wa' then
+        begin
+            expected_text := string(Char($54C7));
+        end;
+        if expected_text = '' then
+        begin
+            Exit;
+        end;
+
+        if Length(candidates) > 0 then
+        begin
+            Inc(candidates[0].score, 12345);
+        end;
+
+        best_index := -1;
+        best_score := Low(Integer);
+        existing_index := -1;
+        for idx := 0 to High(candidates) do
+        begin
+            if (Trim(candidates[idx].comment) <> '') or
+                (get_candidate_text_unit_count(Trim(candidates[idx].text)) <> input_syllable_count) then
+            begin
+                Continue;
+            end;
+
+            segment_path := get_segment_path_for_candidate(candidates[idx]);
+            if get_encoded_path_segment_count_local(segment_path) <= 1 then
+            begin
+                Continue;
+            end;
+
+            segment_parts := segment_path.Split([c_segment_path_separator]);
+            if Length(segment_parts) <= 1 then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(segment_parts[High(segment_parts)])) <> 1 then
+            begin
+                Continue;
+            end;
+
+            corrected_text := '';
+            corrected_path := '';
+            for part_idx := 0 to High(segment_parts) - 1 do
+            begin
+                corrected_text := corrected_text + Trim(segment_parts[part_idx]);
+                if corrected_path = '' then
+                begin
+                    corrected_path := Trim(segment_parts[part_idx]);
+                end
+                else
+                begin
+                    corrected_path := corrected_path + c_segment_path_separator +
+                        Trim(segment_parts[part_idx]);
+                end;
+            end;
+            corrected_text := corrected_text + expected_text;
+            if corrected_path = '' then
+            begin
+                corrected_path := expected_text;
+            end
+            else
+            begin
+                corrected_path := corrected_path + c_segment_path_separator + expected_text;
+            end;
+
+            if SameText(corrected_text, Trim(candidates[idx].text)) then
+            begin
+                if existing_index < 0 then
+                begin
+                    existing_index := idx;
+                end;
+                Continue;
+            end;
+
+            if existing_index < 0 then
+            begin
+                for part_idx := 0 to High(candidates) do
+                begin
+                    if (Trim(candidates[part_idx].comment) = '') and
+                        SameText(Trim(candidates[part_idx].text), corrected_text) then
+                    begin
+                        existing_index := part_idx;
+                        Break;
+                    end;
+                end;
+            end;
+
+            if candidates[idx].score > best_score then
+            begin
+                best_score := candidates[idx].score;
+                best_index := idx;
+            end;
+        end;
+
+        if best_index < 0 then
+        begin
+            Exit;
+        end;
+
+        segment_path := get_segment_path_for_candidate(candidates[best_index]);
+        segment_parts := segment_path.Split([c_segment_path_separator]);
+        corrected_text := '';
+        corrected_path := '';
+        for part_idx := 0 to High(segment_parts) - 1 do
+        begin
+            corrected_text := corrected_text + Trim(segment_parts[part_idx]);
+            if corrected_path = '' then
+            begin
+                corrected_path := Trim(segment_parts[part_idx]);
+            end
+            else
+            begin
+                corrected_path := corrected_path + c_segment_path_separator +
+                    Trim(segment_parts[part_idx]);
+            end;
+        end;
+        corrected_text := corrected_text + expected_text;
+        if corrected_path = '' then
+        begin
+            corrected_path := expected_text;
+        end
+        else
+        begin
+            corrected_path := corrected_path + c_segment_path_separator + expected_text;
+        end;
+
+        if existing_index >= 0 then
+        begin
+            Inc(candidates[existing_index].score, c_modal_tail_correction_bonus);
+            candidates[existing_index].source := cs_rule;
+            remember_segment_path_for_candidate(corrected_text, '',
+                corrected_path, candidates[existing_index].score);
+            Exit;
+        end;
+
+        corrected_candidate := candidates[best_index];
+        corrected_candidate.text := corrected_text;
+        corrected_candidate.comment := '';
+        corrected_candidate.source := cs_rule;
+        corrected_candidate.has_dict_weight := False;
+        corrected_candidate.dict_weight := 0;
+        Inc(corrected_candidate.score, c_modal_tail_correction_bonus);
+        SetLength(candidates, Length(candidates) + 1);
+        candidates[High(candidates)] := corrected_candidate;
+        remember_segment_path_for_candidate(corrected_candidate.text, '',
+            corrected_path, corrected_candidate.score);
+    end;
+
+    procedure finalize_modal_tail_sentence_candidate(var candidates: TncCandidateList);
+    const
+        c_modal_tail_finalize_bonus = 960;
+    var
+        syllables_local: TncPinyinParseResult;
+        tail_key: string;
+        expected_text: string;
+        idx: Integer;
+        candidate_units: Integer;
+        best_index: Integer;
+        best_score: Integer;
+        existing_index: Integer;
+        preferred_existing_index: Integer;
+        preferred_existing_score: Integer;
+        segment_path: string;
+        segment_parts: TArray<string>;
+        corrected_candidate: TncCandidate;
+        corrected_text: string;
+        corrected_path: string;
+        part_idx: Integer;
+        last_units: TArray<string>;
+    begin
+        if (Length(candidates) = 0) or (input_syllable_count < 4) or
+            (not is_full_pinyin_key(lookup_text)) then
+        begin
+            Exit;
+        end;
+
+        syllables_local := get_effective_compact_pinyin_syllables(lookup_text);
+        if Length(syllables_local) <> input_syllable_count then
+        begin
+            Exit;
+        end;
+
+        tail_key := normalize_pinyin_text(syllables_local[High(syllables_local)].text);
+        expected_text := '';
+        if tail_key = 'ba' then
+        begin
+            expected_text := string(Char($5427));
+        end
+        else if tail_key = 'ma' then
+        begin
+            expected_text := string(Char($5417));
+        end
+        else if tail_key = 'ne' then
+        begin
+            expected_text := string(Char($5462));
+        end
+        else if tail_key = 'a' then
+        begin
+            expected_text := string(Char($554A));
+        end
+        else if tail_key = 'ya' then
+        begin
+            expected_text := string(Char($5440));
+        end
+        else if tail_key = 'la' then
+        begin
+            expected_text := string(Char($5566));
+        end
+        else if tail_key = 'wa' then
+        begin
+            expected_text := string(Char($54C7));
+        end;
+        if expected_text = '' then
+        begin
+            Exit;
+        end;
+
+        best_index := -1;
+        best_score := Low(Integer);
+        existing_index := -1;
+        preferred_existing_index := -1;
+        preferred_existing_score := Low(Integer);
+        for idx := 0 to High(candidates) do
+        begin
+            if Trim(candidates[idx].comment) <> '' then
+            begin
+                Continue;
+            end;
+
+            candidate_units := get_candidate_text_unit_count(Trim(candidates[idx].text));
+            if candidate_units = input_syllable_count then
+            begin
+                last_units := split_text_units(Trim(candidates[idx].text));
+                if (Length(last_units) > 0) and
+                    SameText(Trim(last_units[High(last_units)]), expected_text) and
+                    (candidates[idx].score > preferred_existing_score) then
+                begin
+                    preferred_existing_score := candidates[idx].score;
+                    preferred_existing_index := idx;
+                end;
+            end;
+
+            if candidate_units <> input_syllable_count then
+            begin
+                Continue;
+            end;
+
+            segment_path := get_segment_path_for_candidate(candidates[idx]);
+            if get_encoded_path_segment_count_local(segment_path) <= 1 then
+            begin
+                Continue;
+            end;
+            segment_parts := segment_path.Split([c_segment_path_separator]);
+            if Length(segment_parts) <= 1 then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(segment_parts[High(segment_parts)])) <> 1 then
+            begin
+                Continue;
+            end;
+
+            corrected_text := '';
+            corrected_path := '';
+            for part_idx := 0 to High(segment_parts) - 1 do
+            begin
+                corrected_text := corrected_text + Trim(segment_parts[part_idx]);
+                if corrected_path = '' then
+                begin
+                    corrected_path := Trim(segment_parts[part_idx]);
+                end
+                else
+                begin
+                    corrected_path := corrected_path + c_segment_path_separator +
+                        Trim(segment_parts[part_idx]);
+                end;
+            end;
+            corrected_text := corrected_text + expected_text;
+
+            if SameText(corrected_text, Trim(candidates[idx].text)) then
+            begin
+                if existing_index < 0 then
+                begin
+                    existing_index := idx;
+                end;
+                Continue;
+            end;
+
+            if existing_index < 0 then
+            begin
+                for part_idx := 0 to High(candidates) do
+                begin
+                    if (Trim(candidates[part_idx].comment) = '') and
+                        SameText(Trim(candidates[part_idx].text), corrected_text) then
+                    begin
+                        existing_index := part_idx;
+                        Break;
+                    end;
+                end;
+            end;
+
+            if candidates[idx].score > best_score then
+            begin
+                best_score := candidates[idx].score;
+                best_index := idx;
+            end;
+        end;
+
+        if preferred_existing_index > 0 then
+        begin
+            corrected_candidate := candidates[preferred_existing_index];
+            corrected_candidate.comment := '';
+            corrected_candidate.source := cs_rule;
+            Inc(corrected_candidate.score, c_modal_tail_finalize_bonus);
+            for idx := preferred_existing_index downto 1 do
+            begin
+                candidates[idx] := candidates[idx - 1];
+            end;
+            candidates[0] := corrected_candidate;
+            Exit;
+        end;
+
+        if best_index < 0 then
+        begin
+            Exit;
+        end;
+
+        if existing_index >= 0 then
+        begin
+            corrected_candidate := candidates[existing_index];
+            Inc(corrected_candidate.score, c_modal_tail_finalize_bonus);
+            corrected_candidate.source := cs_rule;
+            corrected_candidate.comment := '';
+        end
+        else
+        begin
+            corrected_candidate := candidates[best_index];
+            segment_path := get_segment_path_for_candidate(candidates[best_index]);
+            segment_parts := segment_path.Split([c_segment_path_separator]);
+            corrected_text := '';
+            corrected_path := '';
+            for part_idx := 0 to High(segment_parts) - 1 do
+            begin
+                corrected_text := corrected_text + Trim(segment_parts[part_idx]);
+                if corrected_path = '' then
+                begin
+                    corrected_path := Trim(segment_parts[part_idx]);
+                end
+                else
+                begin
+                    corrected_path := corrected_path + c_segment_path_separator +
+                        Trim(segment_parts[part_idx]);
+                end;
+            end;
+            corrected_text := corrected_text + expected_text;
+            if corrected_path = '' then
+            begin
+                corrected_path := expected_text;
+            end
+            else
+            begin
+                corrected_path := corrected_path + c_segment_path_separator + expected_text;
+            end;
+
+            corrected_candidate.text := corrected_text;
+            corrected_candidate.comment := '';
+            corrected_candidate.source := cs_rule;
+            corrected_candidate.has_dict_weight := False;
+            corrected_candidate.dict_weight := 0;
+            Inc(corrected_candidate.score, c_modal_tail_finalize_bonus);
+            corrected_candidate.comment := '';
+            remember_segment_path_for_candidate(corrected_candidate.text, '',
+                corrected_path, corrected_candidate.score);
+        end;
+
+        for idx := Length(candidates) - 1 downto 1 do
+        begin
+            candidates[idx] := candidates[idx - 1];
+        end;
+        candidates[0] := corrected_candidate;
+    end;
+
     function build_segment_candidates_timed(out out_candidates: TncCandidateList;
         const include_full_path: Boolean = True;
         const allow_relaxed_split: Boolean = False): Boolean;
@@ -5239,6 +6851,72 @@ var
             begin
                 Continue;
             end;
+            Exit(True);
+        end;
+    end;
+
+    function has_exact_complete_phrase_candidate_for_syllable_count(
+        const candidates: TncCandidateList; const expected_syllables: Integer): Boolean;
+    var
+        candidate_idx: Integer;
+    begin
+        Result := False;
+        if expected_syllables <= 0 then
+        begin
+            Exit;
+        end;
+
+        for candidate_idx := 0 to High(candidates) do
+        begin
+            if candidates[candidate_idx].comment <> '' then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(candidates[candidate_idx].text)) <>
+                expected_syllables then
+            begin
+                Continue;
+            end;
+            if candidates[candidate_idx].has_dict_weight or
+                (candidates[candidate_idx].source = cs_user) then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+
+    function has_natural_complete_segment_path_candidate_for_syllable_count(
+        const candidates: TncCandidateList; const expected_syllables: Integer): Boolean;
+    var
+        candidate_idx: Integer;
+        encoded_path: string;
+    begin
+        Result := False;
+        if expected_syllables <= 0 then
+        begin
+            Exit;
+        end;
+
+        for candidate_idx := 0 to High(candidates) do
+        begin
+            if candidates[candidate_idx].comment <> '' then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(Trim(candidates[candidate_idx].text)) <>
+                expected_syllables then
+            begin
+                Continue;
+            end;
+
+            encoded_path := get_segment_path_for_candidate(candidates[candidate_idx]);
+            if (Trim(encoded_path) = '') or
+                (get_encoded_path_segment_count_local(encoded_path) <= 1) or
+                (not is_natural_predictive_segment_path_local(encoded_path)) then
+            begin
+                Continue;
+            end;
+
             Exit(True);
         end;
     end;
@@ -5295,6 +6973,133 @@ var
                 Exit(True);
             end;
         end;
+    end;
+
+    function has_strong_delayed_long_decode_candidate(
+        const candidates: TncCandidateList): Boolean;
+    var
+        candidate_idx: Integer;
+        text_units: Integer;
+        comment_units: Integer;
+        candidate: TncCandidate;
+        segment_score_hint: Integer;
+    begin
+        Result := False;
+        if has_useful_long_sentence_prediction_candidate(candidates) then
+        begin
+            Exit(True);
+        end;
+
+        for candidate_idx := 0 to High(candidates) do
+        begin
+            candidate := candidates[candidate_idx];
+            text_units := get_candidate_text_unit_count(Trim(candidate.text));
+            if text_units < 2 then
+            begin
+                Continue;
+            end;
+
+            segment_score_hint := get_candidate_segment_path_score_hint(candidate);
+            if candidate.comment = '' then
+            begin
+                if (text_units >= Max(2, input_syllable_count - 1)) and
+                    (candidate.has_dict_weight or (candidate.source = cs_user) or
+                    (segment_score_hint > Low(Integer))) then
+                begin
+                    Exit(True);
+                end;
+                Continue;
+            end;
+
+            comment_units := get_effective_compact_pinyin_unit_count(
+                normalize_pinyin_text(candidate.comment));
+            if (comment_units <= 1) and
+                (text_units >= Max(2, input_syllable_count - 2)) and
+                (candidate.has_dict_weight or (candidate.source = cs_user) or
+                (segment_score_hint > Low(Integer))) then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+
+    procedure trim_candidates_for_delayed_long_decode(
+        var candidates: TncCandidateList);
+    const
+        c_complete_limit = 6;
+        c_partial_limit = 8;
+        c_single_partial_limit = 3;
+        c_user_limit = 6;
+    var
+        sorted_candidates: TncCandidateList;
+        trimmed_candidates: TncCandidateList;
+        idx: Integer;
+        out_idx: Integer;
+        text_units: Integer;
+        user_count: Integer;
+        complete_count: Integer;
+        partial_count: Integer;
+        single_partial_count: Integer;
+        candidate: TncCandidate;
+    begin
+        if Length(candidates) <= 0 then
+        begin
+            Exit;
+        end;
+
+        sorted_candidates := candidates;
+        sort_candidates_lightweight(sorted_candidates);
+        SetLength(trimmed_candidates, 0);
+        out_idx := 0;
+        user_count := 0;
+        complete_count := 0;
+        partial_count := 0;
+        single_partial_count := 0;
+
+        for idx := 0 to High(sorted_candidates) do
+        begin
+            candidate := sorted_candidates[idx];
+            text_units := get_candidate_text_unit_count(Trim(candidate.text));
+
+            if candidate.source = cs_user then
+            begin
+                if user_count >= c_user_limit then
+                begin
+                    Continue;
+                end;
+                Inc(user_count);
+            end
+            else if candidate.comment = '' then
+            begin
+                if complete_count >= c_complete_limit then
+                begin
+                    Continue;
+                end;
+                Inc(complete_count);
+            end
+            else if text_units <= 1 then
+            begin
+                if single_partial_count >= c_single_partial_limit then
+                begin
+                    Continue;
+                end;
+                Inc(single_partial_count);
+            end
+            else
+            begin
+                if partial_count >= c_partial_limit then
+                begin
+                    Continue;
+                end;
+                Inc(partial_count);
+            end;
+
+            SetLength(trimmed_candidates, out_idx + 1);
+            trimmed_candidates[out_idx] := candidate;
+            Inc(out_idx);
+        end;
+
+        candidates := trimmed_candidates;
     end;
 
     function has_extendable_trailing_prefix_query_text(const pinyin_key: string): Boolean;
@@ -5843,6 +7648,7 @@ var
         const pinyin_key: string);
     const
         c_exact_long_full_visible_bonus = 840;
+        c_exact_long_full_limit = 6;
     var
         exact_matches: TncCandidateList;
         lookup_results: TncCandidateList;
@@ -5907,6 +7713,11 @@ var
         end;
 
         clear_candidate_comments(exact_matches);
+        sort_candidates_lightweight(exact_matches);
+        if Length(exact_matches) > c_exact_long_full_limit then
+        begin
+            SetLength(exact_matches, c_exact_long_full_limit);
+        end;
         candidates := merge_candidate_lists(candidates, exact_matches, 0);
     end;
 
@@ -7368,6 +9179,7 @@ var
         var candidates: TncCandidateList; const pinyin_key: string): Boolean;
     const
         c_incomplete_trailing_prefix_visible_bonus = 780;
+        c_incomplete_trailing_prefix_limit = 6;
     var
         effective_syllables: TncPinyinParseResult;
         lookup_results: TncCandidateList;
@@ -7465,6 +9277,11 @@ var
             end;
 
             clear_candidate_comments(exact_matches);
+            sort_candidates_lightweight(exact_matches);
+            if Length(exact_matches) > c_incomplete_trailing_prefix_limit then
+            begin
+                SetLength(exact_matches, c_incomplete_trailing_prefix_limit);
+            end;
             candidates := merge_candidate_lists(candidates, exact_matches, 0);
             Result := True;
         end;
@@ -7517,6 +9334,11 @@ var
             end;
 
             clear_candidate_comments(exact_matches);
+            sort_candidates_lightweight(exact_matches);
+            if Length(exact_matches) > c_incomplete_trailing_prefix_limit then
+            begin
+                SetLength(exact_matches, c_incomplete_trailing_prefix_limit);
+            end;
             candidates := merge_candidate_lists(candidates, exact_matches, 0);
             Result := True;
         end;
@@ -10789,6 +12611,8 @@ begin
         short_full_exact_query := has_multi_syllable_input and
             (input_syllable_count >= 2) and (input_syllable_count <= 4) and
             is_full_pinyin_key(lookup_text);
+        delayed_long_decode_mode := should_use_delayed_long_decode_mode_local;
+        delayed_long_decode_strong_candidate := False;
         repeated_two_syllable_query := is_repeated_two_syllable_query_text(lookup_text);
         single_char_partial_min_count := 1;
         if repeated_two_syllable_query then
@@ -10860,6 +12684,12 @@ begin
                 has_raw_candidates := True;
                 raw_from_dictionary := True;
             end
+            else if delayed_long_decode_mode then
+            begin
+                // In predictive long-sentence mode, do not seed from the generic
+                // full-query dictionary bucket. Let lightweight prefix prediction
+                // and narrow exact/prefix probes drive the first candidate set.
+            end
             else if dictionary_lookup_cached(lookup_text, raw_candidates) then
             begin
                 has_raw_candidates := True;
@@ -10899,6 +12729,12 @@ begin
                 begin
                     has_raw_candidates := True;
                     raw_from_dictionary := True;
+                end
+                else if delayed_long_decode_mode then
+                begin
+                    // Predictive long-sentence mode keeps the generic full-query
+                    // dictionary bucket out of the primary path. Heavy decode can
+                    // still run later if lightweight candidates are not strong enough.
                 end
                 else if has_multi_syllable_input and
                     should_enable_long_sentence_exact_search_local and
@@ -11081,7 +12917,85 @@ begin
             end;
         end;
 
-        if lightweight_sentence_applied and has_raw_candidates then
+        if delayed_long_decode_mode and has_raw_candidates then
+        begin
+            merge_exact_long_full_lookup_candidates(raw_candidates, lookup_text);
+            merge_incomplete_trailing_prefix_full_lookup_candidates(raw_candidates,
+                lookup_text);
+            delayed_long_decode_strong_candidate :=
+                has_strong_delayed_long_decode_candidate(raw_candidates);
+
+            if delayed_long_decode_strong_candidate and
+                ((not is_full_pinyin_key(lookup_text)) or
+                has_exact_complete_phrase_candidate_for_syllable_count(
+                    raw_candidates, input_syllable_count) or
+                has_natural_complete_segment_path_candidate_for_syllable_count(
+                    raw_candidates, input_syllable_count)) then
+            begin
+                trim_candidates_for_delayed_long_decode(raw_candidates);
+                m_candidates := raw_candidates;
+
+                if build_exact_head_partial_candidates(lookup_text,
+                    exact_head_partial_candidates) then
+                begin
+                    m_candidates := merge_candidate_lists(m_candidates,
+                        exact_head_partial_candidates, 0);
+                end;
+                if build_exact_head_modal_tail_complete_candidates(lookup_text,
+                    exact_head_partial_candidates) then
+                begin
+                    m_candidates := merge_candidate_lists(m_candidates,
+                        exact_head_partial_candidates, 0);
+                end;
+                ensure_modal_tail_sentence_candidate_visible(m_candidates);
+                merge_confirmed_prefix_user_extensions(m_candidates);
+                apply_user_penalties(lookup_text, m_candidates);
+                sort_candidates_lightweight(m_candidates);
+                ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
+                ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
+                    single_char_partial_min_count);
+                ensure_hard_single_char_partial_visible(m_candidates);
+                ensure_long_sentence_exact_candidate_visible(m_candidates);
+                ensure_long_sentence_partial_exact_candidate_visible(m_candidates);
+                ensure_long_sentence_prefix_partial_visible(m_candidates,
+                    get_candidate_limit);
+                ensure_strong_two_plus_one_partial_visible(m_candidates,
+                    get_candidate_limit);
+                filter_short_query_nonlexicon_complete_noise(m_candidates);
+                ensure_best_lightweight_sentence_candidate_visible(m_candidates);
+                ensure_exact_dict_complete_candidate_visible(m_candidates);
+                ensure_best_user_complete_candidate_visible(m_candidates);
+                finalize_modal_tail_sentence_candidate(m_candidates);
+                finalize_lookup_timing_info;
+                if m_config.debug_mode then
+                begin
+                    m_last_lookup_debug_extra := Format(
+                        'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=1 delayed=1',
+                        [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
+                        Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+                        Ord(runtime_phrase_added), Ord(runtime_redup_added)]) +
+                        Format(' allinit=%d', [Ord(all_initial_compact_query)]);
+                    if Length(m_candidates) > 0 then
+                    begin
+                        m_last_lookup_debug_extra := m_last_lookup_debug_extra + ' ' +
+                            get_candidate_debug_summary(m_candidates[0]);
+                    end;
+                end;
+                refresh_candidate_segment_paths;
+                note_ranked_top_candidate;
+                m_page_index := 0;
+                m_selected_index := 0;
+                Exit;
+            end;
+        end;
+
+        if lightweight_sentence_applied and has_raw_candidates and
+            ((not delayed_long_decode_mode) or
+            (not is_full_pinyin_key(lookup_text)) or
+            has_exact_complete_phrase_candidate_for_syllable_count(
+                raw_candidates, input_syllable_count) or
+            has_natural_complete_segment_path_candidate_for_syllable_count(
+                raw_candidates, input_syllable_count)) then
         begin
             sort_candidates_lightweight(raw_candidates);
             filter_non_bmp_single_char_candidates(raw_candidates);
@@ -11109,13 +13023,31 @@ begin
                 m_candidates := raw_candidates;
             end;
 
+            if build_exact_head_partial_candidates(lookup_text,
+                exact_head_partial_candidates) then
+            begin
+                m_candidates := merge_candidate_lists(m_candidates,
+                    exact_head_partial_candidates, 0);
+            end;
+            if build_exact_head_modal_tail_complete_candidates(lookup_text,
+                exact_head_partial_candidates) then
+            begin
+                m_candidates := merge_candidate_lists(m_candidates,
+                    exact_head_partial_candidates, 0);
+            end;
+            ensure_modal_tail_sentence_candidate_visible(m_candidates);
             merge_confirmed_prefix_user_extensions(m_candidates);
             apply_user_penalties(lookup_text, m_candidates);
             sort_candidates_lightweight(m_candidates);
+            ensure_partial_fallback_visible(m_candidates, get_candidate_limit);
+            ensure_single_char_partial_visible(m_candidates, get_candidate_limit,
+                single_char_partial_min_count);
+            ensure_hard_single_char_partial_visible(m_candidates);
             filter_short_query_nonlexicon_complete_noise(m_candidates);
             ensure_best_lightweight_sentence_candidate_visible(m_candidates);
             ensure_exact_dict_complete_candidate_visible(m_candidates);
             ensure_best_user_complete_candidate_visible(m_candidates);
+            finalize_modal_tail_sentence_candidate(m_candidates);
             finalize_lookup_timing_info;
             if m_config.debug_mode then
             begin
@@ -11409,6 +13341,7 @@ begin
         ensure_best_lightweight_sentence_candidate_visible(m_candidates);
         ensure_exact_dict_complete_candidate_visible(m_candidates);
         ensure_best_user_complete_candidate_visible(m_candidates);
+        finalize_modal_tail_sentence_candidate(m_candidates);
         finalize_lookup_timing_info;
         if m_config.debug_mode then
         begin
@@ -13197,6 +15130,12 @@ var
     cache_key: string;
 begin
     Result := 0;
+    if (m_last_lookup_syllable_count >= 5) and (candidate.comment = '') and
+        candidate.has_dict_weight then
+    begin
+        Exit;
+    end;
+
     if is_nonlexicon_long_segment_path_candidate(candidate) then
     begin
         Exit;
@@ -14230,6 +16169,12 @@ var
 begin
     Result := 0;
     if m_dictionary = nil then
+    begin
+        Exit;
+    end;
+
+    if (m_last_lookup_syllable_count >= 5) and (candidate.comment = '') and
+        candidate.has_dict_weight then
     begin
         Exit;
     end;
@@ -15279,6 +17224,12 @@ var
     has_boundary_anchor_two_plus_one: Boolean;
     preferred_three_syllable_partial_kind: Integer;
     fixed_top_single_char_text: string;
+    best_sentence_single_char_texts: TArray<string>;
+    best_sentence_single_char_weights: TArray<Integer>;
+    best_sentence_single_char_known: TArray<Boolean>;
+    best_three_syllable_exact_texts: TArray<string>;
+    best_three_syllable_exact_weights: TArray<Integer>;
+    best_three_syllable_exact_known: TArray<Boolean>;
 const
     c_boundary_anchor_partial_score_hint_flag = 1000000;
     c_boundary_anchor_partial_shape_kind_scale = 10000;
@@ -15628,6 +17579,54 @@ const
             Result := stored_state = 2;
         end;
     end;
+    function get_fixed_sentence_single_char_for_sort(
+        const syllable_text: string): string;
+    var
+        normalized_syllable: string;
+    begin
+        Result := '';
+        normalized_syllable := normalize_pinyin_text(syllable_text);
+        if normalized_syllable = 'wo' then
+        begin
+            Result := string(Char($6211));
+        end
+        else if normalized_syllable = 'ni' then
+        begin
+            Result := string(Char($4F60));
+        end
+        else if normalized_syllable = 'ta' then
+        begin
+            Result := string(Char($4ED6));
+        end
+        else if normalized_syllable = 'he' then
+        begin
+            Result := string(Char($548C));
+        end
+        else if normalized_syllable = 'shi' then
+        begin
+            Result := string(Char($662F));
+        end
+        else if normalized_syllable = 'ye' then
+        begin
+            Result := string(Char($4E5F));
+        end
+        else if normalized_syllable = 'hui' then
+        begin
+            Result := string(Char($4F1A));
+        end
+        else if normalized_syllable = 'de' then
+        begin
+            Result := string(Char($7684));
+        end
+        else if normalized_syllable = 'zhe' then
+        begin
+            Result := string(Char($8FD9));
+        end
+        else if normalized_syllable = 'qing' then
+        begin
+            Result := string(Char($8BF7));
+        end;
+    end;
     procedure prepare_weak_chain_query_cache;
     var
         parser: TncPinyinParser;
@@ -15672,6 +17671,300 @@ const
         end;
 
         SetLength(weak_chain_preference_maps, Length(weak_chain_query_syllables));
+        SetLength(best_sentence_single_char_texts, Length(weak_chain_query_syllables));
+        SetLength(best_sentence_single_char_weights, Length(weak_chain_query_syllables));
+        SetLength(best_sentence_single_char_known, Length(weak_chain_query_syllables));
+        if Length(weak_chain_query_syllables) >= 3 then
+        begin
+            SetLength(best_three_syllable_exact_texts, Length(weak_chain_query_syllables) - 2);
+            SetLength(best_three_syllable_exact_weights, Length(weak_chain_query_syllables) - 2);
+            SetLength(best_three_syllable_exact_known, Length(weak_chain_query_syllables) - 2);
+        end
+        else
+        begin
+            SetLength(best_three_syllable_exact_texts, 0);
+            SetLength(best_three_syllable_exact_weights, 0);
+            SetLength(best_three_syllable_exact_known, 0);
+        end;
+    end;
+    function try_get_best_sentence_single_char_for_sort(const syllable_index: Integer;
+        out out_text: string; out out_weight: Integer): Boolean;
+    const
+        c_probe_limit = 6;
+    var
+        local_results: TncCandidateList;
+        idx: Integer;
+        candidate_text: string;
+        is_preferred: Boolean;
+        weight_value: Integer;
+        fixed_text: string;
+    begin
+        Result := False;
+        out_text := '';
+        out_weight := 0;
+        prepare_weak_chain_query_cache;
+        if (syllable_index < 0) or (syllable_index > High(weak_chain_query_syllables)) then
+        begin
+            Exit;
+        end;
+
+        if best_sentence_single_char_known[syllable_index] then
+        begin
+            out_text := best_sentence_single_char_texts[syllable_index];
+            out_weight := best_sentence_single_char_weights[syllable_index];
+            Exit(out_text <> '');
+        end;
+
+        best_sentence_single_char_known[syllable_index] := True;
+        fixed_text := get_fixed_sentence_single_char_for_sort(
+            weak_chain_query_syllables[syllable_index].text);
+        if fixed_text <> '' then
+        begin
+            best_sentence_single_char_texts[syllable_index] := fixed_text;
+            best_sentence_single_char_weights[syllable_index] := 960;
+            out_text := fixed_text;
+            out_weight := 960;
+            Exit(True);
+        end;
+
+        if (m_dictionary = nil) or
+            (not m_dictionary.lookup(Trim(weak_chain_query_syllables[syllable_index].text),
+            local_results)) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(local_results) do
+        begin
+            if idx >= c_probe_limit then
+            begin
+                Break;
+            end;
+            candidate_text := Trim(local_results[idx].text);
+            if (get_candidate_text_unit_count(candidate_text) <> 1) or
+                (not match_single_char_candidate_for_syllable(
+                weak_chain_query_syllables[syllable_index].text, candidate_text, is_preferred)) or
+                (not is_preferred) then
+            begin
+                Continue;
+            end;
+
+            if local_results[idx].has_dict_weight then
+            begin
+                weight_value := local_results[idx].dict_weight;
+            end
+            else
+            begin
+                weight_value := local_results[idx].score;
+            end;
+
+            if weight_value > out_weight then
+            begin
+                out_text := candidate_text;
+                out_weight := weight_value;
+                Result := True;
+            end;
+        end;
+
+        if Result then
+        begin
+            best_sentence_single_char_texts[syllable_index] := out_text;
+            best_sentence_single_char_weights[syllable_index] := out_weight;
+        end;
+    end;
+    function build_sort_query_key(const start_idx: Integer;
+        const syllable_count_local: Integer): string;
+    var
+        idx: Integer;
+    begin
+        Result := '';
+        prepare_weak_chain_query_cache;
+        if (start_idx < 0) or (syllable_count_local <= 0) or
+            (start_idx + syllable_count_local - 1 > High(weak_chain_query_syllables)) then
+        begin
+            Exit;
+        end;
+        for idx := start_idx to start_idx + syllable_count_local - 1 do
+        begin
+            Result := Result + normalize_pinyin_text(weak_chain_query_syllables[idx].text);
+        end;
+    end;
+    function try_get_best_exact_phrase_for_three_syllable_span(const start_idx: Integer;
+        out out_text: string; out out_weight: Integer): Boolean;
+    const
+        c_probe_limit = 8;
+    var
+        query_key: string;
+        local_results: TncCandidateList;
+        idx: Integer;
+        candidate_text: string;
+        candidate_units: Integer;
+        weight_value: Integer;
+    begin
+        Result := False;
+        out_text := '';
+        out_weight := 0;
+        prepare_weak_chain_query_cache;
+        if (start_idx < 0) or (start_idx > High(best_three_syllable_exact_known)) then
+        begin
+            Exit;
+        end;
+
+        if best_three_syllable_exact_known[start_idx] then
+        begin
+            out_text := best_three_syllable_exact_texts[start_idx];
+            out_weight := best_three_syllable_exact_weights[start_idx];
+            Exit(out_text <> '');
+        end;
+
+        best_three_syllable_exact_known[start_idx] := True;
+        query_key := build_sort_query_key(start_idx, 3);
+        if (query_key = '') or (m_dictionary = nil) or
+            (not m_dictionary.lookup_exact_full_pinyin(query_key, local_results)) then
+        begin
+            Exit;
+        end;
+
+        for idx := 0 to High(local_results) do
+        begin
+            if idx >= c_probe_limit then
+            begin
+                Break;
+            end;
+            if Trim(local_results[idx].comment) <> '' then
+            begin
+                Continue;
+            end;
+
+            candidate_text := Trim(local_results[idx].text);
+            candidate_units := get_candidate_text_unit_count(candidate_text);
+            if candidate_units <> 3 then
+            begin
+                Continue;
+            end;
+
+            if local_results[idx].has_dict_weight then
+            begin
+                weight_value := local_results[idx].dict_weight;
+            end
+            else
+            begin
+                weight_value := local_results[idx].score;
+            end;
+
+            if weight_value > out_weight then
+            begin
+                out_text := candidate_text;
+                out_weight := weight_value;
+                Result := True;
+            end;
+        end;
+
+        if Result then
+        begin
+            best_three_syllable_exact_texts[start_idx] := out_text;
+            best_three_syllable_exact_weights[start_idx] := out_weight;
+        end;
+    end;
+    function get_sentence_path_bridge_adjustment(const candidate: TncCandidate): Integer;
+    var
+        encoded_path: string;
+        segment_parts: TArray<string>;
+        segment_idx: Integer;
+        syllable_idx: Integer;
+        segment_text: string;
+        next_segment_text: string;
+        segment_units: Integer;
+        next_segment_units: Integer;
+        left_text: string;
+        right_text: string;
+        left_weight: Integer;
+        right_weight: Integer;
+        fixed_left: string;
+        fixed_right: string;
+        combined_text: string;
+        best_exact_three_text: string;
+        best_exact_three_weight: Integer;
+    begin
+        Result := 0;
+        if (candidate.comment <> '') or candidate.has_dict_weight or
+            (candidate.source = cs_user) or
+            (get_candidate_text_unit_count(candidate.text) < 2) then
+        begin
+            Exit;
+        end;
+
+        prepare_weak_chain_query_cache;
+        if Length(weak_chain_query_syllables) < 2 then
+        begin
+            Exit;
+        end;
+
+        encoded_path := get_segment_path_for_candidate(candidate);
+        if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+        begin
+            Exit;
+        end;
+
+        segment_parts := encoded_path.Split([c_segment_path_separator]);
+        syllable_idx := 0;
+        for segment_idx := 0 to High(segment_parts) do
+        begin
+            segment_text := Trim(segment_parts[segment_idx]);
+            segment_units := get_candidate_text_unit_count(segment_text);
+            if (segment_units = 2) and (syllable_idx + 1 <= High(weak_chain_query_syllables)) then
+            begin
+                fixed_left := get_fixed_sentence_single_char_for_sort(
+                    weak_chain_query_syllables[syllable_idx].text);
+                fixed_right := get_fixed_sentence_single_char_for_sort(
+                    weak_chain_query_syllables[syllable_idx + 1].text);
+                if (fixed_left <> '') and (fixed_right <> '') and
+                    (segment_text <> fixed_left + fixed_right) then
+                begin
+                    Dec(Result, 1600);
+                end
+                else if try_get_best_sentence_single_char_for_sort(
+                    syllable_idx, left_text, left_weight) and
+                    try_get_best_sentence_single_char_for_sort(
+                    syllable_idx + 1, right_text, right_weight) and
+                    (segment_text <> left_text + right_text) then
+                begin
+                    if (left_weight + right_weight) >= 1500 then
+                    begin
+                        Dec(Result, 1100);
+                    end
+                    else if (left_weight + right_weight) >= 1200 then
+                    begin
+                        Dec(Result, 780);
+                    end;
+                end;
+
+                if (segment_idx < High(segment_parts)) and
+                    (syllable_idx + 2 <= High(weak_chain_query_syllables)) then
+                begin
+                    next_segment_text := Trim(segment_parts[segment_idx + 1]);
+                    next_segment_units := get_candidate_text_unit_count(next_segment_text);
+                    if next_segment_units >= 1 then
+                    begin
+                        combined_text := segment_text + split_text_units(next_segment_text)[0];
+                        if try_get_best_exact_phrase_for_three_syllable_span(
+                            syllable_idx, best_exact_three_text, best_exact_three_weight) and
+                            (best_exact_three_weight >= 520) then
+                        begin
+                            if combined_text = best_exact_three_text then
+                            begin
+                                Inc(Result, 520);
+                            end
+                            else
+                            begin
+                                Dec(Result, 880);
+                            end;
+                        end;
+                    end;
+                end;
+            end;
+            Inc(syllable_idx, segment_units);
+        end;
     end;
     function is_weighted_complete_phrase_candidate(const candidate: TncCandidate): Boolean;
     var
@@ -15697,6 +17990,33 @@ const
         encoded_path := get_segment_path_for_candidate(candidate);
         Result := get_encoded_path_segment_count_local(encoded_path) > 1;
     end;
+    function has_multi_char_segment_path_candidate(const candidate: TncCandidate): Boolean;
+    var
+        encoded_path: string;
+        segment_parts: TArray<string>;
+        part: string;
+    begin
+        Result := False;
+        if candidate.comment <> '' then
+        begin
+            Exit;
+        end;
+
+        encoded_path := get_segment_path_for_candidate(candidate);
+        if get_encoded_path_segment_count_local(encoded_path) <= 1 then
+        begin
+            Exit;
+        end;
+
+        segment_parts := encoded_path.Split([c_segment_path_separator]);
+        for part in segment_parts do
+        begin
+            if get_candidate_text_unit_count(Trim(part)) >= 2 then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
     function is_runtime_constructed_complete_phrase_candidate(const candidate: TncCandidate): Boolean;
     begin
         Result := (candidate.comment = '') and (get_candidate_text_unit_count(candidate.text) >= 2) and
@@ -15720,6 +18040,11 @@ const
 
         if (candidate.source = cs_user) and
             (get_candidate_text_unit_count(candidate.text) >= 2) then
+        begin
+            Exit(False);
+        end;
+
+        if has_multi_char_segment_path_candidate(candidate) then
         begin
             Exit(False);
         end;
@@ -15766,6 +18091,11 @@ const
 
         if (candidate.source = cs_user) and
             (get_candidate_text_unit_count(candidate.text) >= 2) then
+        begin
+            Exit(False);
+        end;
+
+        if has_multi_char_segment_path_candidate(candidate) then
         begin
             Exit(False);
         end;
@@ -16112,6 +18442,7 @@ begin
             begin
                 Inc(item.rank_score, c_demonstrative_head_friendly_partial_rank_bonus);
             end;
+            Inc(item.rank_score, get_sentence_path_bridge_adjustment(candidates[i]));
             item.is_fixed_top_single_char := (fixed_top_single_char_text <> '') and
                 (item.candidate.comment = '') and (item.text_units = 1) and
                 (Trim(item.candidate.text) = fixed_top_single_char_text);
