@@ -84,6 +84,7 @@ type
         function exact_base_entry_exists(const pinyin: string; const text: string): Boolean;
         function normalized_base_entry_exists(const pinyin: string; const text: string): Boolean;
         function has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
+        function explicit_user_entry_exists(const pinyin: string; const text: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
         function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
@@ -2824,6 +2825,40 @@ begin
     end;
 end;
 
+function TncSqliteDictionary.explicit_user_entry_exists(const pinyin: string; const text: string): Boolean;
+const
+    user_phrase_sql = 'SELECT 1 FROM dict_user WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    pinyin_key: string;
+    text_key: string;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if m_user_connection.prepare(user_phrase_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, text_key) then
+        begin
+            step_result := m_user_connection.step(stmt);
+            Result := step_result = SQLITE_ROW;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
 function TncSqliteDictionary.is_suppressible_nonbase_exact_phrase(const pinyin: string;
     const text: string): Boolean;
 const
@@ -3067,6 +3102,13 @@ begin
     if not is_suppressible_nonbase_exact_phrase(pinyin, text) then
     begin
         Exit;
+    end;
+
+    if user_weight > 0 then
+    begin
+        // dict_user rows represent explicit user-word confirmations. Do not
+        // treat them as weak constructed pollution.
+        Exit(False);
     end;
 
     // Treat one-off or low-support non-base full-pinyin chains as polluted
@@ -7128,31 +7170,6 @@ begin
         Exit;
     end;
 
-    if is_suppressible_nonbase_exact_phrase(pinyin_key, text) then
-    begin
-        // Keep stats/latest learning for repeated explicit confirmations, but
-        // do not persist low-confidence constructed full phrases as dict_user
-        // rows. They should only surface after enough repeated selections via
-        // stats-driven ranking, not as immediate user-word pollution.
-        stmt := nil;
-        try
-            if m_user_connection.prepare(delete_user_sql, stmt) then
-            begin
-                if m_user_connection.bind_text(stmt, 1, pinyin_key) and
-                    m_user_connection.bind_text(stmt, 2, text) then
-                begin
-                    m_user_connection.step(stmt);
-                end;
-            end;
-        finally
-            if stmt <> nil then
-            begin
-                m_user_connection.finalize(stmt);
-            end;
-        end;
-        Exit;
-    end;
-
     if base_entry_exists then
     begin
         // Base-dictionary entries should learn through stats-driven re-ranking,
@@ -7665,7 +7682,8 @@ begin
             Exit;
         end;
 
-        if should_suppress_constructed_user_phrase(normalized_query, text_key, commit_count, 0) then
+        if should_suppress_constructed_user_phrase(normalized_query, text_key, commit_count, 0) and
+            (not explicit_user_entry_exists(normalized_query, text_key)) then
         begin
             Exit;
         end;
@@ -7835,7 +7853,8 @@ begin
 
             if (not use_fallback_scan) and
                 ((candidate_text = '') or
-                (is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text)) or
+                ((is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text)) and
+                (not explicit_user_entry_exists(normalized_query, candidate_text))) or
                 (get_candidate_penalty(normalized_query, candidate_text) > 0)) then
             begin
                 use_fallback_scan := True;
@@ -7887,7 +7906,8 @@ begin
                         end;
 
                         if should_suppress_constructed_user_phrase(normalized_query,
-                            candidate_text, commit_count, 0) then
+                            candidate_text, commit_count, 0) and
+                            (not explicit_user_entry_exists(normalized_query, candidate_text)) then
                         begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
