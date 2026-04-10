@@ -33,6 +33,7 @@ type
         function get_query_latest_choice_text(const query_key: string): string; virtual;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; virtual;
+        function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
     end;
@@ -155,6 +156,12 @@ function TncDictionaryProvider.get_query_segment_path_penalty(const query_key: s
     const encoded_path: string): Integer;
 begin
     Result := 0;
+end;
+
+function TncDictionaryProvider.should_suppress_exact_query_learning(const pinyin: string;
+    const text: string): Boolean;
+begin
+    Result := False;
 end;
 
 procedure TncDictionaryProvider.remove_user_entry(const pinyin: string; const text: string);

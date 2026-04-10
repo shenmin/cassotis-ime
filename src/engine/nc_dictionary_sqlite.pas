@@ -87,6 +87,8 @@ type
         function explicit_user_entry_exists(const pinyin: string; const text: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
+        function is_nonbase_multi_segment_composed_exact_phrase(const pinyin: string;
+            const text: string): Boolean;
         function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
         function is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
             const commit_count: Integer = 0; const user_weight: Integer = 0): Boolean;
@@ -132,6 +134,7 @@ type
         function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
+        function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
@@ -3037,6 +3040,182 @@ begin
     end;
 end;
 
+function TncSqliteDictionary.is_nonbase_multi_segment_composed_exact_phrase(const pinyin: string;
+    const text: string): Boolean;
+const
+    c_composed_exact_phrase_min_units = 6;
+    c_composed_exact_phrase_min_segments = 3;
+    c_composed_exact_phrase_segment_max_syllables = 8;
+    c_composed_exact_phrase_segment_max_units = 4;
+var
+    pinyin_key: string;
+    text_key: string;
+    syllables: TArray<string>;
+    text_units: TArray<string>;
+    segment_exists_cache: TDictionary<string, Boolean>;
+    compose_cache: TDictionary<string, Boolean>;
+
+    function build_range_key(const start_syllable: Integer; const end_syllable: Integer;
+        const start_unit: Integer; const end_unit: Integer): string;
+    begin
+        Result := IntToStr(start_syllable) + ':' + IntToStr(end_syllable) + '|' +
+            IntToStr(start_unit) + ':' + IntToStr(end_unit);
+    end;
+
+    function build_compose_key(const start_syllable: Integer; const start_unit: Integer;
+        const min_segments_remaining: Integer): string;
+    begin
+        Result := IntToStr(start_syllable) + '|' + IntToStr(start_unit) + '|' +
+            IntToStr(min_segments_remaining);
+    end;
+
+    function join_syllable_slice(const start_idx: Integer; const end_idx: Integer): string;
+    var
+        idx: Integer;
+    begin
+        Result := '';
+        for idx := start_idx to end_idx do
+        begin
+            Result := Result + syllables[idx];
+        end;
+    end;
+
+    function join_text_unit_slice(const start_idx: Integer; const end_idx: Integer): string;
+    var
+        idx: Integer;
+    begin
+        Result := '';
+        for idx := start_idx to end_idx do
+        begin
+            Result := Result + text_units[idx];
+        end;
+    end;
+
+    function segment_exists(const start_syllable: Integer; const end_syllable: Integer;
+        const start_unit: Integer; const end_unit: Integer): Boolean;
+    var
+        cache_key: string;
+        segment_pinyin: string;
+        segment_text: string;
+    begin
+        Result := False;
+        if (start_syllable > end_syllable) or (start_unit > end_unit) then
+        begin
+            Exit;
+        end;
+
+        cache_key := build_range_key(start_syllable, end_syllable, start_unit, end_unit);
+        if segment_exists_cache.TryGetValue(cache_key, Result) then
+        begin
+            Exit;
+        end;
+
+        segment_pinyin := join_syllable_slice(start_syllable, end_syllable);
+        segment_text := join_text_unit_slice(start_unit, end_unit);
+        Result := normalized_base_entry_exists(segment_pinyin, segment_text);
+        segment_exists_cache.AddOrSetValue(cache_key, Result);
+    end;
+
+    function can_compose_from(const start_syllable: Integer; const start_unit: Integer;
+        const min_segments_remaining: Integer): Boolean;
+    var
+        cache_key: string;
+        end_syllable: Integer;
+        end_unit: Integer;
+        max_end_syllable: Integer;
+        max_end_unit: Integer;
+        next_required_segments: Integer;
+    begin
+        if (start_syllable = Length(syllables)) and (start_unit = Length(text_units)) then
+        begin
+            Exit(min_segments_remaining <= 0);
+        end;
+        if (start_syllable >= Length(syllables)) or (start_unit >= Length(text_units)) then
+        begin
+            Exit(False);
+        end;
+
+        cache_key := build_compose_key(start_syllable, start_unit, min_segments_remaining);
+        if compose_cache.TryGetValue(cache_key, Result) then
+        begin
+            Exit;
+        end;
+
+        Result := False;
+        max_end_syllable := Min(High(syllables),
+            start_syllable + c_composed_exact_phrase_segment_max_syllables - 1);
+        max_end_unit := Min(High(text_units),
+            start_unit + c_composed_exact_phrase_segment_max_units - 1);
+        for end_syllable := start_syllable to max_end_syllable do
+        begin
+            for end_unit := start_unit to max_end_unit do
+            begin
+                if not segment_exists(start_syllable, end_syllable, start_unit, end_unit) then
+                begin
+                    Continue;
+                end;
+
+                next_required_segments := Max(min_segments_remaining - 1, 0);
+                if can_compose_from(end_syllable + 1, end_unit + 1, next_required_segments) then
+                begin
+                    Result := True;
+                    compose_cache.AddOrSetValue(cache_key, Result);
+                    Exit;
+                end;
+            end;
+        end;
+
+        compose_cache.AddOrSetValue(cache_key, Result);
+    end;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') then
+    begin
+        Exit;
+    end;
+    if (not is_full_pinyin_key(pinyin_key)) or (not is_valid_user_text(text_key)) then
+    begin
+        Exit;
+    end;
+    if is_whitelisted_constructed_phrase(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+    if normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+
+    text_units := split_text_units_local(text_key);
+    if Length(text_units) < c_composed_exact_phrase_min_units then
+    begin
+        Exit;
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
+    if Length(syllables) <= 0 then
+    begin
+        Exit;
+    end;
+
+    segment_exists_cache := TDictionary<string, Boolean>.Create;
+    compose_cache := TDictionary<string, Boolean>.Create;
+    try
+        Result := can_compose_from(0, 0, c_composed_exact_phrase_min_segments);
+    finally
+        compose_cache.Free;
+        segment_exists_cache.Free;
+    end;
+end;
+
+function TncSqliteDictionary.should_suppress_exact_query_learning(const pinyin: string;
+    const text: string): Boolean;
+begin
+    Result := is_nonbase_multi_segment_composed_exact_phrase(pinyin, text);
+end;
+
 function TncSqliteDictionary.is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
     const commit_count: Integer; const user_weight: Integer): Boolean;
 var
@@ -3099,6 +3278,11 @@ const
     c_constructed_phrase_weight_trust_min = 3;
 begin
     Result := False;
+    if should_suppress_exact_query_learning(pinyin, text) then
+    begin
+        Exit(True);
+    end;
+
     if not is_suppressible_nonbase_exact_phrase(pinyin, text) then
     begin
         Exit;
@@ -7041,6 +7225,11 @@ begin
     end;
 
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
+    if full_pinyin_input and should_suppress_exact_query_learning(pinyin_key, text) then
+    begin
+        purge_user_entry_internal(pinyin_key, text, False, False);
+        Exit;
+    end;
 
     // A positive explicit selection for the same query/text pair should
     // cancel any earlier "remove candidate" feedback for that exact pair.
@@ -7682,6 +7871,11 @@ begin
             Exit;
         end;
 
+        if should_suppress_exact_query_learning(normalized_query, text_key) then
+        begin
+            Exit;
+        end;
+
         if should_suppress_constructed_user_phrase(normalized_query, text_key, commit_count, 0) and
             (not explicit_user_entry_exists(normalized_query, text_key)) then
         begin
@@ -7853,6 +8047,7 @@ begin
 
             if (not use_fallback_scan) and
                 ((candidate_text = '') or
+                (should_suppress_exact_query_learning(normalized_query, candidate_text)) or
                 ((is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text)) and
                 (not explicit_user_entry_exists(normalized_query, candidate_text))) or
                 (get_candidate_penalty(normalized_query, candidate_text) > 0)) then
@@ -7903,6 +8098,12 @@ begin
                                     Break;
                                 end;
                             end;
+                        end;
+
+                        if should_suppress_exact_query_learning(normalized_query, candidate_text) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
                         end;
 
                         if should_suppress_constructed_user_phrase(normalized_query,

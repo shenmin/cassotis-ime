@@ -1819,14 +1819,58 @@ begin
 
         if handled and session.engine.commit_text(commit_text) then
         begin
+            readback_start_tick := GetTickCount64;
+            display_text := session.engine.get_display_text;
+            candidates := session.engine.get_candidates;
+            page_index := session.engine.get_page_index;
+            page_count := session.engine.get_page_count;
+            selected_index := session.engine.get_selected_index;
+            preedit_text := session.engine.get_composition_text;
+            lookup_perf_info := session.engine.get_lookup_perf_info;
+            m_last_lookup_perf_info := lookup_perf_info;
             if debug_logging then
             begin
-                host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[] comp=[] confirmed=%d',
-                    [key_code, Ord(handled), sanitize_log_text(commit_text), session.engine.get_confirmed_length]));
+                lookup_debug_info := session.engine.get_lookup_debug_info;
+            end
+            else
+            begin
+                lookup_debug_info := '';
             end;
-            display_text := '';
-            session.clear_candidates;
-            should_hide_candidates := True;
+            readback_elapsed_ms := Int64(GetTickCount64 - readback_start_tick);
+            total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
+
+            if debug_logging then
+            begin
+                host_log_debug(Format('engine key=%d handled=%d commit=[%s] display=[%s] comp=[%s] confirmed=%d candidates=%d page=%d/%d selected=%d %s',
+                    [key_code, Ord(handled), sanitize_log_text(commit_text), sanitize_log_text(display_text),
+                    sanitize_log_text(preedit_text), session.engine.get_confirmed_length, Length(candidates),
+                    page_index + 1, page_count, selected_index + 1, sanitize_log_text(lookup_debug_info)]));
+            end;
+
+            if Length(candidates) = 0 then
+            begin
+                session.clear_candidates;
+                should_hide_candidates := True;
+            end
+            else
+            begin
+                session.store_candidates(candidates, page_index, page_count, selected_index, preedit_text);
+                if had_candidates_before and session.has_caret then
+                begin
+                    caret_point := session.last_caret;
+                    has_caret := session.has_caret;
+                    caret_line_height := session.caret_line_height;
+                    candidate_terminal_like_target := session.m_terminal_like_target;
+                    candidate_source := session.m_last_candidate_source;
+                    candidate_score := session.m_last_candidate_score;
+                    if session.needs_candidate_refresh(caret_point, has_caret, caret_line_height,
+                        candidate_terminal_like_target) then
+                    begin
+                        session.stage_candidate_apply(caret_point, has_caret, caret_line_height,
+                            candidate_terminal_like_target, candidate_source, candidate_score, queue_candidate_apply);
+                    end;
+                end;
+            end;
         end;
 
         if handled and (commit_text = '') then
