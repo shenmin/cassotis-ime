@@ -2130,6 +2130,10 @@ var
             begin
                 Result := string(Char($548C));
             end
+            else if normalized_syllable = 'qu' then
+            begin
+                Result := string(Char($53BB));
+            end
             else if normalized_syllable = 'shi' then
             begin
                 Result := string(Char($662F));
@@ -3933,6 +3937,10 @@ var
             begin
                 Result := string(Char($548C));
             end
+            else if normalized_syllable = 'qu' then
+            begin
+                Result := string(Char($53BB));
+            end
             else if normalized_syllable = 'shi' then
             begin
                 Result := string(Char($662F));
@@ -4314,6 +4322,7 @@ var
         out_idx: Integer;
         candidate_text_units: Integer;
         has_short_complete_anchor: Boolean;
+        partial_comment_syllables: Integer;
 
         function get_display_codepoint_count(const text: string): Integer;
         var
@@ -4355,6 +4364,19 @@ var
             begin
                 has_short_complete_anchor := True;
                 Break;
+            end;
+            if (Trim(candidates[idx].comment) <> '') and
+                (candidate_text_units >= 2) and (candidate_text_units <= 4) and
+                (candidates[idx].has_dict_weight or (candidates[idx].source = cs_user)) then
+            begin
+                partial_comment_syllables := get_effective_compact_pinyin_unit_count(
+                    normalize_pinyin_text(Trim(candidates[idx].comment)));
+                if (partial_comment_syllables > 0) and
+                    (candidate_text_units + partial_comment_syllables = input_syllable_count) then
+                begin
+                    has_short_complete_anchor := True;
+                    Break;
+                end;
             end;
         end;
         if not has_short_complete_anchor then
@@ -5319,6 +5341,10 @@ var
             else if normalized_syllable = 'he' then
             begin
                 Result := string(Char($548C));
+            end
+            else if normalized_syllable = 'qu' then
+            begin
+                Result := string(Char($53BB));
             end
             else if normalized_syllable = 'shi' then
             begin
@@ -17601,6 +17627,10 @@ const
         else if normalized_syllable = 'he' then
         begin
             Result := string(Char($548C));
+        end
+        else if normalized_syllable = 'qu' then
+        begin
+            Result := string(Char($53BB));
         end
         else if normalized_syllable = 'shi' then
         begin
