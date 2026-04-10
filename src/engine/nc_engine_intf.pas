@@ -6056,9 +6056,7 @@ var
                 end;
                 normalized_syllable := normalize_pinyin_text(syllables[segment_start].text);
                 fixed_text := get_fixed_sentence_single_char_for_filter(normalized_syllable);
-                if (fixed_text = '') and
-                    (not is_allowed_single_char_for_sentence(text_value)) and
-                    has_strong_two_syllable_exact_sentence_segment(segment_start) then
+                if has_strong_two_syllable_exact_sentence_segment(segment_start) then
                 begin
                     Exit(False);
                 end;
@@ -10759,11 +10757,7 @@ var
                             begin
                                 exact_effective_weight := get_candidate_effective_weight_local(exact_candidate);
                                 if (exact_units <> 1) or
-                                    ((get_fixed_long_sentence_single_char_local(
-                                    exact_syllables[exact_state_pos].text) = '') and
-                                    (not is_long_sentence_allowed_single_char_text_codepoint_local(
-                                    exact_candidate_text)) and
-                                    has_strong_two_syllable_exact_segment_local(exact_state_pos)) or
+                                    has_strong_two_syllable_exact_segment_local(exact_state_pos) or
                                     (not is_extended_long_sentence_allowed_single_char_candidate_local(
                                     exact_syllables[exact_state_pos].text,
                                     exact_candidate_text, exact_effective_weight)) then
