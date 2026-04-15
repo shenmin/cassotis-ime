@@ -124,6 +124,8 @@ end;
 function get_sqlite_dll_candidates: TArray<string>;
 var
     module_dir: string;
+    module_parent_dir: string;
+    module_grandparent_dir: string;
     count_value: Integer;
 
     procedure add_candidate(const candidate_path: string);
@@ -145,6 +147,23 @@ begin
         add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite3_64.dll');
         add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite\win64\sqlite3.dll');
         add_candidate(IncludeTrailingPathDelimiter(module_dir) + 'sqlite3.dll');
+
+        module_parent_dir := ExtractFileDir(module_dir);
+        module_grandparent_dir := ExtractFileDir(module_parent_dir);
+
+        {$IFDEF WIN64}
+        if module_grandparent_dir <> '' then
+        begin
+            add_candidate(IncludeTrailingPathDelimiter(module_grandparent_dir) +
+                'third_party\sqlite\win64\sqlite3.dll');
+        end;
+        {$ELSE}
+        if module_grandparent_dir <> '' then
+        begin
+            add_candidate(IncludeTrailingPathDelimiter(module_grandparent_dir) +
+                'third_party\sqlite\win32\sqlite3.dll');
+        end;
+        {$ENDIF}
     end;
 
     add_candidate('sqlite3.dll');
