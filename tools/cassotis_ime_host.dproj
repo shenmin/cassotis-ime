@@ -72,7 +72,7 @@
         <VerInfo_Keys>CompanyName=;FileDescription=;FileVersion=$(CassotisVersionQuad);InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=;ProductVersion=$(CassotisVersionQuad);Comments=;CFBundleName=</VerInfo_Keys>
         <DCC_DcpOutput>../dcu</DCC_DcpOutput>
         <DCC_ExeOutput>../out</DCC_ExeOutput>
-        <DCC_DcuOutput>../dcu</DCC_DcuOutput>
+        <DCC_DcuOutput>../dcu/$(Platform)/$(Config)</DCC_DcuOutput>
         <DCC_HppOutput>../dcu</DCC_HppOutput>
         <DCC_ObjOutput>../dcu</DCC_ObjOutput>
     </PropertyGroup>

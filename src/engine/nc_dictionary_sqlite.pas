@@ -35,6 +35,7 @@ type
         m_contains_popularity_cache: TDictionary<string, Integer>;
         m_prefix_popularity_cache: TDictionary<string, Integer>;
         m_pinyin_followup_popularity_cache: TDictionary<string, Integer>;
+        m_base_text_prefix_bonus_cache: TDictionary<string, Integer>;
         m_single_char_weight_cache: TDictionary<string, Integer>;
         m_query_choice_bonus_cache: TDictionary<string, Integer>;
         m_query_latest_choice_text_cache: TDictionary<string, string>;
@@ -43,6 +44,7 @@ type
         m_stmt_base_query_path_bonus: Psqlite3_stmt;
         m_stmt_prefix_popularity: Psqlite3_stmt;
         m_stmt_pinyin_followup_popularity: Psqlite3_stmt;
+        m_stmt_base_text_prefix_bonus: Psqlite3_stmt;
         m_stmt_single_char_exact_weight: Psqlite3_stmt;
         m_stmt_query_choice_bonus: Psqlite3_stmt;
         m_stmt_query_latest_choice_text: Psqlite3_stmt;
@@ -110,6 +112,8 @@ type
         function open: Boolean;
         procedure close;
         procedure prewarm_short_lookup_caches;
+        function get_prefix_popularity_hint(const prefix: string): Integer;
+        function get_base_text_prefix_bonus(const prefix_text: string): Integer; override;
         function lookup(const pinyin: string; out results: TncCandidateList): Boolean; override;
         function lookup_exact_full_pinyin(const pinyin: string;
             out results: TncCandidateList): Boolean; override;
@@ -1785,6 +1789,7 @@ begin
     m_stmt_base_query_path_bonus := nil;
     m_stmt_prefix_popularity := nil;
     m_stmt_pinyin_followup_popularity := nil;
+    m_stmt_base_text_prefix_bonus := nil;
     m_stmt_single_char_exact_weight := nil;
     m_stmt_query_choice_bonus := nil;
     m_stmt_query_latest_choice_text := nil;
@@ -1802,6 +1807,7 @@ begin
     m_contains_popularity_cache := TDictionary<string, Integer>.Create;
     m_prefix_popularity_cache := TDictionary<string, Integer>.Create;
     m_pinyin_followup_popularity_cache := TDictionary<string, Integer>.Create;
+    m_base_text_prefix_bonus_cache := TDictionary<string, Integer>.Create;
     m_single_char_weight_cache := TDictionary<string, Integer>.Create;
     m_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_latest_choice_text_cache := TDictionary<string, string>.Create;
@@ -1840,6 +1846,11 @@ begin
         m_pinyin_followup_popularity_cache.Free;
         m_pinyin_followup_popularity_cache := nil;
     end;
+    if m_base_text_prefix_bonus_cache <> nil then
+    begin
+        m_base_text_prefix_bonus_cache.Free;
+        m_base_text_prefix_bonus_cache := nil;
+    end;
     if m_single_char_weight_cache <> nil then
     begin
         m_single_char_weight_cache.Free;
@@ -1872,6 +1883,31 @@ end;
 function TncSqliteDictionary.get_last_lookup_debug_hint: string;
 begin
     Result := m_last_lookup_debug_hint;
+end;
+
+function TncSqliteDictionary.get_prefix_popularity_hint(const prefix: string): Integer;
+begin
+    Result := get_prefix_popularity_score(Trim(prefix));
+end;
+
+function TncSqliteDictionary.get_base_text_prefix_bonus(const prefix_text: string): Integer;
+var
+    normalized_prefix: string;
+    prefix_score: Integer;
+    contains_score: Integer;
+begin
+    Result := 0;
+    normalized_prefix := Trim(prefix_text);
+    if (normalized_prefix = '') or (Length(normalized_prefix) < 2) or
+        (Length(normalized_prefix) > 6) or (not ensure_open) or
+        (not m_base_ready) then
+    begin
+        Exit;
+    end;
+
+    prefix_score := get_prefix_popularity_score(normalized_prefix);
+    contains_score := get_contains_popularity_score(normalized_prefix);
+    Result := Min(6400, (prefix_score div 16) + (contains_score div 32));
 end;
 
 function TncSqliteDictionary.lookup_full_pinyin_prefix(const pinyin_prefix: string;
@@ -4248,6 +4284,11 @@ begin
         m_base_connection.finalize(m_stmt_pinyin_followup_popularity);
         m_stmt_pinyin_followup_popularity := nil;
     end;
+    if (m_stmt_base_text_prefix_bonus <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_base_text_prefix_bonus);
+        m_stmt_base_text_prefix_bonus := nil;
+    end;
     if (m_stmt_single_char_exact_weight <> nil) and (m_base_connection <> nil) then
     begin
         m_base_connection.finalize(m_stmt_single_char_exact_weight);
@@ -4278,6 +4319,10 @@ begin
     if m_pinyin_followup_popularity_cache <> nil then
     begin
         m_pinyin_followup_popularity_cache.Clear;
+    end;
+    if m_base_text_prefix_bonus_cache <> nil then
+    begin
+        m_base_text_prefix_bonus_cache.Clear;
     end;
     if m_single_char_weight_cache <> nil then
     begin
