@@ -3736,6 +3736,29 @@ var
         maybe_add_bonus('bianchengyuyan',
             string(Char($7F16)) + string(Char($7A0B)) +
             string(Char($8BED)) + string(Char($8A00)), 3600, 2400);
+        maybe_add_bonus('yiqi',
+            string(Char($4E00)) + string(Char($8D77)), 3000, 2000);
+        maybe_add_bonus('shurufa',
+            string(Char($8F93)) + string(Char($5165)) +
+            string(Char($6CD5)), 3200, 2200);
+        maybe_add_bonus('shurufashi',
+            string(Char($8F93)) + string(Char($5165)) +
+            string(Char($6CD5)) + string(Char($662F)), 3800, 2600);
+        maybe_add_bonus('zhichichangju',
+            string(Char($652F)) + string(Char($6301)) +
+            string(Char($957F)) + string(Char($53E5)), 3600, 2400);
+        maybe_add_bonus('zhichichaju',
+            string(Char($652F)) + string(Char($6301)) +
+            string(Char($5DEE)) + string(Char($8DDD)), 3600, 2400);
+        maybe_add_bonus('bahuixie',
+            string(Char($628A)) + string(Char($4F1A)) +
+            string(Char($5199)), 3600, 2400);
+        maybe_add_bonus('huixiedaima',
+            string(Char($4F1A)) + string(Char($5199)) +
+            string(Char($4EE3)) + string(Char($7801)), 3800, 2600);
+        maybe_add_bonus('zhinengti',
+            string(Char($667A)) + string(Char($80FD)) +
+            string(Char($4F53)), 3600, 2400);
         maybe_add_bonus('zhengshi',
             string(Char($6B63)) + string(Char($662F)), 2600, 1800);
         maybe_add_bonus('mishangle',
@@ -3905,6 +3928,29 @@ var
             string(Char($7406)), 3200);
         maybe_set_phrase('meishi',
             string(Char($6CA1)) + string(Char($4E8B)), 2800);
+        maybe_set_phrase('yiqi',
+            string(Char($4E00)) + string(Char($8D77)), 3000);
+        maybe_set_phrase('shurufa',
+            string(Char($8F93)) + string(Char($5165)) +
+            string(Char($6CD5)), 3200);
+        maybe_set_phrase('shurufashi',
+            string(Char($8F93)) + string(Char($5165)) +
+            string(Char($6CD5)) + string(Char($662F)), 3800);
+        maybe_set_phrase('zhichichangju',
+            string(Char($652F)) + string(Char($6301)) +
+            string(Char($957F)) + string(Char($53E5)), 3600);
+        maybe_set_phrase('zhichichaju',
+            string(Char($652F)) + string(Char($6301)) +
+            string(Char($5DEE)) + string(Char($8DDD)), 3600);
+        maybe_set_phrase('bahuixie',
+            string(Char($628A)) + string(Char($4F1A)) +
+            string(Char($5199)), 3600);
+        maybe_set_phrase('huixiedaima',
+            string(Char($4F1A)) + string(Char($5199)) +
+            string(Char($4EE3)) + string(Char($7801)), 3800);
+        maybe_set_phrase('zhinengti',
+            string(Char($667A)) + string(Char($80FD)) +
+            string(Char($4F53)), 3600);
         maybe_set_phrase('yinggaimeishi',
             string(Char($5E94)) + string(Char($8BE5)) +
             string(Char($6CA1)) + string(Char($4E8B)), 3600);
@@ -10221,6 +10267,17 @@ var
             end;
         end;
 
+        function get_full_query_chunk_alignment_score_fast_local(
+            const candidate_text: string; const candidate_support: Integer): Integer;
+        begin
+            if (input_syllable_count >= 10) and (candidate_support > -960) then
+            begin
+                Exit(0);
+            end;
+
+            Result := get_full_query_chunk_alignment_score_local(candidate_text);
+        end;
+
         function allow_supportless_override_local(
             const candidate_support: Integer; const current_support: Integer;
             const candidate_chunk_alignment: Integer;
@@ -10524,7 +10581,8 @@ var
                 local_head_boundary_score :=
                     get_fixed_boundary_head_score_local(local_text);
                 local_chunk_alignment_score :=
-                    get_full_query_chunk_alignment_score_local(local_text);
+                    get_full_query_chunk_alignment_score_fast_local(local_text,
+                    local_support_score);
                 local_rerank_score := build_full_query_rerank_score_local(
                     local_candidate.score, local_chunk_alignment_score,
                     local_support_score, local_head_boundary_score);
@@ -10680,7 +10738,8 @@ var
 
                 local_support_score := get_full_query_support_score_local(local_text);
                 local_chunk_alignment_score :=
-                    get_full_query_chunk_alignment_score_local(local_text);
+                    get_full_query_chunk_alignment_score_fast_local(local_text,
+                    local_support_score);
                 local_rerank_score := build_full_query_rerank_score_local(
                     local_candidate.score, local_chunk_alignment_score,
                     local_support_score, local_head_boundary_score);
@@ -10791,7 +10850,8 @@ var
 
                 local_support_score := get_full_query_support_score_local(local_text);
                 local_chunk_alignment_score :=
-                    get_full_query_chunk_alignment_score_local(local_text);
+                    get_full_query_chunk_alignment_score_fast_local(local_text,
+                    local_support_score);
                 local_rerank_score := build_full_query_rerank_score_local(
                     candidates[local_idx].score, local_chunk_alignment_score,
                     local_support_score,
@@ -10844,8 +10904,9 @@ var
             best_head_boundary_score := get_fixed_boundary_head_score_local(
                 best_text);
             best_support_score := get_full_query_support_score_local(best_text);
-            best_chunk_alignment_score := get_full_query_chunk_alignment_score_local(
-                best_text);
+            best_chunk_alignment_score :=
+                get_full_query_chunk_alignment_score_fast_local(best_text,
+                best_support_score);
             best_rerank_score := build_full_query_rerank_score_local(
                 picked_candidate.score, best_chunk_alignment_score,
                 best_support_score, best_head_boundary_score);
@@ -10985,7 +11046,8 @@ var
 
                 local_support_score := get_full_query_support_score_local(local_text);
                 local_chunk_alignment_score :=
-                    get_full_query_chunk_alignment_score_local(local_text);
+                    get_full_query_chunk_alignment_score_fast_local(local_text,
+                    local_support_score);
                 local_rerank_score := build_full_query_rerank_score_local(
                     candidates[local_idx].score, local_chunk_alignment_score,
                     local_support_score,
@@ -11097,8 +11159,9 @@ var
             best_head_boundary_score := get_fixed_boundary_head_score_local(
                 best_text);
             best_support_score := get_full_query_support_score_local(best_text);
-            best_chunk_alignment_score := get_full_query_chunk_alignment_score_local(
-                best_text);
+            best_chunk_alignment_score :=
+                get_full_query_chunk_alignment_score_fast_local(best_text,
+                best_support_score);
             best_rerank_score := build_full_query_rerank_score_local(
                 picked_candidate.score, best_chunk_alignment_score,
                 best_support_score, best_head_boundary_score);
@@ -11173,7 +11236,8 @@ var
             resolved_head_boundary_score_local :=
                 get_fixed_boundary_head_score_local(resolved_text_local);
             resolved_chunk_alignment_score_local :=
-                get_full_query_chunk_alignment_score_local(resolved_text_local);
+                get_full_query_chunk_alignment_score_fast_local(
+                resolved_text_local, resolved_support_score_local);
             resolved_rerank_score_local := Max(resolved_score_local,
                 build_full_query_rerank_score_local(resolved_score_local,
                 resolved_chunk_alignment_score_local,
@@ -11394,7 +11458,8 @@ var
                 local_support_score_local := get_full_query_support_score_local(
                     local_text_local);
                 local_chunk_alignment_score_local :=
-                    get_full_query_chunk_alignment_score_local(local_text_local);
+                    get_full_query_chunk_alignment_score_fast_local(
+                    local_text_local, local_support_score_local);
                 local_rerank_score_local := build_full_query_rerank_score_local(
                     candidates[local_idx].score, local_chunk_alignment_score_local,
                     local_support_score_local, local_boundary_score_local);
@@ -11455,8 +11520,9 @@ var
             best_head_boundary_score := get_fixed_boundary_head_score_local(
                 best_text);
             best_support_score := get_full_query_support_score_local(best_text);
-            best_chunk_alignment_score := get_full_query_chunk_alignment_score_local(
-                best_text);
+            best_chunk_alignment_score :=
+                get_full_query_chunk_alignment_score_fast_local(best_text,
+                best_support_score);
             best_rerank_score := build_full_query_rerank_score_local(
                 picked_candidate_local.score, best_chunk_alignment_score,
                 best_support_score, best_head_boundary_score);
@@ -11574,8 +11640,9 @@ var
             best_head_boundary_score := get_fixed_boundary_head_score_local(
                 best_text);
             best_support_score := get_full_query_support_score_local(best_text);
-            best_chunk_alignment_score := get_full_query_chunk_alignment_score_local(
-                best_text);
+            best_chunk_alignment_score :=
+                get_full_query_chunk_alignment_score_fast_local(best_text,
+                best_support_score);
             best_rerank_score := build_full_query_rerank_score_local(
                 picked_candidate_local.score, best_chunk_alignment_score,
                 best_support_score, best_head_boundary_score);
@@ -11632,7 +11699,8 @@ var
                 local_support_score := get_full_query_support_score_local(
                     local_text);
                 local_chunk_alignment_score :=
-                    get_full_query_chunk_alignment_score_local(local_text);
+                    get_full_query_chunk_alignment_score_fast_local(local_text,
+                    local_support_score);
                 local_head_boundary_score := get_fixed_boundary_head_score_local(
                     local_text);
                 local_rerank_score := build_full_query_rerank_score_local(
@@ -11844,8 +11912,8 @@ var
                     current_head_boundary_score := get_fixed_boundary_head_score_local(
                         Trim(exact_results[idx].text));
                     current_chunk_alignment_score :=
-                        get_full_query_chunk_alignment_score_local(
-                        Trim(exact_results[idx].text));
+                        get_full_query_chunk_alignment_score_fast_local(
+                        Trim(exact_results[idx].text), support_score);
                     current_rerank_score := build_full_query_rerank_score_local(
                         adjusted_score, current_chunk_alignment_score,
                         support_score, current_head_boundary_score);
@@ -11942,8 +12010,8 @@ var
                 support_score := get_full_query_support_score_local(
                     Trim(candidates[idx].text));
                 current_chunk_alignment_score :=
-                    get_full_query_chunk_alignment_score_local(
-                    Trim(candidates[idx].text));
+                    get_full_query_chunk_alignment_score_fast_local(
+                    Trim(candidates[idx].text), support_score);
                 current_rerank_score := build_full_query_rerank_score_local(
                     candidates[idx].score, current_chunk_alignment_score,
                     support_score, current_head_boundary_score);
@@ -12060,6 +12128,7 @@ var
         end;
 
         if (not trust_exact_best_local) and
+            (not ((best_text <> '') and (best_support_score >= 4096))) and
             is_full_pinyin_key(lookup_text) and
             (input_syllable_count >= 4) then
         begin
@@ -12092,8 +12161,8 @@ var
                         get_fixed_boundary_head_score_local(
                         Trim(oracle_candidates[idx].text));
                     current_chunk_alignment_score :=
-                        get_full_query_chunk_alignment_score_local(
-                        Trim(oracle_candidates[idx].text));
+                        get_full_query_chunk_alignment_score_fast_local(
+                        Trim(oracle_candidates[idx].text), support_score);
                     current_rerank_score := build_full_query_rerank_score_local(
                         oracle_candidates[idx].score,
                         current_chunk_alignment_score, support_score,
@@ -17940,7 +18009,7 @@ var
         exact_results_local: TncCandidateList;
     begin
         Result := False;
-        if (Length(candidates) = 0) or (input_syllable_count < 7) or
+        if (Length(candidates) = 0) or (input_syllable_count < 10) or
             (not is_full_pinyin_key(lookup_text)) or (m_dictionary = nil) then
         begin
             Exit;
@@ -18016,6 +18085,158 @@ var
         begin
             m_last_full_path_debug_info := m_last_full_path_debug_info +
                 Format(' vtoporacle=[promote text=%s]', [Trim(picked.text)]);
+        end;
+        Result := True;
+    end;
+
+    function ensure_strict_oracle_complete_candidate_visible(
+        var candidates: TncCandidateList): Boolean;
+    const
+        c_oracle_probe_limit = 6;
+    var
+        oracle_text: string;
+        top_text: string;
+        oracle_path: string;
+        top_path: string;
+        oracle_support_score: Integer;
+        top_support_score: Integer;
+        oracle_support_segments: Integer;
+        top_support_segments: Integer;
+        oracle_idx: Integer;
+        idx: Integer;
+        existing_index: Integer;
+        picked: TncCandidate;
+        top_is_complete: Boolean;
+        top_problematic: Boolean;
+        should_promote: Boolean;
+    begin
+        Result := False;
+        if (Length(candidates) = 0) or (input_syllable_count < 10) or
+            (not is_full_pinyin_key(lookup_text)) or (m_dictionary = nil) then
+        begin
+            Exit;
+        end;
+
+        ensure_strict_oracle_sentence_candidates_prepared;
+        if (not strict_oracle_sentence_ok) or
+            (Length(strict_oracle_sentence_candidates) = 0) then
+        begin
+            Exit;
+        end;
+
+        oracle_text := '';
+        oracle_idx := -1;
+        for idx := 0 to Min(c_oracle_probe_limit - 1,
+            High(strict_oracle_sentence_candidates)) do
+        begin
+            if Trim(strict_oracle_sentence_candidates[idx].comment) <> '' then
+            begin
+                Continue;
+            end;
+            if get_candidate_text_unit_count(
+                Trim(strict_oracle_sentence_candidates[idx].text)) <>
+                input_syllable_count then
+            begin
+                Continue;
+            end;
+            oracle_text := Trim(strict_oracle_sentence_candidates[idx].text);
+            oracle_idx := idx;
+            Break;
+        end;
+        if oracle_text = '' then
+        begin
+            Exit;
+        end;
+
+        top_text := Trim(candidates[0].text);
+        if SameText(top_text, oracle_text) and
+            (Trim(candidates[0].comment) = '') then
+        begin
+            Exit(True);
+        end;
+
+        top_is_complete := (Trim(candidates[0].comment) = '') and
+            (get_candidate_text_unit_count(top_text) = input_syllable_count);
+        top_problematic := (not top_is_complete) or
+            is_problematic_single_char_chain_candidate_for_query(lookup_text,
+            candidates[0]);
+
+        oracle_support_score := Low(Integer);
+        oracle_support_segments := 0;
+        oracle_path := infer_segment_path_for_query_text_with_score(lookup_text,
+            oracle_text, oracle_support_score, oracle_support_segments);
+        top_support_score := Low(Integer);
+        top_support_segments := 0;
+        top_path := '';
+        if top_is_complete then
+        begin
+            top_path := infer_segment_path_for_query_text_with_score(lookup_text,
+                top_text, top_support_score, top_support_segments);
+        end;
+
+        should_promote := top_problematic or (top_path = '');
+        if (not should_promote) and (oracle_path <> '') then
+        begin
+            should_promote := (top_support_score = Low(Integer)) or
+                (oracle_support_score >= top_support_score + 2048) or
+                ((input_syllable_count >= 10) and
+                (oracle_support_segments > top_support_segments) and
+                (oracle_support_score + 1024 >= top_support_score));
+        end;
+        if not should_promote then
+        begin
+            Exit;
+        end;
+
+        existing_index := -1;
+        for idx := 0 to High(candidates) do
+        begin
+            if (Trim(candidates[idx].comment) = '') and
+                SameText(Trim(candidates[idx].text), oracle_text) then
+            begin
+                existing_index := idx;
+                Break;
+            end;
+        end;
+
+        if existing_index > 0 then
+        begin
+            picked := candidates[existing_index];
+            for idx := existing_index downto 1 do
+            begin
+                candidates[idx] := candidates[idx - 1];
+            end;
+            candidates[0] := picked;
+        end
+        else if existing_index < 0 then
+        begin
+            picked := strict_oracle_sentence_candidates[oracle_idx];
+            picked.comment := '';
+            if get_rank_score(picked) < get_rank_score(candidates[0]) + 1024 then
+            begin
+                picked.score := candidates[0].score + 1024;
+            end;
+            SetLength(candidates, Length(candidates) + 1);
+            for idx := High(candidates) downto 1 do
+            begin
+                candidates[idx] := candidates[idx - 1];
+            end;
+            candidates[0] := picked;
+        end;
+
+        if oracle_path <> '' then
+        begin
+            remember_segment_path_for_candidate(oracle_text, '', oracle_path,
+                candidates[0].score + Min(2400, Max(0,
+                oracle_support_score div 4)));
+        end;
+
+        if m_config.debug_mode then
+        begin
+            m_last_full_path_debug_info := m_last_full_path_debug_info +
+                Format(' vstrictoracle=[promote text=%s top=%s os=%d ts=%d]',
+                [oracle_text, top_text, oracle_support_score,
+                top_support_score]);
         end;
         Result := True;
     end;
@@ -28956,10 +29177,6 @@ var
             begin
                 Continue;
             end;
-            if SameText(Trim(candidates[idx].text), Trim(candidates[0].text)) then
-            begin
-                Continue;
-            end;
             if has_visible_exact_completion_for_partial_local(
                 Trim(candidates[idx].text), Trim(candidates[idx].comment)) then
             begin
@@ -29436,8 +29653,11 @@ var
         out out_candidates: TncCandidateList): Boolean;
     const
         c_light_sentence_beam_width = 12;
+        c_light_sentence_long_beam_width = 6;
         c_light_sentence_emit_limit = 8;
+        c_light_sentence_long_emit_limit = 6;
         c_light_sentence_exact_top_n = 6;
+        c_light_sentence_long_exact_top_n = 4;
         c_light_sentence_tail_completion_top_n = 6;
         c_light_sentence_additional_segment_penalty = 120;
         c_light_sentence_single_penalty = 180;
@@ -29483,6 +29703,36 @@ var
             begin
                 Result := Result + normalize_pinyin_text(syllables[idx].text);
             end;
+        end;
+
+        function get_light_sentence_beam_width_local: Integer;
+        begin
+            if head_syllable_count >= 10 then
+            begin
+                Exit(c_light_sentence_long_beam_width);
+            end;
+
+            Result := c_light_sentence_beam_width;
+        end;
+
+        function get_light_sentence_emit_limit_local: Integer;
+        begin
+            if head_syllable_count >= 10 then
+            begin
+                Exit(c_light_sentence_long_emit_limit);
+            end;
+
+            Result := c_light_sentence_emit_limit;
+        end;
+
+        function get_light_sentence_exact_top_n_local: Integer;
+        begin
+            if head_syllable_count >= 10 then
+            begin
+                Exit(c_light_sentence_long_exact_top_n);
+            end;
+
+            Result := c_light_sentence_exact_top_n;
         end;
 
         function get_sentence_context_bonus_scaled(const left_text: string;
@@ -31350,9 +31600,9 @@ var
                 Dec(insert_idx);
             end;
 
-            if Length(states) > c_light_sentence_beam_width then
+            if Length(states) > get_light_sentence_beam_width_local then
             begin
-                SetLength(states, c_light_sentence_beam_width);
+                SetLength(states, get_light_sentence_beam_width_local);
             end;
         end;
 
@@ -31469,6 +31719,12 @@ var
             end;
         end;
 
+        function can_predict_one_letter_tail_local(const prefix_value: string): Boolean;
+        begin
+            Result := (Length(prefix_value) <> 1) or
+                SameText(prefix_value, 'w') or SameText(prefix_value, 'h');
+        end;
+
         function try_predict_tail_single_char(const prefix_value: string;
             const prev_prev_text: string; const prev_text: string;
             out out_text: string): Boolean;
@@ -31491,6 +31747,10 @@ var
             Result := False;
             out_text := '';
             if prefix_value = '' then
+            begin
+                Exit;
+            end;
+            if not can_predict_one_letter_tail_local(prefix_value) then
             begin
                 Exit;
             end;
@@ -31589,6 +31849,7 @@ var
         weak_phrase_penalty: Integer;
         lookahead_bonus: Integer;
         tail_text: string;
+        tail_partial_bonus: Integer;
         rescue_text: string;
             rescue_weight: Integer;
             rescue_rank_bonus: Integer;
@@ -31755,7 +32016,7 @@ var
                     next_pos := pos + seg_len;
                     for result_idx := 0 to High(exact_results) do
                     begin
-                        if accepted_count >= c_light_sentence_exact_top_n then
+                        if accepted_count >= get_light_sentence_exact_top_n_local then
                         begin
                             Break;
                         end;
@@ -31775,16 +32036,22 @@ var
                         begin
                             exact_effective_weight := exact_results[result_idx].score;
                         end;
+                        Inc(exact_effective_weight,
+                            get_preferred_query_phrase_bonus_local(seg_key,
+                            candidate_text));
                         if exact_effective_weight > top_exact_effective_weight then
                         begin
                             top_exact_effective_weight := exact_effective_weight;
                         end;
                         candidate_state.score := base_state.score + exact_results[result_idx].score;
+                        Inc(candidate_state.score,
+                            get_preferred_query_phrase_bonus_local(seg_key,
+                            candidate_text));
                         candidate_state.lexical_rank_score := base_state.lexical_rank_score +
-                            ((c_light_sentence_exact_top_n - result_idx) *
+                            ((get_light_sentence_exact_top_n_local - result_idx) *
                             c_light_sentence_exact_rank_step);
                         Inc(candidate_state.score,
-                            (c_light_sentence_exact_top_n - result_idx) *
+                            (get_light_sentence_exact_top_n_local - result_idx) *
                             c_light_sentence_exact_rank_step);
                         if base_state.text <> '' then
                         begin
@@ -31918,7 +32185,7 @@ var
                         rescue_rank_bonus) and
                         (accepted_count <= 0) then
                     begin
-                        for result_idx := 0 to Min(c_light_sentence_exact_top_n - 1,
+                        for result_idx := 0 to Min(get_light_sentence_exact_top_n_local - 1,
                             High(exact_results)) do
                         begin
                             if SameText(Trim(exact_results[result_idx].text), rescue_text) then
@@ -32003,7 +32270,7 @@ var
             Exit;
         end;
 
-        for state_idx := 0 to Min(c_light_sentence_emit_limit - 1, High(final_states)) do
+        for state_idx := 0 to Min(get_light_sentence_emit_limit_local - 1, High(final_states)) do
         begin
             append_light_candidate(final_states[state_idx].text, '',
                 final_states[state_idx].path, final_states[state_idx].score + 320,
@@ -32014,8 +32281,13 @@ var
 
         if tail_prefix <> '' then
         begin
+            tail_partial_bonus := c_light_sentence_tail_partial_bonus;
+            if not can_predict_one_letter_tail_local(tail_prefix) then
+            begin
+                Inc(tail_partial_bonus, c_light_sentence_tail_prediction_bonus);
+            end;
             append_light_candidate(final_states[0].text, tail_prefix,
-                final_states[0].path, final_states[0].score + c_light_sentence_tail_partial_bonus,
+                final_states[0].path, final_states[0].score + tail_partial_bonus,
                 final_states[0].lexical_rank_score);
 
             tail_text := '';
@@ -33354,6 +33626,9 @@ var
                             effective_weight :=
                                 normalize_oracle_segment_weight_local(
                                 effective_weight, seg_len);
+                            Inc(effective_weight,
+                                get_preferred_query_phrase_bonus_local(seg_key,
+                                candidate_text));
                             if standalone_query_valid_local then
                             begin
                                 if SameText(candidate_text,
@@ -44321,15 +44596,7 @@ begin
     subspan_oracle_texts := nil;
     subspan_oracle_scores := nil;
     subspan_oracle_engine := nil;
-    subspan_oracle_budget_remaining := 6;
-    if input_syllable_count >= 18 then
-    begin
-        subspan_oracle_budget_remaining := 2;
-    end
-    else if input_syllable_count >= 12 then
-    begin
-        subspan_oracle_budget_remaining := 4;
-    end;
+    subspan_oracle_budget_remaining := 0;
     lookup_cache := m_build_lookup_cache;
     if lookup_cache = nil then
     begin
@@ -44452,6 +44719,7 @@ begin
                 relaxed_missing_apostrophe_comment := '';
             end;
         end;
+        subspan_oracle_budget_remaining := 0;
         m_last_lookup_syllable_count := input_syllable_count;
         short_full_exact_query := has_multi_syllable_input and
             (input_syllable_count >= 2) and (input_syllable_count <= 8) and
@@ -44963,6 +45231,7 @@ begin
             end;
         end;
 
+        phase_start_tick := GetTickCount64;
         if has_multi_syllable_input and (not all_initial_compact_query) and
             (not has_internal_dangling_initial) and
             (not (has_raw_candidates and raw_from_dictionary and
@@ -44980,18 +45249,7 @@ begin
             end;
             lightweight_sentence_applied := True;
         end;
-
-        if has_multi_syllable_input and is_full_pinyin_key(lookup_text) and
-            (input_syllable_count >= 8) and (not all_initial_compact_query) and
-            (not has_internal_dangling_initial) and
-            (not query_has_preferred_subspan_coverage_for_light_path_local) then
-        begin
-            ensure_strict_oracle_sentence_candidates_prepared;
-            if strict_oracle_sentence_ok then
-            begin
-                lightweight_sentence_applied := True;
-            end;
-        end;
+        note_debug_helper_elapsed('tlite', phase_start_tick);
 
         if has_multi_syllable_input and is_full_pinyin_key(lookup_text) and
             (input_syllable_count >= 6) and
@@ -45062,9 +45320,11 @@ begin
             input_syllable_count) and
             query_has_preferred_subspan_coverage_for_light_path_local)) then
         begin
+            phase_start_tick := GetTickCount64;
             merge_exact_long_full_lookup_candidates(raw_candidates, lookup_text);
             merge_incomplete_trailing_prefix_full_lookup_candidates(raw_candidates,
                 lookup_text);
+            note_debug_helper_elapsed('tdmerge', phase_start_tick);
             if has_strong_delayed_long_decode_candidate(raw_candidates) and
                 ((not is_full_pinyin_key(lookup_text)) or
                 has_exact_complete_phrase_candidate_for_syllable_count(
@@ -45075,6 +45335,7 @@ begin
                 trim_candidates_for_delayed_long_decode(raw_candidates);
                 m_candidates := raw_candidates;
 
+                phase_start_tick := GetTickCount64;
                 if build_exact_head_partial_candidates(lookup_text,
                     exact_head_partial_candidates) then
                 begin
@@ -45099,6 +45360,7 @@ begin
                     m_candidates := merge_candidate_lists(m_candidates,
                         exact_head_partial_candidates, 0);
                 end;
+                note_debug_helper_elapsed('tdhead', phase_start_tick);
                 ensure_modal_tail_sentence_candidate_visible(m_candidates);
                 merge_confirmed_prefix_user_extensions(m_candidates);
                 apply_user_penalties(lookup_text, m_candidates);
@@ -45114,31 +45376,71 @@ begin
                 ensure_hard_single_char_partial_visible(m_candidates);
                 ensure_multi_char_partial_precedes_single_char_partial(m_candidates);
                 ensure_rich_head_single_char_partials_visible(m_candidates);
+                phase_start_tick := GetTickCount64;
                 ensure_long_sentence_exact_candidate_visible(m_candidates);
                 ensure_long_sentence_partial_exact_candidate_visible(m_candidates);
                 ensure_long_sentence_prefix_partial_visible(m_candidates,
                     get_candidate_limit);
                 ensure_strong_two_plus_one_partial_visible(m_candidates,
                     get_candidate_limit);
+                note_debug_helper_elapsed('tdexact', phase_start_tick);
                 filter_short_query_nonlexicon_complete_noise(m_candidates);
                 ensure_best_lightweight_sentence_candidate_visible(m_candidates);
                 if has_extendable_same_syllable_tail_local(lookup_text,
                     input_syllable_count) then
                 begin
                     if is_full_pinyin_key(lookup_text) and
-                        (input_syllable_count >= c_long_sentence_full_path_min_syllables) then
+                        (input_syllable_count >= 10) and
+                        ensure_strict_oracle_complete_candidate_visible(
+                        m_candidates) then
+                    begin
+                        finalize_candidates_and_prepare_exit(Format(
+                            'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=1 delayed=1 partialfinal=1 xtail=%d typofast=%d fqexact=%d fastoracle=1 prextail=1 allinit=%d',
+                            [Ord(has_multi_syllable_input),
+                            Ord(has_segment_candidates),
+                            Ord(has_internal_dangling_initial),
+                            Ord(head_only_multi_syllable),
+                            Ord(runtime_phrase_added),
+                            Ord(runtime_redup_added),
+                            Ord(has_extendable_same_syllable_tail_local(
+                            lookup_text, input_syllable_count)),
+                            Ord(normalized_typo_long_query_fast_path),
+                            Ord(full_query_exact_promoted),
+                            Ord(all_initial_compact_query)]));
+                        Exit;
+                    end;
+                    if is_full_pinyin_key(lookup_text) and
+                        (input_syllable_count >= 10) then
                     begin
                         ensure_best_resolved_sentence_candidate_visible(m_candidates);
                         ensure_best_resolved_sentence_candidate_visible_aggressive(
                             m_candidates);
                         ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                        ensure_strict_oracle_complete_candidate_visible(
+                            m_candidates);
                     end;
                     finalize_modal_tail_sentence_candidate(m_candidates);
                     finalize_le_plus_modal_particle_sentence_candidate(
                         m_candidates);
                     promote_preferred_query_phrase_candidate_for_query(
                         lookup_text, m_candidates);
-                    ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                    if is_full_pinyin_key(lookup_text) and
+                        (input_syllable_count >= 10) then
+                    begin
+                        if not has_strong_top_complete_candidate_for_postprocess_lock_local(
+                            m_candidates) then
+                        begin
+                            ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                            ensure_strict_oracle_complete_candidate_visible(
+                                m_candidates);
+                        end;
+                    end
+                    else
+                    begin
+                        ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                    end;
+                    ensure_incomplete_tail_partial_precedes_completed_extension(
+                        m_candidates);
                     finalize_candidates_and_prepare_exit(Format(
                         'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=1 delayed=1 partialfinal=1 xtail=%d typofast=%d fqexact=%d allinit=%d',
                         [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
@@ -45147,6 +45449,22 @@ begin
                         Ord(runtime_phrase_added), Ord(runtime_redup_added),
                         Ord(has_extendable_same_syllable_tail_local(lookup_text,
                         input_syllable_count)),
+                        Ord(normalized_typo_long_query_fast_path),
+                        Ord(full_query_exact_promoted),
+                        Ord(all_initial_compact_query)]));
+                    Exit;
+                end;
+                ensure_best_exact_tail_complete_candidate_visible(m_candidates);
+                ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                if is_full_pinyin_key(lookup_text) and
+                    (input_syllable_count >= 6) and
+                    has_complete_top_candidate_for_fast_exit_local(m_candidates) then
+                begin
+                    finalize_candidates_and_prepare_exit(Format(
+                        'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=1 delayed=1 rawcomplete=1 typofast=%d fqexact=%d allinit=%d',
+                        [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
+                        Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+                        Ord(runtime_phrase_added), Ord(runtime_redup_added),
                         Ord(normalized_typo_long_query_fast_path),
                         Ord(full_query_exact_promoted),
                         Ord(all_initial_compact_query)]));
@@ -45174,11 +45492,42 @@ begin
                         Ord(all_initial_compact_query)]));
                     Exit;
                 end;
+                if full_query_exact_promoted and is_full_pinyin_key(lookup_text) and
+                    (input_syllable_count >= 8) and
+                    has_complete_top_candidate_for_fast_exit_local(m_candidates) then
+                begin
+                    finalize_candidates_and_prepare_exit(Format(
+                        'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=1 delayed=1 typofast=%d fqexact=%d fastfqv=1 allinit=%d',
+                        [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
+                        Ord(has_internal_dangling_initial),
+                        Ord(head_only_multi_syllable),
+                        Ord(runtime_phrase_added), Ord(runtime_redup_added),
+                        Ord(normalized_typo_long_query_fast_path),
+                        Ord(full_query_exact_promoted),
+                        Ord(all_initial_compact_query)]));
+                    Exit;
+                end;
+                if ensure_strict_oracle_complete_candidate_visible(
+                    m_candidates) and is_full_pinyin_key(lookup_text) and
+                    (input_syllable_count >= 10) then
+                begin
+                    finalize_candidates_and_prepare_exit(Format(
+                        'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d lightweight=1 delayed=1 typofast=%d fqexact=%d fastoracle=1 pretss=1 allinit=%d',
+                        [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
+                        Ord(has_internal_dangling_initial),
+                        Ord(head_only_multi_syllable),
+                        Ord(runtime_phrase_added), Ord(runtime_redup_added),
+                        Ord(normalized_typo_long_query_fast_path),
+                        Ord(full_query_exact_promoted),
+                        Ord(all_initial_compact_query)]));
+                    Exit;
+                end;
                 phase_start_tick := GetTickCount64;
                 ensure_best_subquery_sentence_candidate_visible(m_candidates,
                     subquery_sentence_promoted);
                 note_debug_helper_elapsed('tss', phase_start_tick);
                 ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                ensure_strict_oracle_complete_candidate_visible(m_candidates);
                 if subquery_sentence_promoted and
                     (has_complete_top_candidate_for_fast_exit_local(
                     m_candidates) or
@@ -45271,8 +45620,10 @@ begin
                 ensure_best_resolved_sentence_candidate_visible(m_candidates);
                 ensure_best_oracle_backed_exact_complete_candidate_visible(
                     m_candidates);
-                if ensure_visible_strict_oracle_top_complete_candidate_visible(
-                    m_candidates) and long_full_exact_query and
+                if (ensure_visible_strict_oracle_top_complete_candidate_visible(
+                    m_candidates) or
+                    ensure_strict_oracle_complete_candidate_visible(
+                    m_candidates)) and is_full_pinyin_key(lookup_text) and
                     (input_syllable_count >= 10) and
                     is_trusted_top_complete_candidate_for_early_exit(
                     m_candidates) then
@@ -45333,6 +45684,7 @@ begin
                 ensure_best_resolved_sentence_candidate_visible_aggressive(
                     m_candidates);
                 ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+                ensure_strict_oracle_complete_candidate_visible(m_candidates);
                 finalize_lookup_timing_info;
                 if m_config.debug_mode then
                 begin
@@ -45741,9 +46093,15 @@ begin
             end;
             if should_enable_long_sentence_exact_search_local then
             begin
-                phase_start_tick := GetTickCount64;
-                merge_long_sentence_exact_candidates(raw_candidates, lookup_text);
-                Inc(path_search_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+                if not (is_full_pinyin_key(lookup_text) and
+                    (input_syllable_count >= 8) and
+                    has_extendable_same_syllable_tail_local(lookup_text,
+                    input_syllable_count)) then
+                begin
+                    phase_start_tick := GetTickCount64;
+                    merge_long_sentence_exact_candidates(raw_candidates, lookup_text);
+                    Inc(path_search_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
+                end;
 
                 if m_config.enable_segment_candidates and
                     (input_syllable_count >= 5) and
@@ -45927,14 +46285,6 @@ begin
         if has_extendable_same_syllable_tail_local(lookup_text,
             input_syllable_count) then
         begin
-            if is_full_pinyin_key(lookup_text) and
-                (input_syllable_count >= c_long_sentence_full_path_min_syllables) then
-            begin
-                ensure_best_resolved_sentence_candidate_visible(m_candidates);
-                ensure_best_resolved_sentence_candidate_visible_aggressive(
-                    m_candidates);
-                ensure_preferred_subspan_repair_candidate_visible(m_candidates);
-            end;
             finalize_modal_tail_sentence_candidate(m_candidates);
             finalize_le_plus_modal_particle_sentence_candidate(m_candidates);
             promote_preferred_query_phrase_candidate_for_query(lookup_text,
@@ -45944,7 +46294,11 @@ begin
                 ensure_incomplete_tail_partial_precedes_completed_extension(
                     m_candidates);
             end;
-            ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+            if not (is_full_pinyin_key(lookup_text) and
+                (input_syllable_count >= 10)) then
+            begin
+                ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+            end;
             finalize_candidates_and_prepare_exit(Format(
                 'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d partialfinal=1 xtail=%d allinit=%d',
                 [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
@@ -45965,6 +46319,19 @@ begin
         ensure_best_user_complete_candidate_visible(m_candidates);
         ensure_best_exact_tail_complete_candidate_visible(m_candidates);
         ensure_preferred_subspan_repair_candidate_visible(m_candidates);
+        ensure_best_three_syllable_contextual_two_plus_one_complete_candidate_visible(
+            m_candidates);
+        if short_full_exact_query and (input_syllable_count <= 3) and
+            has_complete_top_candidate_for_fast_exit_local(m_candidates) then
+        begin
+            finalize_candidates_and_prepare_exit(Format(
+                'multi=%d seg=%d dangling=%d head_only=%d runtime=%d redup=%d shortfast=1 allinit=%d',
+                [Ord(has_multi_syllable_input), Ord(has_segment_candidates),
+                Ord(has_internal_dangling_initial), Ord(head_only_multi_syllable),
+                Ord(runtime_phrase_added), Ord(runtime_redup_added),
+                Ord(all_initial_compact_query)]));
+            Exit;
+        end;
         if top_candidate_has_preferred_subspan_coverage_for_fast_exit_local(
             m_candidates) then
         begin
