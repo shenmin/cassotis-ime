@@ -4698,8 +4698,10 @@ function TncSqliteDictionary.lookup(const pinyin: string; out results: TncCandid
 const
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
-    base_exact_entry_sql =
-        'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    base_exact_entry_normalized_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base ' +
+        'WHERE text = ?2 AND (pinyin = ?1 OR replace(pinyin, ?3, ?4) = ?1) ' +
+        'ORDER BY weight DESC LIMIT 64';
     base_typo_prefix_sql =
         'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin LIKE ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
@@ -4731,7 +4733,9 @@ const
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
     user_nonfull_sql = 'SELECT pinyin, text, weight, last_used FROM dict_user WHERE pinyin LIKE ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
-    stats_sql = 'SELECT text, commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1';
+    stats_normalized_sql =
+        'SELECT pinyin, text, commit_count, last_used FROM dict_user_stats ' +
+        'WHERE pinyin = ?1 OR replace(pinyin, ?2, ?3) = ?1';
     text_stats_sql =
         'SELECT COALESCE(SUM(commit_count), 0), COALESCE(MAX(last_used), 0) ' +
         'FROM dict_user_stats WHERE text = ?1';
@@ -4784,6 +4788,7 @@ var
     key: string;
     query_key: string;
     candidate_pinyin: string;
+    stat_pinyin_value: string;
     candidate_score_cap: Integer;
     mixed_full_prefix: string;
     mixed_jianpin_key: string;
@@ -5990,7 +5995,7 @@ var
 
         learned_stmt := nil;
         try
-            if not m_base_connection.prepare(base_exact_entry_sql, learned_stmt) then
+            if not m_base_connection.prepare(base_exact_entry_normalized_sql, learned_stmt) then
             begin
                 Exit;
             end;
@@ -6003,7 +6008,9 @@ var
                 end;
 
                 if not m_base_connection.bind_text(learned_stmt, 1, query_key) or
-                    not m_base_connection.bind_text(learned_stmt, 2, learned_pair.Key) then
+                    not m_base_connection.bind_text(learned_stmt, 2, learned_pair.Key) or
+                    not m_base_connection.bind_text(learned_stmt, 3, '''') or
+                    not m_base_connection.bind_text(learned_stmt, 4, '') then
                 begin
                     m_base_connection.reset(learned_stmt);
                     m_base_connection.clear_bindings(learned_stmt);
@@ -6011,8 +6018,14 @@ var
                 end;
 
                 learned_step_result := m_base_connection.step(learned_stmt);
-                if learned_step_result = SQLITE_ROW then
+                while learned_step_result = SQLITE_ROW do
                 begin
+                    if not same_normalized_pinyin_key(
+                        m_base_connection.column_text(learned_stmt, 0), query_key) then
+                    begin
+                        learned_step_result := m_base_connection.step(learned_stmt);
+                        Continue;
+                    end;
                     learned_text := m_base_connection.column_text(learned_stmt, 1);
                     learned_comment := m_base_connection.column_text(learned_stmt, 2);
                     learned_weight := m_base_connection.column_int(learned_stmt, 3);
@@ -6020,6 +6033,7 @@ var
                         learned_weight, query_key);
                     exact_base_hit := True;
                     Inc(injected_learned_base_count);
+                    learned_step_result := m_base_connection.step(learned_stmt);
                 end;
 
                 m_base_connection.reset(learned_stmt);
@@ -6484,15 +6498,23 @@ begin
         begin
             stmt := nil;
             try
-                if m_user_connection.prepare(stats_sql, stmt) and
-                    m_user_connection.bind_text(stmt, 1, query_key) then
+                if m_user_connection.prepare(stats_normalized_sql, stmt) and
+                    m_user_connection.bind_text(stmt, 1, query_key) and
+                    m_user_connection.bind_text(stmt, 2, '''') and
+                    m_user_connection.bind_text(stmt, 3, '') then
                 begin
                     step_result := m_user_connection.step(stmt);
                     while step_result = SQLITE_ROW do
                     begin
-                        text_value := m_user_connection.column_text(stmt, 0);
-                        commit_count := m_user_connection.column_int(stmt, 1);
-                        last_used_value := m_user_connection.column_int(stmt, 2);
+                        stat_pinyin_value := m_user_connection.column_text(stmt, 0);
+                        if not same_normalized_pinyin_key(stat_pinyin_value, query_key) then
+                        begin
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        text_value := m_user_connection.column_text(stmt, 1);
+                        commit_count := m_user_connection.column_int(stmt, 2);
+                        last_used_value := m_user_connection.column_int(stmt, 3);
                         if full_pinyin_query and
                             (get_valid_cjk_codepoint_count(text_value) = 1) and
                             (not single_char_matches_pinyin(query_key, text_value)) then
