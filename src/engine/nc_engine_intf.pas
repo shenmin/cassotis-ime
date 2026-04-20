@@ -3609,296 +3609,304 @@ var
         end;
     end;
 
-    function get_preferred_query_phrase_bonus_local(const query_key: string;
-        const candidate_text: string): Integer;
+    function try_lookup_preferred_exact_phrase_candidate_local(
+        const query_key: string; out out_candidate: TncCandidate;
+        out out_syllable_count: Integer): Boolean;
+    const
+        c_min_preferred_phrase_syllables = 2;
+        c_max_preferred_phrase_syllables = 4;
+        c_min_preferred_phrase_weight = 80;
     var
         normalized_query: string;
-        trimmed_candidate: string;
+        syllables_local: TncPinyinParseResult;
+        exact_results_local: TncCandidateList;
+        cache_key_local: string;
+        phase_start_tick_local: UInt64;
+        idx_local: Integer;
+        candidate_text_local: string;
+        candidate_units_local: Integer;
+        candidate_weight_local: Integer;
+        best_idx_local: Integer;
+        best_weight_local: Integer;
 
-        procedure maybe_add_bonus(const phrase_key: string;
-            const phrase_text: string; const exact_bonus: Integer;
-            const coverage_bonus: Integer);
+        function build_sub_query_key_local(const start_idx_local: Integer;
+            const count_local: Integer): string;
+        var
+            key_idx_local: Integer;
         begin
-            if (phrase_key = '') or (phrase_text = '') then
+            Result := '';
+            if (start_idx_local < 0) or (count_local <= 0) or
+                (start_idx_local + count_local - 1 > High(syllables_local)) then
             begin
                 Exit;
             end;
-            if (normalized_query = phrase_key) and
-                SameText(trimmed_candidate, phrase_text) then
+            for key_idx_local := start_idx_local to
+                start_idx_local + count_local - 1 do
             begin
-                Inc(Result, exact_bonus);
-                Exit;
-            end;
-            if (Pos(phrase_key, normalized_query) > 0) and
-                (Pos(phrase_text, trimmed_candidate) > 0) then
-            begin
-                Inc(Result, coverage_bonus);
+                Result := Result + normalize_pinyin_text(
+                    syllables_local[key_idx_local].text);
             end;
         end;
 
+        function get_best_exact_weight_for_split_local(
+            const split_query_key: string; const split_syllable_count: Integer;
+            out out_weight: Integer): Boolean;
+        var
+            split_results_local: TncCandidateList;
+            split_cache_key_local: string;
+            split_phase_start_tick_local: UInt64;
+            split_idx_local: Integer;
+            split_text_local: string;
+            split_weight_local: Integer;
+        begin
+            Result := False;
+            out_weight := 0;
+            if (split_query_key = '') or (split_syllable_count <= 0) then
+            begin
+                Exit;
+            end;
+
+            split_cache_key_local := '#preferred_split#' + split_query_key;
+            if (lookup_cache <> nil) and
+                lookup_cache.TryGetValue(split_cache_key_local,
+                split_results_local) then
+            begin
+                Inc(lookup_cache_hits);
+            end
+            else
+            begin
+                Inc(lookup_cache_misses);
+                split_phase_start_tick_local := GetTickCount64;
+                if not m_dictionary.lookup_exact_full_pinyin(split_query_key,
+                    split_results_local) then
+                begin
+                    SetLength(split_results_local, 0);
+                end;
+                Inc(lookup_elapsed_ms, Int64(GetTickCount64 -
+                    split_phase_start_tick_local));
+                if lookup_cache <> nil then
+                begin
+                    lookup_cache.AddOrSetValue(split_cache_key_local,
+                        split_results_local);
+                end;
+            end;
+
+            for split_idx_local := 0 to High(split_results_local) do
+            begin
+                if Trim(split_results_local[split_idx_local].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                split_text_local := Trim(split_results_local[split_idx_local].text);
+                if (split_text_local = '') or
+                    (get_candidate_text_unit_count(split_text_local) <>
+                    split_syllable_count) then
+                begin
+                    Continue;
+                end;
+                if split_results_local[split_idx_local].has_dict_weight then
+                begin
+                    split_weight_local :=
+                        split_results_local[split_idx_local].dict_weight;
+                end
+                else
+                begin
+                    split_weight_local := split_results_local[split_idx_local].score;
+                end;
+                if split_weight_local > out_weight then
+                begin
+                    out_weight := split_weight_local;
+                    Result := True;
+                end;
+            end;
+        end;
+
+        function has_much_stronger_split_local(
+            const exact_weight_local: Integer): Boolean;
+        const
+            c_exact_phrase_protection_weight = 260;
+            c_split_override_margin = 700;
+            c_split_strong_chunk_weight = 360;
+        var
+            split_pos_local: Integer;
+            left_key_local: string;
+            right_key_local: string;
+            left_weight_local: Integer;
+            right_weight_local: Integer;
+            split_weight_local: Integer;
+        begin
+            Result := False;
+            if out_syllable_count < 3 then
+            begin
+                Exit;
+            end;
+            if exact_weight_local >= c_exact_phrase_protection_weight then
+            begin
+                Exit;
+            end;
+
+            for split_pos_local := 1 to out_syllable_count - 1 do
+            begin
+                left_key_local := build_sub_query_key_local(0,
+                    split_pos_local);
+                right_key_local := build_sub_query_key_local(split_pos_local,
+                    out_syllable_count - split_pos_local);
+                if (not get_best_exact_weight_for_split_local(left_key_local,
+                    split_pos_local, left_weight_local)) or
+                    (not get_best_exact_weight_for_split_local(right_key_local,
+                    out_syllable_count - split_pos_local,
+                    right_weight_local)) then
+                begin
+                    Continue;
+                end;
+
+                split_weight_local := left_weight_local + right_weight_local;
+                if (Max(left_weight_local, right_weight_local) >=
+                    c_split_strong_chunk_weight) and
+                    (split_weight_local >= exact_weight_local +
+                    c_split_override_margin) then
+                begin
+                    Exit(True);
+                end;
+            end;
+        end;
     begin
-        Result := 0;
+        Result := False;
+        out_candidate.text := '';
+        out_candidate.comment := '';
+        out_candidate.score := 0;
+        out_candidate.source := cs_rule;
+        out_candidate.has_dict_weight := False;
+        out_candidate.dict_weight := 0;
+        out_syllable_count := 0;
+
         normalized_query := normalize_pinyin_text(query_key);
-        trimmed_candidate := Trim(candidate_text);
-        if (normalized_query = '') or (trimmed_candidate = '') then
+        if (normalized_query = '') or (m_dictionary = nil) or
+            (not is_full_pinyin_key(normalized_query)) then
         begin
             Exit;
         end;
 
-        maybe_add_bonus('youyu',
-            string(Char($7531)) + string(Char($4E8E)), 2600, 1800);
-        maybe_add_bonus('chuyu',
-            string(Char($51FA)) + string(Char($4E8E)), 2600, 1800);
-        maybe_add_bonus('jiayi',
-            string(Char($52A0)) + string(Char($4EE5)), 2200, 1500);
-        maybe_add_bonus('jiuzhi',
-            string(Char($5C31)) + string(Char($804C)), 2200, 1500);
-        maybe_add_bonus('biancheng',
-            string(Char($7F16)) + string(Char($7A0B)), 2200, 1500);
-        maybe_add_bonus('jiyu',
-            string(Char($6025)) + string(Char($4E8E)), 2200, 1500);
-        maybe_add_bonus('linyi',
-            string(Char($6797)) + string(Char($6BC5)), 2200, 1500);
-        maybe_add_bonus('jiade',
-            string(Char($5BB6)) + string(Char($7684)), 2200, 1500);
-        maybe_add_bonus('quanzhong',
-            string(Char($5708)) + string(Char($4E2D)), 2200, 1500);
-        maybe_add_bonus('shenhou',
-            string(Char($8EAB)) + string(Char($540E)), 2200, 1500);
-        maybe_add_bonus('sajin',
-            string(Char($6D12)) + string(Char($8FDB)), 2200, 1500);
-        maybe_add_bonus('aoyun',
-            string(Char($5965)) + string(Char($8FD0)), 2200, 1500);
-        maybe_add_bonus('xingqu',
-            string(Char($5174)) + string(Char($8DA3)), 2200, 1500);
-        maybe_add_bonus('dexingqu',
-            string(Char($7684)) + string(Char($5174)) +
-            string(Char($8DA3)), 2800, 2000);
-        maybe_add_bonus('meikong',
-            string(Char($6CA1)) + string(Char($7A7A)), 2200, 1500);
-        maybe_add_bonus('luodichuang',
-            string(Char($843D)) + string(Char($5730)) +
-            string(Char($7A97)), 2600, 1800);
-        maybe_add_bonus('touguo',
-            string(Char($900F)) + string(Char($8FC7)), 2200, 1500);
-        maybe_add_bonus('gongchengshi',
-            string(Char($5DE5)) + string(Char($7A0B)) +
-            string(Char($5E08)), 2600, 1800);
-        maybe_add_bonus('jisuanji',
-            string(Char($8BA1)) + string(Char($7B97)) +
-            string(Char($673A)), 2600, 1800);
-        maybe_add_bonus('bingbu',
-            string(Char($5E76)) + string(Char($4E0D)), 2200, 1500);
-        maybe_add_bonus('zuozai',
-            string(Char($5750)) + string(Char($5728)), 2200, 1500);
-        maybe_add_bonus('ruwangchang',
-            string(Char($5982)) + string(Char($5F80)) +
-            string(Char($5E38)), 2800, 2000);
-        maybe_add_bonus('ruyudeshuibande',
-            string(Char($5982)) + string(Char($9C7C)) +
-            string(Char($5F97)) + string(Char($6C34)) +
-            string(Char($822C)) + string(Char($5730)), 3800, 2600);
-        maybe_add_bonus('jiuzhiyu',
-            string(Char($5C31)) + string(Char($804C)) +
-            string(Char($4E8E)), 3200, 2200);
-        maybe_add_bonus('chushengyu',
-            string(Char($51FA)) + string(Char($751F)) +
-            string(Char($4E8E)), 3200, 2200);
-        maybe_add_bonus('danchuyu',
-            string(Char($4F46)) + string(Char($51FA)) +
-            string(Char($4E8E)), 3200, 2200);
-        maybe_add_bonus('linyishi',
-            string(Char($6797)) + string(Char($6BC5)) +
-            string(Char($662F)), 3200, 2200);
-        maybe_add_bonus('jiyuqu',
-            string(Char($6025)) + string(Char($4E8E)) +
-            string(Char($53BB)), 2800, 2000);
-        maybe_add_bonus('erzhineng',
-            string(Char($800C)) + string(Char($53EA)) +
-            string(Char($80FD)), 3200, 2200);
-        maybe_add_bonus('bianchengfangmian',
-            string(Char($7F16)) + string(Char($7A0B)) +
-            string(Char($65B9)) + string(Char($9762)), 3600, 2400);
-        maybe_add_bonus('youyugongzuo',
-            string(Char($7531)) + string(Char($4E8E)) +
-            string(Char($5DE5)) + string(Char($4F5C)), 3600, 2400);
-        maybe_add_bonus('chuyuzifa',
-            string(Char($51FA)) + string(Char($4E8E)) +
-            string(Char($81EA)) + string(Char($53D1)), 3600, 2400);
-        maybe_add_bonus('jiayizhidao',
-            string(Char($52A0)) + string(Char($4EE5)) +
-            string(Char($6307)) + string(Char($5BFC)), 3400, 2300);
-        maybe_add_bonus('beijing',
-            string(Char($5317)) + string(Char($4EAC)), 2600, 1800);
-        maybe_add_bonus('quanzhong',
-            string(Char($5708)) + string(Char($4E2D)), 2600, 1800);
-        maybe_add_bonus('zhidao',
-            string(Char($6307)) + string(Char($5BFC)), 2400, 1800);
-        maybe_add_bonus('dexingqu',
-            string(Char($7684)) + string(Char($5174)) +
-            string(Char($8DA3)), 3200, 2200);
-        maybe_add_bonus('bianchengku',
-            string(Char($7F16)) + string(Char($7A0B)) +
-            string(Char($5E93)), 3200, 2200);
-        maybe_add_bonus('xiaoyousuocheng',
-            string(Char($5C0F)) + string(Char($6709)) +
-            string(Char($6240)) + string(Char($6210)), 3400, 2300);
-        maybe_add_bonus('xiaotiancai',
-            string(Char($5C0F)) + string(Char($5929)) +
-            string(Char($624D)), 3200, 2200);
-        maybe_add_bonus('bande',
-            string(Char($822C)) + string(Char($7684)), 2600, 1800);
-        maybe_add_bonus('gaoyi',
-            string(Char($9AD8)) + string(Char($4E00)), 2200, 1600);
-        maybe_add_bonus('gaoyide',
-            string(Char($9AD8)) + string(Char($4E00)) +
-            string(Char($7684)), 3200, 2200);
-        maybe_add_bonus('beijingaoyun',
-            string(Char($5317)) + string(Char($4EAC)) +
-            string(Char($5965)) + string(Char($8FD0)), 3600, 2400);
-        maybe_add_bonus('rengongzhinengjishu',
-            string(Char($4EBA)) + string(Char($5DE5)) +
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($6280)) + string(Char($672F)), 3600, 2400);
-        maybe_add_bonus('gongzuotaimang',
-            string(Char($5DE5)) + string(Char($4F5C)) +
-            string(Char($592A)) + string(Char($5FD9)), 3600, 2400);
-        maybe_add_bonus('jiadediannao',
-            string(Char($5BB6)) + string(Char($7684)) +
-            string(Char($7535)) + string(Char($8111)), 3600, 2400);
-        maybe_add_bonus('jisuanjikexue',
-            string(Char($8BA1)) + string(Char($7B97)) +
-            string(Char($673A)) + string(Char($79D1)) +
-            string(Char($5B66)), 3800, 2500);
-        maybe_add_bonus('bianchengyuyan',
-            string(Char($7F16)) + string(Char($7A0B)) +
-            string(Char($8BED)) + string(Char($8A00)), 3600, 2400);
-        maybe_add_bonus('jintian',
-            string(Char($4ECA)) + string(Char($5929)), 3400, 2400);
-        maybe_add_bonus('laopo',
-            string(Char($8001)) + string(Char($5A46)), 3400, 2400);
-        maybe_add_bonus('yiqi',
-            string(Char($4E00)) + string(Char($8D77)), 3000, 2000);
-        maybe_add_bonus('shurufa',
-            string(Char($8F93)) + string(Char($5165)) +
-            string(Char($6CD5)), 3200, 2200);
-        maybe_add_bonus('shurufashi',
-            string(Char($8F93)) + string(Char($5165)) +
-            string(Char($6CD5)) + string(Char($662F)), 3800, 2600);
-        maybe_add_bonus('zhichichangju',
-            string(Char($652F)) + string(Char($6301)) +
-            string(Char($957F)) + string(Char($53E5)), 3600, 2400);
-        maybe_add_bonus('zhichichaju',
-            string(Char($652F)) + string(Char($6301)) +
-            string(Char($5DEE)) + string(Char($8DDD)), 3600, 2400);
-        maybe_add_bonus('bahuixie',
-            string(Char($628A)) + string(Char($4F1A)) +
-            string(Char($5199)), 3600, 2400);
-        maybe_add_bonus('huixiedaima',
-            string(Char($4F1A)) + string(Char($5199)) +
-            string(Char($4EE3)) + string(Char($7801)), 3800, 2600);
-        maybe_add_bonus('zhinengti',
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($4F53)), 3600, 2400);
-        maybe_add_bonus('meixiangdao',
-            string(Char($6CA1)) + string(Char($60F3)) +
-            string(Char($5230)), 3800, 2600);
-        maybe_add_bonus('lushang',
-            string(Char($8DEF)) + string(Char($4E0A)), 3000, 2000);
-        maybe_add_bonus('jingran',
-            string(Char($7ADF)) + string(Char($7136)), 3000, 2000);
-        maybe_add_bonus('yudao',
-            string(Char($9047)) + string(Char($5230)), 3600, 2400);
-        maybe_add_bonus('meiguo',
-            string(Char($7F8E)) + string(Char($56FD)), 3200, 2200);
-        maybe_add_bonus('zongtong',
-            string(Char($603B)) + string(Char($7EDF)), 3400, 2400);
-        maybe_add_bonus('telangpu',
-            string(Char($7279)) + string(Char($6717)) +
-            string(Char($666E)), 3800, 2600);
-        maybe_add_bonus('taqing',
-            string(Char($8E0F)) + string(Char($9752)), 3400, 2400);
-        maybe_add_bonus('saomu',
-            string(Char($626B)) + string(Char($5893)), 3400, 2400);
-        maybe_add_bonus('zhengshi',
-            string(Char($6B63)) + string(Char($662F)), 2600, 1800);
-        maybe_add_bonus('mishangle',
-            string(Char($8FF7)) + string(Char($4E0A)) +
-            string(Char($4E86)), 3200, 2200);
-        maybe_add_bonus('ruanjiangongchengshi',
-            string(Char($8F6F)) + string(Char($4EF6)) +
-            string(Char($5DE5)) + string(Char($7A0B)) +
-            string(Char($5E08)), 4000, 2600);
-        maybe_add_bonus('rengongzhinengxiangguan',
-            string(Char($4EBA)) + string(Char($5DE5)) +
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($76F8)) + string(Char($5173)), 4000, 2600);
-        maybe_add_bonus('sajinde',
-            string(Char($6D12)) + string(Char($8FDB)) +
-            string(Char($7684)), 3200, 2200);
-        maybe_add_bonus('bingxiaoyousuocheng',
-            string(Char($5E76)) + string(Char($5C0F)) +
-            string(Char($6709)) + string(Char($6240)) +
-            string(Char($6210)), 4000, 2600);
-        maybe_add_bonus('zhinengpai',
-            string(Char($53EA)) + string(Char($80FD)) +
-            string(Char($6D3E)), 3200, 2200);
-        maybe_add_bonus('erzhinengpai',
-            string(Char($800C)) + string(Char($53EA)) +
-            string(Char($80FD)) + string(Char($6D3E)), 4000, 2600);
-        maybe_add_bonus('deshihou',
-            string(Char($7684)) + string(Char($65F6)) +
-            string(Char($5019)), 3200, 2200);
-        maybe_add_bonus('wande',
-            string(Char($73A9)) + string(Char($5F97)), 2600, 1800);
-        maybe_add_bonus('lide',
-            string(Char($91CC)) + string(Char($7684)), 2600, 1800);
-        maybe_add_bonus('zuozaita',
-            string(Char($5750)) + string(Char($5728)) +
-            string(Char($4ED6)), 3200, 2200);
-        maybe_add_bonus('gongyulide',
-            string(Char($516C)) + string(Char($5BD3)) +
-            string(Char($91CC)) + string(Char($7684)), 3600, 2400);
-        maybe_add_bonus('congxiaodui',
-            string(Char($4ECE)) + string(Char($5C0F)) +
-            string(Char($5BF9)), 3200, 2200);
-        maybe_add_bonus('zifadexingqu',
-            string(Char($81EA)) + string(Char($53D1)) +
-            string(Char($7684)) + string(Char($5174)) +
-            string(Char($8DA3)), 3800, 2500);
-        maybe_add_bonus('yizhishi',
-            string(Char($4E00)) + string(Char($76F4)) +
-            string(Char($662F)), 3200, 2200);
-        maybe_add_bonus('xiaotiancaibande',
-            string(Char($5C0F)) + string(Char($5929)) +
-            string(Char($624D)) + string(Char($822C)) +
-            string(Char($7684)), 3800, 2500);
-        maybe_add_bonus('daduoshude',
-            string(Char($5927)) + string(Char($591A)) +
-            string(Char($6570)) + string(Char($7684)), 3600, 2400);
-        maybe_add_bonus('shanchangde',
-            string(Char($64C5)) + string(Char($957F)) +
-            string(Char($7684)), 3200, 2200);
-        maybe_add_bonus('weiyushanghai',
-            string(Char($4F4D)) + string(Char($4E8E)) +
-            string(Char($4E0A)) + string(Char($6D77)), 3600, 2400);
-        maybe_add_bonus('diannaochuwenti',
-            string(Char($7535)) + string(Char($8111)) +
-            string(Char($51FA)) + string(Char($95EE)) +
-            string(Char($9898)), 3800, 2500);
-        maybe_add_bonus('sajindechaoyang',
-            string(Char($6D12)) + string(Char($8FDB)) +
-            string(Char($7684)) + string(Char($671D)) +
-            string(Char($9633)), 3800, 2500);
-        maybe_add_bonus('ranggaoyide',
-            string(Char($8BA9)) + string(Char($9AD8)) +
-            string(Char($4E00)) + string(Char($7684)), 3600, 2400);
-        maybe_add_bonus('jiucimishangle',
-            string(Char($5C31)) + string(Char($6B64)) +
-            string(Char($8FF7)) + string(Char($4E0A)) +
-            string(Char($4E86)), 3800, 2500);
+        syllables_local := get_effective_compact_pinyin_syllables(
+            normalized_query);
+        out_syllable_count := Length(syllables_local);
+        if (out_syllable_count < c_min_preferred_phrase_syllables) or
+            (out_syllable_count > c_max_preferred_phrase_syllables) then
+        begin
+            Exit;
+        end;
+
+        cache_key_local := '#preferred_exact#' + normalized_query;
+        if (lookup_cache <> nil) and
+            lookup_cache.TryGetValue(cache_key_local, exact_results_local) then
+        begin
+            Inc(lookup_cache_hits);
+        end
+        else
+        begin
+            Inc(lookup_cache_misses);
+            phase_start_tick_local := GetTickCount64;
+            if not m_dictionary.lookup_exact_full_pinyin(normalized_query,
+                exact_results_local) then
+            begin
+                SetLength(exact_results_local, 0);
+            end;
+            Inc(lookup_elapsed_ms, Int64(GetTickCount64 -
+                phase_start_tick_local));
+            if lookup_cache <> nil then
+            begin
+                lookup_cache.AddOrSetValue(cache_key_local,
+                    exact_results_local);
+            end;
+        end;
+
+        best_idx_local := -1;
+        best_weight_local := Low(Integer);
+        for idx_local := 0 to High(exact_results_local) do
+        begin
+            if Trim(exact_results_local[idx_local].comment) <> '' then
+            begin
+                Continue;
+            end;
+            candidate_text_local := Trim(exact_results_local[idx_local].text);
+            if candidate_text_local = '' then
+            begin
+                Continue;
+            end;
+            candidate_units_local := get_candidate_text_unit_count(
+                candidate_text_local);
+            if candidate_units_local <> out_syllable_count then
+            begin
+                Continue;
+            end;
+
+            if exact_results_local[idx_local].has_dict_weight then
+            begin
+                candidate_weight_local := exact_results_local[idx_local].dict_weight;
+            end
+            else
+            begin
+                candidate_weight_local := exact_results_local[idx_local].score;
+            end;
+            if candidate_weight_local < c_min_preferred_phrase_weight then
+            begin
+                Continue;
+            end;
+
+            if candidate_weight_local > best_weight_local then
+            begin
+                best_weight_local := candidate_weight_local;
+                best_idx_local := idx_local;
+            end;
+        end;
+
+        if best_idx_local >= 0 then
+        begin
+            if has_much_stronger_split_local(best_weight_local) then
+            begin
+                Exit(False);
+            end;
+            out_candidate := exact_results_local[best_idx_local];
+            Result := True;
+        end;
     end;
 
+    function get_preferred_query_phrase_bonus_local(const query_key: string;
+        const candidate_text: string): Integer;
+    var
+        preferred_candidate_local: TncCandidate;
+        preferred_syllables_local: Integer;
+        preferred_text_local: string;
+        weight_value_local: Integer;
+    begin
+        Result := 0;
+        if Trim(candidate_text) = '' then
+        begin
+            Exit;
+        end;
+        if not try_lookup_preferred_exact_phrase_candidate_local(query_key,
+            preferred_candidate_local, preferred_syllables_local) then
+        begin
+            Exit;
+        end;
+
+        preferred_text_local := Trim(preferred_candidate_local.text);
+        if not SameText(Trim(candidate_text), preferred_text_local) then
+        begin
+            Exit;
+        end;
+
+        if preferred_candidate_local.has_dict_weight then
+        begin
+            weight_value_local := preferred_candidate_local.dict_weight;
+        end
+        else
+        begin
+            weight_value_local := preferred_candidate_local.score;
+        end;
+        Result := 1600 + Min(1800, Max(0, weight_value_local)) +
+            preferred_syllables_local * 160;
+    end;
     procedure apply_preferred_query_phrase_bonus_for_query(const query_key: string;
         var candidates: TncCandidateList);
     var
@@ -3928,631 +3936,32 @@ var
 
     function try_get_preferred_query_phrase_text_local(const query_key: string;
         out out_text: string; out out_bonus: Integer): Boolean;
-        procedure maybe_set_phrase(const expected_query: string;
-            const expected_text: string; const expected_bonus: Integer);
-        begin
-            if SameText(normalize_pinyin_text(query_key), expected_query) then
-            begin
-                out_text := expected_text;
-                out_bonus := expected_bonus;
-            end;
-        end;
-        function u(const codes: array of Word): string;
-        var
-            code_idx: Integer;
-        begin
-            Result := '';
-            for code_idx := Low(codes) to High(codes) do
-            begin
-                Result := Result + string(Char(codes[code_idx]));
-            end;
-        end;
+    var
+        preferred_candidate_local: TncCandidate;
+        preferred_syllables_local: Integer;
+        weight_value_local: Integer;
     begin
         out_text := '';
         out_bonus := 0;
+        Result := try_lookup_preferred_exact_phrase_candidate_local(query_key,
+            preferred_candidate_local, preferred_syllables_local);
+        if not Result then
+        begin
+            Exit;
+        end;
 
-        maybe_set_phrase('beijing',
-            string(Char($5317)) + string(Char($4EAC)), 2600);
-        maybe_set_phrase('linhao',
-            string(Char($6797)) + string(Char($6D69)), 2600);
-        maybe_set_phrase('yonghu',
-            string(Char($7528)) + string(Char($6237)), 2800);
-        maybe_set_phrase('fankui',
-            string(Char($53CD)) + string(Char($9988)), 2800);
-        maybe_set_phrase('meige',
-            string(Char($6BCF)) + string(Char($4E2A)), 2600);
-        maybe_set_phrase('meiyou',
-            string(Char($6CA1)) + string(Char($6709)), 2800);
-        maybe_set_phrase('ouer',
-            string(Char($5076)) + string(Char($5C14)), 2600);
-        maybe_set_phrase('xingqu',
-            string(Char($5174)) + string(Char($8DA3)), 2800);
-        maybe_set_phrase('chushengyu',
-            string(Char($51FA)) + string(Char($751F)) +
-            string(Char($4E8E)), 3200);
-        maybe_set_phrase('yongheng',
-            string(Char($6C38)) + string(Char($6052)), 2600);
-        maybe_set_phrase('rengong', u([$4EBA, $5DE5]), 2800);
-        maybe_set_phrase('rengongzhineng',
-            u([$4EBA, $5DE5, $667A, $80FD]), 3600);
-        maybe_set_phrase('zhineng',
-            string(Char($667A)) + string(Char($80FD)), 2600);
-        maybe_set_phrase('zhinengjishu',
-            u([$667A, $80FD, $6280, $672F]), 3600);
-        maybe_set_phrase('zhinenggongsi',
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($516C)) + string(Char($53F8)), 3400);
-        maybe_set_phrase('daili',
-            string(Char($4EE3)) + string(Char($7406)), 2600);
-        maybe_set_phrase('zoudaili',
-            string(Char($8D70)) + string(Char($4EE3)) +
-            string(Char($7406)), 3200);
-        maybe_set_phrase('meishi',
-            string(Char($6CA1)) + string(Char($4E8B)), 2800);
-        maybe_set_phrase('jintian',
-            string(Char($4ECA)) + string(Char($5929)), 3400);
-        maybe_set_phrase('laopo',
-            string(Char($8001)) + string(Char($5A46)), 3400);
-        maybe_set_phrase('yiqi',
-            string(Char($4E00)) + string(Char($8D77)), 3000);
-        maybe_set_phrase('shurufa',
-            string(Char($8F93)) + string(Char($5165)) +
-            string(Char($6CD5)), 3200);
-        maybe_set_phrase('shurufashi',
-            string(Char($8F93)) + string(Char($5165)) +
-            string(Char($6CD5)) + string(Char($662F)), 3800);
-        maybe_set_phrase('zhichichangju',
-            string(Char($652F)) + string(Char($6301)) +
-            string(Char($957F)) + string(Char($53E5)), 3600);
-        maybe_set_phrase('zhichichaju',
-            string(Char($652F)) + string(Char($6301)) +
-            string(Char($5DEE)) + string(Char($8DDD)), 3600);
-        maybe_set_phrase('bahuixie',
-            string(Char($628A)) + string(Char($4F1A)) +
-            string(Char($5199)), 3600);
-        maybe_set_phrase('huixiedaima',
-            string(Char($4F1A)) + string(Char($5199)) +
-            string(Char($4EE3)) + string(Char($7801)), 3800);
-        maybe_set_phrase('zhinengti',
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($4F53)), 3600);
-        maybe_set_phrase('meixiangdao',
-            string(Char($6CA1)) + string(Char($60F3)) +
-            string(Char($5230)), 3800);
-        maybe_set_phrase('lushang',
-            string(Char($8DEF)) + string(Char($4E0A)), 3000);
-        maybe_set_phrase('jingran',
-            string(Char($7ADF)) + string(Char($7136)), 3000);
-        maybe_set_phrase('yudao',
-            string(Char($9047)) + string(Char($5230)), 3600);
-        maybe_set_phrase('meiguo',
-            string(Char($7F8E)) + string(Char($56FD)), 3200);
-        maybe_set_phrase('zongtong',
-            string(Char($603B)) + string(Char($7EDF)), 3400);
-        maybe_set_phrase('telangpu',
-            string(Char($7279)) + string(Char($6717)) +
-            string(Char($666E)), 3800);
-        maybe_set_phrase('taqing',
-            string(Char($8E0F)) + string(Char($9752)), 3400);
-        maybe_set_phrase('saomu',
-            string(Char($626B)) + string(Char($5893)), 3400);
-        maybe_set_phrase('yinggaimeishi',
-            string(Char($5E94)) + string(Char($8BE5)) +
-            string(Char($6CA1)) + string(Char($4E8B)), 3600);
-        maybe_set_phrase('qianliangnian',
-            string(Char($524D)) + string(Char($4E24)) +
-            string(Char($5E74)), 3200);
-        maybe_set_phrase('biqianliangnian',
-            string(Char($6BD4)) + string(Char($524D)) +
-            string(Char($4E24)) + string(Char($5E74)), 3600);
-        maybe_set_phrase('suotaiduo',
-            string(Char($7F29)) + string(Char($592A)) +
-            string(Char($591A)), 3200);
-        maybe_set_phrase('gaide',
-            string(Char($6539)) + string(Char($5F97)), 2600);
-        maybe_set_phrase('gaidehaixing',
-            string(Char($6539)) + string(Char($5F97)) +
-            string(Char($8FD8)) + string(Char($884C)), 3400);
-        maybe_set_phrase('zhongduan',
-            string(Char($7EC8)) + string(Char($7AEF)), 2800);
-        maybe_set_phrase('zhongduanyu',
-            string(Char($7EC8)) + string(Char($7AEF)) +
-            string(Char($4E0E)), 3200);
-        maybe_set_phrase('gongchengyueshu',
-            string(Char($5DE5)) + string(Char($7A0B)) +
-            string(Char($7EA6)) + string(Char($675F)), 3400);
-        maybe_set_phrase('cunzai', u([$5B58, $5728]), 2800);
-        maybe_set_phrase('laoshu', u([$8001, $9F20]), 2800);
-        maybe_set_phrase('rulaoshu', u([$5982, $8001, $9F20]), 3200);
-        maybe_set_phrase('diaoru', u([$6389, $5165]), 2800);
-        maybe_set_phrase('migang', u([$7C73, $7F38]), 2800);
-        maybe_set_phrase('migangban', u([$7C73, $7F38, $822C]), 3200);
-        maybe_set_phrase('chenmi', u([$6C89, $8FF7]), 2800);
-        maybe_set_phrase('shijie', u([$4E16, $754C]), 2800);
-        maybe_set_phrase('deshijie', u([$7684, $4E16, $754C]), 3200);
-        maybe_set_phrase('deshijiezhong',
-            u([$7684, $4E16, $754C, $4E2D]), 3400);
-        maybe_set_phrase('shijiezhong', u([$4E16, $754C, $4E2D]), 3200);
-        maybe_set_phrase('zaidao', u([$518D, $5230]), 2600);
-        maybe_set_phrase('xiazai', u([$4E0B, $8F7D]), 2800);
-        maybe_set_phrase('yixie', u([$4E00, $4E9B]), 2800);
-        maybe_set_phrase('kaiyuan', u([$5F00, $6E90]), 2800);
-        maybe_set_phrase('kaiyuande', u([$5F00, $6E90, $7684]), 3200);
-        maybe_set_phrase('dayuyan', u([$5927, $8BED, $8A00]), 3200);
-        maybe_set_phrase('moxingku', u([$6A21, $578B, $5E93]), 3200);
-        maybe_set_phrase('ziji', u([$81EA, $5DF1]), 2600);
-        maybe_set_phrase('xunlian', u([$8BAD, $7EC3]), 2800);
-        maybe_set_phrase('zuoweitiao', u([$505A, $5FAE, $8C03]), 3400);
-        maybe_set_phrase('wandebuyilehu',
-            u([$73A9, $5F97, $4E0D, $4EA6, $4E50, $4E4E]), 3800);
-        maybe_set_phrase('shenzhi', u([$751A, $81F3]), 2800);
-        maybe_set_phrase('daoliao', u([$5230, $4E86]), 2600);
-        maybe_set_phrase('shenzhidaoliao', u([$751A, $81F3, $5230, $4E86]), 3600);
-        maybe_set_phrase('feiqinwangshi', u([$5E9F, $5BDD, $5FD8, $98DF]), 3600);
-        maybe_set_phrase('dibu', u([$5730, $6B65]), 2600);
-        maybe_set_phrase('dedibu', u([$7684, $5730, $6B65]), 3200);
-        maybe_set_phrase('maile', u([$4E70, $4E86]), 2600);
-        maybe_set_phrase('yizhang', u([$4E00, $5F20]), 2600);
-        maybe_set_phrase('xueye', u([$5B66, $4E1A]), 3000);
-        maybe_set_phrase('buqingsong', u([$4E0D, $8F7B, $677E]), 3200);
-        maybe_set_phrase('jingli', u([$7CBE, $529B]), 2800);
-        maybe_set_phrase('gucishibi', u([$987E, $6B64, $5931, $5F7C]), 3600);
-        maybe_set_phrase('gaokaoshi', u([$9AD8, $8003, $65F6]), 3200);
-        maybe_set_phrase('zaigaokaoshi',
-            u([$5728, $9AD8, $8003, $65F6]), 3400);
-        maybe_set_phrase('zhikaoshang', u([$53EA, $8003, $4E0A]), 3200);
-        maybe_set_phrase('zheye', u([$8FD9, $4E5F]), 2600);
-        maybe_set_phrase('daozhile', u([$5BFC, $81F4, $4E86]), 3200);
-        maybe_set_phrase('yige', u([$4E00, $4E2A]), 2600);
-        maybe_set_phrase('putongyiben', u([$666E, $901A, $4E00, $672C]), 3600);
-        maybe_set_phrase('jisuanjizhuanye',
-            u([$8BA1, $7B97, $673A, $4E13, $4E1A]), 3800);
-        maybe_set_phrase('gaozhongxuexiao',
-            u([$9AD8, $4E2D, $5B66, $6821]), 3600);
-        maybe_set_phrase('jianzhi', u([$7B80, $76F4]), 2800);
-        maybe_set_phrase('xuexiao', u([$5B66, $6821]), 2800);
-        maybe_set_phrase('yiban', u([$4E00, $822C]), 2800);
-        maybe_set_phrase('xuexiaoyiban',
-            u([$5B66, $6821, $4E00, $822C]), 3400);
-        maybe_set_phrase('suanyige', u([$7B97, $4E00, $4E2A]), 3200);
-        maybe_set_phrase('zhuanye', u([$4E13, $4E1A]), 3000);
-        maybe_set_phrase('zhuanyeke', u([$4E13, $4E1A, $8BFE]), 3200);
-        maybe_set_phrase('jibenshang', u([$57FA, $672C, $4E0A]), 3200);
-        maybe_set_phrase('haowuyali', u([$6BEB, $65E0, $538B, $529B]), 3600);
-        maybe_set_phrase('ruyudeshuibande',
-            u([$5982, $9C7C, $5F97, $6C34, $822C, $5730]), 3800);
-        maybe_set_phrase('jixu', u([$7EE7, $7EED]), 2800);
-        maybe_set_phrase('zuanyan', u([$94BB, $7814]), 2800);
-        maybe_set_phrase('zhongdian', u([$91CD, $70B9]), 2800);
-        maybe_set_phrase('zhuanzhuyu', u([$4E13, $6CE8, $4E8E]), 3200);
-        maybe_set_phrase('ziran', u([$81EA, $7136]), 2800);
-        maybe_set_phrase('yuyanchuli', u([$8BED, $8A00, $5904, $7406]), 3600);
-        maybe_set_phrase('zhexiang', u([$8FD9, $9879]), 2800);
-        maybe_set_phrase('yanjiu', u([$7814, $7A76]), 2800);
-        maybe_set_phrase('shide', u([$4F7F, $5F97]), 2800);
-        maybe_set_phrase('dangshi', u([$5F53, $65F6]), 2800);
-        maybe_set_phrase('zhuliude', u([$4E3B, $6D41, $7684]), 3200);
-        maybe_set_phrase('gaozhongshi', u([$9AD8, $4E2D, $65F6]), 3200);
-        maybe_set_phrase('jiechudao', u([$63A5, $89E6, $5230]), 3200);
-        maybe_set_phrase('jiechudaode', u([$63A5, $89E6, $5230, $7684]), 3600);
-        maybe_set_phrase('suojiyude', u([$6240, $57FA, $4E8E, $7684]), 3600);
-        maybe_set_phrase('jishu', u([$6280, $672F]), 2800);
-        maybe_set_phrase('jishude', u([$6280, $672F, $7684]), 3200);
-        maybe_set_phrase('laoshi', u([$8001, $5E08]), 2800);
-        maybe_set_phrase('faxian', u([$53D1, $73B0]), 2800);
-        maybe_set_phrase('zhidaolaoshi',
-            u([$6307, $5BFC, $8001, $5E08]), 3400);
-        maybe_set_phrase('yerenwei', u([$4E5F, $8BA4, $4E3A]), 3200);
-        maybe_set_phrase('zhege', u([$8FD9, $4E2A]), 2600);
-        maybe_set_phrase('zhongyao', u([$91CD, $8981]), 2800);
-        maybe_set_phrase('zhongyaode', u([$91CD, $8981, $7684]), 3200);
-        maybe_set_phrase('youzhongyao', u([$6709, $91CD, $8981]), 3200);
-        maybe_set_phrase('xueshujiazhi',
-            u([$5B66, $672F, $4EF7, $503C]), 3600);
-        maybe_set_phrase('lunwen', u([$8BBA, $6587]), 2800);
-        maybe_set_phrase('tijiao', u([$63D0, $4EA4]), 2800);
-        maybe_set_phrase('tijiaodao',
-            u([$63D0, $4EA4, $5230]), 3200);
-        maybe_set_phrase('tijiaodaoliao', u([$63D0, $4EA4, $5230, $4E86]), 3600);
-        maybe_set_phrase('daoliaoyici',
-            u([$5230, $4E86, $4E00, $6B21]), 3400);
-        maybe_set_phrase('yici', u([$4E00, $6B21]), 2600);
-        maybe_set_phrase('yigu', u([$4E00, $80A1]), 2800);
-        maybe_set_phrase('yiguqingliu',
-            u([$4E00, $80A1, $6E05, $6D41]), 3600);
-        maybe_set_phrase('hangye', u([$884C, $4E1A]), 2800);
-        maybe_set_phrase('xueshu', u([$5B66, $672F]), 2800);
-        maybe_set_phrase('hangyexueshu',
-            u([$884C, $4E1A, $5B66, $672F]), 3400);
-        maybe_set_phrase('xueshuhuiyi',
-            u([$5B66, $672F, $4F1A, $8BAE]), 3600);
-        maybe_set_phrase('quanzhong',
-            string(Char($5708)) + string(Char($4E2D)), 2600);
-        maybe_set_phrase('zhidao',
-            string(Char($6307)) + string(Char($5BFC)), 2400);
-        maybe_set_phrase('jiuzhi',
-            string(Char($5C31)) + string(Char($804C)), 2600);
-        maybe_set_phrase('jiuzhiyu',
-            string(Char($5C31)) + string(Char($804C)) +
-            string(Char($4E8E)), 3200);
-        maybe_set_phrase('jiji', u([$79EF, $6781]), 2800);
-        maybe_set_phrase('yushijiji',
-            u([$4E8E, $662F, $79EF, $6781]), 3400);
-        maybe_set_phrase('bangta', u([$5E2E, $4ED6]), 2800);
-        maybe_set_phrase('balunwen',
-            u([$628A, $8BBA, $6587]), 3200);
-        maybe_set_phrase('yushijiuci',
-            u([$4E8E, $662F, $5C31, $6B64]), 3400);
-        maybe_set_phrase('nenggou', u([$80FD, $591F]), 2800);
-        maybe_set_phrase('jiaoxiaode',
-            u([$8F83, $5C0F, $7684]), 3200);
-        maybe_set_phrase('canshuguimo',
-            u([$53C2, $6570, $89C4, $6A21]), 3400);
-        maybe_set_phrase('tiaojianxia',
-            u([$6761, $4EF6, $4E0B]), 3200);
-        maybe_set_phrase('bucuode', u([$4E0D, $9519, $7684]), 3200);
-        maybe_set_phrase('xiaoguo', u([$6548, $679C]), 2800);
-        maybe_set_phrase('dadao', u([$8FBE, $5230]), 2800);
-        maybe_set_phrase('nengdadao',
-            u([$80FD, $8FBE, $5230]), 3200);
-        maybe_set_phrase('yenengdadao',
-            u([$4E5F, $80FD, $8FBE, $5230]), 3400);
-        maybe_set_phrase('yuanben', u([$539F, $672C]), 2800);
-        maybe_set_phrase('xuesheng', u([$5B66, $751F]), 2800);
-        maybe_set_phrase('juran', u([$5C45, $7136]), 2800);
-        maybe_set_phrase('sitanfu', u([$65AF, $5766, $798F]), 3200);
-        maybe_set_phrase('daxue', u([$5927, $5B66]), 2800);
-        maybe_set_phrase('yiwei', u([$4E00, $4F4D]), 2800);
-        maybe_set_phrase('jiaoshou', u([$6559, $6388]), 2800);
-        maybe_set_phrase('zhuyidao',
-            u([$6CE8, $610F, $5230]), 3200);
-        maybe_set_phrase('benke', u([$672C, $79D1]), 2800);
-        maybe_set_phrase('biye', u([$6BD5, $4E1A]), 2800);
-        maybe_set_phrase('biyehou',
-            u([$6BD5, $4E1A, $540E]), 3200);
-        maybe_set_phrase('zhijie', u([$76F4, $63A5]), 2800);
-        maybe_set_phrase('qianwang', u([$524D, $5F80]), 2800);
-        maybe_set_phrase('shuoshi', u([$7855, $58EB]), 2800);
-        maybe_set_phrase('huiguo', u([$56DE, $56FD]), 2800);
-        maybe_set_phrase('huiguobing',
-            u([$56DE, $56FD, $5E76]), 3200);
-        maybe_set_phrase('bingjiarule',
-            u([$5E76, $52A0, $5165, $4E86]), 3400);
-        maybe_set_phrase('jiarule',
-            u([$52A0, $5165, $4E86]), 3200);
-        maybe_set_phrase('zaishanghaide',
-            u([$5728, $4E0A, $6D77, $7684]), 3400);
-        maybe_set_phrase('yijia', u([$4E00, $5BB6]), 2600);
-        maybe_set_phrase('qianyan', u([$524D, $6CBF]), 2800);
-        maybe_set_phrase('chuchuang', u([$521D, $521B]), 2800);
-        maybe_set_phrase('duigongsi',
-            u([$5BF9, $516C, $53F8]), 3200);
-        maybe_set_phrase('gongside',
-            u([$516C, $53F8, $7684]), 3200);
-        maybe_set_phrase('xiangmu', u([$9879, $76EE]), 2800);
-        maybe_set_phrase('xiangmude',
-            u([$9879, $76EE, $7684]), 3200);
-        maybe_set_phrase('reqing', u([$70ED, $60C5]), 2800);
-        maybe_set_phrase('butaigao',
-            u([$4E0D, $592A, $9AD8]), 3200);
-        maybe_set_phrase('shangban', u([$4E0A, $73ED]), 2800);
-        maybe_set_phrase('zhiwai', u([$4E4B, $5916]), 2800);
-        maybe_set_phrase('deshijian',
-            u([$7684, $65F6, $95F4]), 3200);
-        maybe_set_phrase('jiuxihuan',
-            u([$5C31, $559C, $6B22]), 3200);
-        maybe_set_phrase('xihuan', u([$559C, $6B22]), 2800);
-        maybe_set_phrase('duzidai', u([$72EC, $81EA, $5F85]), 3200);
-        maybe_set_phrase('duzidaizai',
-            u([$72EC, $81EA, $5F85, $5728]), 3400);
-        maybe_set_phrase('daizai', u([$5F85, $5728]), 2800);
-        maybe_set_phrase('xiaogongyu',
-            u([$5C0F, $516C, $5BD3]), 3200);
-        maybe_set_phrase('xiaogongyuli',
-            u([$5C0F, $516C, $5BD3, $91CC]), 3400);
-        maybe_set_phrase('gongyuli',
-            u([$516C, $5BD3, $91CC]), 3200);
-        maybe_set_phrase('zheli', u([$8FD9, $91CC]), 2800);
-        maybe_set_phrase('shuyu', u([$5C5E, $4E8E]), 2800);
-        maybe_set_phrase('yifang', u([$4E00, $65B9]), 2800);
-        maybe_set_phrase('tiandi', u([$5929, $5730]), 2800);
-        maybe_set_phrase('budao', u([$4E0D, $5230]), 2800);
-        maybe_set_phrase('shipingmi',
-            u([$5341, $5E73, $7C73]), 3200);
-        maybe_set_phrase('gongzuojian',
-            u([$5DE5, $4F5C, $95F4]), 3200);
-        maybe_set_phrase('gongzuojianli',
-            u([$5DE5, $4F5C, $95F4, $91CC]), 3400);
-        maybe_set_phrase('baile', u([$6446, $4E86]), 2600);
-        maybe_set_phrase('baileyizhang',
-            u([$6446, $4E86, $4E00, $5F20]), 3400);
-        maybe_set_phrase('lvexian', u([$7565, $663E]), 2800);
-        maybe_set_phrase('shechi', u([$5962, $4F88]), 2800);
-        maybe_set_phrase('shechide',
-            u([$5962, $4F88, $7684]), 3200);
-        maybe_set_phrase('dashuzhuo',
-            u([$5927, $4E66, $684C]), 3200);
-        maybe_set_phrase('zhuoshang', u([$684C, $4E0A]), 2800);
-        maybe_set_phrase('zhuoshangchule',
-            u([$684C, $4E0A, $9664, $4E86]), 3400);
-        maybe_set_phrase('chule', u([$9664, $4E86]), 2800);
-        maybe_set_phrase('tadebaobei',
-            u([$4ED6, $7684, $5B9D, $8D1D]), 3400);
-        maybe_set_phrase('baobei', u([$5B9D, $8D1D]), 2800);
-        maybe_set_phrase('diannaowai',
-            u([$7535, $8111, $5916]), 3200);
-        maybe_set_phrase('duimanle',
-            u([$5806, $6EE1, $4E86]), 3200);
-        maybe_set_phrase('shuji', u([$4E66, $7C4D]), 2800);
-        maybe_set_phrase('gezhong', u([$5404, $79CD]), 2800);
-        maybe_set_phrase('dianzi', u([$7535, $5B50]), 2800);
-        maybe_set_phrase('shebei', u([$8BBE, $5907]), 2800);
-        maybe_set_phrase('qishiyu',
-            u([$8D77, $59CB, $4E8E]), 3200);
-        maybe_set_phrase('zaisitanfu',
-            u([$5728, $65AF, $5766, $798F]), 3400);
-        maybe_set_phrase('dushuoshi',
-            u([$8BFB, $7855, $58EB]), 3200);
-        maybe_set_phrase('qijian', u([$671F, $95F4]), 2800);
-        maybe_set_phrase('yiweizhe',
-            u([$610F, $5473, $7740]), 3200);
-        maybe_set_phrase('youxiu', u([$4F18, $79C0]), 2800);
-        maybe_set_phrase('youxiuqieyou',
-            u([$4F18, $79C0, $4E14, $6709]), 3400);
-        maybe_set_phrase('qieyou', u([$4E14, $6709]), 2800);
-        maybe_set_phrase('youpinwei',
-            u([$6709, $54C1, $4F4D]), 3200);
-        maybe_set_phrase('pinwei', u([$54C1, $4F4D]), 2800);
-        maybe_set_phrase('bingzai', u([$5E76, $5728]), 2800);
-        maybe_set_phrase('jiejuewenti',
-            u([$89E3, $51B3, $95EE, $9898]), 3400);
-        maybe_set_phrase('guochengzhong',
-            u([$8FC7, $7A0B, $4E2D]), 3200);
-        maybe_set_phrase('zhanxianchu',
-            u([$5C55, $73B0, $51FA]), 3200);
-        maybe_set_phrase('liuchang', u([$6D41, $7545]), 2800);
-        maybe_set_phrase('erziran', u([$800C, $81EA, $7136]), 3200);
-        maybe_set_phrase('fengge', u([$98CE, $683C]), 2800);
-        maybe_set_phrase('jiuxiang', u([$5C31, $50CF]), 2800);
-        maybe_set_phrase('youya', u([$4F18, $96C5]), 2800);
-        maybe_set_phrase('wuzhe', u([$821E, $8005]), 2800);
-        maybe_set_phrase('wutaishang',
-            u([$821E, $53F0, $4E0A]), 3200);
-        maybe_set_phrase('wulun', u([$65E0, $8BBA]), 2800);
-        maybe_set_phrase('heshi', u([$4F55, $65F6]), 2800);
-        maybe_set_phrase('baochi', u([$4FDD, $6301]), 2800);
-        maybe_set_phrase('pingheng', u([$5E73, $8861]), 2800);
-        maybe_set_phrase('xiangyouya',
-            u([$50CF, $4F18, $96C5]), 3200);
-        maybe_set_phrase('wuzheyiyang',
-            u([$821E, $8005, $4E00, $6837]), 3400);
-        maybe_set_phrase('bujinjin',
-            u([$4E0D, $4EC5, $4EC5]), 3200);
-        maybe_set_phrase('daima', u([$4EE3, $7801]), 2800);
-        maybe_set_phrase('daimashiti',
-            u([$4EE3, $7801, $5B9E, $4F53]), 3400);
-        maybe_set_phrase('ershiyizhong',
-            u([$800C, $662F, $4E00, $79CD]), 3400);
-        maybe_set_phrase('yizhong', u([$4E00, $79CD]), 2800);
-        maybe_set_phrase('shengming', u([$751F, $547D]), 2800);
-        maybe_set_phrase('yiweizhuiqiu',
-            u([$4E00, $5473, $8FFD, $6C42]), 3400);
-        maybe_set_phrase('zhuiqiu', u([$8FFD, $6C42]), 2800);
-        maybe_set_phrase('gengda', u([$66F4, $5927]), 2800);
-        maybe_set_phrase('canshu', u([$53C2, $6570]), 2800);
-        maybe_set_phrase('guimo', u([$89C4, $6A21]), 2800);
-        maybe_set_phrase('zhuliu', u([$4E3B, $6D41]), 2800);
-        maybe_set_phrase('zuofa', u([$505A, $6CD5]), 2800);
-        maybe_set_phrase('zuofazhong',
-            u([$505A, $6CD5, $4E2D]), 3200);
-        maybe_set_phrase('zaijiejue',
-            u([$5728, $89E3, $51B3]), 3200);
-        maybe_set_phrase('wentide',
-            u([$95EE, $9898, $7684]), 3200);
-        maybe_set_phrase('deguocheng',
-            u([$7684, $8FC7, $7A0B]), 3200);
-        maybe_set_phrase('deguochengzhong',
-            u([$7684, $8FC7, $7A0B, $4E2D]), 3400);
-        maybe_set_phrase('chuliuchang',
-            u([$51FA, $6D41, $7545]), 3200);
-        maybe_set_phrase('liuchanger',
-            u([$6D41, $7545, $800C]), 3200);
-        maybe_set_phrase('zirande',
-            u([$81EA, $7136, $7684]), 3200);
-        maybe_set_phrase('defengge',
-            u([$7684, $98CE, $683C]), 3200);
-        maybe_set_phrase('jiangbujinjin',
-            u([$5C06, $4E0D, $4EC5, $4EC5]), 3400);
-        maybe_set_phrase('xiangyao', u([$60F3, $8981]), 2800);
-        maybe_set_phrase('jiangfuza',
-            u([$5C06, $590D, $6742]), 3200);
-        maybe_set_phrase('fuza', u([$590D, $6742]), 2800);
-        maybe_set_phrase('fuzade',
-            u([$590D, $6742, $7684]), 3200);
-        maybe_set_phrase('renxing', u([$4EBA, $6027]), 2800);
-        maybe_set_phrase('meihaode',
-            u([$7F8E, $597D, $7684]), 3200);
-        maybe_set_phrase('yimian', u([$4E00, $9762]), 2800);
-        maybe_set_phrase('wanmei', u([$5B8C, $7F8E]), 2800);
-        maybe_set_phrase('jiehe', u([$7ED3, $5408]), 2800);
-        maybe_set_phrase('wanmeijiehe',
-            u([$5B8C, $7F8E, $7ED3, $5408]), 3400);
-        maybe_set_phrase('chuangzao', u([$521B, $9020]), 2800);
-        maybe_set_phrase('jigaoxiao',
-            u([$65E2, $9AD8, $6548]), 3200);
-        maybe_set_phrase('youhexie',
-            u([$53C8, $548C, $8C10]), 3200);
-        maybe_set_phrase('hexiede',
-            u([$548C, $8C10, $7684]), 3200);
-        maybe_set_phrase('badian', u([$516B, $70B9]), 2800);
-        maybe_set_phrase('qichuang', u([$8D77, $5E8A]), 2800);
-        maybe_set_phrase('qichuangde',
-            u([$8D77, $5E8A, $7684]), 3200);
-        maybe_set_phrase('xishu', u([$6D17, $6F31]), 2800);
-        maybe_set_phrase('zaixishu',
-            u([$5728, $6D17, $6F31]), 3200);
-        maybe_set_phrase('xishuhou',
-            u([$6D17, $6F31, $540E]), 3200);
-        maybe_set_phrase('yijing', u([$5DF2, $7ECF]), 2800);
-        maybe_set_phrase('gongzuole',
-            u([$5DE5, $4F5C, $4E86]), 3200);
-        maybe_set_phrase('duoxiaoshi',
-            u([$591A, $5C0F, $65F6]), 3200);
-        maybe_set_phrase('shidian', u([$5341, $70B9]), 2800);
-        maybe_set_phrase('shiwufen',
-            u([$5341, $4E94, $5206]), 3200);
-        maybe_set_phrase('bixu', u([$5FC5, $987B]), 2800);
-        maybe_set_phrase('chumen', u([$51FA, $95E8]), 2800);
-        maybe_set_phrase('jianpan', u([$952E, $76D8]), 2800);
-        maybe_set_phrase('jianpanshang',
-            u([$952E, $76D8, $4E0A]), 3200);
-        maybe_set_phrase('shanganxia',
-            u([$4E0A, $6309, $4E0B]), 3200);
-        maybe_set_phrase('anxia', u([$6309, $4E0B]), 2800);
-        maybe_set_phrase('xiangdiannao',
-            u([$5411, $7535, $8111]), 3200);
-        maybe_set_phrase('dazhaohu',
-            u([$6253, $62DB, $547C]), 3200);
-        maybe_set_phrase('wenhede',
-            u([$6E29, $548C, $7684]), 3200);
-        maybe_set_phrase('wenhedenvsheng',
-            u([$6E29, $548C, $7684, $5973, $58F0]), 3600);
-        maybe_set_phrase('diannaozhong',
-            u([$7535, $8111, $4E2D]), 3200);
-        maybe_set_phrase('chuanchu', u([$4F20, $51FA]), 2800);
-        maybe_set_phrase('kanleyixia',
-            u([$770B, $4E86, $4E00, $4E0B]), 3400);
-        maybe_set_phrase('yixia', u([$4E00, $4E0B]), 2800);
-        maybe_set_phrase('shijian', u([$65F6, $95F4]), 2800);
-        maybe_set_phrase('dexingqu',
-            string(Char($7684)) + string(Char($5174)) +
-            string(Char($8DA3)), 3200);
-        maybe_set_phrase('bianchengku',
-            string(Char($7F16)) + string(Char($7A0B)) +
-            string(Char($5E93)), 3200);
-        maybe_set_phrase('doushiyong',
-            u([$90FD, $662F, $7528]), 3200);
-        maybe_set_phrase('xiaoyousuocheng',
-            string(Char($5C0F)) + string(Char($6709)) +
-            string(Char($6240)) + string(Char($6210)), 3400);
-        maybe_set_phrase('xiaotiancai',
-            string(Char($5C0F)) + string(Char($5929)) +
-            string(Char($624D)), 3200);
-        maybe_set_phrase('bande',
-            string(Char($822C)) + string(Char($7684)), 2600);
-        maybe_set_phrase('gaoyide',
-            string(Char($9AD8)) + string(Char($4E00)) +
-            string(Char($7684)), 3200);
-        maybe_set_phrase('beijingaoyun',
-            string(Char($5317)) + string(Char($4EAC)) +
-            string(Char($5965)) + string(Char($8FD0)), 3600);
-        maybe_set_phrase('rengongzhinengjishu',
-            string(Char($4EBA)) + string(Char($5DE5)) +
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($6280)) + string(Char($672F)), 3600);
-        maybe_set_phrase('gongzuotaimang',
-            string(Char($5DE5)) + string(Char($4F5C)) +
-            string(Char($592A)) + string(Char($5FD9)), 3600);
-        maybe_set_phrase('jiadediannao',
-            string(Char($5BB6)) + string(Char($7684)) +
-            string(Char($7535)) + string(Char($8111)), 3600);
-        maybe_set_phrase('jisuanjikexue',
-            string(Char($8BA1)) + string(Char($7B97)) +
-            string(Char($673A)) + string(Char($79D1)) +
-            string(Char($5B66)), 3800);
-        maybe_set_phrase('bianchengyuyan',
-            string(Char($7F16)) + string(Char($7A0B)) +
-            string(Char($8BED)) + string(Char($8A00)), 3600);
-        maybe_set_phrase('zhengshi',
-            string(Char($6B63)) + string(Char($662F)), 2600);
-        maybe_set_phrase('mishangle',
-            string(Char($8FF7)) + string(Char($4E0A)) +
-            string(Char($4E86)), 3200);
-        maybe_set_phrase('ruanjiangongchengshi',
-            string(Char($8F6F)) + string(Char($4EF6)) +
-            string(Char($5DE5)) + string(Char($7A0B)) +
-            string(Char($5E08)), 4000);
-        maybe_set_phrase('rengongzhinengxiangguan',
-            string(Char($4EBA)) + string(Char($5DE5)) +
-            string(Char($667A)) + string(Char($80FD)) +
-            string(Char($76F8)) + string(Char($5173)), 4000);
-        maybe_set_phrase('sajinde',
-            string(Char($6D12)) + string(Char($8FDB)) +
-            string(Char($7684)), 3200);
-        maybe_set_phrase('bingxiaoyousuocheng',
-            string(Char($5E76)) + string(Char($5C0F)) +
-            string(Char($6709)) + string(Char($6240)) +
-            string(Char($6210)), 4000);
-        maybe_set_phrase('zhinengpai',
-            string(Char($53EA)) + string(Char($80FD)) +
-            string(Char($6D3E)), 3200);
-        maybe_set_phrase('chuma',
-            string(Char($51FA)) + string(Char($9A6C)), 2800);
-        maybe_set_phrase('chumade',
-            string(Char($51FA)) + string(Char($9A6C)) +
-            string(Char($7684)), 3200);
-        maybe_set_phrase('chumadeshihou',
-            string(Char($51FA)) + string(Char($9A6C)) +
-            string(Char($7684)) + string(Char($65F6)) +
-            string(Char($5019)), 3800);
-        maybe_set_phrase('erzhinengpai',
-            string(Char($800C)) + string(Char($53EA)) +
-            string(Char($80FD)) + string(Char($6D3E)), 4000);
-        maybe_set_phrase('deshihou',
-            string(Char($7684)) + string(Char($65F6)) +
-            string(Char($5019)), 3200);
-        maybe_set_phrase('wande',
-            string(Char($73A9)) + string(Char($5F97)), 2600);
-        maybe_set_phrase('lide',
-            string(Char($91CC)) + string(Char($7684)), 2600);
-        maybe_set_phrase('zuozaita',
-            string(Char($5750)) + string(Char($5728)) +
-            string(Char($4ED6)), 3200);
-        maybe_set_phrase('gongyulide',
-            string(Char($516C)) + string(Char($5BD3)) +
-            string(Char($91CC)) + string(Char($7684)), 3600);
-        maybe_set_phrase('congxiaodui',
-            string(Char($4ECE)) + string(Char($5C0F)) +
-            string(Char($5BF9)), 3200);
-        maybe_set_phrase('zifadexingqu',
-            string(Char($81EA)) + string(Char($53D1)) +
-            string(Char($7684)) + string(Char($5174)) +
-            string(Char($8DA3)), 3800);
-        maybe_set_phrase('yizhishi',
-            string(Char($4E00)) + string(Char($76F4)) +
-            string(Char($662F)), 3200);
-        maybe_set_phrase('xiaotiancaibande',
-            string(Char($5C0F)) + string(Char($5929)) +
-            string(Char($624D)) + string(Char($822C)) +
-            string(Char($7684)), 3800);
-        maybe_set_phrase('daduoshude',
-            string(Char($5927)) + string(Char($591A)) +
-            string(Char($6570)) + string(Char($7684)), 3600);
-        maybe_set_phrase('shanchangde',
-            string(Char($64C5)) + string(Char($957F)) +
-            string(Char($7684)), 3200);
-        maybe_set_phrase('weiyushanghai',
-            string(Char($4F4D)) + string(Char($4E8E)) +
-            string(Char($4E0A)) + string(Char($6D77)), 3600);
-        maybe_set_phrase('diannaochuwenti',
-            string(Char($7535)) + string(Char($8111)) +
-            string(Char($51FA)) + string(Char($95EE)) +
-            string(Char($9898)), 3800);
-        maybe_set_phrase('sajindechaoyang',
-            string(Char($6D12)) + string(Char($8FDB)) +
-            string(Char($7684)) + string(Char($671D)) +
-            string(Char($9633)), 3800);
-        maybe_set_phrase('ranggaoyide',
-            string(Char($8BA9)) + string(Char($9AD8)) +
-            string(Char($4E00)) + string(Char($7684)), 3600);
-        maybe_set_phrase('jiucimishangle',
-            string(Char($5C31)) + string(Char($6B64)) +
-            string(Char($8FF7)) + string(Char($4E0A)) +
-            string(Char($4E86)), 3800);
-
-        Result := out_text <> '';
+        out_text := Trim(preferred_candidate_local.text);
+        if preferred_candidate_local.has_dict_weight then
+        begin
+            weight_value_local := preferred_candidate_local.dict_weight;
+        end
+        else
+        begin
+            weight_value_local := preferred_candidate_local.score;
+        end;
+        out_bonus := 1800 + Min(2000, Max(0, weight_value_local)) +
+            preferred_syllables_local * 180;
     end;
-
     procedure ensure_preferred_subspan_repair_candidate_visible(
         var candidates: TncCandidateList);
     const
@@ -35554,97 +34963,11 @@ var
 
     procedure apply_preferred_sentence_phrase_bonus(
         var candidates: TncCandidateList);
-    var
-        idx: Integer;
-        trimmed_candidate: string;
-        bonus: Integer;
-
-        procedure maybe_add_bonus(const phrase_text: string;
-            const phrase_bonus: Integer);
-        begin
-            if (phrase_text <> '') and (Pos(phrase_text, trimmed_candidate) > 0) then
-            begin
-                Inc(bonus, phrase_bonus);
-            end;
-        end;
     begin
-        if Length(candidates) = 0 then
-        begin
-            Exit;
-        end;
-
-        for idx := 0 to High(candidates) do
-        begin
-            if Trim(candidates[idx].comment) <> '' then
-            begin
-                Continue;
-            end;
-
-            trimmed_candidate := Trim(candidates[idx].text);
-            if trimmed_candidate = '' then
-            begin
-                Continue;
-            end;
-
-            bonus := 0;
-            maybe_add_bonus(string(Char($5750)) + string(Char($5728)) +
-                string(Char($4ED6)), 2600);
-            maybe_add_bonus(string(Char($4E0A)) + string(Char($6D77)) +
-                string(Char($7684)), 2200);
-            maybe_add_bonus(string(Char($516C)) + string(Char($5BD3)) +
-                string(Char($91CC)) + string(Char($7684)), 3200);
-            maybe_add_bonus(string(Char($6D12)) + string(Char($8FDB)) +
-                string(Char($7684)), 2600);
-            maybe_add_bonus(string(Char($4ECE)) + string(Char($5C0F)) +
-                string(Char($5BF9)), 2200);
-            maybe_add_bonus(string(Char($81EA)) + string(Char($53D1)) +
-                string(Char($7684)) + string(Char($5174)) +
-                string(Char($8DA3)), 3600);
-            maybe_add_bonus(string(Char($5E76)) + string(Char($5C0F)) +
-                string(Char($6709)) + string(Char($6240)) +
-                string(Char($6210)), 3600);
-            maybe_add_bonus(string(Char($5BB6)) + string(Char($7684)) +
-                string(Char($7535)) + string(Char($8111)), 3200);
-            maybe_add_bonus(string(Char($800C)) + string(Char($53EA)) +
-                string(Char($80FD)) + string(Char($6D3E)), 3600);
-            maybe_add_bonus(string(Char($51FA)) + string(Char($9A6C)) +
-                string(Char($7684)) + string(Char($65F6)) +
-                string(Char($5019)), 3600);
-            maybe_add_bonus(string(Char($4E00)) + string(Char($76F4)) +
-                string(Char($662F)), 2600);
-            maybe_add_bonus(string(Char($822C)) + string(Char($7684)) +
-                string(Char($5B58)) + string(Char($5728)), 3200);
-            maybe_add_bonus(string(Char($9AD8)) + string(Char($4E00)) +
-                string(Char($7684)), 2200);
-            maybe_add_bonus(string(Char($8FF7)) + string(Char($4E0A)) +
-                string(Char($4E86)), 2600);
-            maybe_add_bonus(string(Char($5927)) + string(Char($591A)) +
-                string(Char($6570)) + string(Char($7684)), 3200);
-            maybe_add_bonus(string(Char($64C5)) + string(Char($957F)) +
-                string(Char($7684)), 2600);
-            maybe_add_bonus(string(Char($7F16)) + string(Char($7A0B)) +
-                string(Char($8BED)) + string(Char($8A00)), 2600);
-            maybe_add_bonus(string(Char($6B63)) + string(Char($662F)), 2000);
-            maybe_add_bonus(string(Char($4EBA)) + string(Char($5DE5)) +
-                string(Char($667A)) + string(Char($80FD)) +
-                string(Char($76F8)) + string(Char($5173)), 3600);
-            maybe_add_bonus(string(Char($7F16)) + string(Char($7A0B)) +
-                string(Char($5E93)), 2600);
-            maybe_add_bonus(string(Char($5DE5)) + string(Char($4F5C)) +
-                string(Char($592A)) + string(Char($5FD9)), 2600);
-            maybe_add_bonus(string(Char($7684)) + string(Char($5174)) +
-                string(Char($8DA3)), 2600);
-            maybe_add_bonus(string(Char($7684)) + string(Char($65F6)) +
-                string(Char($5019)), 2600);
-            maybe_add_bonus(string(Char($73A9)) + string(Char($5F97)), 2200);
-
-            if bonus <> 0 then
-            begin
-                Inc(candidates[idx].score, bonus);
-            end;
-        end;
+        // Phrase preference is intentionally dictionary-driven. Avoid hard-coded
+        // sentence substring bonuses here; short phrases should be represented in
+        // the lexicon and resolved through exact chunk lookup.
     end;
-
     procedure ensure_modal_tail_sentence_candidate_visible(var candidates: TncCandidateList);
     const
         c_modal_tail_correction_bonus = 980;
@@ -50523,6 +49846,8 @@ end;
 
 function TncEngine.is_problematic_single_char_chain_candidate_for_query(const query_key: string;
     const candidate: TncCandidate): Boolean;
+const
+    c_low_evidence_user_chain_weight = 8;
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
@@ -50532,17 +49857,10 @@ var
     normalized_query: string;
     idx: Integer;
     is_preferred: Boolean;
+    is_low_evidence_user_chain: Boolean;
 begin
     Result := False;
     if candidate.comment <> '' then
-    begin
-        Exit;
-    end;
-
-    // Only suppress low-evidence user chains and runtime-composed single-char
-    // chains. Exact lexicon phrases like "好吧/有点" must not be treated as
-    // problematic just because they also align with per-syllable single chars.
-    if candidate.has_dict_weight then
     begin
         Exit;
     end;
@@ -50577,6 +49895,39 @@ begin
         begin
             Exit(False);
         end;
+    end;
+
+    is_low_evidence_user_chain := (candidate.source = cs_user) and
+        candidate.has_dict_weight and
+        (candidate.dict_weight <= c_low_evidence_user_chain_weight);
+
+    // User-learned one-character-per-syllable chains are allowed as fallback,
+    // but they should not outrank a real complete lexicon phrase for the same
+    // query. Exact lexicon phrases must still stay protected.
+    if is_low_evidence_user_chain then
+    begin
+        text_units := split_text_units(Trim(candidate.text));
+        if Length(text_units) = Length(syllables) then
+        begin
+            for idx := 0 to High(text_units) do
+            begin
+                if (get_candidate_text_unit_count(text_units[idx]) <> 1) or
+                    (not match_single_char_candidate_for_syllable(
+                    syllables[idx].text, text_units[idx], is_preferred)) then
+                begin
+                    Exit(False);
+                end;
+            end;
+            Exit(True);
+        end;
+    end;
+
+    // Only suppress low-evidence user chains and runtime-composed single-char
+    // chains. Exact lexicon phrases must not be treated as problematic just
+    // because they also align with per-syllable single chars.
+    if candidate.has_dict_weight then
+    begin
+        Exit;
     end;
 
     if is_weak_single_char_chain_candidate_for_query(normalized_query, candidate) then
@@ -52359,6 +51710,21 @@ begin
                             Result := 1;
                             Exit;
                         end;
+                    end;
+                end;
+
+                if has_weighted_complete_phrase and
+                    (left.candidate.comment = '') and (right.candidate.comment = '') then
+                begin
+                    if left.is_weighted_complete_phrase and right.is_problematic_single_char_chain then
+                    begin
+                        Result := -1;
+                        Exit;
+                    end;
+                    if right.is_weighted_complete_phrase and left.is_problematic_single_char_chain then
+                    begin
+                        Result := 1;
+                        Exit;
                     end;
                 end;
 
