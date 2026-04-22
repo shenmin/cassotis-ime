@@ -2918,7 +2918,7 @@ begin
     begin
         Exit;
     end;
-    if (not is_full_pinyin_key(pinyin_key)) or (not is_valid_user_text(text_key)) then
+    if not is_full_pinyin_key(pinyin_key) then
     begin
         Exit;
     end;
@@ -3211,7 +3211,7 @@ begin
     begin
         Exit;
     end;
-    if (not is_full_pinyin_key(pinyin_key)) or (not is_valid_user_text(text_key)) then
+    if not is_full_pinyin_key(pinyin_key) then
     begin
         Exit;
     end;
@@ -4780,6 +4780,7 @@ var
     score_value: Integer;
     dict_weight_value: Integer;
     score_with_bonus: Integer;
+    penalty_value: Integer;
     commit_count: Integer;
     last_used_value: Int64;
     learning_bonus: Integer;
@@ -5084,6 +5085,8 @@ var
         Result := current_result_count >= min_results_before_fallback;
     end;
 
+    function has_separator_normalized_base_variant(const normalized_key: string): Boolean; forward;
+
     procedure rebuild_query_mode_state;
     var
         query_parser: TncPinyinParser;
@@ -5131,6 +5134,11 @@ var
             end;
             disable_long_full_query_jianpin := (full_query_syllable_count >= 3);
             full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
+            if disable_long_full_query_jianpin and
+                has_separator_normalized_base_variant(query_key) then
+            begin
+                disable_long_full_query_jianpin := False;
+            end;
             if (not disable_long_full_query_jianpin) and
                 (full_query_jianpin_key <> '') and
                 (not SameText(full_query_jianpin_key, query_key)) then
@@ -5231,6 +5239,36 @@ var
         end;
     end;
 
+    function has_separator_normalized_base_variant(const normalized_key: string): Boolean;
+    const
+        base_separator_variant_sql =
+            'SELECT 1 FROM dict_base WHERE pinyin <> ?1 AND replace(pinyin, ?2, ?3) = ?1 LIMIT 1';
+    var
+        local_stmt: Psqlite3_stmt;
+    begin
+        Result := False;
+        if (normalized_key = '') or (not m_base_ready) or (m_base_connection = nil) then
+        begin
+            Exit;
+        end;
+
+        local_stmt := nil;
+        try
+            if m_base_connection.prepare(base_separator_variant_sql, local_stmt) and
+                m_base_connection.bind_text(local_stmt, 1, normalized_key) and
+                m_base_connection.bind_text(local_stmt, 2, '''') and
+                m_base_connection.bind_text(local_stmt, 3, '') then
+            begin
+                Result := m_base_connection.step(local_stmt) = SQLITE_ROW;
+            end;
+        finally
+            if local_stmt <> nil then
+            begin
+                m_base_connection.finalize(local_stmt);
+            end;
+        end;
+    end;
+
     procedure append_candidate(const text: string; const comment: string; const score: Integer;
         const source: TncCandidateSource; const has_dict_weight: Boolean = False;
         const dict_weight: Integer = 0; const candidate_pinyin_key: string = '';
@@ -5260,6 +5298,14 @@ var
         begin
             Inc(score_with_bonus, learning_bonus);
             Inc(applied_learning_bonus_count);
+        end;
+        if (candidate_pinyin_key <> '') and (comment = '') then
+        begin
+            penalty_value := get_candidate_penalty(candidate_pinyin_key, text);
+            if penalty_value > 0 then
+            begin
+                Dec(score_with_bonus, Max(720, penalty_value * 2));
+            end;
         end;
         if score_with_bonus > max_final_score then
         begin
@@ -7212,10 +7258,7 @@ begin
             if (pinyin_value <> '') and (text_unit_count = 1) and is_full_pinyin_key(pinyin_value) and
                 (not single_char_matches_pinyin(pinyin_value, text_value)) then
             begin
-                // Lookup already ignores mismatched single-char user rows.
-                // Avoid destructive cleanup here so a provider reload cannot
-                // erase a valid recent choice due to transient validation
-                // disagreement or lexicon normalization differences.
+                purge_user_entry_internal(pinyin_value, text_value, False, False);
             end
             else if should_suppress_constructed_user_phrase(pinyin_value, text_value,
                 commit_count, user_weight) then
