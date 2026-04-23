@@ -88,6 +88,8 @@ type
         function has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
         function explicit_user_entry_exists(const pinyin: string; const text: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
+        function full_pinyin_text_alignment_valid(const pinyin: string;
+            const text: string): Boolean;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
         function is_nonbase_multi_segment_composed_exact_phrase(const pinyin: string;
             const text: string): Boolean;
@@ -124,7 +126,8 @@ type
         procedure commit_learning_batch; override;
         procedure rollback_learning_batch; override;
         procedure set_debug_mode(const enabled: Boolean); override;
-        procedure record_commit(const pinyin: string; const text: string); override;
+        procedure record_commit(const pinyin: string; const text: string;
+            const explicit_choice: Boolean = False); override;
         procedure record_context_pair(const left_text: string; const committed_text: string); override;
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); override;
@@ -138,6 +141,7 @@ type
         function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
+        function is_base_entry(const pinyin: string; const text: string): Boolean; override;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
@@ -3018,6 +3022,102 @@ begin
     end;
 end;
 
+function TncSqliteDictionary.full_pinyin_text_alignment_valid(
+    const pinyin: string; const text: string): Boolean;
+const
+    base_text_sql = 'SELECT pinyin FROM dict_base WHERE text = ?1 LIMIT 64';
+var
+    pinyin_key: string;
+    text_key: string;
+    syllables: TArray<string>;
+    text_units: TArray<string>;
+    idx: Integer;
+    function text_unit_can_match_syllable(const syllable_text: string;
+        const text_unit: string): Boolean;
+    var
+        stmt: Psqlite3_stmt;
+        step_result: Integer;
+        saw_known_reading: Boolean;
+        candidate_pinyin: string;
+    begin
+        if single_char_matches_pinyin(syllable_text, text_unit) then
+        begin
+            Exit(True);
+        end;
+
+        // Missing per-character readings in a small test/user base are
+        // unknown, not evidence of a bad alignment. Reject only when the base
+        // has readings for the character and none match the syllable.
+        if (not m_base_ready) or (m_base_connection = nil) then
+        begin
+            Exit(True);
+        end;
+
+        saw_known_reading := False;
+        stmt := nil;
+        try
+            if not (m_base_connection.prepare(base_text_sql, stmt) and
+                m_base_connection.bind_text(stmt, 1, text_unit)) then
+            begin
+                Exit(True);
+            end;
+
+            step_result := m_base_connection.step(stmt);
+            while step_result = SQLITE_ROW do
+            begin
+                saw_known_reading := True;
+                candidate_pinyin := m_base_connection.column_text(stmt, 0);
+                if same_normalized_pinyin_key(candidate_pinyin, syllable_text) then
+                begin
+                    Exit(True);
+                end;
+                step_result := m_base_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_base_connection.finalize(stmt);
+            end;
+        end;
+
+        Result := not saw_known_reading;
+    end;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or
+        (not is_full_pinyin_key(pinyin_key)) then
+    begin
+        Exit;
+    end;
+
+    if normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
+    text_units := split_text_units_local(text_key);
+    if (Length(syllables) <= 0) or
+        (Length(text_units) <> Length(syllables)) then
+    begin
+        Exit;
+    end;
+
+    for idx := 0 to High(text_units) do
+    begin
+        if (get_valid_cjk_codepoint_count(text_units[idx]) <> 1) or
+            (not text_unit_can_match_syllable(syllables[idx], text_units[idx])) then
+        begin
+            Exit;
+        end;
+    end;
+
+    Result := True;
+end;
+
 function TncSqliteDictionary.is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
 
     function matches_expected_phrase(const expected_pinyin: string; const expected_text: string): Boolean;
@@ -3250,6 +3350,11 @@ function TncSqliteDictionary.should_suppress_exact_query_learning(const pinyin: 
     const text: string): Boolean;
 begin
     Result := is_nonbase_multi_segment_composed_exact_phrase(pinyin, text);
+end;
+
+function TncSqliteDictionary.is_base_entry(const pinyin: string; const text: string): Boolean;
+begin
+    Result := normalized_base_entry_exists(pinyin, text);
 end;
 
 function TncSqliteDictionary.is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
@@ -4647,7 +4752,11 @@ begin
                         begin
                             Continue;
                         end;
-                        add_or_merge_candidate(text_value, '', score_value, cs_user);
+                        // Learned exact-query rows are ranking evidence, not
+                        // explicit custom words. Keep the weight but do not
+                        // expose them as cs_user, otherwise the UI shows a
+                        // misleading remove button.
+                        add_or_merge_candidate(text_value, '', score_value, cs_rule);
                     end;
                 until step_result <> SQLITE_ROW;
             end;
@@ -5273,6 +5382,11 @@ var
         const source: TncCandidateSource; const has_dict_weight: Boolean = False;
         const dict_weight: Integer = 0; const candidate_pinyin_key: string = '';
         const max_final_score: Integer = MaxInt);
+    var
+        effective_source: TncCandidateSource;
+        effective_has_dict_weight: Boolean;
+        effective_dict_weight: Integer;
+        normalized_candidate_pinyin: string;
     begin
         if text = '' then
         begin
@@ -5312,12 +5426,32 @@ var
             score_with_bonus := max_final_score;
         end;
 
+        effective_source := source;
+        if (source = cs_user) and (candidate_pinyin_key <> '') then
+        begin
+            normalized_candidate_pinyin := normalize_compact_pinyin_key(
+                candidate_pinyin_key);
+            if (normalized_candidate_pinyin <> '') and
+                (not SameText(normalized_candidate_pinyin, query_key)) then
+            begin
+                effective_source := cs_rule;
+            end;
+        end;
+
+        effective_has_dict_weight := (effective_source = cs_rule) and has_dict_weight;
+        effective_dict_weight := dict_weight;
+        if (source = cs_user) and (effective_source = cs_rule) then
+        begin
+            effective_has_dict_weight := True;
+            effective_dict_weight := Max(dict_weight, score_with_bonus);
+        end;
+
         item.text := text;
         item.comment := comment;
         item.score := score_with_bonus;
-        item.source := source;
-        item.has_dict_weight := (source = cs_rule) and has_dict_weight;
-        item.dict_weight := dict_weight;
+        item.source := effective_source;
+        item.has_dict_weight := effective_has_dict_weight;
+        item.dict_weight := effective_dict_weight;
         list.Add(item);
         seen.Add(key, True);
         if (candidate_pinyin_key <> '') and (candidate_pinyin_map <> nil) then
@@ -6562,6 +6696,14 @@ begin
                         commit_count := m_user_connection.column_int(stmt, 2);
                         last_used_value := m_user_connection.column_int(stmt, 3);
                         if full_pinyin_query and
+                            (not full_pinyin_text_alignment_valid(query_key,
+                            text_value)) then
+                        begin
+                            Inc(skipped_noisy_user_count);
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        if full_pinyin_query and
                             (get_valid_cjk_codepoint_count(text_value) = 1) and
                             (not single_char_matches_pinyin(query_key, text_value)) then
                         begin
@@ -6611,6 +6753,14 @@ begin
                         text_value := m_user_connection.column_text(stmt, 0);
                         last_used_value := m_user_connection.column_int(stmt, 2);
                         if full_pinyin_query and
+                            (not full_pinyin_text_alignment_valid(query_key,
+                            text_value)) then
+                        begin
+                            Inc(skipped_noisy_user_count);
+                            step_result := m_user_connection.step(stmt);
+                            Continue;
+                        end;
+                        if full_pinyin_query and
                             (get_valid_cjk_codepoint_count(text_value) = 1) and
                             (not single_char_matches_pinyin(query_key, text_value)) then
                         begin
@@ -6638,7 +6788,8 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        append_candidate(text_value, '', score_value, cs_user, False, 0, query_key);
+                        append_candidate(text_value, '', score_value, cs_user, False,
+                            0, query_key);
                         step_result := m_user_connection.step(stmt);
                     end;
                 end;
@@ -6700,7 +6851,8 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        append_candidate(text_value, '', score_value, cs_user, False, 0, candidate_pinyin);
+                        append_candidate(text_value, '', score_value, cs_user, False,
+                            0, candidate_pinyin);
                         if list.Count >= m_limit then
                         begin
                             Break;
@@ -7255,7 +7407,12 @@ begin
             last_used_value := m_user_connection.column_int(stmt, 4);
             text_unit_count := get_valid_cjk_codepoint_count(text_value);
 
-            if (pinyin_value <> '') and (text_unit_count = 1) and is_full_pinyin_key(pinyin_value) and
+            if (pinyin_value <> '') and is_full_pinyin_key(pinyin_value) and
+                (not full_pinyin_text_alignment_valid(pinyin_value, text_value)) then
+            begin
+                purge_user_entry_internal(pinyin_value, text_value, False, False);
+            end
+            else if (pinyin_value <> '') and (text_unit_count = 1) and is_full_pinyin_key(pinyin_value) and
                 (not single_char_matches_pinyin(pinyin_value, text_value)) then
             begin
                 purge_user_entry_internal(pinyin_value, text_value, False, False);
@@ -7281,7 +7438,8 @@ begin
     end;
 end;
 
-procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: string);
+procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: string;
+    const explicit_choice: Boolean = False);
 const
     update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
@@ -7302,7 +7460,9 @@ var
     pinyin_key: string;
     cache_key: string;
     full_pinyin_input: Boolean;
+    invalid_full_pinyin_alignment: Boolean;
     base_entry_exists: Boolean;
+    suppress_exact_query_user_row: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
     cache_key := pinyin_key + #1 + Trim(text);
@@ -7325,6 +7485,13 @@ begin
     end;
 
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
+    invalid_full_pinyin_alignment := full_pinyin_input and
+        (not full_pinyin_text_alignment_valid(pinyin_key, text));
+    if invalid_full_pinyin_alignment then
+    begin
+        purge_user_entry_internal(pinyin_key, text, False, False);
+        Exit;
+    end;
     if full_pinyin_input and (get_valid_cjk_codepoint_count(text) = 1) and
         (not single_char_matches_pinyin(pinyin_key, text)) then
     begin
@@ -7335,11 +7502,9 @@ begin
     end;
 
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
-    if full_pinyin_input and should_suppress_exact_query_learning(pinyin_key, text) then
-    begin
-        purge_user_entry_internal(pinyin_key, text, False, False);
-        Exit;
-    end;
+    suppress_exact_query_user_row := invalid_full_pinyin_alignment or
+        ((not explicit_choice) and full_pinyin_input and
+        should_suppress_exact_query_learning(pinyin_key, text));
 
     // A positive explicit selection for the same query/text pair should
     // cancel any earlier "remove candidate" feedback for that exact pair.
@@ -7426,9 +7591,10 @@ begin
         end;
     end;
 
-    if not is_valid_user_text(text) then
+    if (not is_valid_user_text(text)) or suppress_exact_query_user_row then
     begin
-        // Keep learning stats for single-char commits, but never keep them as user words.
+        // Keep query-level learning, but do not persist single chars or
+        // composed long-query confirmations as standalone user words.
         stmt := nil;
         try
             if m_user_connection.prepare(delete_user_sql, stmt) then
@@ -7952,6 +8118,12 @@ begin
     begin
         Exit;
     end;
+    if is_full_pinyin_key(normalized_query) and
+        (get_valid_cjk_codepoint_count(text_key) = 1) and
+        (not full_pinyin_text_alignment_valid(normalized_query, text_key)) then
+    begin
+        Exit;
+    end;
 
     try
         if m_stmt_query_choice_bonus = nil then
@@ -8092,7 +8264,6 @@ var
     step_result: Integer;
     stmt: Psqlite3_stmt;
     candidate_text: string;
-    commit_count: Integer;
     last_used_unix: Int64;
     now_unix: Int64;
     age_seconds: Int64;
@@ -8157,9 +8328,8 @@ begin
 
             if (not use_fallback_scan) and
                 ((candidate_text = '') or
-                (should_suppress_exact_query_learning(normalized_query, candidate_text)) or
-                ((is_suppressible_nonbase_exact_phrase(normalized_query, candidate_text)) and
-                (not explicit_user_entry_exists(normalized_query, candidate_text))) or
+                (not full_pinyin_text_alignment_valid(normalized_query,
+                candidate_text)) or
                 (get_candidate_penalty(normalized_query, candidate_text) > 0)) then
             begin
                 use_fallback_scan := True;
@@ -8191,7 +8361,6 @@ begin
                     candidate_text := Trim(m_user_connection.column_text(stmt, 0));
                     if candidate_text <> '' then
                     begin
-                        commit_count := m_user_connection.column_int(stmt, 1);
                         last_used_unix := m_user_connection.column_int(stmt, 2);
                         if last_used_unix > 0 then
                         begin
@@ -8210,21 +8379,10 @@ begin
                             end;
                         end;
 
-                        if should_suppress_exact_query_learning(normalized_query, candidate_text) then
-                        begin
-                            step_result := m_user_connection.step(stmt);
-                            Continue;
-                        end;
-
-                        if should_suppress_constructed_user_phrase(normalized_query,
-                            candidate_text, commit_count, 0) and
-                            (not explicit_user_entry_exists(normalized_query, candidate_text)) then
-                        begin
-                            step_result := m_user_connection.step(stmt);
-                            Continue;
-                        end;
-
-                        if get_candidate_penalty(normalized_query, candidate_text) <= 0 then
+                        if full_pinyin_text_alignment_valid(normalized_query,
+                            candidate_text) and
+                            (get_candidate_penalty(normalized_query,
+                            candidate_text) <= 0) then
                         begin
                             Result := candidate_text;
                             Break;

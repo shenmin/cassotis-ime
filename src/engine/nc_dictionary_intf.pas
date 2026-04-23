@@ -19,7 +19,8 @@ type
         procedure commit_learning_batch; virtual;
         procedure rollback_learning_batch; virtual;
         procedure set_debug_mode(const enabled: Boolean); virtual;
-        procedure record_commit(const pinyin: string; const text: string); virtual;
+        procedure record_commit(const pinyin: string; const text: string;
+            const explicit_choice: Boolean = False); virtual;
         procedure record_context_pair(const left_text: string; const committed_text: string); virtual;
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); virtual;
@@ -34,6 +35,7 @@ type
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_base_text_prefix_bonus(const prefix_text: string): Integer; virtual;
+        function is_base_entry(const pinyin: string; const text: string): Boolean; virtual;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
@@ -99,7 +101,8 @@ procedure TncDictionaryProvider.set_debug_mode(const enabled: Boolean);
 begin
 end;
 
-procedure TncDictionaryProvider.record_commit(const pinyin: string; const text: string);
+procedure TncDictionaryProvider.record_commit(const pinyin: string; const text: string;
+    const explicit_choice: Boolean = False);
 begin
 end;
 
@@ -162,6 +165,11 @@ end;
 function TncDictionaryProvider.get_base_text_prefix_bonus(const prefix_text: string): Integer;
 begin
     Result := 0;
+end;
+
+function TncDictionaryProvider.is_base_entry(const pinyin: string; const text: string): Boolean;
+begin
+    Result := False;
 end;
 
 function TncDictionaryProvider.should_suppress_exact_query_learning(const pinyin: string;

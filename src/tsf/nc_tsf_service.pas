@@ -1512,6 +1512,7 @@ var
     total_elapsed_ms: Int64;
     ipc_start_tick: UInt64;
     ipc_elapsed_ms: Int64;
+    translated_key_code: Word;
 begin
     eaten := 0;
     total_start_tick := GetTickCount64;
@@ -1593,6 +1594,35 @@ begin
         eaten := 1;
         Result := S_OK;
         Exit;
+    end;
+
+    if (not key_state.ctrl_down) and (not key_state.alt_down) and
+        (m_ipc_client <> nil) and (m_session_id <> '') then
+    begin
+        translated_key_code := key_code;
+        case key_code of
+            VK_OEM_PLUS, VK_ADD:
+                translated_key_code := VK_NEXT;
+            VK_OEM_MINUS, VK_SUBTRACT:
+                translated_key_code := VK_PRIOR;
+        end;
+
+        if translated_key_code <> key_code then
+        begin
+            handled := False;
+            ipc_start_tick := GetTickCount64;
+            if m_ipc_client.test_key(m_session_id, translated_key_code,
+                key_state, handled) then
+            begin
+                ipc_elapsed_ms := Int64(GetTickCount64 - ipc_start_tick);
+                if handled then
+                begin
+                    eaten := 1;
+                    Result := S_OK;
+                    Exit;
+                end;
+            end;
+        end;
     end;
 
     if (m_composition <> nil) and (not key_state.ctrl_down) and (not key_state.alt_down) then
@@ -1796,7 +1826,7 @@ begin
         Exit;
     end;
 
-    if (m_composition <> nil) and (not key_state.ctrl_down) and (not key_state.alt_down) then
+    if (not key_state.ctrl_down) and (not key_state.alt_down) then
     begin
         case key_code of
             VK_OEM_PLUS, VK_ADD:
@@ -1805,10 +1835,13 @@ begin
                 key_code := VK_PRIOR;
             VK_ESCAPE:
                 begin
-                    cancel_composition;
-                    eaten := 1;
-                    Result := S_OK;
-                    Exit;
+                    if m_composition <> nil then
+                    begin
+                        cancel_composition;
+                        eaten := 1;
+                        Result := S_OK;
+                        Exit;
+                    end;
                 end;
         end;
     end;
