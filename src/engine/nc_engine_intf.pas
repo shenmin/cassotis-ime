@@ -2771,6 +2771,15 @@ var
                     Continue;
                 end;
 
+                if (m_dictionary.get_candidate_penalty(lookup_text,
+                    exact_text_local) > 0) and
+                    ((exact_results_local[exact_idx_local].source = cs_user) or
+                    (not m_dictionary.is_base_entry(lookup_text,
+                    exact_text_local))) then
+                begin
+                    Continue;
+                end;
+
                 if exact_results_local[exact_idx_local].has_dict_weight then
                 begin
                     exact_weight_local :=
@@ -3855,6 +3864,51 @@ var
             SetLength(candidates, out_idx_local);
         end;
 
+        procedure filter_rejected_user_candidate_texts_local(
+            var candidates: TncCandidateList);
+        var
+            in_idx_local: Integer;
+            out_idx_local: Integer;
+            candidate_text_local: string;
+            penalty_local: Integer;
+        begin
+            if (m_dictionary = nil) or (lookup_text = '') or
+                (Length(candidates) = 0) then
+            begin
+                Exit;
+            end;
+
+            out_idx_local := 0;
+            for in_idx_local := 0 to High(candidates) do
+            begin
+                candidate_text_local := Trim(candidates[in_idx_local].text);
+                if (candidate_text_local <> '') and
+                    (Trim(candidates[in_idx_local].comment) = '') then
+                begin
+                    penalty_local := m_dictionary.get_candidate_penalty(
+                        lookup_text, candidate_text_local);
+                    if (penalty_local > 0) and
+                        ((candidates[in_idx_local].source = cs_user) or
+                        (not m_dictionary.is_base_entry(lookup_text,
+                        candidate_text_local))) then
+                    begin
+                        Continue;
+                    end;
+                end;
+
+                if out_idx_local <> in_idx_local then
+                begin
+                    candidates[out_idx_local] := candidates[in_idx_local];
+                end;
+                Inc(out_idx_local);
+            end;
+
+            if out_idx_local < Length(candidates) then
+            begin
+                SetLength(candidates, out_idx_local);
+            end;
+        end;
+
         procedure note_finalize_debug_elapsed_local(const phase_name: string;
             const phase_start_tick_local: UInt64);
         var
@@ -3905,6 +3959,8 @@ var
             m_candidates);
         ensure_complete_phrase_head_partial_visible_local(m_candidates);
         ensure_single_syllable_best_exact_visible_local(m_candidates);
+        filter_rejected_user_candidate_texts_local(m_candidates);
+        ensure_best_complete_exact_phrase_visible_local(m_candidates);
         dedupe_visible_candidates_local(m_candidates,
             deduped_candidate_count_local);
         note_finalize_debug_elapsed_local('tfin_filter', phase_start_tick);
@@ -43612,10 +43668,6 @@ var
             begin
                 Result := string(Char($597D));
             end
-            else if normalized_query = 'ku' then
-            begin
-                Result := string(Char($9177));
-            end
             else if normalized_query = 'bang' then
             begin
                 Result := string(Char($68D2));
@@ -44757,8 +44809,8 @@ var
             promote_direct_complete_exact_candidate_local;
             ensure_exact_query_partial_candidate_visible_local;
             promote_demonstrative_head_partial_local;
-            ensure_fixed_top_single_char_visible_local;
         end;
+        ensure_fixed_top_single_char_visible_local;
         total_elapsed_ms := Int64(GetTickCount64 - total_start_tick);
         m_last_lookup_timing_info := Format(
             'perf=[lk=%d seg=%d path=%d rt=%d post=%d sort=%d cache=%d/%d total=%d]',
@@ -52414,6 +52466,7 @@ var
     procedure apply_user_penalties(const pinyin_key: string; var candidates: TncCandidateList);
     var
         idx: Integer;
+        write_idx: Integer;
         penalty: Integer;
     begin
         if (m_dictionary = nil) or (pinyin_key = '') then
@@ -52421,6 +52474,7 @@ var
             Exit;
         end;
 
+        write_idx := 0;
         for idx := 0 to High(candidates) do
         begin
             if candidates[idx].text = '' then
@@ -52431,8 +52485,24 @@ var
             penalty := m_dictionary.get_candidate_penalty(pinyin_key, candidates[idx].text);
             if penalty > 0 then
             begin
+                if (candidates[idx].comment = '') and
+                    ((candidates[idx].source = cs_user) or
+                    (not m_dictionary.is_base_entry(pinyin_key, candidates[idx].text))) then
+                begin
+                    Continue;
+                end;
                 Dec(candidates[idx].score, penalty);
             end;
+            if write_idx <> idx then
+            begin
+                candidates[write_idx] := candidates[idx];
+            end;
+            Inc(write_idx);
+        end;
+
+        if write_idx < Length(candidates) then
+        begin
+            SetLength(candidates, write_idx);
         end;
     end;
 
@@ -63830,10 +63900,6 @@ const
         else if normalized_query = 'hao' then
         begin
             Result := string(Char($597D));
-        end
-        else if normalized_query = 'ku' then
-        begin
-            Result := string(Char($9177));
         end
         else if normalized_query = 'bang' then
         begin

@@ -5418,6 +5418,10 @@ var
             penalty_value := get_candidate_penalty(candidate_pinyin_key, text);
             if penalty_value > 0 then
             begin
+                if source = cs_user then
+                begin
+                    Exit;
+                end;
                 Dec(score_with_bonus, Max(720, penalty_value * 2));
             end;
         end;

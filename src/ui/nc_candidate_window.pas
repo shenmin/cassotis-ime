@@ -206,11 +206,11 @@ begin
     m_list_padding := m_base_list_padding;
     m_show_page_text := False;
     m_show_preedit_text := False;
-    m_base_remove_button_size := 11;
+    m_base_remove_button_size := 14;
     m_base_remove_button_gap := 5;
     m_remove_button_size := m_base_remove_button_size;
     m_remove_button_gap := m_base_remove_button_gap;
-    m_base_remove_hit_padding := 3;
+    m_base_remove_hit_padding := 8;
     m_remove_hit_padding := m_base_remove_hit_padding;
     m_weight_gap := m_base_weight_gap;
     m_swallow_next_button_up := False;
