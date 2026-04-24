@@ -1084,14 +1084,7 @@ begin
             m_candidate_show_weight[i] := m_debug_mode and (candidates[i].source = cs_rule);
             if m_candidate_show_weight[i] then
             begin
-                if candidates[i].has_dict_weight then
-                begin
-                    m_candidate_weight_lines.Add(IntToStr(candidates[i].dict_weight));
-                end
-                else
-                begin
-                    m_candidate_weight_lines.Add('');
-                end;
+                m_candidate_weight_lines.Add(IntToStr(candidates[i].score));
             end
             else
             begin

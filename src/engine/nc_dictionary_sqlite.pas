@@ -37,8 +37,10 @@ type
         m_pinyin_followup_popularity_cache: TDictionary<string, Integer>;
         m_base_text_prefix_bonus_cache: TDictionary<string, Integer>;
         m_single_char_weight_cache: TDictionary<string, Integer>;
+        m_context_bonus_cache: TDictionary<string, Integer>;
         m_query_choice_bonus_cache: TDictionary<string, Integer>;
         m_query_latest_choice_text_cache: TDictionary<string, string>;
+        m_query_path_bonus_cache: TDictionary<string, Integer>;
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
         m_stmt_base_query_path_bonus: Psqlite3_stmt;
@@ -88,6 +90,8 @@ type
         function has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
         function explicit_user_entry_exists(const pinyin: string; const text: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
+        function strict_full_pinyin_text_alignment_valid(const pinyin: string;
+            const text: string): Boolean;
         function full_pinyin_text_alignment_valid(const pinyin: string;
             const text: string): Boolean;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
@@ -1813,8 +1817,10 @@ begin
     m_pinyin_followup_popularity_cache := TDictionary<string, Integer>.Create;
     m_base_text_prefix_bonus_cache := TDictionary<string, Integer>.Create;
     m_single_char_weight_cache := TDictionary<string, Integer>.Create;
+    m_context_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_latest_choice_text_cache := TDictionary<string, string>.Create;
+    m_query_path_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_path_penalty_cache := TDictionary<string, Integer>.Create;
     m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
     m_debug_mode := False;
@@ -1860,6 +1866,11 @@ begin
         m_single_char_weight_cache.Free;
         m_single_char_weight_cache := nil;
     end;
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.Free;
+        m_context_bonus_cache := nil;
+    end;
     if m_query_choice_bonus_cache <> nil then
     begin
         m_query_choice_bonus_cache.Free;
@@ -1869,6 +1880,11 @@ begin
     begin
         m_query_latest_choice_text_cache.Free;
         m_query_latest_choice_text_cache := nil;
+    end;
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Free;
+        m_query_path_bonus_cache := nil;
     end;
     if m_candidate_penalty_cache <> nil then
     begin
@@ -3022,7 +3038,7 @@ begin
     end;
 end;
 
-function TncSqliteDictionary.full_pinyin_text_alignment_valid(
+function TncSqliteDictionary.strict_full_pinyin_text_alignment_valid(
     const pinyin: string; const text: string): Boolean;
 const
     base_text_sql = 'SELECT pinyin FROM dict_base WHERE text = ?1 LIMIT 64';
@@ -3092,12 +3108,6 @@ begin
         Exit;
     end;
 
-    if normalized_base_entry_exists(pinyin_key, text_key) then
-    begin
-        Result := True;
-        Exit;
-    end;
-
     syllables := split_full_pinyin_syllables(pinyin_key);
     text_units := split_text_units_local(text_key);
     if (Length(syllables) <= 0) or
@@ -3116,6 +3126,30 @@ begin
     end;
 
     Result := True;
+end;
+
+function TncSqliteDictionary.full_pinyin_text_alignment_valid(
+    const pinyin: string; const text: string): Boolean;
+var
+    pinyin_key: string;
+    text_key: string;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or
+        (not is_full_pinyin_key(pinyin_key)) then
+    begin
+        Exit;
+    end;
+
+    if normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    Result := strict_full_pinyin_text_alignment_valid(pinyin_key, text_key);
 end;
 
 function TncSqliteDictionary.is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
@@ -3417,6 +3451,8 @@ function TncSqliteDictionary.should_suppress_constructed_user_phrase(const pinyi
 const
     c_constructed_phrase_commit_trust_min = 3;
     c_constructed_phrase_weight_trust_min = 3;
+var
+    pinyin_key: string;
 begin
     Result := False;
     if should_suppress_exact_query_learning(pinyin, text) then
@@ -3427,6 +3463,14 @@ begin
     if not is_suppressible_nonbase_exact_phrase(pinyin, text) then
     begin
         Exit;
+    end;
+
+    pinyin_key := LowerCase(Trim(pinyin));
+    if has_any_base_phrase_for_pinyin(pinyin_key) then
+    begin
+        // A dictionary phrase for the same full pinyin is the normal candidate.
+        // Do not let old runtime-composed pollution stored in dict_user compete.
+        Exit(True);
     end;
 
     if user_weight > 0 then
@@ -4433,9 +4477,17 @@ begin
     begin
         m_single_char_weight_cache.Clear;
     end;
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.Clear;
+    end;
     if m_query_choice_bonus_cache <> nil then
     begin
         m_query_choice_bonus_cache.Clear;
+    end;
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Clear;
     end;
     if m_candidate_penalty_cache <> nil then
     begin
@@ -4614,6 +4666,8 @@ var
     text_value: string;
     comment_value: string;
     score_value: Integer;
+    query_syllables: TArray<string>;
+    query_syllable_count: Integer;
 
     procedure add_or_merge_candidate(const candidate_text: string; const candidate_comment: string;
         const candidate_score: Integer; const candidate_source: TncCandidateSource);
@@ -4709,6 +4763,85 @@ var
             end;
         end;
     end;
+
+    procedure apply_short_exact_commonness_tiebreak;
+    const
+        c_min_syllables = 2;
+        c_max_syllables = 3;
+        c_close_weight_gap = 96;
+        c_close_weight_ratio_pct = 90;
+        c_commonness_factor = 8;
+        c_commonness_bonus_cap = 960;
+    var
+        exact_indexes: TList<Integer>;
+        local_idx, list_index: Integer;
+        local_item: TncCandidate;
+        best_weight: Integer;
+        commonness_bonus: Integer;
+        score_bonus: Integer;
+    begin
+        if (query_syllable_count < c_min_syllables) or
+            (query_syllable_count > c_max_syllables) or (list.Count <= 1) then
+        begin
+            Exit;
+        end;
+
+        exact_indexes := TList<Integer>.Create;
+        try
+            best_weight := Low(Integer);
+            for local_idx := 0 to list.Count - 1 do
+            begin
+                local_item := list[local_idx];
+                if (local_item.source <> cs_rule) or (local_item.comment <> '') or
+                    (not local_item.has_dict_weight) or (local_item.dict_weight <= 0) then
+                begin
+                    Continue;
+                end;
+                if get_text_unit_count_local(local_item.text) <> query_syllable_count then
+                begin
+                    Continue;
+                end;
+
+                exact_indexes.Add(local_idx);
+                if local_item.dict_weight > best_weight then
+                begin
+                    best_weight := local_item.dict_weight;
+                end;
+            end;
+
+            if exact_indexes.Count <= 1 then
+            begin
+                Exit;
+            end;
+
+            for list_index in exact_indexes do
+            begin
+                local_item := list[list_index];
+                if (best_weight - local_item.dict_weight > c_close_weight_gap) and
+                    (local_item.dict_weight * 100 < best_weight * c_close_weight_ratio_pct) then
+                begin
+                    Continue;
+                end;
+
+                commonness_bonus := get_base_text_prefix_bonus(local_item.text);
+                if commonness_bonus <= 0 then
+                begin
+                    Continue;
+                end;
+
+                score_bonus := commonness_bonus * c_commonness_factor;
+                if score_bonus > c_commonness_bonus_cap then
+                begin
+                    score_bonus := c_commonness_bonus_cap;
+                end;
+
+                Inc(local_item.score, score_bonus);
+                list[list_index] := local_item;
+            end;
+        finally
+            exact_indexes.Free;
+        end;
+    end;
 begin
     SetLength(results, 0);
     Result := False;
@@ -4725,6 +4858,8 @@ begin
     begin
         Exit;
     end;
+    query_syllables := split_full_pinyin_syllables(query_key);
+    query_syllable_count := Length(query_syllables);
 
     limit_value := Max(m_limit * 3, 24);
     if limit_value > 96 then
@@ -4748,15 +4883,20 @@ begin
                     begin
                         text_value := Trim(m_user_connection.column_text(stmt, 0));
                         score_value := m_user_connection.column_int(stmt, 1);
+                        if not strict_full_pinyin_text_alignment_valid(query_key,
+                            text_value) then
+                        begin
+                            Continue;
+                        end;
                         if should_suppress_constructed_user_phrase(query_key, text_value, 0, score_value) then
                         begin
                             Continue;
                         end;
-                        // Learned exact-query rows are ranking evidence, not
-                        // explicit custom words. Keep the weight but do not
-                        // expose them as cs_user, otherwise the UI shows a
-                        // misleading remove button.
-                        add_or_merge_candidate(text_value, '', score_value, cs_rule);
+                        if normalized_base_entry_exists(query_key, text_value) then
+                        begin
+                            Continue;
+                        end;
+                        add_or_merge_candidate(text_value, '', score_value, cs_user);
                     end;
                 until step_result <> SQLITE_ROW;
             end;
@@ -4780,6 +4920,11 @@ begin
                         text_value := Trim(m_base_connection.column_text(stmt, 1));
                         comment_value := Trim(m_base_connection.column_text(stmt, 2));
                         score_value := m_base_connection.column_int(stmt, 3);
+                        if not strict_full_pinyin_text_alignment_valid(query_key,
+                            text_value) then
+                        begin
+                            Continue;
+                        end;
                         add_or_merge_candidate(text_value, comment_value, score_value, cs_rule);
                     end;
                 until step_result <> SQLITE_ROW;
@@ -4790,6 +4935,7 @@ begin
             end;
         end;
 
+        apply_short_exact_commonness_tiebreak;
         SetLength(results, list.Count);
         for idx := 0 to list.Count - 1 do
         begin
@@ -5422,7 +5568,7 @@ var
                 begin
                     Exit;
                 end;
-                Dec(score_with_bonus, Max(720, penalty_value * 2));
+                Dec(score_with_bonus, Min(480, penalty_value * 4));
             end;
         end;
         if score_with_bonus > max_final_score then
@@ -5898,11 +6044,104 @@ var
                 list[idx] := candidate_item;
                 Inc(applied_text_learning_bonus_count);
             end;
-        finally
-            if stmt_text_stats <> nil then
+    finally
+        if stmt_text_stats <> nil then
+        begin
+            m_user_connection.finalize(stmt_text_stats);
+        end;
+    end;
+  end;
+
+    procedure apply_short_full_pinyin_commonness_tiebreak;
+    const
+        c_min_syllables = 2;
+        c_max_syllables = 3;
+        c_close_weight_gap = 96;
+        c_close_weight_ratio_pct = 90;
+        c_commonness_factor = 8;
+        c_commonness_bonus_cap = 960;
+    var
+        exact_indexes: TList<Integer>;
+        idx, list_index: Integer;
+        candidate_item: TncCandidate;
+        candidate_pinyin_key: string;
+        best_weight: Integer;
+        commonness_bonus: Integer;
+        score_bonus: Integer;
+    begin
+        if (not full_pinyin_query) or mixed_mode then
+        begin
+            Exit;
+        end;
+        if (full_query_syllable_count < c_min_syllables) or
+            (full_query_syllable_count > c_max_syllables) then
+        begin
+            Exit;
+        end;
+        if (list.Count <= 1) or (candidate_pinyin_map = nil) then
+        begin
+            Exit;
+        end;
+
+        exact_indexes := TList<Integer>.Create;
+        try
+            best_weight := Low(Integer);
+            for idx := 0 to list.Count - 1 do
             begin
-                m_user_connection.finalize(stmt_text_stats);
+                candidate_item := list[idx];
+                if (candidate_item.source <> cs_rule) or (candidate_item.comment <> '') or
+                    (not candidate_item.has_dict_weight) or (candidate_item.dict_weight <= 0) then
+                begin
+                    Continue;
+                end;
+                if get_text_unit_count_local(candidate_item.text) <> full_query_syllable_count then
+                begin
+                    Continue;
+                end;
+                if (not candidate_pinyin_map.TryGetValue(candidate_item.text, candidate_pinyin_key)) or
+                    (candidate_pinyin_key <> query_key) then
+                begin
+                    Continue;
+                end;
+
+                exact_indexes.Add(idx);
+                if candidate_item.dict_weight > best_weight then
+                begin
+                    best_weight := candidate_item.dict_weight;
+                end;
             end;
+
+            if exact_indexes.Count <= 1 then
+            begin
+                Exit;
+            end;
+
+            for list_index in exact_indexes do
+            begin
+                candidate_item := list[list_index];
+                if (best_weight - candidate_item.dict_weight > c_close_weight_gap) and
+                    (candidate_item.dict_weight * 100 < best_weight * c_close_weight_ratio_pct) then
+                begin
+                    Continue;
+                end;
+
+                commonness_bonus := get_base_text_prefix_bonus(candidate_item.text);
+                if commonness_bonus <= 0 then
+                begin
+                    Continue;
+                end;
+
+                score_bonus := commonness_bonus * c_commonness_factor;
+                if score_bonus > c_commonness_bonus_cap then
+                begin
+                    score_bonus := c_commonness_bonus_cap;
+                end;
+
+                Inc(candidate_item.score, score_bonus);
+                list[list_index] := candidate_item;
+            end;
+        finally
+            exact_indexes.Free;
         end;
     end;
 
@@ -6898,6 +7137,13 @@ begin
                         end;
 
                         text_value := m_base_connection.column_text(stmt, 1);
+                        if full_pinyin_query and
+                            (not strict_full_pinyin_text_alignment_valid(query_key,
+                            text_value)) then
+                        begin
+                            step_result := m_base_connection.step(stmt);
+                            Continue;
+                        end;
                         comment_value := m_base_connection.column_text(stmt, 2);
                         dict_weight_value := m_base_connection.column_int(stmt, 3);
                         score_value := dict_weight_value;
@@ -6942,6 +7188,12 @@ begin
                         while step_result = SQLITE_ROW do
                         begin
                             text_value := m_base_connection.column_text(stmt, 1);
+                            if not strict_full_pinyin_text_alignment_valid(query_key,
+                                text_value) then
+                            begin
+                                step_result := m_base_connection.step(stmt);
+                                Continue;
+                            end;
                             comment_value := m_base_connection.column_text(stmt, 2);
                             dict_weight_value := m_base_connection.column_int(stmt, 3);
                             score_value := dict_weight_value;
@@ -7029,6 +7281,13 @@ begin
                                 end;
 
                                 text_value := m_base_connection.column_text(stmt, 1);
+                                if full_pinyin_query and
+                                    (not strict_full_pinyin_text_alignment_valid(
+                                    query_key, text_value)) then
+                                begin
+                                    step_result := m_base_connection.step(stmt);
+                                    Continue;
+                                end;
                                 comment_value := m_base_connection.column_text(stmt, 2);
                                 dict_weight_value := m_base_connection.column_int(stmt, 3);
                                 score_value := dict_weight_value - jianpin_score_penalty;
@@ -7105,6 +7364,13 @@ begin
                                 end;
 
                                 text_value := m_base_connection.column_text(stmt, 1);
+                                if full_pinyin_query and
+                                    (not strict_full_pinyin_text_alignment_valid(
+                                    query_key, text_value)) then
+                                begin
+                                    step_result := m_base_connection.step(stmt);
+                                    Continue;
+                                end;
                                 comment_value := m_base_connection.column_text(stmt, 2);
                                 dict_weight_value := m_base_connection.column_int(stmt, 3);
                                 score_value := dict_weight_value - jianpin_score_penalty;
@@ -7293,7 +7559,7 @@ begin
         end;
 
         apply_text_learning_bonus;
-        apply_single_letter_full_query_standalone_rerank;
+        apply_short_full_pinyin_commonness_tiebreak;
         apply_single_letter_full_query_spoken_bonus;
         enforce_single_letter_exact_group_priority;
         apply_candidate_score_caps;
@@ -7718,6 +7984,11 @@ begin
         Exit;
     end;
 
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.Clear;
+    end;
+
     context_variants := build_context_variants_local(left_key);
     if Length(context_variants) = 0 then
     begin
@@ -7849,6 +8120,11 @@ begin
         Exit;
     end;
 
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Clear;
+    end;
+
     stmt_update := m_stmt_record_query_path_update;
     stmt_insert := m_stmt_record_query_path_insert;
     if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
@@ -7913,6 +8189,10 @@ begin
     begin
         m_query_path_penalty_cache.Clear;
     end;
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Clear;
+    end;
 
     stmt := nil;
     try
@@ -7957,6 +8237,7 @@ var
     step_result: Integer;
     left_key: string;
     text_key: string;
+    cache_key: string;
     commit_count: Integer;
     last_used_unix: Int64;
 begin
@@ -7964,6 +8245,13 @@ begin
     left_key := Trim(left_text);
     text_key := Trim(candidate_text);
     if (left_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    cache_key := left_key + #1 + text_key;
+    if (m_context_bonus_cache <> nil) and
+        m_context_bonus_cache.TryGetValue(cache_key, Result) then
     begin
         Exit;
     end;
@@ -8004,6 +8292,11 @@ begin
             m_user_connection.reset(m_stmt_context_bonus);
             m_user_connection.clear_bindings(m_stmt_context_bonus);
         end;
+    end;
+
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.AddOrSetValue(cache_key, Result);
     end;
 end;
 
@@ -8421,6 +8714,7 @@ var
     step_result: Integer;
     normalized_query: string;
     normalized_path: string;
+    cache_key: string;
     commit_count: Integer;
     last_used_unix: Int64;
     base_weight: Integer;
@@ -8432,6 +8726,13 @@ begin
     if (normalized_query = '') or (normalized_path = '') or
         (get_encoded_path_segment_count(normalized_path) <= 1) or
         (not ensure_open) or ((not m_base_ready) and (not m_user_ready)) then
+    begin
+        Exit;
+    end;
+
+    cache_key := normalized_query + #1 + normalized_path;
+    if (m_query_path_bonus_cache <> nil) and
+        m_query_path_bonus_cache.TryGetValue(cache_key, Result) then
     begin
         Exit;
     end;
@@ -8522,6 +8823,11 @@ begin
             m_user_connection.reset(m_stmt_query_path_bonus);
             m_user_connection.clear_bindings(m_stmt_query_path_bonus);
         end;
+    end;
+
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
     end;
 end;
 
@@ -8683,6 +8989,14 @@ begin
     begin
         m_candidate_penalty_cache.Clear;
     end;
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.Clear;
+    end;
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Clear;
+    end;
     if m_query_choice_bonus_cache <> nil then
     begin
         m_query_choice_bonus_cache.Remove(pinyin_key + #1 + text_key);
@@ -8776,6 +9090,14 @@ begin
     if m_candidate_penalty_cache <> nil then
     begin
         m_candidate_penalty_cache.Clear;
+    end;
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.Clear;
+    end;
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Clear;
     end;
     if m_query_choice_bonus_cache <> nil then
     begin
