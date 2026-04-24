@@ -2192,6 +2192,8 @@ var
         var candidates: TncCandidateList); forward;
     procedure ensure_simple_fixed_boundary_chain_candidate_visible(
         var candidates: TncCandidateList); forward;
+    procedure ensure_short_full_query_exact_cluster_visible(
+        var candidates: TncCandidateList); forward;
 
     function lookup_exact_full_pinyin_cached_local(const pinyin_key: string;
         out out_results: TncCandidateList): Boolean;
@@ -4784,6 +4786,7 @@ var
         finalize_modal_tail_sentence_candidate(m_candidates);
         ensure_best_tail_exact_completion_visible_local(m_candidates);
         ensure_best_complete_exact_phrase_visible_local(m_candidates);
+        ensure_short_full_query_exact_cluster_visible(m_candidates);
         ensure_learned_exact_query_choice_visible_local(m_candidates);
         if is_full_pinyin_key(lookup_text) and (input_syllable_count >= 4) then
         begin
@@ -4800,6 +4803,7 @@ var
         filter_rejected_user_candidate_texts_local(m_candidates);
         ensure_lexicon_longer_prefix_complete_visible_local(m_candidates);
         ensure_best_complete_exact_phrase_visible_local(m_candidates);
+        ensure_short_full_query_exact_cluster_visible(m_candidates);
         dedupe_visible_candidates_local(m_candidates,
             deduped_candidate_count_local);
         ensure_final_supported_complete_candidate_local(m_candidates);
@@ -4863,6 +4867,7 @@ var
     begin
         finalize_modal_tail_sentence_candidate(m_candidates);
         filter_self_composed_complete_candidates_when_normal_complete_exists;
+        ensure_short_full_query_exact_cluster_visible(m_candidates);
         if is_full_pinyin_key(lookup_text) and (input_syllable_count >= 4) then
         begin
             ensure_incomplete_tail_partial_precedes_completed_extension(
@@ -5549,6 +5554,7 @@ var
         dedupe_visible_candidates_local(m_candidates,
             deduped_prefix_candidate_count_local);
         filter_self_composed_complete_candidates_when_normal_complete_exists;
+        ensure_short_full_query_exact_cluster_visible(m_candidates);
         if is_full_pinyin_key(lookup_text) and (input_syllable_count >= 4) then
         begin
             ensure_incomplete_tail_partial_precedes_completed_extension(
@@ -5571,6 +5577,7 @@ var
             promote_stable_prefix_partial_candidate_local(m_candidates, 2);
         end;
         ensure_best_natural_prefix_candidate_visible_local(m_candidates);
+        ensure_short_full_query_exact_cluster_visible(m_candidates);
         if m_config.debug_mode then
         begin
             m_last_lookup_debug_extra := debug_extra;
@@ -17486,6 +17493,193 @@ var
         end;
         candidates[0] := picked;
     end;
+
+    procedure ensure_short_full_query_exact_cluster_visible(
+        var candidates: TncCandidateList);
+    const
+        c_max_exact_cluster = 3;
+        c_exact_probe_limit = 12;
+    var
+        exact_results: TncCandidateList;
+        exact_candidates: TncCandidateList;
+        exact_idx: Integer;
+        insert_idx: Integer;
+        existing_idx: Integer;
+        selected_count: Integer;
+        candidate: TncCandidate;
+        candidate_text: string;
+
+        function is_eligible_exact_candidate(
+            const item: TncCandidate): Boolean;
+        var
+            text_value: string;
+        begin
+            text_value := Trim(item.text);
+            Result := (text_value <> '') and (Trim(item.comment) = '') and
+                (get_candidate_text_unit_count(text_value) =
+                input_syllable_count);
+            if Result and has_explicit_apostrophe_input then
+            begin
+                Result := matches_explicit_apostrophe_unit_alignment(
+                    text_value);
+            end;
+        end;
+
+        function exact_text_already_selected(const text_value: string): Boolean;
+        var
+            idx_local: Integer;
+        begin
+            Result := False;
+            for idx_local := 0 to High(exact_candidates) do
+            begin
+                if SameText(Trim(exact_candidates[idx_local].text),
+                    text_value) then
+                begin
+                    Exit(True);
+                end;
+            end;
+        end;
+
+        function same_candidate_text_and_comment(const left_value,
+            right_value: TncCandidate): Boolean;
+        begin
+            Result := SameText(Trim(left_value.text), Trim(right_value.text)) and
+                SameText(Trim(left_value.comment), Trim(right_value.comment));
+        end;
+
+        function find_existing_candidate_from_index(
+            const item: TncCandidate; const start_idx: Integer): Integer;
+        var
+            idx_local: Integer;
+        begin
+            Result := -1;
+            for idx_local := Max(0, start_idx) to High(candidates) do
+            begin
+                if same_candidate_text_and_comment(candidates[idx_local],
+                    item) then
+                begin
+                    Exit(idx_local);
+                end;
+            end;
+        end;
+
+        procedure remove_candidate_at(var list: TncCandidateList;
+            const remove_idx: Integer);
+        var
+            idx_local: Integer;
+        begin
+            if (remove_idx < 0) or (remove_idx > High(list)) then
+            begin
+                Exit;
+            end;
+
+            for idx_local := remove_idx to High(list) - 1 do
+            begin
+                list[idx_local] := list[idx_local + 1];
+            end;
+            SetLength(list, Length(list) - 1);
+        end;
+
+        procedure insert_candidate_at(var list: TncCandidateList;
+            const target_idx: Integer; const item: TncCandidate);
+        var
+            idx_local: Integer;
+            safe_idx: Integer;
+        begin
+            safe_idx := target_idx;
+            if safe_idx < 0 then
+            begin
+                safe_idx := 0;
+            end;
+            if safe_idx > Length(list) then
+            begin
+                safe_idx := Length(list);
+            end;
+
+            SetLength(list, Length(list) + 1);
+            for idx_local := High(list) downto safe_idx + 1 do
+            begin
+                list[idx_local] := list[idx_local - 1];
+            end;
+            list[safe_idx] := item;
+        end;
+    begin
+        if (m_dictionary = nil) or (input_syllable_count < 2) or
+            (input_syllable_count > 3) or
+            (not is_full_pinyin_key(lookup_text)) or
+            (not lookup_exact_full_pinyin_cached_local(lookup_text,
+            exact_results)) then
+        begin
+            Exit;
+        end;
+
+        SetLength(exact_candidates, 0);
+        selected_count := 0;
+        for exact_idx := 0 to High(exact_results) do
+        begin
+            if exact_idx >= c_exact_probe_limit then
+            begin
+                Break;
+            end;
+
+            if not is_eligible_exact_candidate(exact_results[exact_idx]) then
+            begin
+                Continue;
+            end;
+
+            candidate_text := Trim(exact_results[exact_idx].text);
+            if exact_text_already_selected(candidate_text) then
+            begin
+                Continue;
+            end;
+
+            SetLength(exact_candidates, Length(exact_candidates) + 1);
+            exact_candidates[High(exact_candidates)] := exact_results[exact_idx];
+            exact_candidates[High(exact_candidates)].text := candidate_text;
+            exact_candidates[High(exact_candidates)].comment := '';
+            Inc(selected_count);
+            if selected_count >= Min(c_max_exact_cluster,
+                get_candidate_limit) then
+            begin
+                Break;
+            end;
+        end;
+
+        if Length(exact_candidates) < 2 then
+        begin
+            Exit;
+        end;
+
+        insert_idx := 0;
+        if Length(candidates) > 0 then
+        begin
+            insert_idx := 1;
+        end;
+
+        for exact_idx := High(exact_candidates) downto 0 do
+        begin
+            candidate := exact_candidates[exact_idx];
+            if (Length(candidates) > 0) and
+                same_candidate_text_and_comment(candidates[0], candidate) then
+            begin
+                Continue;
+            end;
+
+            existing_idx := find_existing_candidate_from_index(candidate, 1);
+            if existing_idx >= 0 then
+            begin
+                candidate := candidates[existing_idx];
+                remove_candidate_at(candidates, existing_idx);
+            end;
+
+            if insert_idx > Length(candidates) then
+            begin
+                insert_idx := Length(candidates);
+            end;
+            insert_candidate_at(candidates, insert_idx, candidate);
+        end;
+    end;
+
     procedure ensure_full_query_exact_complete_candidate_visible(
         var candidates: TncCandidateList);
     var
