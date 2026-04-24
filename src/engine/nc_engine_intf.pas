@@ -64053,6 +64053,8 @@ begin
         SetLength(explicit_apostrophe_query_syllables, 0);
         explicit_apostrophe_query_parsed := False;
         SetLength(m_candidates, 0);
+        m_page_index := 0;
+        m_selected_index := 0;
         confirmed_prefix_boundary_partial_preferred := False;
         m_last_lookup_key := '';
         m_last_lookup_normalized_from := '';
