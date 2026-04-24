@@ -64,6 +64,8 @@ type
         m_debug_mode: Boolean;
         m_last_lookup_debug_hint: string;
         m_short_lookup_cache_prewarmed: Boolean;
+        m_user_data_version: Integer;
+        m_last_user_data_version_check_tick: UInt64;
         function ensure_open: Boolean;
         function get_module_dir: string;
         function find_schema_path: string;
@@ -112,6 +114,9 @@ type
         procedure prune_query_path_rows_if_needed(const force: Boolean);
         procedure prune_query_path_penalty_rows_if_needed(const force: Boolean);
         procedure clear_cached_user_statements;
+        procedure clear_user_read_caches;
+        function read_user_data_version(out version: Integer): Boolean;
+        procedure refresh_user_data_version_if_changed(const force: Boolean);
     public
         constructor create(const base_db_path: string; const user_db_path: string);
         destructor Destroy; override;
@@ -160,6 +165,9 @@ type
 implementation
 
 const
+    c_recent_explicit_user_choice_bonus = 1200;
+    c_recent_explicit_user_choice_bonus_min = 200;
+
     default_schema_sql =
         'CREATE TABLE IF NOT EXISTS meta (' + sLineBreak +
         '    key TEXT PRIMARY KEY,' + sLineBreak +
@@ -1826,6 +1834,8 @@ begin
     m_debug_mode := False;
     m_last_lookup_debug_hint := '';
     m_short_lookup_cache_prewarmed := False;
+    m_user_data_version := 0;
+    m_last_user_data_version_check_tick := 0;
 end;
 
 destructor TncSqliteDictionary.Destroy;
@@ -2097,6 +2107,7 @@ begin
     begin
         if ((m_base_db_path = '') or m_base_ready) and ((m_user_db_path = '') or m_user_ready) then
         begin
+            refresh_user_data_version_if_changed(False);
             Result := True;
             Exit;
         end;
@@ -2136,6 +2147,8 @@ begin
 end;
 
 procedure TncSqliteDictionary.commit_learning_batch;
+var
+    current_version: Integer;
 begin
     if m_write_batch_depth <= 0 then
     begin
@@ -2148,6 +2161,12 @@ begin
         if not m_user_connection.exec('COMMIT;') then
         begin
             m_user_connection.exec('ROLLBACK;');
+        end;
+        clear_user_read_caches;
+        if read_user_data_version(current_version) then
+        begin
+            m_user_data_version := current_version;
+            m_last_user_data_version_check_tick := GetTickCount64;
         end;
     end;
 end;
@@ -3465,19 +3484,20 @@ begin
         Exit;
     end;
 
+    if user_weight > 0 then
+    begin
+        // dict_user rows represent explicit user-word confirmations. Keep
+        // them even when the same pinyin bucket already has a base phrase;
+        // otherwise cross-session learning is pruned on reopen.
+        Exit(False);
+    end;
+
     pinyin_key := LowerCase(Trim(pinyin));
     if has_any_base_phrase_for_pinyin(pinyin_key) then
     begin
         // A dictionary phrase for the same full pinyin is the normal candidate.
         // Do not let old runtime-composed pollution stored in dict_user compete.
         Exit(True);
-    end;
-
-    if user_weight > 0 then
-    begin
-        // dict_user rows represent explicit user-word confirmations. Do not
-        // treat them as weak constructed pollution.
-        Exit(False);
     end;
 
     // Treat one-off or low-support non-base full-pinyin chains as polluted
@@ -4411,6 +4431,13 @@ begin
         prune_suspicious_user_entries;
     end;
 
+    if m_user_ready then
+    begin
+        m_user_data_version := 0;
+        m_last_user_data_version_check_tick := 0;
+        refresh_user_data_version_if_changed(True);
+    end;
+
     m_ready := m_base_ready or m_user_ready;
     Result := m_ready;
 end;
@@ -4485,6 +4512,10 @@ begin
     begin
         m_query_choice_bonus_cache.Clear;
     end;
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        m_query_latest_choice_text_cache.Clear;
+    end;
     if m_query_path_bonus_cache <> nil then
     begin
         m_query_path_bonus_cache.Clear;
@@ -4497,6 +4528,8 @@ begin
     begin
         m_query_path_penalty_cache.Clear;
     end;
+    m_user_data_version := 0;
+    m_last_user_data_version_check_tick := 0;
 end;
 
 procedure TncSqliteDictionary.clear_cached_user_statements;
@@ -4565,6 +4598,109 @@ begin
     begin
         m_user_connection.finalize(m_stmt_record_query_path_insert);
         m_stmt_record_query_path_insert := nil;
+    end;
+end;
+
+procedure TncSqliteDictionary.clear_user_read_caches;
+begin
+    if m_context_bonus_cache <> nil then
+    begin
+        m_context_bonus_cache.Clear;
+    end;
+    if m_query_choice_bonus_cache <> nil then
+    begin
+        m_query_choice_bonus_cache.Clear;
+    end;
+    if m_query_latest_choice_text_cache <> nil then
+    begin
+        m_query_latest_choice_text_cache.Clear;
+    end;
+    if m_query_path_bonus_cache <> nil then
+    begin
+        m_query_path_bonus_cache.Clear;
+    end;
+    if m_query_path_penalty_cache <> nil then
+    begin
+        m_query_path_penalty_cache.Clear;
+    end;
+    if m_candidate_penalty_cache <> nil then
+    begin
+        m_candidate_penalty_cache.Clear;
+    end;
+end;
+
+function TncSqliteDictionary.read_user_data_version(out version: Integer): Boolean;
+const
+    query_sql = 'PRAGMA data_version';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+begin
+    version := 0;
+    Result := False;
+    if (m_user_connection = nil) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not m_user_connection.prepare(query_sql, stmt) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_user_connection.step(stmt);
+        if step_result <> SQLITE_ROW then
+        begin
+            Exit;
+        end;
+
+        version := m_user_connection.column_int(stmt, 0);
+        Result := True;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+end;
+
+procedure TncSqliteDictionary.refresh_user_data_version_if_changed(const force: Boolean);
+const
+    c_user_data_version_check_interval_ms = 200;
+var
+    now_tick: UInt64;
+    current_version: Integer;
+begin
+    if (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    now_tick := GetTickCount64;
+    if (not force) and (m_last_user_data_version_check_tick <> 0) and
+        (now_tick - m_last_user_data_version_check_tick < c_user_data_version_check_interval_ms) then
+    begin
+        Exit;
+    end;
+    m_last_user_data_version_check_tick := now_tick;
+
+    if not read_user_data_version(current_version) then
+    begin
+        Exit;
+    end;
+
+    if m_user_data_version = 0 then
+    begin
+        m_user_data_version := current_version;
+        Exit;
+    end;
+
+    if current_version <> m_user_data_version then
+    begin
+        m_user_data_version := current_version;
+        clear_user_read_caches;
     end;
 end;
 
@@ -4674,11 +4810,18 @@ var
     var
         local_idx: Integer;
         local_item: TncCandidate;
+        effective_score: Integer;
     begin
         key := Trim(candidate_text);
         if key = '' then
         begin
             Exit;
+        end;
+        effective_score := candidate_score;
+        if (candidate_source = cs_user) and
+            (get_query_choice_bonus(query_key, key) >= c_recent_explicit_user_choice_bonus_min) then
+        begin
+            Inc(effective_score, c_recent_explicit_user_choice_bonus);
         end;
 
         if seen.TryGetValue(key, local_idx) then
@@ -4688,9 +4831,9 @@ var
             begin
                 local_item.comment := candidate_comment;
             end;
-            if candidate_score > local_item.score then
+            if effective_score > local_item.score then
             begin
-                local_item.score := candidate_score;
+                local_item.score := effective_score;
             end;
             if (candidate_source = cs_user) or (local_item.source = cs_user) then
             begin
@@ -4707,7 +4850,7 @@ var
 
         item.text := key;
         item.comment := candidate_comment;
-        item.score := candidate_score;
+        item.score := effective_score;
         item.source := candidate_source;
         item.has_dict_weight := True;
         item.dict_weight := candidate_score;
@@ -4858,6 +5001,7 @@ begin
     begin
         Exit;
     end;
+    refresh_user_data_version_if_changed(True);
     query_syllables := split_full_pinyin_syllables(query_key);
     query_syllable_count := Length(query_syllables);
 
@@ -5558,6 +5702,12 @@ var
         begin
             Inc(score_with_bonus, learning_bonus);
             Inc(applied_learning_bonus_count);
+        end;
+        if (source = cs_user) and (candidate_pinyin_key <> '') and
+            same_normalized_pinyin_key(candidate_pinyin_key, query_key) and
+            (get_query_choice_bonus(query_key, text) >= c_recent_explicit_user_choice_bonus_min) then
+        begin
+            Inc(score_with_bonus, c_recent_explicit_user_choice_bonus);
         end;
         if (candidate_pinyin_key <> '') and (comment = '') then
         begin
@@ -6879,6 +7029,7 @@ begin
         Result := False;
         Exit;
     end;
+    refresh_user_data_version_if_changed(True);
     query_key := LowerCase(pinyin);
     now_unix := get_unix_time_now;
     rebuild_query_mode_state;
@@ -6981,7 +7132,6 @@ begin
                 end;
             end;
         end;
-
         if m_user_ready and full_pinyin_query then
         begin
             stmt := nil;
@@ -7728,31 +7878,18 @@ const
 var
     stmt: Psqlite3_stmt;
     pinyin_key: string;
-    cache_key: string;
     full_pinyin_input: Boolean;
     invalid_full_pinyin_alignment: Boolean;
     base_entry_exists: Boolean;
     suppress_exact_query_user_row: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
-    cache_key := pinyin_key + #1 + Trim(text);
     if (pinyin_key = '') or (text = '') or (not is_valid_learning_text(text)) or
         (not ensure_open) or (not m_user_ready) then
     begin
         Exit;
     end;
-    if m_query_choice_bonus_cache <> nil then
-    begin
-        m_query_choice_bonus_cache.Remove(cache_key);
-    end;
-    if m_query_latest_choice_text_cache <> nil then
-    begin
-        m_query_latest_choice_text_cache.Remove(pinyin_key);
-    end;
-    if m_candidate_penalty_cache <> nil then
-    begin
-        m_candidate_penalty_cache.Remove(cache_key);
-    end;
+    clear_user_read_caches;
 
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
     invalid_full_pinyin_alignment := full_pinyin_input and
@@ -8404,6 +8541,7 @@ begin
     begin
         Exit;
     end;
+    refresh_user_data_version_if_changed(False);
 
     cache_key := normalized_query + #1 + text_key;
     if (m_query_choice_bonus_cache <> nil) and m_query_choice_bonus_cache.TryGetValue(cache_key, Result) then
@@ -8450,7 +8588,8 @@ begin
             Exit;
         end;
 
-        if should_suppress_exact_query_learning(normalized_query, text_key) then
+        if should_suppress_exact_query_learning(normalized_query, text_key) and
+            (not explicit_user_entry_exists(normalized_query, text_key)) then
         begin
             Exit;
         end;
@@ -8573,6 +8712,7 @@ begin
     begin
         Exit;
     end;
+    refresh_user_data_version_if_changed(True);
 
     if (m_query_latest_choice_text_cache <> nil) and
         m_query_latest_choice_text_cache.TryGetValue(normalized_query, Result) then

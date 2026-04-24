@@ -2939,6 +2939,7 @@ var
             exact_support_score_local: Integer;
             exact_support_segments_local: Integer;
             exact_support_path_local: string;
+            exact_choice_priority_local: Integer;
             best_idx_local: Integer;
             best_weight_local: Integer;
             function build_chunk_text_local(const units_local: TArray<string>;
@@ -3162,12 +3163,14 @@ var
                         Inc(exact_weight_local, 12000);
                     end;
                 end;
-                if not ((exact_results_local[exact_idx_local].source = cs_user) and
+                exact_choice_priority_local :=
+                    get_exact_query_user_choice_priority_local(exact_text_local);
+                if (exact_choice_priority_local > 0) or
+                    (not ((exact_results_local[exact_idx_local].source = cs_user) and
                     (exact_weight_local <= 1) and
-                    is_complete_single_char_chain_text_local(exact_text_local)) then
+                    is_complete_single_char_chain_text_local(exact_text_local))) then
                 begin
-                    Inc(exact_weight_local,
-                        get_exact_query_user_choice_priority_local(exact_text_local));
+                    Inc(exact_weight_local, exact_choice_priority_local);
                 end;
                 Inc(exact_weight_local,
                     get_fixed_head_match_bonus_local(exact_text_local));
@@ -17443,12 +17446,16 @@ var
     end;
 
     procedure ensure_exact_dict_complete_candidate_visible(var candidates: TncCandidateList);
+    const
+        c_explicit_query_choice_min_bonus = 200;
     var
         best_index: Integer;
         best_score: Integer;
         best_dict_weight: Integer;
         idx: Integer;
         picked: TncCandidate;
+        normalized_query: string;
+        top_text: string;
     begin
         if (Length(candidates) = 0) or (input_syllable_count < 2) or
             (input_syllable_count > 4) or (not is_full_pinyin_key(lookup_text)) then
@@ -17457,6 +17464,18 @@ var
         end;
 
         if is_exact_dict_complete_candidate_for_visibility(candidates[0]) then
+        begin
+            Exit;
+        end;
+        top_text := Trim(candidates[0].text);
+        normalized_query := normalize_pinyin_text(lookup_text);
+        if (top_text <> '') and (candidates[0].source = cs_user) and
+            (Trim(candidates[0].comment) = '') and
+            (get_candidate_text_unit_count(top_text) = input_syllable_count) and
+            ((is_latest_session_query_choice(top_text)) or
+            ((m_dictionary <> nil) and
+            (m_dictionary.get_query_choice_bonus(normalized_query, top_text) >=
+            c_explicit_query_choice_min_bonus))) then
         begin
             Exit;
         end;
@@ -72394,6 +72413,7 @@ function TncEngine.is_problematic_single_char_chain_candidate_for_query(const qu
     const candidate: TncCandidate): Boolean;
 const
     c_low_evidence_user_chain_weight = 8;
+    c_explicit_query_choice_min_bonus = 200;
 var
     parser: TncPinyinParser;
     syllables: TncPinyinParseResult;
@@ -72431,6 +72451,17 @@ begin
     if Length(syllables) < 2 then
     begin
         Exit;
+    end;
+
+    // A persisted same-query choice is explicit user intent. It may still look
+    // like a per-syllable chain (for example qiantao -> 嵌套), but it must not
+    // be demoted as runtime pollution against a competing base phrase.
+    if (candidate.source = cs_user) and (m_dictionary <> nil) and
+        ((is_latest_session_query_choice(candidate.text)) or
+        (m_dictionary.get_query_choice_bonus(normalized_query, candidate.text) >=
+        c_explicit_query_choice_min_bonus)) then
+    begin
+        Exit(False);
     end;
 
     for idx := 0 to High(syllables) do
@@ -74263,10 +74294,12 @@ begin
                     (right.text_units = m_last_lookup_syllable_count);
                 left_nonlex_complete := (left.candidate.comment = '') and
                     (left.text_units >= 2) and
+                    (left.candidate.source <> cs_user) and
                     (not left.candidate.has_dict_weight) and
                     (left.path_confidence_score > 0);
                 right_nonlex_complete := (right.candidate.comment = '') and
                     (right.text_units >= 2) and
+                    (right.candidate.source <> cs_user) and
                     (not right.candidate.has_dict_weight) and
                     (right.path_confidence_score > 0);
                 left_nonlex_full_complete := (left.candidate.comment = '') and
