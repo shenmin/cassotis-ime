@@ -79,6 +79,7 @@ type
         function get_valid_cjk_codepoint_count(const text: string): Integer;
         function is_valid_learning_text(const text: string): Boolean;
         function is_valid_user_text(const text: string): Boolean;
+        function is_boundary_noise_user_phrase(const pinyin: string; const text: string): Boolean;
         function is_valid_learning_path(const encoded_path: string): Boolean;
         function get_contains_popularity_score(const token: string): Integer;
         function get_prefix_popularity_score(const prefix: string): Integer;
@@ -100,6 +101,8 @@ type
         function full_pinyin_text_alignment_valid(const pinyin: string;
             const text: string): Boolean;
         function is_whitelisted_constructed_phrase(const pinyin: string; const text: string): Boolean;
+        function is_nonbase_multiword_composed_exact_phrase(const pinyin: string;
+            const text: string): Boolean;
         function is_nonbase_multi_segment_composed_exact_phrase(const pinyin: string;
             const text: string): Boolean;
         function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
@@ -154,6 +157,7 @@ type
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
         function is_base_entry(const pinyin: string; const text: string): Boolean; override;
+        function is_user_entry(const pinyin: string; const text: string): Boolean; override;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
@@ -2770,12 +2774,87 @@ begin
 end;
 
 function TncSqliteDictionary.is_valid_user_text(const text: string): Boolean;
+const
+    c_user_text_max_codepoints = 4;
 var
     codepoint_count: Integer;
 begin
     codepoint_count := get_valid_cjk_codepoint_count(text);
     // User dictionary should store phrase learning only, not single-character commits.
-    Result := (codepoint_count >= 2) and (codepoint_count <= 10);
+    Result := (codepoint_count >= 2) and (codepoint_count <= c_user_text_max_codepoints);
+end;
+
+function TncSqliteDictionary.is_boundary_noise_user_phrase(const pinyin: string;
+    const text: string): Boolean;
+var
+    pinyin_key: string;
+    text_key: string;
+    syllables: TArray<string>;
+    text_units: TArray<string>;
+
+    function is_leading_boundary_unit(const syllable_text: string;
+        const text_unit: string): Boolean;
+    begin
+        Result := False;
+        if get_valid_cjk_codepoint_count(text_unit) <> 1 then
+        begin
+            Exit;
+        end;
+
+        if SameText(syllable_text, 'de') then
+        begin
+            case Ord(text_unit[1]) of
+                $7684, $5730, $5F97:
+                    Exit(True);
+            end;
+        end
+        else if SameText(syllable_text, 'le') and
+            (Ord(text_unit[1]) = $4E86) then
+        begin
+            Exit(True);
+        end
+        else if SameText(syllable_text, 'zhe') and
+            (Ord(text_unit[1]) = $7740) then
+        begin
+            Exit(True);
+        end;
+    end;
+
+    function is_trailing_boundary_unit(const syllable_text: string;
+        const text_unit: string): Boolean;
+    begin
+        Result := is_leading_boundary_unit(syllable_text, text_unit);
+        if Result then
+        begin
+            Exit;
+        end;
+
+        if SameText(syllable_text, 'zai') and
+            (get_valid_cjk_codepoint_count(text_unit) = 1) and
+            (Ord(text_unit[1]) = $518D) then
+        begin
+            Result := True;
+        end;
+    end;
+begin
+    Result := False;
+    pinyin_key := normalize_compact_pinyin_key(pinyin);
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or
+        (not is_full_pinyin_key(pinyin_key)) then
+    begin
+        Exit;
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
+    text_units := split_text_units_local(text_key);
+    if (Length(syllables) <> Length(text_units)) or (Length(text_units) < 2) then
+    begin
+        Exit;
+    end;
+
+    Result := is_leading_boundary_unit(syllables[0], text_units[0]) or
+        is_trailing_boundary_unit(syllables[High(syllables)], text_units[High(text_units)]);
 end;
 
 function TncSqliteDictionary.is_valid_learning_path(const encoded_path: string): Boolean;
@@ -3164,9 +3243,23 @@ begin
     pinyin_key := LowerCase(Trim(pinyin));
     text_key := Trim(text);
     if (pinyin_key = '') or (text_key = '') or
-        (not is_full_pinyin_key(pinyin_key)) then
+        (not (
+            ((Length(pinyin_key) > 2) and (pinyin_key[Length(pinyin_key)] = 'r') and
+                (Copy(pinyin_key, Length(pinyin_key) - 1, 2) <> 'er') and
+                ((Copy(text_key, Length(text_key), 1) = '儿') or
+                (Copy(text_key, Length(text_key), 1) = '兒')) and
+                is_full_pinyin_key(Copy(pinyin_key, 1, Length(pinyin_key) - 1) + #39 + 'er')) or
+            is_full_pinyin_key(pinyin_key))) then
     begin
         Exit;
+    end;
+    if (Length(pinyin_key) > 2) and (pinyin_key[Length(pinyin_key)] = 'r') and
+        (Copy(pinyin_key, Length(pinyin_key) - 1, 2) <> 'er') and
+        ((Copy(text_key, Length(text_key), 1) = '儿') or
+        (Copy(text_key, Length(text_key), 1) = '兒')) and
+        is_full_pinyin_key(Copy(pinyin_key, 1, Length(pinyin_key) - 1) + #39 + 'er') then
+    begin
+        pinyin_key := Copy(pinyin_key, 1, Length(pinyin_key) - 1) + #39 + 'er';
     end;
 
     syllables := split_full_pinyin_syllables(pinyin_key);
@@ -3268,6 +3361,163 @@ begin
         SameText(syllables[0], syllables[1]) and SameText(text_units[0], text_units[1]) then
     begin
         Result := True;
+    end;
+end;
+
+function TncSqliteDictionary.is_nonbase_multiword_composed_exact_phrase(const pinyin: string;
+    const text: string): Boolean;
+const
+    c_short_composed_min_units = 4;
+    c_short_composed_min_segments = 2;
+    c_short_composed_min_segment_units = 2;
+var
+    pinyin_key: string;
+    text_key: string;
+    syllables: TArray<string>;
+    text_units: TArray<string>;
+    segment_exists_cache: TDictionary<string, Boolean>;
+    compose_cache: TDictionary<string, Boolean>;
+
+    function build_range_key(const start_syllable: Integer; const end_syllable: Integer;
+        const start_unit: Integer; const end_unit: Integer): string;
+    begin
+        Result := IntToStr(start_syllable) + ':' + IntToStr(end_syllable) + '|' +
+            IntToStr(start_unit) + ':' + IntToStr(end_unit);
+    end;
+
+    function build_compose_key(const start_syllable: Integer; const start_unit: Integer;
+        const min_segments_remaining: Integer): string;
+    begin
+        Result := IntToStr(start_syllable) + '|' + IntToStr(start_unit) + '|' +
+            IntToStr(min_segments_remaining);
+    end;
+
+    function join_syllable_slice(const start_idx: Integer; const end_idx: Integer): string;
+    var
+        idx: Integer;
+    begin
+        Result := '';
+        for idx := start_idx to end_idx do
+        begin
+            Result := Result + syllables[idx];
+        end;
+    end;
+
+    function join_text_unit_slice(const start_idx: Integer; const end_idx: Integer): string;
+    var
+        idx: Integer;
+    begin
+        Result := '';
+        for idx := start_idx to end_idx do
+        begin
+            Result := Result + text_units[idx];
+        end;
+    end;
+
+    function segment_exists(const start_syllable: Integer; const end_syllable: Integer;
+        const start_unit: Integer; const end_unit: Integer): Boolean;
+    var
+        cache_key: string;
+        segment_pinyin: string;
+        segment_text: string;
+    begin
+        Result := False;
+        if (start_syllable > end_syllable) or (start_unit > end_unit) or
+            ((end_unit - start_unit + 1) < c_short_composed_min_segment_units) then
+        begin
+            Exit;
+        end;
+
+        cache_key := build_range_key(start_syllable, end_syllable, start_unit, end_unit);
+        if segment_exists_cache.TryGetValue(cache_key, Result) then
+        begin
+            Exit;
+        end;
+
+        segment_pinyin := join_syllable_slice(start_syllable, end_syllable);
+        segment_text := join_text_unit_slice(start_unit, end_unit);
+        Result := normalized_base_entry_exists(segment_pinyin, segment_text);
+        segment_exists_cache.AddOrSetValue(cache_key, Result);
+    end;
+
+    function can_compose_from(const start_syllable: Integer; const start_unit: Integer;
+        const min_segments_remaining: Integer): Boolean;
+    var
+        cache_key: string;
+        end_syllable: Integer;
+        end_unit: Integer;
+        next_required_segments: Integer;
+    begin
+        if (start_syllable = Length(syllables)) and (start_unit = Length(text_units)) then
+        begin
+            Exit(min_segments_remaining <= 0);
+        end;
+        if (start_syllable >= Length(syllables)) or (start_unit >= Length(text_units)) then
+        begin
+            Exit(False);
+        end;
+
+        cache_key := build_compose_key(start_syllable, start_unit, min_segments_remaining);
+        if compose_cache.TryGetValue(cache_key, Result) then
+        begin
+            Exit;
+        end;
+
+        Result := False;
+        for end_syllable := start_syllable to High(syllables) do
+        begin
+            for end_unit := start_unit to High(text_units) do
+            begin
+                if not segment_exists(start_syllable, end_syllable, start_unit, end_unit) then
+                begin
+                    Continue;
+                end;
+
+                next_required_segments := Max(min_segments_remaining - 1, 0);
+                if can_compose_from(end_syllable + 1, end_unit + 1, next_required_segments) then
+                begin
+                    Result := True;
+                    compose_cache.AddOrSetValue(cache_key, Result);
+                    Exit;
+                end;
+            end;
+        end;
+
+        compose_cache.AddOrSetValue(cache_key, Result);
+    end;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or (not is_full_pinyin_key(pinyin_key)) then
+    begin
+        Exit;
+    end;
+    if is_whitelisted_constructed_phrase(pinyin_key, text_key) or
+        normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+
+    text_units := split_text_units_local(text_key);
+    if Length(text_units) < c_short_composed_min_units then
+    begin
+        Exit;
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
+    if Length(syllables) <= 0 then
+    begin
+        Exit;
+    end;
+
+    segment_exists_cache := TDictionary<string, Boolean>.Create;
+    compose_cache := TDictionary<string, Boolean>.Create;
+    try
+        Result := can_compose_from(0, 0, c_short_composed_min_segments);
+    finally
+        compose_cache.Free;
+        segment_exists_cache.Free;
     end;
 end;
 
@@ -3444,12 +3694,35 @@ end;
 function TncSqliteDictionary.should_suppress_exact_query_learning(const pinyin: string;
     const text: string): Boolean;
 begin
-    Result := is_nonbase_multi_segment_composed_exact_phrase(pinyin, text);
+    Result := is_nonbase_multiword_composed_exact_phrase(pinyin, text) or
+        is_nonbase_multi_segment_composed_exact_phrase(pinyin, text);
 end;
 
 function TncSqliteDictionary.is_base_entry(const pinyin: string; const text: string): Boolean;
 begin
     Result := normalized_base_entry_exists(pinyin, text);
+end;
+
+function TncSqliteDictionary.is_user_entry(const pinyin: string; const text: string): Boolean;
+var
+    pinyin_key: string;
+    normalized_key: string;
+    text_key: string;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    normalized_key := normalize_compact_pinyin_key(pinyin_key);
+    text_key := Trim(text);
+    if (normalized_key = '') or (text_key = '') then
+    begin
+        Exit;
+    end;
+
+    // Red-x/delete is only for explicit user entries. Stats/latest rows are
+    // ranking signals and must not make lexicon candidates look user-owned.
+    Result := explicit_user_entry_exists(pinyin_key, text_key) or
+        ((not SameText(normalized_key, pinyin_key)) and
+        explicit_user_entry_exists(normalized_key, text_key));
 end;
 
 function TncSqliteDictionary.is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
@@ -4849,6 +5122,10 @@ const
         'FROM dict_base_pinyin_alias a INNER JOIN dict_base b ON b.id = a.word_id ' +
         'WHERE a.compact_pinyin = ?1 ' +
         'ORDER BY b.weight DESC, b.text ASC LIMIT ?2';
+    base_longer_prefix_sql =
+        'SELECT pinyin, text, comment, weight FROM dict_base ' +
+        'WHERE pinyin >= ?1 AND pinyin < ?2 ' +
+        'ORDER BY weight DESC, text ASC LIMIT ?3';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
 var
@@ -4865,9 +5142,55 @@ var
     comment_value: string;
     pinyin_value: string;
     score_value: Integer;
+    raw_full_pinyin_query: Boolean;
+    full_pinyin_query: Boolean;
+    exact_query_key: string;
+    expanded_erhua_query_key: string;
     query_syllables: TArray<string>;
     query_syllable_count: Integer;
     base_candidates_before: Integer;
+
+    function is_administrative_place_suffix_local(const suffix_text: string): Boolean;
+    begin
+        Result := SameText(suffix_text, string(Char($533A))) or       // 区
+            SameText(suffix_text, string(Char($5340))) or             // 區
+            SameText(suffix_text, string(Char($53BF))) or             // 县
+            SameText(suffix_text, string(Char($7E23))) or             // 縣
+            SameText(suffix_text, string(Char($5E02))) or             // 市
+            SameText(suffix_text, string(Char($9547))) or             // 镇
+            SameText(suffix_text, string(Char($93AE))) or             // 鎮
+            SameText(suffix_text, string(Char($4E61))) or             // 乡
+            SameText(suffix_text, string(Char($9109))) or             // 鄉
+            SameText(suffix_text, string(Char($6751))) or             // 村
+            SameText(suffix_text, string(Char($5DDE))) or             // 州
+            SameText(suffix_text, string(Char($7701))) or             // 省
+            SameText(suffix_text, string(Char($65D7))) or             // 旗
+            SameText(suffix_text, string(Char($65B0)) + string(Char($533A))) or // 新区
+            SameText(suffix_text, string(Char($65B0)) + string(Char($5340))) or // 新區
+            SameText(suffix_text, string(Char($81EA)) + string(Char($6CBB)) +
+            string(Char($533A))) or                                  // 自治区
+            SameText(suffix_text, string(Char($81EA)) + string(Char($6CBB)) +
+            string(Char($5340))) or                                  // 自治區
+            SameText(suffix_text, string(Char($81EA)) + string(Char($6CBB)) +
+            string(Char($5DDE))) or                                  // 自治州
+            SameText(suffix_text, string(Char($81EA)) + string(Char($6CBB)) +
+            string(Char($53BF))) or                                  // 自治县
+            SameText(suffix_text, string(Char($81EA)) + string(Char($6CBB)) +
+            string(Char($7E23)));                                    // 自治縣
+    end;
+
+    function suffix_after_prefix_units_local(const text_value: string;
+        const prefix_units: Integer): string;
+    var
+        prefix_text: string;
+    begin
+        prefix_text := copy_first_text_units(text_value, prefix_units);
+        if (prefix_text = '') or (Length(prefix_text) >= Length(text_value)) then
+        begin
+            Exit('');
+        end;
+        Result := Copy(text_value, Length(prefix_text) + 1, MaxInt);
+    end;
 
     procedure add_or_merge_candidate(const candidate_text: string; const candidate_comment: string;
         const candidate_score: Integer; const candidate_source: TncCandidateSource);
@@ -4971,6 +5294,90 @@ var
         end;
     end;
 
+    procedure add_administrative_place_prefix_candidates;
+    var
+        prefix_stmt: Psqlite3_stmt;
+        prefix_step_result: Integer;
+        prefix_candidate_pinyin: string;
+        prefix_candidate_text: string;
+        prefix_candidate_comment: string;
+        prefix_candidate_weight: Integer;
+        prefix_text: string;
+        suffix_text: string;
+        pinyin_syllables: TArray<string>;
+        prefix_limit: Integer;
+    begin
+        if (not full_pinyin_query) or (query_syllable_count < 2) or
+            (not m_base_ready) then
+        begin
+            Exit;
+        end;
+
+        prefix_limit := 32;
+        prefix_stmt := nil;
+        try
+            if not m_base_connection.prepare(base_longer_prefix_sql, prefix_stmt) then
+            begin
+                Exit;
+            end;
+            if (not m_base_connection.bind_text(prefix_stmt, 1, exact_query_key)) or
+                (not m_base_connection.bind_text(prefix_stmt, 2,
+                build_prefix_upper_bound(exact_query_key))) or
+                (not m_base_connection.bind_int(prefix_stmt, 3, prefix_limit)) then
+            begin
+                Exit;
+            end;
+
+            prefix_step_result := m_base_connection.step(prefix_stmt);
+            while prefix_step_result = SQLITE_ROW do
+            begin
+                prefix_candidate_pinyin := Trim(m_base_connection.column_text(prefix_stmt, 0));
+                prefix_candidate_text := Trim(m_base_connection.column_text(prefix_stmt, 1));
+                prefix_candidate_comment := Trim(m_base_connection.column_text(prefix_stmt, 2));
+                prefix_candidate_weight := m_base_connection.column_int(prefix_stmt, 3);
+
+                if (prefix_candidate_comment <> '') or
+                    (Copy(prefix_candidate_pinyin, 1, Length(exact_query_key)) <>
+                    exact_query_key) then
+                begin
+                    prefix_step_result := m_base_connection.step(prefix_stmt);
+                    Continue;
+                end;
+
+                pinyin_syllables := split_full_pinyin_syllables(prefix_candidate_pinyin);
+                if Length(pinyin_syllables) <= query_syllable_count then
+                begin
+                    prefix_step_result := m_base_connection.step(prefix_stmt);
+                    Continue;
+                end;
+                if get_text_unit_count_local(prefix_candidate_text) <= query_syllable_count then
+                begin
+                    prefix_step_result := m_base_connection.step(prefix_stmt);
+                    Continue;
+                end;
+
+                prefix_text := copy_first_text_units(prefix_candidate_text,
+                    query_syllable_count);
+                suffix_text := suffix_after_prefix_units_local(prefix_candidate_text,
+                    query_syllable_count);
+                if (prefix_text = '') or (suffix_text = '') or
+                    (not is_administrative_place_suffix_local(suffix_text)) then
+                begin
+                    prefix_step_result := m_base_connection.step(prefix_stmt);
+                    Continue;
+                end;
+
+                add_or_merge_candidate(prefix_text, '', prefix_candidate_weight, cs_rule);
+                prefix_step_result := m_base_connection.step(prefix_stmt);
+            end;
+        finally
+            if prefix_stmt <> nil then
+            begin
+                m_base_connection.finalize(prefix_stmt);
+            end;
+        end;
+    end;
+
     procedure apply_short_exact_commonness_tiebreak;
     const
         c_min_syllables = 2;
@@ -5057,17 +5464,39 @@ begin
     begin
         Exit;
     end;
-    if not is_full_pinyin_key(query_key) then
-    begin
-        Exit(lookup(query_key, results));
-    end;
     if not ensure_open then
     begin
         Exit;
     end;
     refresh_user_data_version_if_changed(True);
-    query_syllables := split_full_pinyin_syllables(query_key);
-    query_syllable_count := Length(query_syllables);
+    raw_full_pinyin_query := is_full_pinyin_key(query_key);
+    expanded_erhua_query_key := '';
+    if (Length(query_key) > 2) and
+        (query_key[Length(query_key)] = 'r') and
+        (Copy(query_key, Length(query_key) - 1, 2) <> 'er') then
+    begin
+        expanded_erhua_query_key := Copy(query_key, 1, Length(query_key) - 1) + #39 + 'er';
+        if not is_full_pinyin_key(expanded_erhua_query_key) then
+        begin
+            expanded_erhua_query_key := '';
+        end;
+    end;
+    exact_query_key := query_key;
+    if expanded_erhua_query_key <> '' then
+    begin
+        exact_query_key := expanded_erhua_query_key;
+    end;
+    full_pinyin_query := raw_full_pinyin_query or (expanded_erhua_query_key <> '');
+    if full_pinyin_query then
+    begin
+        query_syllables := split_full_pinyin_syllables(exact_query_key);
+        query_syllable_count := Length(query_syllables);
+    end
+    else
+    begin
+        SetLength(query_syllables, 0);
+        query_syllable_count := 0;
+    end;
 
     limit_value := Max(m_limit * 3, 24);
     if limit_value > 96 then
@@ -5078,7 +5507,7 @@ begin
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Integer>.Create;
     try
-        if m_user_ready then
+        if m_user_ready and full_pinyin_query then
         begin
             if m_stmt_exact_user = nil then
             begin
@@ -5119,15 +5548,15 @@ begin
         if m_base_ready then
         begin
             base_candidates_before := list.Count;
-            if m_stmt_exact_base = nil then
+            if full_pinyin_query and (m_stmt_exact_base = nil) then
             begin
                 m_base_connection.prepare(base_sql, m_stmt_exact_base);
             end;
             stmt := m_stmt_exact_base;
-            if (stmt <> nil) and
+            if full_pinyin_query and (stmt <> nil) and
                 m_base_connection.reset(stmt) and
                 m_base_connection.clear_bindings(stmt) and
-                m_base_connection.bind_text(stmt, 1, query_key) and
+                m_base_connection.bind_text(stmt, 1, exact_query_key) and
                 m_base_connection.bind_int(stmt, 2, limit_value) then
             begin
                 repeat
@@ -5181,6 +5610,8 @@ begin
                     until step_result <> SQLITE_ROW;
                 end;
             end;
+
+            add_administrative_place_prefix_candidates;
         end;
 
         apply_short_exact_commonness_tiebreak;
@@ -5194,6 +5625,10 @@ begin
     finally
         seen.Free;
         list.Free;
+    end;
+    if (not Result) and (not raw_full_pinyin_query) then
+    begin
+        Result := lookup(query_key, results);
     end;
 end;
 
@@ -5303,6 +5738,8 @@ var
     mixed_tokens: TncMixedQueryTokenList;
     mixed_mode: Boolean;
     full_pinyin_query: Boolean;
+    base_exact_query_key: string;
+    expanded_erhua_query_key: string;
     allow_full_query_jianpin_fallback: Boolean;
     full_query_dual_jianpin_mode: Boolean;
     single_letter_query: Boolean;
@@ -5606,6 +6043,24 @@ var
 
         effective_jianpin_key := mixed_jianpin_key;
         full_pinyin_query := is_full_pinyin_key(query_key);
+        base_exact_query_key := query_key;
+        expanded_erhua_query_key := '';
+        if (Length(query_key) > 2) and
+            (query_key[Length(query_key)] = 'r') and
+            (Copy(query_key, Length(query_key) - 1, 2) <> 'er') then
+        begin
+            expanded_erhua_query_key :=
+                Copy(query_key, 1, Length(query_key) - 1) + #39 + 'er';
+            if is_full_pinyin_key(expanded_erhua_query_key) then
+            begin
+                base_exact_query_key := expanded_erhua_query_key;
+                full_pinyin_query := True;
+            end
+            else
+            begin
+                expanded_erhua_query_key := '';
+            end;
+        end;
         full_query_jianpin_key := '';
         allow_full_query_jianpin_fallback := False;
         full_query_dual_jianpin_mode := False;
@@ -5625,7 +6080,7 @@ var
             begin
                 query_parser := TncPinyinParser.Create;
                 try
-                    query_syllables := query_parser.parse(query_key);
+                    query_syllables := query_parser.parse(base_exact_query_key);
                 finally
                     query_parser.Free;
                 end;
@@ -5636,7 +6091,7 @@ var
                 end;
             end;
             disable_long_full_query_jianpin := (full_query_syllable_count >= 3);
-            full_query_jianpin_key := build_jianpin_key_from_full_pinyin(query_key);
+            full_query_jianpin_key := build_jianpin_key_from_full_pinyin(base_exact_query_key);
             if disable_long_full_query_jianpin and
                 has_separator_normalized_base_variant(query_key) then
             begin
@@ -7135,6 +7590,16 @@ begin
     end;
     refresh_user_data_version_if_changed(True);
     query_key := LowerCase(pinyin);
+    if (Length(query_key) > 2) and (query_key[Length(query_key)] = 'r') and
+        (Copy(query_key, Length(query_key) - 1, 2) <> 'er') then
+    begin
+        expanded_erhua_query_key := Copy(query_key, 1, Length(query_key) - 1) + #39 + 'er';
+        if is_full_pinyin_key(expanded_erhua_query_key) and
+            lookup(expanded_erhua_query_key, results) then
+        begin
+            Exit(True);
+        end;
+    end;
     now_unix := get_unix_time_now;
     rebuild_query_mode_state;
 
@@ -7370,7 +7835,7 @@ begin
             stmt := nil;
             try
                 if m_base_connection.prepare(base_sql, stmt) and
-                    m_base_connection.bind_text(stmt, 1, query_key) and
+                    m_base_connection.bind_text(stmt, 1, base_exact_query_key) and
                     m_base_connection.bind_int(stmt, 2, m_limit) then
                 begin
                     step_result := m_base_connection.step(stmt);
@@ -7383,7 +7848,8 @@ begin
                             Continue;
                         end;
 
-                        if mixed_mode and (not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin,
+                        if mixed_mode and (not SameText(candidate_pinyin, base_exact_query_key)) and
+                            (not candidate_matches_mixed_jianpin(mixed_parser, candidate_pinyin,
                             mixed_tokens)) then
                         begin
                             step_result := m_base_connection.step(stmt);
@@ -7392,7 +7858,7 @@ begin
 
                         text_value := m_base_connection.column_text(stmt, 1);
                         if full_pinyin_query and
-                            (not strict_full_pinyin_text_alignment_valid(query_key,
+                            (not strict_full_pinyin_text_alignment_valid(base_exact_query_key,
                             text_value)) then
                         begin
                             step_result := m_base_connection.step(stmt);
@@ -7941,6 +8407,10 @@ begin
             begin
                 purge_user_entry_internal(pinyin_value, text_value, False, False);
             end
+            else if is_boundary_noise_user_phrase(pinyin_value, text_value) then
+            begin
+                purge_user_entry_internal(pinyin_value, text_value, False, False);
+            end
             else if should_suppress_constructed_user_phrase(pinyin_value, text_value,
                 commit_count, user_weight) then
             begin
@@ -8003,6 +8473,14 @@ begin
         purge_user_entry_internal(pinyin_key, text, False, False);
         Exit;
     end;
+    if is_boundary_noise_user_phrase(pinyin_key, text) then
+    begin
+        // Long-sentence commits can cross phrase boundaries and produce
+        // boundary-crossing fragments from long-sentence commits. These should not become
+        // persisted query choices or user words.
+        purge_user_entry_internal(pinyin_key, text, False, False);
+        Exit;
+    end;
     if full_pinyin_input and (get_valid_cjk_codepoint_count(text) = 1) and
         (not single_char_matches_pinyin(pinyin_key, text)) then
     begin
@@ -8014,8 +8492,7 @@ begin
 
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
     suppress_exact_query_user_row := invalid_full_pinyin_alignment or
-        ((not explicit_choice) and full_pinyin_input and
-        should_suppress_exact_query_learning(pinyin_key, text));
+        (full_pinyin_input and should_suppress_exact_query_learning(pinyin_key, text));
 
     // A positive explicit selection for the same query/text pair should
     // cancel any earlier "remove candidate" feedback for that exact pair.

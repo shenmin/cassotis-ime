@@ -36,6 +36,7 @@ type
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_base_text_prefix_bonus(const prefix_text: string): Integer; virtual;
         function is_base_entry(const pinyin: string; const text: string): Boolean; virtual;
+        function is_user_entry(const pinyin: string; const text: string): Boolean; virtual;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
@@ -168,6 +169,11 @@ begin
 end;
 
 function TncDictionaryProvider.is_base_entry(const pinyin: string; const text: string): Boolean;
+begin
+    Result := False;
+end;
+
+function TncDictionaryProvider.is_user_entry(const pinyin: string; const text: string): Boolean;
 begin
     Result := False;
 end;
