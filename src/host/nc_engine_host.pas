@@ -1740,6 +1740,7 @@ var
     candidate_source: TncCaretAnchorSource;
     candidate_score: Integer;
     queue_candidate_apply: Boolean;
+    has_candidate_anchor: Boolean;
 begin
     handled := False;
     commit_text := '';
@@ -1859,7 +1860,8 @@ begin
                 candidate_terminal_like_target := session.m_terminal_like_target;
                 candidate_source := session.m_last_candidate_source;
                 candidate_score := session.m_last_candidate_score;
-                if session.needs_candidate_refresh(caret_point, has_caret, caret_line_height,
+                has_candidate_anchor := has_caret or (caret_point.X <> 0) or (caret_point.Y <> 0);
+                if has_candidate_anchor and session.needs_candidate_refresh(caret_point, has_caret, caret_line_height,
                     candidate_terminal_like_target) then
                 begin
                     session.stage_candidate_apply(caret_point, has_caret, caret_line_height,
@@ -1920,7 +1922,8 @@ begin
                 candidate_terminal_like_target := session.m_terminal_like_target;
                 candidate_source := session.m_last_candidate_source;
                 candidate_score := session.m_last_candidate_score;
-                if session.needs_candidate_refresh(caret_point, has_caret, caret_line_height,
+                has_candidate_anchor := has_caret or (caret_point.X <> 0) or (caret_point.Y <> 0);
+                if has_candidate_anchor and session.needs_candidate_refresh(caret_point, has_caret, caret_line_height,
                     candidate_terminal_like_target) then
                 begin
                     session.stage_candidate_apply(caret_point, has_caret, caret_line_height,

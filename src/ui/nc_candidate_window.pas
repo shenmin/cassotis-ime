@@ -111,6 +111,10 @@ var
     g_get_dpi_for_window_ready: Boolean = False;
     g_get_dpi_for_window: TGetDpiForWindow = nil;
 
+const
+    c_candidate_ui_font_name = 'Microsoft YaHei UI';
+    c_candidate_text_height_sample = 'Hg' + WideChar($56FD);
+
 function try_get_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
 var
     module: HMODULE;
@@ -226,11 +230,11 @@ begin
     configure_preedit_label;
     configure_page_label;
 
-    m_list_font.Name := 'Segoe UI';
+    m_list_font.Name := c_candidate_ui_font_name;
     m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, 96);
     m_list_font.Color := TColor(RGB(24, 24, 24));
 
-    m_weight_font.Name := 'Segoe UI';
+    m_weight_font.Name := c_candidate_ui_font_name;
     m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, 96);
     m_weight_font.Color := TColor(RGB(112, 122, 134));
 end;
@@ -534,7 +538,7 @@ begin
     m_preedit_label.Height := m_base_preedit_height;
     m_preedit_label.Alignment := taLeftJustify;
     m_preedit_label.Layout := tlCenter;
-    m_preedit_label.Font.Name := 'Segoe UI';
+    m_preedit_label.Font.Name := c_candidate_ui_font_name;
     m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, 96);
     m_preedit_label.Font.Color := TColor(RGB(98, 112, 128));
     m_preedit_label.Transparent := False;
@@ -552,7 +556,7 @@ begin
     m_page_label.Height := m_base_label_height;
     m_page_label.Alignment := taRightJustify;
     m_page_label.Layout := tlCenter;
-    m_page_label.Font.Name := 'Segoe UI';
+    m_page_label.Font.Name := c_candidate_ui_font_name;
     m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, 96);
     m_page_label.Font.Color := clGrayText;
     m_page_label.Transparent := False;
@@ -774,9 +778,9 @@ begin
     end;
 
     Canvas.Font.Assign(m_list_font);
-    main_text_height := Canvas.TextHeight('Hg');
+    main_text_height := Canvas.TextHeight(c_candidate_text_height_sample);
     Canvas.Font.Assign(m_weight_font);
-    weight_text_height := Canvas.TextHeight('Hg');
+    weight_text_height := Canvas.TextHeight(c_candidate_text_height_sample);
 
     dynamic_item_height := MulDiv(m_base_item_height, m_current_dpi, 96);
     if m_show_weight_row then
