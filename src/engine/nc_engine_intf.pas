@@ -5476,6 +5476,7 @@ var
         ensure_high_quality_complete_candidate_in_top2(m_candidates);
         ensure_bounded_single_char_partial_pool(m_candidates);
         ensure_top_complete_candidate_prefix_partials_visible(m_candidates);
+        ensure_learned_exact_query_choice_visible_local(m_candidates);
         note_finalize_debug_elapsed_local('tfin_filter', phase_start_tick);
         phase_start_tick := GetTickCount64;
         refresh_candidate_segment_paths;
@@ -20692,9 +20693,54 @@ var
         exact_idx: Integer;
         insert_idx: Integer;
         existing_idx: Integer;
-        selected_count: Integer;
         candidate: TncCandidate;
         candidate_text: string;
+
+        function get_query_choice_priority_local(
+            const candidate_text_value: string): Integer;
+        var
+            normalized_query_local: string;
+            latest_text_local: string;
+            choice_bonus_local: Integer;
+            text_key_local: string;
+        begin
+            Result := 0;
+            text_key_local := Trim(candidate_text_value);
+            if text_key_local = '' then
+            begin
+                Exit;
+            end;
+
+            normalized_query_local := normalize_pinyin_text(lookup_text);
+            if normalized_query_local = '' then
+            begin
+                Exit;
+            end;
+
+            if is_latest_session_query_choice(text_key_local) then
+            begin
+                Inc(Result, 200000);
+            end;
+
+            if m_dictionary <> nil then
+            begin
+                latest_text_local := Trim(
+                    m_dictionary.get_query_latest_choice_text(
+                    normalized_query_local));
+                if (latest_text_local <> '') and
+                    SameText(text_key_local, latest_text_local) then
+                begin
+                    Inc(Result, 200000);
+                end;
+
+                choice_bonus_local := m_dictionary.get_query_choice_bonus(
+                    normalized_query_local, text_key_local);
+                if choice_bonus_local > 0 then
+                begin
+                    Inc(Result, 50000 + (choice_bonus_local * 20));
+                end;
+            end;
+        end;
 
         function candidate_effective_weight_local(
             const item: TncCandidate): Integer;
@@ -20704,6 +20750,7 @@ var
             begin
                 Result := item.dict_weight;
             end;
+            Inc(Result, get_query_choice_priority_local(item.text));
         end;
 
         function is_eligible_exact_candidate(
@@ -20832,7 +20879,6 @@ var
         end;
 
         SetLength(exact_candidates, 0);
-        selected_count := 0;
         for exact_idx := 0 to High(exact_results) do
         begin
             if exact_idx >= c_exact_probe_limit then
@@ -20855,12 +20901,6 @@ var
             exact_candidates[High(exact_candidates)] := exact_results[exact_idx];
             exact_candidates[High(exact_candidates)].text := candidate_text;
             exact_candidates[High(exact_candidates)].comment := '';
-            Inc(selected_count);
-            if selected_count >= Min(c_max_exact_cluster,
-                get_candidate_limit) then
-            begin
-                Break;
-            end;
         end;
 
         if Length(exact_candidates) = 0 then
@@ -20869,11 +20909,26 @@ var
         end;
 
         sort_exact_candidates_by_weight;
+        if Length(exact_candidates) > Min(c_max_exact_cluster,
+            get_candidate_limit) then
+        begin
+            SetLength(exact_candidates, Min(c_max_exact_cluster,
+                get_candidate_limit));
+        end;
         insert_idx := 0;
         if Length(candidates) > 0 then
         begin
             if same_candidate_text_and_comment(candidates[0],
                 exact_candidates[0]) then
+            begin
+                insert_idx := 1;
+            end
+            else if (Trim(candidates[0].comment) = '') and
+                (get_candidate_text_unit_count(Trim(candidates[0].text)) =
+                input_syllable_count) and
+                (get_query_choice_priority_local(candidates[0].text) > 0) and
+                (get_query_choice_priority_local(candidates[0].text) >=
+                get_query_choice_priority_local(exact_candidates[0].text)) then
             begin
                 insert_idx := 1;
             end
