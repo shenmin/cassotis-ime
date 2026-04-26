@@ -9694,9 +9694,13 @@ end;
 
 function TncSqliteDictionary.get_candidate_penalty(const pinyin: string; const text: string): Integer;
 const
-    query_penalty_sql = 'SELECT penalty, last_used FROM dict_user_penalty WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    query_penalty_sql =
+        'SELECT penalty, last_used FROM dict_user_penalty ' +
+        'WHERE text = ?2 AND (pinyin = ?1 OR pinyin = ?3) ' +
+        'ORDER BY penalty DESC, last_used DESC LIMIT 1';
 var
     pinyin_key: string;
+    compact_pinyin_key: string;
     text_key: string;
     cache_key: string;
     step_result: Integer;
@@ -9704,6 +9708,7 @@ var
 begin
     Result := 0;
     pinyin_key := LowerCase(Trim(pinyin));
+    compact_pinyin_key := normalize_compact_pinyin_key(pinyin_key);
     text_key := Trim(text);
     if (pinyin_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
     begin
@@ -9728,7 +9733,8 @@ begin
         if (not m_user_connection.reset(m_stmt_candidate_penalty)) or
             (not m_user_connection.clear_bindings(m_stmt_candidate_penalty)) or
             (not m_user_connection.bind_text(m_stmt_candidate_penalty, 1, pinyin_key)) or
-            (not m_user_connection.bind_text(m_stmt_candidate_penalty, 2, text_key)) then
+            (not m_user_connection.bind_text(m_stmt_candidate_penalty, 2, text_key)) or
+            (not m_user_connection.bind_text(m_stmt_candidate_penalty, 3, compact_pinyin_key)) then
         begin
             Exit;
         end;
