@@ -292,6 +292,7 @@ type
         function next_page: Boolean;
         function prev_page: Boolean;
         function get_composition_text: string;
+        function get_last_lookup_key: string;
         function get_display_text: string;
         function get_confirmed_length: Integer;
         function get_lookup_perf_info: string;
@@ -92900,6 +92901,11 @@ begin
     end;
 end;
 
+function TncEngine.get_last_lookup_key: string;
+begin
+    Result := m_last_lookup_key;
+end;
+
 function TncEngine.get_display_text: string;
 var
     page_size: Integer;
@@ -93958,6 +93964,10 @@ begin
     Result := False;
     candidate_text := Trim(text);
     pinyin_key := normalize_pinyin_text(pinyin);
+    if pinyin_key = '' then
+    begin
+        pinyin_key := normalize_pinyin_text(m_last_lookup_key);
+    end;
     if pinyin_key = '' then
     begin
         pinyin_key := normalize_pinyin_text(m_composition_text);

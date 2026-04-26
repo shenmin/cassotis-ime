@@ -2425,7 +2425,11 @@ begin
         end;
 
         candidate_text := session.m_candidates[candidate_index].text;
-        pinyin_key := session.m_preedit_text;
+        pinyin_key := session.engine.get_last_lookup_key;
+        if pinyin_key = '' then
+        begin
+            pinyin_key := session.m_preedit_text;
+        end;
         if pinyin_key = '' then
         begin
             pinyin_key := session.engine.get_composition_text;
