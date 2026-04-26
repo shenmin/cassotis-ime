@@ -95,11 +95,16 @@ function normalize_pinyin_key(const value: string): string;
 begin
     Result := LowerCase(Trim(value));
     Result := StringReplace(Result, ' ', '', [rfReplaceAll]);
-    Result := StringReplace(Result, '''', '', [rfReplaceAll]);
 {$IF FALSE}
     Result := StringReplace(Result, '’', '', [rfReplaceAll]);
 end;
 {$ENDIF}
+end;
+
+function normalize_compact_pinyin_key(const value: string): string;
+begin
+    Result := normalize_pinyin_key(value);
+    Result := StringReplace(Result, '''', '', [rfReplaceAll]);
 end;
 
 function normalize_query_path_text(const value: string): string;
@@ -356,6 +361,8 @@ function import_data(const conn: TncSqliteConnection; const import_path: string;
 const
     insert_base_sql = 'INSERT INTO dict_base(pinyin, text, weight) VALUES (?1, ?2, ?3);';
     insert_jianpin_sql = 'INSERT OR IGNORE INTO dict_jianpin(word_id, jianpin, weight) VALUES (?1, ?2, ?3);';
+    insert_alias_sql =
+        'INSERT OR IGNORE INTO dict_base_pinyin_alias(compact_pinyin, word_id) VALUES (?1, ?2);';
     select_last_rowid_sql = 'SELECT last_insert_rowid()';
     insert_query_path_sql =
         'INSERT OR REPLACE INTO dict_base_query_path(query_pinyin, path_text, weight) VALUES (?1, ?2, ?3);';
@@ -363,6 +370,7 @@ var
     reader: TStreamReader;
     stmt_base: Psqlite3_stmt;
     stmt_jianpin: Psqlite3_stmt;
+    stmt_alias: Psqlite3_stmt;
     stmt_last_rowid: Psqlite3_stmt;
     stmt_query_path: Psqlite3_stmt;
     line: string;
@@ -375,9 +383,11 @@ var
     line_count: Integer;
     inserted: Integer;
     inserted_jianpin: Integer;
+    inserted_aliases: Integer;
     inserted_query_paths: Integer;
     jianpin_variants: TArray<string>;
     jianpin_value: string;
+    compact_pinyin: string;
 begin
     Result := False;
     if not FileExists(import_path) then
@@ -393,12 +403,14 @@ begin
     reader := TStreamReader.Create(import_path, TEncoding.UTF8);
     stmt_base := nil;
     stmt_jianpin := nil;
+    stmt_alias := nil;
     stmt_last_rowid := nil;
     stmt_query_path := nil;
     has_error := False;
     line_count := 0;
     inserted := 0;
     inserted_jianpin := 0;
+    inserted_aliases := 0;
     inserted_query_paths := 0;
     try
         if import_mode = imQueryPathPrior then
@@ -410,6 +422,7 @@ begin
         end
         else if not conn.prepare(insert_base_sql, stmt_base) or
             (not conn.prepare(insert_jianpin_sql, stmt_jianpin)) or
+            (not conn.prepare(insert_alias_sql, stmt_alias)) or
             (not conn.prepare(select_last_rowid_sql, stmt_last_rowid)) then
         begin
             Exit;
@@ -436,7 +449,7 @@ begin
                     Continue;
                 end;
 
-                pinyin := normalize_pinyin_key(pinyin);
+                pinyin := normalize_compact_pinyin_key(pinyin);
                 text := normalize_query_path_text(text);
                 if (pinyin = '') or (text = '') or
                     (get_query_path_segment_count(text) <= 1) or (weight <= 0) then
@@ -529,6 +542,31 @@ begin
                 Break;
             end;
 
+            compact_pinyin := normalize_compact_pinyin_key(pinyin);
+            if (compact_pinyin <> '') and (compact_pinyin <> pinyin) then
+            begin
+                if (not conn.bind_text(stmt_alias, 1, compact_pinyin)) or
+                    (not conn.bind_int(stmt_alias, 2, word_id)) then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+
+                rc := conn.step(stmt_alias);
+                if rc <> SQLITE_DONE then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+
+                Inc(inserted_aliases);
+                if (not conn.reset(stmt_alias)) or (not conn.clear_bindings(stmt_alias)) then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+            end;
+
             if build_jianpin_variants(pinyin, jianpin_variants) then
             begin
                 for jianpin_value in jianpin_variants do
@@ -572,6 +610,10 @@ begin
         begin
             conn.finalize(stmt_jianpin);
         end;
+        if stmt_alias <> nil then
+        begin
+            conn.finalize(stmt_alias);
+        end;
         if stmt_last_rowid <> nil then
         begin
             conn.finalize(stmt_last_rowid);
@@ -598,8 +640,8 @@ begin
         end
         else
         begin
-            Writeln(Format('Imported %d entries (%d jianpin rows) from %d lines.',
-                [inserted, inserted_jianpin, line_count]));
+            Writeln(Format('Imported %d entries (%d jianpin rows, %d compact aliases) from %d lines.',
+                [inserted, inserted_jianpin, inserted_aliases, line_count]));
         end;
         Result := True;
     end

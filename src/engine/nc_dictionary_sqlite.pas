@@ -53,6 +53,9 @@ type
         m_stmt_query_path_bonus: Psqlite3_stmt;
         m_stmt_query_path_penalty: Psqlite3_stmt;
         m_stmt_candidate_penalty: Psqlite3_stmt;
+        m_stmt_exact_base: Psqlite3_stmt;
+        m_stmt_exact_base_alias: Psqlite3_stmt;
+        m_stmt_exact_user: Psqlite3_stmt;
         m_stmt_record_context_pair_update: Psqlite3_stmt;
         m_stmt_record_context_pair_insert: Psqlite3_stmt;
         m_stmt_record_context_trigram_update: Psqlite3_stmt;
@@ -187,6 +190,17 @@ const
         'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin ON dict_base(pinyin);' + sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_weight ON dict_base(pinyin, weight);' + sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_base_text_weight ON dict_base(text, weight);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_base_pinyin_alias (' + sLineBreak +
+        '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
+        '    compact_pinyin TEXT NOT NULL,' + sLineBreak +
+        '    word_id INTEGER NOT NULL,' + sLineBreak +
+        '    UNIQUE(compact_pinyin, word_id),' + sLineBreak +
+        '    FOREIGN KEY(word_id) REFERENCES dict_base(id) ON DELETE CASCADE' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_alias_compact ' +
+        'ON dict_base_pinyin_alias(compact_pinyin);' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_jianpin (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -1362,6 +1376,7 @@ var
     syllables: TncPinyinParseResult;
     idx: Integer;
     reconstructed: string;
+    compact_value: string;
 begin
     Result := False;
     if value = '' then
@@ -1391,7 +1406,9 @@ begin
         reconstructed := reconstructed + syllables[idx].text;
     end;
 
-    Result := SameText(reconstructed, value);
+    compact_value := LowerCase(Trim(value));
+    compact_value := StringReplace(compact_value, '''', '', [rfReplaceAll]);
+    Result := SameText(reconstructed, compact_value);
 end;
 
 function normalize_compact_pinyin_key(const value: string): string;
@@ -1812,6 +1829,9 @@ begin
     m_stmt_query_path_bonus := nil;
     m_stmt_query_path_penalty := nil;
     m_stmt_candidate_penalty := nil;
+    m_stmt_exact_base := nil;
+    m_stmt_exact_base_alias := nil;
+    m_stmt_exact_user := nil;
     m_stmt_record_context_pair_update := nil;
     m_stmt_record_context_pair_insert := nil;
     m_stmt_record_context_trigram_update := nil;
@@ -2296,6 +2316,26 @@ begin
     end;
 
     if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_weight ON dict_base(pinyin, weight);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_base_pinyin_alias (' +
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+        'compact_pinyin TEXT NOT NULL,' +
+        'word_id INTEGER NOT NULL,' +
+        'UNIQUE(compact_pinyin, word_id),' +
+        'FOREIGN KEY(word_id) REFERENCES dict_base(id) ON DELETE CASCADE);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_alias_compact ' +
+        'ON dict_base_pinyin_alias(compact_pinyin);') then
     begin
         Result := False;
         Exit;
@@ -3018,6 +3058,7 @@ var
     idx: Integer;
     reconstructed: string;
     pinyin_key: string;
+    compact_key: string;
 begin
     SetLength(Result, 0);
     pinyin_key := LowerCase(Trim(pinyin));
@@ -3051,7 +3092,8 @@ begin
         Result[idx] := syllables[idx].text;
     end;
 
-    if not SameText(reconstructed, pinyin_key) then
+    compact_key := StringReplace(pinyin_key, '''', '', [rfReplaceAll]);
+    if not SameText(reconstructed, compact_key) then
     begin
         SetLength(Result, 0);
     end;
@@ -4470,6 +4512,16 @@ begin
         m_base_connection.finalize(m_stmt_single_char_exact_weight);
         m_stmt_single_char_exact_weight := nil;
     end;
+    if (m_stmt_exact_base <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_exact_base);
+        m_stmt_exact_base := nil;
+    end;
+    if (m_stmt_exact_base_alias <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_exact_base_alias);
+        m_stmt_exact_base_alias := nil;
+    end;
     if m_base_connection <> nil then
     begin
         m_base_connection.close;
@@ -4568,6 +4620,11 @@ begin
     begin
         m_user_connection.finalize(m_stmt_candidate_penalty);
         m_stmt_candidate_penalty := nil;
+    end;
+    if (m_stmt_exact_user <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_exact_user);
+        m_stmt_exact_user := nil;
     end;
     if (m_stmt_record_context_pair_update <> nil) and (m_user_connection <> nil) then
     begin
@@ -4787,6 +4844,11 @@ function TncSqliteDictionary.lookup_exact_full_pinyin(const pinyin: string;
 const
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?2';
+    base_alias_sql =
+        'SELECT b.pinyin, b.text, b.comment, b.weight ' +
+        'FROM dict_base_pinyin_alias a INNER JOIN dict_base b ON b.id = a.word_id ' +
+        'WHERE a.compact_pinyin = ?1 ' +
+        'ORDER BY b.weight DESC, b.text ASC LIMIT ?2';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
 var
@@ -4801,9 +4863,11 @@ var
     key: string;
     text_value: string;
     comment_value: string;
+    pinyin_value: string;
     score_value: Integer;
     query_syllables: TArray<string>;
     query_syllable_count: Integer;
+    base_candidates_before: Integer;
 
     procedure add_or_merge_candidate(const candidate_text: string; const candidate_comment: string;
         const candidate_score: Integer; const candidate_source: TncCandidateSource);
@@ -5016,8 +5080,14 @@ begin
     try
         if m_user_ready then
         begin
-            stmt := nil;
-            if m_user_connection.prepare(user_sql, stmt) and
+            if m_stmt_exact_user = nil then
+            begin
+                m_user_connection.prepare(user_sql, m_stmt_exact_user);
+            end;
+            stmt := m_stmt_exact_user;
+            if (stmt <> nil) and
+                m_user_connection.reset(stmt) and
+                m_user_connection.clear_bindings(stmt) and
                 m_user_connection.bind_text(stmt, 1, query_key) and
                 m_user_connection.bind_int(stmt, 2, limit_value) then
             begin
@@ -5044,16 +5114,19 @@ begin
                     end;
                 until step_result <> SQLITE_ROW;
             end;
-            if stmt <> nil then
-            begin
-                m_user_connection.finalize(stmt);
-            end;
         end;
 
         if m_base_ready then
         begin
-            stmt := nil;
-            if m_base_connection.prepare(base_sql, stmt) and
+            base_candidates_before := list.Count;
+            if m_stmt_exact_base = nil then
+            begin
+                m_base_connection.prepare(base_sql, m_stmt_exact_base);
+            end;
+            stmt := m_stmt_exact_base;
+            if (stmt <> nil) and
+                m_base_connection.reset(stmt) and
+                m_base_connection.clear_bindings(stmt) and
                 m_base_connection.bind_text(stmt, 1, query_key) and
                 m_base_connection.bind_int(stmt, 2, limit_value) then
             begin
@@ -5061,10 +5134,11 @@ begin
                     step_result := m_base_connection.step(stmt);
                     if step_result = SQLITE_ROW then
                     begin
+                        pinyin_value := Trim(m_base_connection.column_text(stmt, 0));
                         text_value := Trim(m_base_connection.column_text(stmt, 1));
                         comment_value := Trim(m_base_connection.column_text(stmt, 2));
                         score_value := m_base_connection.column_int(stmt, 3);
-                        if not strict_full_pinyin_text_alignment_valid(query_key,
+                        if not strict_full_pinyin_text_alignment_valid(pinyin_value,
                             text_value) then
                         begin
                             Continue;
@@ -5073,9 +5147,39 @@ begin
                     end;
                 until step_result <> SQLITE_ROW;
             end;
-            if stmt <> nil then
+
+            if list.Count = base_candidates_before then
             begin
-                m_base_connection.finalize(stmt);
+                if m_stmt_exact_base_alias = nil then
+                begin
+                    m_base_connection.prepare(base_alias_sql,
+                        m_stmt_exact_base_alias);
+                end;
+                stmt := m_stmt_exact_base_alias;
+                if (stmt <> nil) and
+                    m_base_connection.reset(stmt) and
+                    m_base_connection.clear_bindings(stmt) and
+                    m_base_connection.bind_text(stmt, 1, query_key) and
+                    m_base_connection.bind_int(stmt, 2, limit_value) then
+                begin
+                    repeat
+                        step_result := m_base_connection.step(stmt);
+                        if step_result = SQLITE_ROW then
+                        begin
+                            pinyin_value := Trim(m_base_connection.column_text(stmt, 0));
+                            text_value := Trim(m_base_connection.column_text(stmt, 1));
+                            comment_value := Trim(m_base_connection.column_text(stmt, 2));
+                            score_value := m_base_connection.column_int(stmt, 3);
+                            if not strict_full_pinyin_text_alignment_valid(pinyin_value,
+                                text_value) then
+                            begin
+                                Continue;
+                            end;
+                            add_or_merge_candidate(text_value, comment_value,
+                                score_value, cs_rule);
+                        end;
+                    until step_result <> SQLITE_ROW;
+                end;
             end;
         end;
 

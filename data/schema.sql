@@ -19,6 +19,17 @@ CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin ON dict_base(pinyin);
 CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_weight ON dict_base(pinyin, weight);
 CREATE INDEX IF NOT EXISTS idx_dict_base_text_weight ON dict_base(text, weight);
 
+CREATE TABLE IF NOT EXISTS dict_base_pinyin_alias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    compact_pinyin TEXT NOT NULL,
+    word_id INTEGER NOT NULL,
+    UNIQUE(compact_pinyin, word_id),
+    FOREIGN KEY(word_id) REFERENCES dict_base(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_dict_base_pinyin_alias_compact
+    ON dict_base_pinyin_alias(compact_pinyin);
+
 CREATE TABLE IF NOT EXISTS dict_jianpin (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     word_id INTEGER NOT NULL,
