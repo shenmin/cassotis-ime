@@ -93,6 +93,8 @@ type
         procedure migrate_user_entries;
         function exact_base_entry_exists(const pinyin: string; const text: string): Boolean;
         function normalized_base_entry_exists(const pinyin: string; const text: string): Boolean;
+        function try_get_single_char_full_pinyin_for_prefix(const prefix_pinyin: string;
+            const text: string; out full_pinyin: string): Boolean;
         function has_any_base_phrase_for_pinyin(const pinyin: string): Boolean;
         function explicit_user_entry_exists(const pinyin: string; const text: string): Boolean;
         function split_full_pinyin_syllables(const pinyin: string): TArray<string>;
@@ -2978,6 +2980,68 @@ begin
             candidate_pinyin := m_base_connection.column_text(stmt, 0);
             if same_normalized_pinyin_key(candidate_pinyin, pinyin_key) then
             begin
+                Result := True;
+                Exit;
+            end;
+            step_result := m_base_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+end;
+
+function TncSqliteDictionary.try_get_single_char_full_pinyin_for_prefix(const prefix_pinyin: string;
+    const text: string; out full_pinyin: string): Boolean;
+const
+    select_sql = 'SELECT pinyin FROM dict_base WHERE text = ?1 AND comment = '''' ' +
+        'AND pinyin >= ?2 AND pinyin < ?3 ORDER BY weight DESC LIMIT 16';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    prefix_key: string;
+    upper_bound: string;
+    text_key: string;
+    candidate_pinyin: string;
+begin
+    Result := False;
+    full_pinyin := '';
+    prefix_key := normalize_compact_pinyin_key(prefix_pinyin);
+    text_key := Trim(text);
+    if (prefix_key = '') or is_full_pinyin_key(prefix_key) or
+        (get_valid_cjk_codepoint_count(text_key) <> 1) or
+        (not m_base_ready) or (m_base_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    upper_bound := build_prefix_upper_bound(prefix_key);
+    if upper_bound = '' then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not (m_base_connection.prepare(select_sql, stmt) and
+            m_base_connection.bind_text(stmt, 1, text_key) and
+            m_base_connection.bind_text(stmt, 2, prefix_key) and
+            m_base_connection.bind_text(stmt, 3, upper_bound)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(stmt);
+        while step_result = SQLITE_ROW do
+        begin
+            candidate_pinyin := normalize_compact_pinyin_key(
+                m_base_connection.column_text(stmt, 0));
+            if (Length(candidate_pinyin) > Length(prefix_key)) and
+                is_full_pinyin_key(candidate_pinyin) then
+            begin
+                full_pinyin := candidate_pinyin;
                 Result := True;
                 Exit;
             end;
@@ -6262,7 +6326,7 @@ var
             Inc(score_with_bonus, learning_bonus);
             Inc(applied_learning_bonus_count);
         end;
-        if (source = cs_user) and (candidate_pinyin_key <> '') and
+        if (comment = '') and (candidate_pinyin_key <> '') and
             same_normalized_pinyin_key(candidate_pinyin_key, query_key) and
             (get_query_choice_bonus(query_key, text) >= c_recent_explicit_user_choice_bonus_min) then
         begin
@@ -8452,6 +8516,7 @@ const
 var
     stmt: Psqlite3_stmt;
     pinyin_key: string;
+    inferred_pinyin_key: string;
     full_pinyin_input: Boolean;
     invalid_full_pinyin_alignment: Boolean;
     base_entry_exists: Boolean;
@@ -8466,6 +8531,12 @@ begin
     clear_user_read_caches;
 
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
+    if (not full_pinyin_input) and
+        try_get_single_char_full_pinyin_for_prefix(pinyin_key, text, inferred_pinyin_key) then
+    begin
+        pinyin_key := inferred_pinyin_key;
+        full_pinyin_input := True;
+    end;
     invalid_full_pinyin_alignment := full_pinyin_input and
         (not full_pinyin_text_alignment_valid(pinyin_key, text));
     if invalid_full_pinyin_alignment then

@@ -681,6 +681,7 @@ destructor TncTextService.Destroy;
 begin
     stop_active_state_worker;
     free_logger;
+    reset_session_if_needed(True);
     if m_ipc_client <> nil then
     begin
         m_ipc_client.Free;
@@ -1423,6 +1424,7 @@ begin
         signal_tray_profile_event(True);
         update_active_state(True);
         mark_session_dirty;
+        reset_session_if_needed(True);
         m_last_surrounding_request_tick := 0;
         m_surrounding_needs_refresh := True;
     end;
@@ -1461,6 +1463,7 @@ begin
         signal_tray_profile_event(False);
         update_active_state(False);
         mark_session_dirty;
+        reset_session_if_needed(True);
     end;
     if m_logger <> nil then
     begin
@@ -1486,6 +1489,7 @@ begin
             signal_tray_profile_event(False);
             update_active_state(False);
             mark_session_dirty;
+            reset_session_if_needed(True);
         end;
         unadvise_context_sinks;
         m_doc_mgr := nil;
