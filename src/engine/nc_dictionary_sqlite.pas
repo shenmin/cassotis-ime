@@ -7196,6 +7196,7 @@ var
     var
         learned_stmt: Psqlite3_stmt;
         learned_pair: TPair<string, Integer>;
+        learned_pinyin: string;
         learned_text: string;
         learned_comment: string;
         learned_weight: Integer;
@@ -7233,8 +7234,14 @@ var
                 learned_step_result := m_base_connection.step(learned_stmt);
                 while learned_step_result = SQLITE_ROW do
                 begin
-                    if not same_normalized_pinyin_key(
-                        m_base_connection.column_text(learned_stmt, 0), query_key) then
+                    learned_pinyin := Trim(m_base_connection.column_text(learned_stmt, 0));
+                    if not same_normalized_pinyin_key(learned_pinyin, query_key) then
+                    begin
+                        learned_step_result := m_base_connection.step(learned_stmt);
+                        Continue;
+                    end;
+                    if full_query_dual_jianpin_mode and exact_base_hit and
+                        (not SameText(learned_pinyin, base_exact_query_key)) then
                     begin
                         learned_step_result := m_base_connection.step(learned_stmt);
                         Continue;
@@ -7243,7 +7250,7 @@ var
                     learned_comment := m_base_connection.column_text(learned_stmt, 2);
                     learned_weight := m_base_connection.column_int(learned_stmt, 3);
                     append_candidate(learned_text, learned_comment, learned_weight, cs_rule, True,
-                        learned_weight, query_key);
+                        learned_weight, learned_pinyin);
                     exact_base_hit := True;
                     Inc(injected_learned_base_count);
                     learned_step_result := m_base_connection.step(learned_stmt);
@@ -8093,7 +8100,7 @@ begin
                                 dict_weight_value := m_base_connection.column_int(stmt, 3);
                                 score_value := dict_weight_value - jianpin_score_penalty;
                                 if full_query_dual_jianpin_mode and
-                                    (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
+                                    (not SameText(Trim(candidate_pinyin), base_exact_query_key)) then
                                 begin
                                     Dec(score_value, c_full_query_dual_jianpin_penalty);
                                     if full_query_dual_jianpin_has_cap and
@@ -8176,7 +8183,7 @@ begin
                                 dict_weight_value := m_base_connection.column_int(stmt, 3);
                                 score_value := dict_weight_value - jianpin_score_penalty;
                                 if full_query_dual_jianpin_mode and
-                                    (not same_normalized_pinyin_key(candidate_pinyin, query_key)) then
+                                    (not SameText(Trim(candidate_pinyin), base_exact_query_key)) then
                                 begin
                                     Dec(score_value, c_full_query_dual_jianpin_penalty);
                                     if full_query_dual_jianpin_has_cap and
