@@ -7,6 +7,9 @@ uses
     System.IniFiles,
     System.IOUtils,
     Winapi.Windows,
+    Winapi.ShlObj,
+    Winapi.KnownFolders,
+    Winapi.ActiveX,
     nc_types,
     nc_log;
 
@@ -138,12 +141,34 @@ begin
     Result := ExtractFileDir(path_buffer);
 end;
 
+function get_known_local_app_data_directory: string;
+var
+    path_ptr: PWideChar;
+begin
+    Result := '';
+    path_ptr := nil;
+    if Succeeded(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, path_ptr)) and (path_ptr <> nil) then
+    begin
+        try
+            Result := Trim(string(path_ptr));
+        finally
+            CoTaskMemFree(path_ptr);
+        end;
+    end;
+end;
+
 function get_local_app_data_directory: string;
 begin
-    Result := Trim(GetEnvironmentVariable('LOCALAPPDATA'));
+    // Do not rely on LOCALAPPDATA: TSF can be hosted by packaged apps whose
+    // environment points to a package-local cache, splitting the user dictionary.
+    Result := get_known_local_app_data_directory;
     if Result = '' then
     begin
-        Result := TPath.GetHomePath;
+        Result := Trim(GetEnvironmentVariable('LOCALAPPDATA'));
+        if Result = '' then
+        begin
+            Result := TPath.GetHomePath;
+        end;
     end;
 end;
 

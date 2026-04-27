@@ -307,6 +307,8 @@ begin
     try
         try
             append_log('host start');
+            append_log(Format('runtime data dir=%s user dict=%s',
+                [get_runtime_data_directory, get_default_user_dictionary_path]));
             ensure_tray_host_running;
             try_enable_per_monitor_dpi;
             Application.Initialize;

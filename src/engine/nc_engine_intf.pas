@@ -18012,6 +18012,8 @@ var
         tmp_rank: Integer;
         exact_complete_texts: TArray<string>;
         exact_complete_texts_prepared: Boolean;
+        latest_query_choice_text: string;
+        latest_query_choice_prepared: Boolean;
 
         function get_display_text_unit_count(const text: string): Integer;
         var
@@ -18035,6 +18037,35 @@ var
                 Inc(Result);
                 Inc(idx);
             end;
+        end;
+
+        function is_latest_query_choice_lightweight_local(
+            const candidate_text: string): Boolean;
+        begin
+            Result := False;
+            if (lookup_text = '') or (Trim(candidate_text) = '') then
+            begin
+                Exit;
+            end;
+
+            if not latest_query_choice_prepared then
+            begin
+                latest_query_choice_prepared := True;
+                latest_query_choice_text := '';
+                if (m_session_query_latest_text <> nil) and
+                    m_session_query_latest_text.TryGetValue(lookup_text,
+                    latest_query_choice_text) then
+                begin
+                end
+                else if m_dictionary <> nil then
+                begin
+                    latest_query_choice_text := Trim(
+                        m_dictionary.get_query_latest_choice_text(lookup_text));
+                end;
+            end;
+
+            Result := (latest_query_choice_text <> '') and
+                SameText(Trim(candidate_text), latest_query_choice_text);
         end;
 
         procedure prepare_exact_complete_texts_local;
@@ -18803,6 +18834,11 @@ var
             remaining_comment_units_local: Integer;
         begin
             Result := candidate.score;
+            if (candidate.comment = '') and
+                is_latest_query_choice_lightweight_local(candidate.text) then
+            begin
+                Inc(Result, 12000);
+            end;
             if (candidate.comment = '') and is_full_pinyin_key(lookup_text) and
                 (input_syllable_count > 0) and
                 (text_units > input_syllable_count) then
@@ -18884,6 +18920,8 @@ var
         end;
 
         has_exact_complete_phrase_candidate := False;
+        latest_query_choice_text := '';
+        latest_query_choice_prepared := False;
         for left_idx := 0 to High(candidates) do
         begin
             left_units := get_display_text_unit_count(candidates[left_idx].text);

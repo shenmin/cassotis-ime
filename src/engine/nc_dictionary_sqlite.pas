@@ -5197,6 +5197,7 @@ const
         'ORDER BY weight DESC, text ASC LIMIT ?3';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
+    c_exact_latest_choice_bonus = 1800;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -5218,6 +5219,7 @@ var
     query_syllables: TArray<string>;
     query_syllable_count: Integer;
     base_candidates_before: Integer;
+    latest_query_choice_text: string;
 
     function is_administrative_place_suffix_local(const suffix_text: string): Boolean;
     begin
@@ -5267,6 +5269,7 @@ var
         local_idx: Integer;
         local_item: TncCandidate;
         effective_score: Integer;
+        choice_bonus: Integer;
     begin
         key := Trim(candidate_text);
         if key = '' then
@@ -5274,10 +5277,17 @@ var
             Exit;
         end;
         effective_score := candidate_score;
-        if (candidate_source = cs_user) and
-            (get_query_choice_bonus(query_key, key) >= c_recent_explicit_user_choice_bonus_min) then
+        if (candidate_comment = '') and full_pinyin_query then
         begin
-            Inc(effective_score, c_recent_explicit_user_choice_bonus);
+            choice_bonus := get_query_choice_bonus(query_key, key);
+            if choice_bonus >= c_recent_explicit_user_choice_bonus_min then
+            begin
+                Inc(effective_score, c_recent_explicit_user_choice_bonus);
+            end;
+            if (latest_query_choice_text <> '') and SameText(latest_query_choice_text, key) then
+            begin
+                Inc(effective_score, c_exact_latest_choice_bonus);
+            end;
         end;
 
         if seen.TryGetValue(key, local_idx) then
@@ -5556,10 +5566,12 @@ begin
         exact_query_key := expanded_erhua_query_key;
     end;
     full_pinyin_query := raw_full_pinyin_query or (expanded_erhua_query_key <> '');
+    latest_query_choice_text := '';
     if full_pinyin_query then
     begin
         query_syllables := split_full_pinyin_syllables(exact_query_key);
         query_syllable_count := Length(query_syllables);
+        latest_query_choice_text := get_query_latest_choice_text(query_key);
     end
     else
     begin
@@ -9168,6 +9180,7 @@ const
     c_multi_query_base = 96;
     c_multi_query_step = 56;
     c_multi_query_cap = 640;
+    c_latest_query_choice_bonus = 1800;
     c_recent_bonus_1d = 220;
     c_recent_bonus_3d = 120;
     c_recent_bonus_7d = 64;
@@ -9189,6 +9202,8 @@ var
     recent_bonus: Integer;
     session_like_bonus: Integer;
     learning_floor_bonus: Integer;
+    latest_choice_text: string;
+    latest_bonus: Integer;
 begin
     Result := 0;
     normalized_query := LowerCase(Trim(query_key));
@@ -9215,6 +9230,16 @@ begin
         (not full_pinyin_text_alignment_valid(normalized_query, text_key)) then
     begin
         Exit;
+    end;
+
+    latest_bonus := 0;
+    latest_choice_text := get_query_latest_choice_text(normalized_query);
+    if (latest_choice_text <> '') and SameText(latest_choice_text, text_key) then
+    begin
+        // Latest explicit exact-query choice must work even when the stats row
+        // is missing, otherwise single-character learning disappears on restart.
+        latest_bonus := c_latest_query_choice_bonus;
+        Result := latest_bonus;
     end;
 
     try
@@ -9329,6 +9354,13 @@ begin
         if Result < 0 then
         begin
             Result := 0;
+        end;
+
+        if latest_bonus > 0 then
+        begin
+            // The user's latest explicit correction for the exact pinyin should
+            // beat older repeated mistakes after a TSF restart.
+            Inc(Result, latest_bonus);
         end;
     finally
         if m_stmt_query_choice_bonus <> nil then

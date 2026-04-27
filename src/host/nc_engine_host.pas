@@ -63,6 +63,8 @@ type
             const page_count: Integer; const selected_index: Integer; const preedit_text: string);
         procedure clear_candidates;
         function has_candidates: Boolean;
+        function has_dirty_candidates: Boolean;
+        procedure apply_candidate_content_only;
         procedure apply_candidate_state(const caret: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean; const source: TncCaretAnchorSource; const anchor_score: Integer);
         procedure stage_candidate_apply(const caret: TPoint; const has_caret: Boolean; const line_height: Integer;
@@ -764,6 +766,30 @@ end;
 function TncHostSession.has_candidates: Boolean;
 begin
     Result := Length(m_candidates) > 0;
+end;
+
+function TncHostSession.has_dirty_candidates: Boolean;
+begin
+    Result := m_candidate_dirty;
+end;
+
+procedure TncHostSession.apply_candidate_content_only;
+begin
+    if Length(m_candidates) = 0 then
+    begin
+        hide_candidate_window;
+        m_candidate_dirty := False;
+        Exit;
+    end;
+
+    ensure_candidate_window;
+    if m_candidate_dirty or (m_last_candidate_debug_mode <> m_engine.config.debug_mode) then
+    begin
+        m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index,
+            m_preedit_text, m_engine.config.debug_mode);
+        m_last_candidate_debug_mode := m_engine.config.debug_mode;
+    end;
+    m_candidate_dirty := False;
 end;
 
 procedure TncHostSession.hide_candidate_window;
@@ -1740,6 +1766,7 @@ var
     candidate_source: TncCaretAnchorSource;
     candidate_score: Integer;
     queue_candidate_apply: Boolean;
+    queue_candidate_content_update: Boolean;
     has_candidate_anchor: Boolean;
 begin
     handled := False;
@@ -1784,6 +1811,7 @@ begin
     lookup_perf_info := '';
     caret_point := Point(0, 0);
     queue_candidate_apply := False;
+    queue_candidate_content_update := False;
     m_lock.Acquire;
     try
         touch_session_activity(session_id);
@@ -1867,6 +1895,10 @@ begin
                     session.stage_candidate_apply(caret_point, has_caret, caret_line_height,
                         candidate_terminal_like_target, candidate_source, candidate_score, queue_candidate_apply);
                 end;
+                if (not has_candidate_anchor) and session.has_dirty_candidates then
+                begin
+                    queue_candidate_content_update := True;
+                end;
             end;
         end;
 
@@ -1929,6 +1961,10 @@ begin
                     session.stage_candidate_apply(caret_point, has_caret, caret_line_height,
                         candidate_terminal_like_target, candidate_source, candidate_score, queue_candidate_apply);
                 end;
+                if (not has_candidate_anchor) and session.has_dirty_candidates then
+                begin
+                    queue_candidate_content_update := True;
+                end;
             end;
         end;
     finally
@@ -1972,6 +2008,25 @@ begin
                 end;
                 queued_session.apply_candidate_state(queued_point, queued_has_caret, queued_line_height,
                     queued_terminal_like_target, queued_source, queued_score);
+            end);
+    end;
+    if queue_candidate_content_update and (not queue_candidate_apply) then
+    begin
+        TThread.Queue(nil,
+            procedure
+            var
+                queued_session: TncHostSession;
+            begin
+                m_lock.Acquire;
+                try
+                    if not m_sessions.TryGetValue(session_id, queued_session) then
+                    begin
+                        Exit;
+                    end;
+                finally
+                    m_lock.Release;
+                end;
+                queued_session.apply_candidate_content_only;
             end);
     end;
 
