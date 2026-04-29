@@ -12540,6 +12540,7 @@ var
             if (local_start_idx < 0) or
                 (local_start_idx + 2 > input_syllable_count) or
                 (get_candidate_text_unit_count(current_text_value) <> 2) or
+                (current_weight_value >= c_min_replace_weight) or
                 ((not has_following_exact_phrase_for_repair_local(
                 local_start_idx + 2)) and
                 (not has_following_strong_phrase_chain_for_repair_local(
@@ -13553,6 +13554,7 @@ var
             combined_units_local: Integer;
             best_span_text_local: string;
             best_span_weight_local: Integer;
+            next_segment_units_text_local: TArray<string>;
         begin
             Result := 0;
             if not is_complete_candidate_local(candidate) then
@@ -13632,6 +13634,31 @@ var
                                 best_span_weight_local));
                         end;
                     end;
+
+                    // Penalize an off-by-one split such as A/BC when AB is a
+                    // strong phrase. This keeps complete long-sentence paths
+                    // from preferring self-composed tails over phrase-aligned
+                    // paths.
+                    if next_segment_units_local = 2 then
+                    begin
+                        next_segment_units_text_local := split_text_units(
+                            next_segment_text_local);
+                        if (Length(next_segment_units_text_local) = 2) and
+                            try_get_best_exact_two_unit_text_local(
+                            segment_start_local, best_pair_text_local,
+                            best_pair_weight_local) then
+                        begin
+                            pair_text_local := segment_text_local +
+                                Trim(next_segment_units_text_local[0]);
+                            if (best_pair_weight_local >= 520) and
+                                (not SameText(best_pair_text_local,
+                                pair_text_local)) then
+                            begin
+                                Dec(Result, 36000 +
+                                    Min(16000, best_pair_weight_local * 4));
+                            end;
+                        end;
+                    end;
                 end;
 
                 query_key_local := build_query_key_local(segment_start_local,
@@ -13683,8 +13710,8 @@ var
                             end
                             else
                             begin
-                                Dec(Result, 2600 +
-                                    Min(3200, best_pair_weight_local));
+                                Dec(Result, 42000 +
+                                    Min(18000, best_pair_weight_local * 4));
                             end;
                         end
                         else
@@ -15306,6 +15333,106 @@ var
             Result := m_dictionary.get_base_text_prefix_bonus(prefix_text);
         end;
 
+        function get_first_path_text_unit_local(const encoded_path: string): string;
+        var
+            parts: TArray<string>;
+            units: TArray<string>;
+            part_idx: Integer;
+            segment_text: string;
+        begin
+            Result := '';
+            if Trim(encoded_path) = '' then
+            begin
+                Exit;
+            end;
+
+            parts := encoded_path.Split([c_segment_path_separator]);
+            for part_idx := 0 to High(parts) do
+            begin
+                segment_text := Trim(parts[part_idx]);
+                if segment_text = '' then
+                begin
+                    Continue;
+                end;
+                units := split_text_units(segment_text);
+                if Length(units) > 0 then
+                begin
+                    Exit(units[0]);
+                end;
+            end;
+        end;
+
+        function try_get_best_exact_two_unit_text_local(
+            const local_start_idx: Integer; out out_text: string;
+            out out_weight: Integer): Boolean;
+        const
+            c_two_unit_probe_limit = 12;
+        var
+            query_key: string;
+            local_results: TncCandidateList;
+            result_idx: Integer;
+            candidate_text: string;
+            candidate_weight: Integer;
+            ranked_weight: Integer;
+        begin
+            Result := False;
+            out_text := '';
+            out_weight := 0;
+            if (m_dictionary = nil) or (local_start_idx < 0) or
+                (local_start_idx + 1 > High(exact_subspan_cache_syllables)) then
+            begin
+                Exit;
+            end;
+
+            query_key := build_query_key_local(local_start_idx, 2);
+            if (query_key = '') or
+                (not lookup_exact_full_pinyin_cached_local(query_key,
+                local_results)) then
+            begin
+                Exit;
+            end;
+
+            for result_idx := 0 to High(local_results) do
+            begin
+                if result_idx >= c_two_unit_probe_limit then
+                begin
+                    Break;
+                end;
+                if Trim(local_results[result_idx].comment) <> '' then
+                begin
+                    Continue;
+                end;
+                if is_runtime_chain_candidate(local_results[result_idx]) or
+                    is_runtime_common_pattern_candidate(local_results[result_idx]) or
+                    is_runtime_redup_candidate(local_results[result_idx]) then
+                begin
+                    Continue;
+                end;
+
+                candidate_text := Trim(local_results[result_idx].text);
+                if (get_candidate_text_unit_count(candidate_text) <> 2) or
+                    (not is_valid_cjk_phrase_text_local(candidate_text, 2)) then
+                begin
+                    Continue;
+                end;
+
+                candidate_weight := get_candidate_effective_weight_local(
+                    local_results[result_idx], 2);
+                Inc(candidate_weight, get_preferred_query_phrase_bonus_local(
+                    query_key, candidate_text));
+                Inc(candidate_weight, get_preferred_exact_subspan_bonus_local(
+                    query_key, candidate_text));
+                ranked_weight := candidate_weight +
+                    ((c_two_unit_probe_limit - result_idx) * 96);
+                if (not Result) or (ranked_weight > out_weight) then
+                begin
+                    Result := True;
+                    out_text := candidate_text;
+                    out_weight := ranked_weight;
+                end;
+            end;
+        end;
+
         function try_get_exact_single_char_weight_local(const local_start_idx: Integer;
             const expected_text: string; out out_weight: Integer): Boolean;
         var
@@ -15609,6 +15736,10 @@ var
         boundary_resolved_anchor_units: Integer;
         boundary_preferred_bonus: Integer;
         current_preferred_bonus_local: Integer;
+        suffix_first_unit_local: string;
+        expected_pair_text_local: string;
+        actual_pair_text_local: string;
+        expected_pair_weight_local: Integer;
         procedure try_update_with_candidate(const local_pos: Integer;
             const local_chunk_syllables: Integer; const chunk_text: string;
             const base_weight: Integer);
@@ -15667,6 +15798,32 @@ var
                 begin
                     combined_path := combined_path + c_segment_path_separator +
                         best_paths[next_pos];
+                end;
+            end;
+
+            if (local_chunk_syllables = 1) and
+                (next_pos < span_syllables) and
+                (best_paths[next_pos] <> '') then
+            begin
+                suffix_first_unit_local :=
+                    get_first_path_text_unit_local(best_paths[next_pos]);
+                if (suffix_first_unit_local <> '') and
+                    try_get_best_exact_two_unit_text_local(start_idx + local_pos,
+                    expected_pair_text_local, expected_pair_weight_local) then
+                begin
+                    actual_pair_text_local := candidate_text +
+                        suffix_first_unit_local;
+                    if SameText(expected_pair_text_local,
+                        actual_pair_text_local) then
+                    begin
+                        Inc(total_score, 1200 +
+                            Min(4800, expected_pair_weight_local div 4));
+                    end
+                    else
+                    begin
+                        Dec(total_score, 24000 +
+                            Min(48000, expected_pair_weight_local * 8));
+                    end;
                 end;
             end;
 
@@ -37593,7 +37750,7 @@ var
                 const suffix_state_inner: TExactChunkChainState): Integer;
             const
                 c_bad_two_plus_tail_penalty = 72000;
-                c_cut_head_exact_penalty = 42000;
+                c_cut_head_exact_penalty = 72000;
             var
                 prefix_text_inner: string;
                 tail_units_inner: Integer;
@@ -37681,10 +37838,10 @@ var
                 begin
                     suffix_first_units_inner := get_candidate_text_unit_count(
                         Trim(suffix_state_inner.first_chunk_text));
-                    if (suffix_first_units_inner >= 2) and
+                    if (suffix_first_units_inner >= 1) and
                         (pos_inner + 2 <= syllable_count_local) and
                         try_get_strong_fast_exact_phrase_text_local(
-                        build_query_key_local(pos_inner, 2), 2, 900,
+                        build_query_key_local(pos_inner, 2), 2, 700,
                         head_text_inner) and
                         text_starts_with_fast_local(head_text_inner,
                         option_inner.text) then
@@ -37750,6 +37907,117 @@ var
                             end;
                         end;
                     end;
+                end;
+            end;
+
+            function get_fast_state_order_score_local(
+                const state_inner: TExactChunkChainState): Integer;
+            const
+                c_cross_boundary_exact_head_penalty = 90000;
+                c_single_segment_penalty = 1600;
+                c_multi_segment_bonus = 1200;
+            var
+                path_segments_inner: TArray<string>;
+                segment_idx_inner: Integer;
+                query_offset_inner: Integer;
+                current_text_inner: string;
+                next_text_inner: string;
+                current_units_inner: Integer;
+                next_units_inner: Integer;
+                exact_head_text_inner: string;
+                current_pair_text_inner: string;
+            begin
+                Result := state_inner.score;
+                if state_inner.path = '' then
+                begin
+                    Exit;
+                end;
+
+                path_segments_inner := state_inner.path.Split(
+                    [c_segment_path_separator]);
+                query_offset_inner := 0;
+                for segment_idx_inner := 0 to High(path_segments_inner) do
+                begin
+                    current_text_inner := Trim(path_segments_inner[segment_idx_inner]);
+                    current_units_inner := get_candidate_text_unit_count(
+                        current_text_inner);
+                    if (current_text_inner = '') or (current_units_inner <= 0) or
+                        (query_offset_inner + current_units_inner >
+                        syllable_count_local) then
+                    begin
+                        Exit;
+                    end;
+
+                    if current_units_inner = 1 then
+                    begin
+                        Dec(Result, c_single_segment_penalty);
+                    end
+                    else
+                    begin
+                        Inc(Result, current_units_inner * c_multi_segment_bonus);
+                    end;
+
+                    if (segment_idx_inner < High(path_segments_inner)) and
+                        (current_units_inner = 1) and
+                        (query_offset_inner + 2 <= syllable_count_local) then
+                    begin
+                        next_text_inner := Trim(
+                            path_segments_inner[segment_idx_inner + 1]);
+                        next_units_inner := get_candidate_text_unit_count(
+                            next_text_inner);
+                        if (next_text_inner <> '') and (next_units_inner = 1) and
+                            is_modifier_prefix_bridge_exempt_local(
+                            current_text_inner) and
+                            is_modifier_prefix_bridge_exempt_local(
+                            next_text_inner) then
+                        begin
+                            Inc(Result, 90000);
+                        end;
+                        if (next_text_inner <> '') and (next_units_inner > 0) and
+                            try_get_strong_fast_exact_phrase_text_local(
+                            build_query_key_local(query_offset_inner, 2), 2, 700,
+                            exact_head_text_inner) and
+                            text_starts_with_fast_local(exact_head_text_inner,
+                            current_text_inner) then
+                        begin
+                            current_pair_text_inner := current_text_inner +
+                                get_first_text_unit_fast_local(next_text_inner);
+                            if (current_pair_text_inner <> '') and
+                                (not SameText(current_pair_text_inner,
+                                exact_head_text_inner)) then
+                            begin
+                                Dec(Result, c_cross_boundary_exact_head_penalty);
+                            end;
+                        end;
+                    end;
+
+                    Inc(query_offset_inner, current_units_inner);
+                end;
+            end;
+
+            procedure sort_fast_states_by_order_score_local(
+                var states_inner: TExactChunkChainStateArray);
+            var
+                idx_inner: Integer;
+                insert_idx_inner: Integer;
+                current_state_inner: TExactChunkChainState;
+                current_score_inner: Integer;
+            begin
+                for idx_inner := 1 to High(states_inner) do
+                begin
+                    current_state_inner := states_inner[idx_inner];
+                    current_score_inner := get_fast_state_order_score_local(
+                        current_state_inner);
+                    insert_idx_inner := idx_inner - 1;
+                    while (insert_idx_inner >= 0) and
+                        (get_fast_state_order_score_local(
+                        states_inner[insert_idx_inner]) < current_score_inner) do
+                    begin
+                        states_inner[insert_idx_inner + 1] :=
+                            states_inner[insert_idx_inner];
+                        Dec(insert_idx_inner);
+                    end;
+                    states_inner[insert_idx_inner + 1] := current_state_inner;
                 end;
             end;
 
@@ -38188,6 +38456,11 @@ var
                             candidate_state_local.score :=
                                 options_local[option_idx_local].score +
                                 suffix_state_local.score;
+                            Dec(candidate_state_local.score,
+                                get_competing_boundary_penalty_fast_local(
+                                candidate_state_local.text, pos_local,
+                                chunk_len_local, options_local[option_idx_local],
+                                suffix_state_local));
                             if suffix_state_local.first_chunk_text <> '' then
                             begin
                                 Inc(candidate_state_local.score,
@@ -38257,6 +38530,8 @@ var
                     end;
                 end;
             end;
+
+            sort_fast_states_by_order_score_local(state_map_local[0]);
 
             if (Length(state_map_local[0]) = 0) or
                 (state_map_local[0][0].text = '') or
@@ -39652,14 +39927,18 @@ var
                 fast_state_to_upsert := fast_states[fast_state_idx];
                 if fast_state_idx = 0 then
                 begin
-                    upsert_fast_state_candidate_local(fast_state_to_upsert, 0);
                     if try_repair_state_with_covering_exact_pairs_local(
                         fast_states[fast_state_idx], fast_repaired_state) and
                         (not SameText(Trim(fast_repaired_state.text),
                         Trim(fast_state_to_upsert.text))) then
                     begin
-                        upsert_fast_state_candidate_local(fast_repaired_state, 1);
+                        upsert_fast_state_candidate_local(fast_repaired_state, 0);
+                        upsert_fast_state_candidate_local(fast_state_to_upsert, 1);
                         fast_repair_inserted := True;
+                    end;
+                    if not fast_repair_inserted then
+                    begin
+                        upsert_fast_state_candidate_local(fast_state_to_upsert, 0);
                     end;
                     Continue;
                 end;
@@ -74412,6 +74691,191 @@ var
             end;
         end;
 
+        function try_get_best_suffix_chain_text_local(
+            const local_start_idx: Integer; const local_expected_units: Integer;
+            out out_text: string; out out_path: string;
+            out out_score: Integer): Boolean;
+        const
+            c_span_probe_limit = 10;
+            c_low_score = Low(Integer) div 4;
+        var
+            best_scores_local: TArray<Integer>;
+            best_texts_local: TArray<string>;
+            best_paths_local: TArray<string>;
+            pos_local: Integer;
+            span_units_local: Integer;
+            next_pos_local: Integer;
+            span_text_local: string;
+            span_score_local: Integer;
+            total_score_local: Integer;
+            path_value_local: string;
+
+            function try_get_best_exact_span_text_local(
+                const span_start_idx: Integer; const span_units: Integer;
+                out span_text: string; out span_score: Integer): Boolean;
+            var
+                span_key_local: string;
+                span_results_local: TncCandidateList;
+                span_idx_local: Integer;
+                candidate_text_local: string;
+                candidate_score_local: Integer;
+            begin
+                Result := False;
+                span_text := '';
+                span_score := 0;
+                if (span_start_idx < 0) or (span_units <= 0) or
+                    (span_units > 4) or
+                    (span_start_idx + span_units >
+                    Length(syllables_local)) then
+                begin
+                    Exit;
+                end;
+
+                span_key_local := build_query_key_from_syllables_local(
+                    span_start_idx, span_units);
+                if (span_key_local = '') or
+                    (not dictionary_exact_lookup_cached(span_key_local,
+                    span_results_local)) then
+                begin
+                    Exit;
+                end;
+
+                for span_idx_local := 0 to High(span_results_local) do
+                begin
+                    if span_idx_local >= c_span_probe_limit then
+                    begin
+                        Break;
+                    end;
+                    if Trim(span_results_local[span_idx_local].comment) <> '' then
+                    begin
+                        Continue;
+                    end;
+                    if is_runtime_chain_candidate(span_results_local[span_idx_local]) or
+                        is_runtime_common_pattern_candidate(
+                        span_results_local[span_idx_local]) or
+                        is_runtime_redup_candidate(span_results_local[span_idx_local]) then
+                    begin
+                        Continue;
+                    end;
+
+                    candidate_text_local := Trim(
+                        span_results_local[span_idx_local].text);
+                    if (candidate_text_local = '') or
+                        (get_candidate_text_unit_count(candidate_text_local) <>
+                        span_units) then
+                    begin
+                        Continue;
+                    end;
+
+                    candidate_score_local := span_results_local[span_idx_local].score;
+                    if span_results_local[span_idx_local].has_dict_weight and
+                        (span_results_local[span_idx_local].dict_weight >
+                        candidate_score_local) then
+                    begin
+                        candidate_score_local :=
+                            span_results_local[span_idx_local].dict_weight;
+                    end;
+
+                    if span_units > 1 then
+                    begin
+                        Inc(candidate_score_local, 3200 + span_units * 720);
+                    end
+                    else
+                    begin
+                        Dec(candidate_score_local, 240);
+                    end;
+
+                    Inc(candidate_score_local,
+                        (c_span_probe_limit - span_idx_local) * 24);
+                    if (not Result) or
+                        (candidate_score_local > span_score) then
+                    begin
+                        Result := True;
+                        span_text := candidate_text_local;
+                        span_score := candidate_score_local;
+                    end;
+                end;
+            end;
+
+        begin
+            Result := False;
+            out_text := '';
+            out_path := '';
+            out_score := 0;
+            if (local_start_idx < 0) or (local_expected_units <= 0) or
+                (local_expected_units > 4) or
+                (local_start_idx + local_expected_units >
+                Length(syllables_local)) then
+            begin
+                Exit;
+            end;
+
+            SetLength(best_scores_local, local_expected_units + 1);
+            SetLength(best_texts_local, local_expected_units + 1);
+            SetLength(best_paths_local, local_expected_units + 1);
+            for pos_local := 0 to local_expected_units do
+            begin
+                best_scores_local[pos_local] := c_low_score;
+                best_texts_local[pos_local] := '';
+                best_paths_local[pos_local] := '';
+            end;
+            best_scores_local[local_expected_units] := 0;
+
+            for pos_local := local_expected_units - 1 downto 0 do
+            begin
+                for span_units_local := Min(4, local_expected_units - pos_local)
+                    downto 1 do
+                begin
+                    next_pos_local := pos_local + span_units_local;
+                    if best_scores_local[next_pos_local] <= c_low_score div 2 then
+                    begin
+                        Continue;
+                    end;
+                    if not try_get_best_exact_span_text_local(
+                        local_start_idx + pos_local, span_units_local,
+                        span_text_local, span_score_local) then
+                    begin
+                        Continue;
+                    end;
+
+                    total_score_local := span_score_local +
+                        best_scores_local[next_pos_local];
+                    if span_units_local > 1 then
+                    begin
+                        Inc(total_score_local, span_units_local * 320);
+                    end;
+
+                    if total_score_local > best_scores_local[pos_local] then
+                    begin
+                        best_scores_local[pos_local] := total_score_local;
+                        best_texts_local[pos_local] := span_text_local +
+                            best_texts_local[next_pos_local];
+                        path_value_local := span_text_local;
+                        if best_paths_local[next_pos_local] <> '' then
+                        begin
+                            path_value_local := path_value_local +
+                                c_segment_path_separator +
+                                best_paths_local[next_pos_local];
+                        end;
+                        best_paths_local[pos_local] := path_value_local;
+                    end;
+                end;
+            end;
+
+            if (best_scores_local[0] <= c_low_score div 2) or
+                (best_texts_local[0] = '') or
+                (get_candidate_text_unit_count(best_texts_local[0]) <>
+                local_expected_units) then
+            begin
+                Exit;
+            end;
+
+            out_text := best_texts_local[0];
+            out_path := best_paths_local[0];
+            out_score := best_scores_local[0];
+            Result := True;
+        end;
+
         function suffix_is_precisely_extendable_local(
             const local_suffix_key: string): Boolean;
         var
@@ -74626,12 +75090,24 @@ var
                     rollback_candidate_prefix_count_local,
                     rollback_suffix_count_local);
                 if (rollback_suffix_key_local = '') or
-                    (Length(rollback_suffix_key_local) > 24) or
-                    (not try_get_best_suffix_text_local(rollback_suffix_key_local,
-                    rollback_suffix_count_local, suffix_text_local,
-                    suffix_score_local)) then
+                    (Length(rollback_suffix_key_local) > 24) then
                 begin
                     Continue;
+                end;
+
+                suffix_path_local := '';
+                if not try_get_best_suffix_chain_text_local(
+                    rollback_candidate_prefix_count_local,
+                    rollback_suffix_count_local, suffix_text_local,
+                    suffix_path_local, suffix_score_local) then
+                begin
+                    if not try_get_best_suffix_text_local(rollback_suffix_key_local,
+                        rollback_suffix_count_local, suffix_text_local,
+                        suffix_score_local) then
+                    begin
+                        Continue;
+                    end;
+                    suffix_path_local := suffix_text_local;
                 end;
 
                 rollback_prefix_text_local := '';
@@ -74669,7 +75145,7 @@ var
                 out_candidate.has_dict_weight := True;
                 out_candidate.dict_weight := out_candidate.score;
                 out_encoded_path := rollback_prefix_path_local +
-                    c_segment_path_separator + suffix_text_local;
+                    c_segment_path_separator + suffix_path_local;
                 Exit(True);
             end;
         end;
@@ -74692,14 +75168,19 @@ var
         if is_full_pinyin_key(suffix_key_local) and
             (not suffix_is_precisely_extendable_local(suffix_key_local)) then
         begin
-            if not try_get_best_suffix_text_local(suffix_key_local,
-                suffix_syllable_count_local, suffix_text_local,
-                suffix_score_local) then
+            if not try_get_best_suffix_chain_text_local(
+                prefix_syllable_count_local, suffix_syllable_count_local,
+                suffix_text_local, suffix_path_local, suffix_score_local) then
             begin
-                Exit;
+                if not try_get_best_suffix_text_local(suffix_key_local,
+                    suffix_syllable_count_local, suffix_text_local,
+                    suffix_score_local) then
+                begin
+                    Exit;
+                end;
+                suffix_path_local := suffix_text_local;
             end;
 
-            suffix_path_local := suffix_text_local;
             out_candidate.text := combined_text_local + suffix_text_local;
             out_candidate.comment := '';
             Inc(out_candidate.score, Max(0, suffix_score_local) + 512);
@@ -102954,6 +103435,10 @@ var
             begin
                 Exit;
             end;
+            if current_weight >= 520 then
+            begin
+                Exit;
+            end;
 
             if (not try_pick_modifier_single_local(start_idx,
                 top_units_local[start_idx], left_text, left_weight, False)) or
@@ -103081,6 +103566,63 @@ var
             exact_weight_local: Integer;
             exact_units_local: Integer;
             non_exact_units_local: Integer;
+            prev_part_text_local: string;
+            prev_part_units_local: Integer;
+            pair_text_local: string;
+            pair_key_local: string;
+            combined_units_local: Integer;
+
+            function is_function_bridge_single_text_local(
+                const text_local: string): Boolean;
+            begin
+                Result := (text_local = string(Char($4E0D))) or
+                    (text_local = string(Char($518D))) or
+                    (text_local = string(Char($9AD8))) or
+                    (text_local = string(Char($5F88))) or
+                    (text_local = string(Char($66F4))) or
+                    (text_local = string(Char($6700))) or
+                    (text_local = string(Char($592A))) or
+                    (text_local = string(Char($8981))) or
+                    (text_local = string(Char($80FD))) or
+                    (text_local = string(Char($6CA1))) or
+                    (text_local = string(Char($65E0))) or
+                    (text_local = string(Char($975E))) or
+                    (text_local = string(Char($53EF))) or
+                    (text_local = string(Char($4F1A))) or
+                    (text_local = string(Char($5E94))) or
+                    (text_local = string(Char($5C06))) or
+                    (text_local = string(Char($672A))) or
+                    (text_local = string(Char($5DF2))) or
+                    (text_local = string(Char($6B63))) or
+                    (text_local = string(Char($53C8))) or
+                    (text_local = string(Char($4E5F))) or
+                    (text_local = string(Char($8FD8))) or
+                    (text_local = string(Char($90FD))) or
+                    (text_local = string(Char($5C31))) or
+                    (text_local = string(Char($522B))) or
+                    (text_local = string(Char($6709))) or
+                    (text_local = string(Char($5BF9))) or
+                    (text_local = string(Char($5230))) or
+                    (text_local = string(Char($4ECE))) or
+                    (text_local = string(Char($548C))) or
+                    (text_local = string(Char($4E0E))) or
+                    (text_local = string(Char($4E8E))) or
+                    (text_local = string(Char($628A))) or
+                    (text_local = string(Char($88AB))) or
+                    (text_local = string(Char($7ED9))) or
+                    (text_local = string(Char($8BA9))) or
+                    (text_local = string(Char($5728))) or
+                    (text_local = string(Char($7684))) or
+                    (text_local = string(Char($5730))) or
+                    (text_local = string(Char($5F97))) or
+                    (text_local = string(Char($6240))) or
+                    (text_local = string(Char($662F))) or
+                    (text_local = string(Char($53EA))) or
+                    (text_local = string(Char($624D))) or
+                    (text_local = string(Char($5E76))) or
+                    (text_local = string(Char($4E14))) or
+                    (text_local = string(Char($4E3A)));
+            end;
         begin
             Result := Low(Integer) div 2;
             if (Trim(candidate_value.comment) <> '') or
@@ -103102,6 +103644,8 @@ var
             syllable_pos_local := 0;
             exact_units_local := 0;
             non_exact_units_local := 0;
+            prev_part_text_local := '';
+            prev_part_units_local := 0;
             Result := 0;
             for part_idx := 0 to High(path_parts_local) do
             begin
@@ -103146,7 +103690,37 @@ var
                         Dec(Result, 260);
                     end;
                 end;
+
+                if (prev_part_units_local > 0) and (part_units_local > 0) and
+                    (syllable_pos_local > 0) then
+                begin
+                    combined_units_local := prev_part_units_local + part_units_local;
+                    pair_text_local := prev_part_text_local + part_text_local;
+                    pair_key_local := build_display_query_key(
+                        syllable_pos_local - prev_part_units_local,
+                        combined_units_local);
+                    if (combined_units_local >= 2) and
+                        (combined_units_local <= 4) and (pair_key_local <> '') and
+                        (prev_part_units_local = 1) and
+                        (part_units_local = 1) and
+                        is_function_bridge_single_text_local(prev_part_text_local) and
+                        is_function_bridge_single_text_local(part_text_local) then
+                    begin
+                        Inc(Result, 90000);
+                    end
+                    else if (combined_units_local >= 2) and
+                        (combined_units_local <= 4) and (pair_key_local <> '') and
+                        (not display_exact_key_has_text(pair_key_local,
+                        pair_text_local)) and
+                        display_exact_key_has_any_complete_text(pair_key_local,
+                        combined_units_local) then
+                    begin
+                        Dec(Result, 60000 + combined_units_local * 4000);
+                    end;
+                end;
                 Inc(syllable_pos_local, part_units_local);
+                prev_part_text_local := part_text_local;
+                prev_part_units_local := part_units_local;
             end;
 
             if syllable_pos_local <> expected_units then
