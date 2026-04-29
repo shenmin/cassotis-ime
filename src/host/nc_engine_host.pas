@@ -1847,8 +1847,8 @@ begin
         if handled and session.engine.commit_text(commit_text) then
         begin
             readback_start_tick := GetTickCount64;
-            display_text := session.engine.get_display_text;
             candidates := session.engine.get_candidates;
+            display_text := session.engine.get_display_text;
             page_index := session.engine.get_page_index;
             page_count := session.engine.get_page_count;
             selected_index := session.engine.get_selected_index;
@@ -1905,8 +1905,8 @@ begin
         if handled and (commit_text = '') then
         begin
             readback_start_tick := GetTickCount64;
-            display_text := session.engine.get_display_text;
             candidates := session.engine.get_candidates;
+            display_text := session.engine.get_display_text;
             page_index := session.engine.get_page_index;
             page_count := session.engine.get_page_count;
             selected_index := session.engine.get_selected_index;
