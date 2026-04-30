@@ -9071,203 +9071,21 @@ begin
 end;
 
 procedure TncSqliteDictionary.record_context_pair(const left_text: string; const committed_text: string);
-const
-    update_sql = 'UPDATE dict_user_bigram SET commit_count = commit_count + 1, ' +
-        'last_used = strftime(''%s'',''now'') WHERE left_text = ?1 AND text = ?2';
-    insert_sql = 'INSERT OR IGNORE INTO dict_user_bigram(left_text, text, commit_count, last_used) ' +
-        'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
-var
-    stmt_update: Psqlite3_stmt;
-    stmt_insert: Psqlite3_stmt;
-    left_key: string;
-    text_key: string;
-    context_variants: TArray<string>;
-    variant_idx: Integer;
 begin
-    left_key := Trim(left_text);
-    text_key := Trim(committed_text);
-    if (left_key = '') or (text_key = '') or
-        (not is_valid_learning_text(left_key)) or (not is_valid_learning_text(text_key)) or
-        (not ensure_open) or (not m_user_ready) then
-    begin
-        Exit;
-    end;
-
-    if m_context_bonus_cache <> nil then
-    begin
-        m_context_bonus_cache.Clear;
-    end;
-
-    context_variants := build_context_variants_local(left_key);
-    if Length(context_variants) = 0 then
-    begin
-        Exit;
-    end;
-
-    stmt_update := m_stmt_record_context_pair_update;
-    stmt_insert := m_stmt_record_context_pair_insert;
-    if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
-    begin
-        Exit;
-    end;
-    if (stmt_insert = nil) and (not m_user_connection.prepare(insert_sql, stmt_insert)) then
-    begin
-        if (m_stmt_record_context_pair_update = nil) and (stmt_update <> nil) then
-        begin
-            m_user_connection.finalize(stmt_update);
-        end;
-        Exit;
-    end;
-    m_stmt_record_context_pair_update := stmt_update;
-    m_stmt_record_context_pair_insert := stmt_insert;
-
-    for variant_idx := 0 to High(context_variants) do
-    begin
-        if m_user_connection.reset(stmt_update) and
-            m_user_connection.clear_bindings(stmt_update) and
-            m_user_connection.bind_text(stmt_update, 1, context_variants[variant_idx]) and
-            m_user_connection.bind_text(stmt_update, 2, text_key) then
-        begin
-            m_user_connection.step(stmt_update);
-        end;
-
-        if m_user_connection.reset(stmt_insert) and
-            m_user_connection.clear_bindings(stmt_insert) and
-            m_user_connection.bind_text(stmt_insert, 1, context_variants[variant_idx]) and
-            m_user_connection.bind_text(stmt_insert, 2, text_key) then
-        begin
-            m_user_connection.step(stmt_insert);
-        end;
-    end;
-
-    prune_bigram_rows_if_needed(False);
+    // Persistent context learning is disabled; only explicit pinyin->text
+    // vocabulary choices are written to the user dictionary.
 end;
 
 procedure TncSqliteDictionary.record_context_trigram(const prev_prev_text: string; const prev_text: string;
     const committed_text: string);
-const
-    update_sql = 'UPDATE dict_user_trigram SET commit_count = commit_count + 1, ' +
-        'last_used = strftime(''%s'',''now'') WHERE prev_prev_text = ?1 AND prev_text = ?2 AND text = ?3';
-    insert_sql = 'INSERT OR IGNORE INTO dict_user_trigram(prev_prev_text, prev_text, text, commit_count, last_used) ' +
-        'VALUES (?1, ?2, ?3, 1, strftime(''%s'',''now''))';
-var
-    stmt_update: Psqlite3_stmt;
-    stmt_insert: Psqlite3_stmt;
-    prev_prev_key: string;
-    prev_key: string;
-    text_key: string;
 begin
-    prev_prev_key := Trim(prev_prev_text);
-    prev_key := Trim(prev_text);
-    text_key := Trim(committed_text);
-    if (prev_prev_key = '') or (prev_key = '') or (text_key = '') or
-        (not is_valid_learning_text(prev_prev_key)) or
-        (not is_valid_learning_text(prev_key)) or
-        (not is_valid_learning_text(text_key)) or
-        (not ensure_open) or (not m_user_ready) then
-    begin
-        Exit;
-    end;
-
-    stmt_update := m_stmt_record_context_trigram_update;
-    stmt_insert := m_stmt_record_context_trigram_insert;
-    if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
-    begin
-        Exit;
-    end;
-    if (stmt_insert = nil) and (not m_user_connection.prepare(insert_sql, stmt_insert)) then
-    begin
-        if (m_stmt_record_context_trigram_update = nil) and (stmt_update <> nil) then
-        begin
-            m_user_connection.finalize(stmt_update);
-        end;
-        Exit;
-    end;
-    m_stmt_record_context_trigram_update := stmt_update;
-    m_stmt_record_context_trigram_insert := stmt_insert;
-
-    if m_user_connection.reset(stmt_update) and
-        m_user_connection.clear_bindings(stmt_update) and
-        m_user_connection.bind_text(stmt_update, 1, prev_prev_key) and
-        m_user_connection.bind_text(stmt_update, 2, prev_key) and
-        m_user_connection.bind_text(stmt_update, 3, text_key) then
-    begin
-        m_user_connection.step(stmt_update);
-    end;
-
-    if m_user_connection.reset(stmt_insert) and
-        m_user_connection.clear_bindings(stmt_insert) and
-        m_user_connection.bind_text(stmt_insert, 1, prev_prev_key) and
-        m_user_connection.bind_text(stmt_insert, 2, prev_key) and
-        m_user_connection.bind_text(stmt_insert, 3, text_key) then
-    begin
-        m_user_connection.step(stmt_insert);
-    end;
-
-    prune_trigram_rows_if_needed(False);
+    // Persistent context learning is disabled.
 end;
 
 procedure TncSqliteDictionary.record_query_segment_path(const query_key: string; const encoded_path: string);
-const
-    update_sql = 'UPDATE dict_user_query_path SET commit_count = commit_count + 1, ' +
-        'last_used = strftime(''%s'',''now'') WHERE query_pinyin = ?1 AND path_text = ?2';
-    insert_sql = 'INSERT OR IGNORE INTO dict_user_query_path(query_pinyin, path_text, commit_count, last_used) ' +
-        'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
-var
-    stmt_update: Psqlite3_stmt;
-    stmt_insert: Psqlite3_stmt;
-    normalized_query: string;
-    normalized_path: string;
 begin
-    normalized_query := LowerCase(Trim(query_key));
-    normalized_path := Trim(encoded_path);
-    if (normalized_query = '') or (normalized_path = '') or
-        (get_encoded_path_segment_count(normalized_path) <= 1) or
-        (not is_valid_learning_path(normalized_path)) or
-        (not ensure_open) or (not m_user_ready) then
-    begin
-        Exit;
-    end;
-
-    if m_query_path_bonus_cache <> nil then
-    begin
-        m_query_path_bonus_cache.Clear;
-    end;
-
-    stmt_update := m_stmt_record_query_path_update;
-    stmt_insert := m_stmt_record_query_path_insert;
-    if (stmt_update = nil) and (not m_user_connection.prepare(update_sql, stmt_update)) then
-    begin
-        Exit;
-    end;
-    if (stmt_insert = nil) and (not m_user_connection.prepare(insert_sql, stmt_insert)) then
-    begin
-        if (m_stmt_record_query_path_update = nil) and (stmt_update <> nil) then
-        begin
-            m_user_connection.finalize(stmt_update);
-        end;
-        Exit;
-    end;
-    m_stmt_record_query_path_update := stmt_update;
-    m_stmt_record_query_path_insert := stmt_insert;
-
-    if m_user_connection.reset(stmt_update) and
-        m_user_connection.clear_bindings(stmt_update) and
-        m_user_connection.bind_text(stmt_update, 1, normalized_query) and
-        m_user_connection.bind_text(stmt_update, 2, normalized_path) then
-    begin
-        m_user_connection.step(stmt_update);
-    end;
-
-    if m_user_connection.reset(stmt_insert) and
-        m_user_connection.clear_bindings(stmt_insert) and
-        m_user_connection.bind_text(stmt_insert, 1, normalized_query) and
-        m_user_connection.bind_text(stmt_insert, 2, normalized_path) then
-    begin
-        m_user_connection.step(stmt_insert);
-    end;
-
-    prune_query_path_rows_if_needed(False);
+    // User query-path persistence is disabled; base query paths can still
+    // contribute through get_query_segment_path_bonus.
 end;
 
 procedure TncSqliteDictionary.record_query_segment_path_penalty(const query_key: string;
@@ -9340,137 +9158,14 @@ begin
 end;
 
 function TncSqliteDictionary.get_context_bonus(const left_text: string; const candidate_text: string): Integer;
-const
-    query_sql = 'SELECT commit_count, last_used FROM dict_user_bigram WHERE left_text = ?1 AND text = ?2 LIMIT 1';
-var
-    step_result: Integer;
-    left_key: string;
-    text_key: string;
-    cache_key: string;
-    commit_count: Integer;
-    last_used_unix: Int64;
 begin
     Result := 0;
-    left_key := Trim(left_text);
-    text_key := Trim(candidate_text);
-    if (left_key = '') or (text_key = '') or (not ensure_open) or (not m_user_ready) then
-    begin
-        Exit;
-    end;
-
-    cache_key := left_key + #1 + text_key;
-    if (m_context_bonus_cache <> nil) and
-        m_context_bonus_cache.TryGetValue(cache_key, Result) then
-    begin
-        Exit;
-    end;
-
-    try
-        if m_stmt_context_bonus = nil then
-        begin
-            if not m_user_connection.prepare(query_sql, m_stmt_context_bonus) then
-            begin
-                Exit;
-            end;
-        end;
-        if (not m_user_connection.reset(m_stmt_context_bonus)) or
-            (not m_user_connection.clear_bindings(m_stmt_context_bonus)) or
-            (not m_user_connection.bind_text(m_stmt_context_bonus, 1, left_key)) or
-            (not m_user_connection.bind_text(m_stmt_context_bonus, 2, text_key)) then
-        begin
-            Exit;
-        end;
-
-        step_result := m_user_connection.step(m_stmt_context_bonus);
-        if step_result <> SQLITE_ROW then
-        begin
-            Exit;
-        end;
-
-        commit_count := m_user_connection.column_int(m_stmt_context_bonus, 0);
-        if commit_count <= 0 then
-        begin
-            Exit;
-        end;
-
-        last_used_unix := m_user_connection.column_int(m_stmt_context_bonus, 1);
-        Result := calc_context_bigram_bonus(commit_count, last_used_unix, get_unix_time_now);
-    finally
-        if m_stmt_context_bonus <> nil then
-        begin
-            m_user_connection.reset(m_stmt_context_bonus);
-            m_user_connection.clear_bindings(m_stmt_context_bonus);
-        end;
-    end;
-
-    if m_context_bonus_cache <> nil then
-    begin
-        m_context_bonus_cache.AddOrSetValue(cache_key, Result);
-    end;
 end;
 
 function TncSqliteDictionary.get_context_trigram_bonus(const prev_prev_text: string; const prev_text: string;
     const candidate_text: string): Integer;
-const
-    query_sql =
-        'SELECT commit_count, last_used FROM dict_user_trigram ' +
-        'WHERE prev_prev_text = ?1 AND prev_text = ?2 AND text = ?3 LIMIT 1';
-var
-    step_result: Integer;
-    prev_prev_key: string;
-    prev_key: string;
-    text_key: string;
-    commit_count: Integer;
-    last_used_unix: Int64;
 begin
     Result := 0;
-    prev_prev_key := Trim(prev_prev_text);
-    prev_key := Trim(prev_text);
-    text_key := Trim(candidate_text);
-    if (prev_prev_key = '') or (prev_key = '') or (text_key = '') or
-        (not ensure_open) or (not m_user_ready) then
-    begin
-        Exit;
-    end;
-
-    try
-        if m_stmt_context_trigram_bonus = nil then
-        begin
-            if not m_user_connection.prepare(query_sql, m_stmt_context_trigram_bonus) then
-            begin
-                Exit;
-            end;
-        end;
-        if (not m_user_connection.reset(m_stmt_context_trigram_bonus)) or
-            (not m_user_connection.clear_bindings(m_stmt_context_trigram_bonus)) or
-            (not m_user_connection.bind_text(m_stmt_context_trigram_bonus, 1, prev_prev_key)) or
-            (not m_user_connection.bind_text(m_stmt_context_trigram_bonus, 2, prev_key)) or
-            (not m_user_connection.bind_text(m_stmt_context_trigram_bonus, 3, text_key)) then
-        begin
-            Exit;
-        end;
-
-        step_result := m_user_connection.step(m_stmt_context_trigram_bonus);
-        if step_result <> SQLITE_ROW then
-        begin
-            Exit;
-        end;
-
-        commit_count := m_user_connection.column_int(m_stmt_context_trigram_bonus, 0);
-        if commit_count <= 0 then
-        begin
-            Exit;
-        end;
-
-        last_used_unix := m_user_connection.column_int(m_stmt_context_trigram_bonus, 1);
-        Result := calc_context_trigram_bonus(commit_count, last_used_unix, get_unix_time_now);
-    finally
-        if m_stmt_context_trigram_bonus <> nil then
-        begin
-            m_user_connection.reset(m_stmt_context_trigram_bonus);
-            m_user_connection.clear_bindings(m_stmt_context_trigram_bonus);
-        end;
-    end;
 end;
 
 function TncSqliteDictionary.get_query_choice_bonus(const query_key: string;
@@ -9843,9 +9538,6 @@ end;
 
 function TncSqliteDictionary.get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer;
 const
-    user_query_sql =
-        'SELECT commit_count, last_used FROM dict_user_query_path ' +
-        'WHERE query_pinyin = ?1 AND path_text = ?2 LIMIT 1';
     base_query_sql =
         'SELECT weight FROM dict_base_query_path ' +
         'WHERE query_pinyin = ?1 AND path_text = ?2 LIMIT 1';
@@ -9854,8 +9546,6 @@ var
     normalized_query: string;
     normalized_path: string;
     cache_key: string;
-    commit_count: Integer;
-    last_used_unix: Int64;
     base_weight: Integer;
     can_query_base: Boolean;
 begin
@@ -9864,7 +9554,7 @@ begin
     normalized_path := Trim(encoded_path);
     if (normalized_query = '') or (normalized_path = '') or
         (get_encoded_path_segment_count(normalized_path) <= 1) or
-        (not ensure_open) or ((not m_base_ready) and (not m_user_ready)) then
+        (not ensure_open) or (not m_base_ready) or (m_base_connection = nil) then
     begin
         Exit;
     end;
@@ -9876,91 +9566,45 @@ begin
         Exit;
     end;
 
-    if m_base_ready and (m_base_connection <> nil) then
-    begin
-        try
-            can_query_base := False;
-            if m_stmt_base_query_path_bonus = nil then
+    try
+        can_query_base := False;
+        if m_stmt_base_query_path_bonus = nil then
+        begin
+            if not m_base_connection.prepare(base_query_sql, m_stmt_base_query_path_bonus) then
             begin
-                if not m_base_connection.prepare(base_query_sql, m_stmt_base_query_path_bonus) then
-                begin
-                    m_stmt_base_query_path_bonus := nil;
-                end;
+                m_stmt_base_query_path_bonus := nil;
             end;
-            if m_stmt_base_query_path_bonus <> nil then
-            begin
-                can_query_base := m_base_connection.reset(m_stmt_base_query_path_bonus) and
-                    m_base_connection.clear_bindings(m_stmt_base_query_path_bonus) and
-                    m_base_connection.bind_text(m_stmt_base_query_path_bonus, 1, normalized_query) and
-                    m_base_connection.bind_text(m_stmt_base_query_path_bonus, 2, normalized_path);
-                if not can_query_base then
-                begin
-                    m_base_connection.reset(m_stmt_base_query_path_bonus);
-                    m_base_connection.clear_bindings(m_stmt_base_query_path_bonus);
-                end;
-            end;
-
-            if can_query_base and (m_stmt_base_query_path_bonus <> nil) then
-            begin
-                step_result := m_base_connection.step(m_stmt_base_query_path_bonus);
-                if step_result = SQLITE_ROW then
-                begin
-                    base_weight := m_base_connection.column_int(m_stmt_base_query_path_bonus, 0);
-                    if base_weight > 0 then
-                    begin
-                        Result := calc_base_query_segment_path_bonus(base_weight);
-                    end;
-                end;
-            end;
-        finally
-            if m_stmt_base_query_path_bonus <> nil then
+        end;
+        if m_stmt_base_query_path_bonus <> nil then
+        begin
+            can_query_base := m_base_connection.reset(m_stmt_base_query_path_bonus) and
+                m_base_connection.clear_bindings(m_stmt_base_query_path_bonus) and
+                m_base_connection.bind_text(m_stmt_base_query_path_bonus, 1, normalized_query) and
+                m_base_connection.bind_text(m_stmt_base_query_path_bonus, 2, normalized_path);
+            if not can_query_base then
             begin
                 m_base_connection.reset(m_stmt_base_query_path_bonus);
                 m_base_connection.clear_bindings(m_stmt_base_query_path_bonus);
             end;
         end;
-    end;
 
-    if (not m_user_ready) or (m_user_connection = nil) then
-    begin
-        Exit;
-    end;
-
-    try
-        if m_stmt_query_path_bonus = nil then
+        if can_query_base and (m_stmt_base_query_path_bonus <> nil) then
         begin
-            if not m_user_connection.prepare(user_query_sql, m_stmt_query_path_bonus) then
+            step_result := m_base_connection.step(m_stmt_base_query_path_bonus);
+            if step_result = SQLITE_ROW then
             begin
-                Exit(Result);
+                base_weight := m_base_connection.column_int(m_stmt_base_query_path_bonus, 0);
+                if base_weight > 0 then
+                begin
+                    Result := calc_base_query_segment_path_bonus(base_weight);
+                end;
             end;
         end;
-        if (not m_user_connection.reset(m_stmt_query_path_bonus)) or
-            (not m_user_connection.clear_bindings(m_stmt_query_path_bonus)) or
-            (not m_user_connection.bind_text(m_stmt_query_path_bonus, 1, normalized_query)) or
-            (not m_user_connection.bind_text(m_stmt_query_path_bonus, 2, normalized_path)) then
-        begin
-            Exit(Result);
-        end;
-
-        step_result := m_user_connection.step(m_stmt_query_path_bonus);
-        if step_result <> SQLITE_ROW then
-        begin
-            Exit(Result);
-        end;
-
-        commit_count := m_user_connection.column_int(m_stmt_query_path_bonus, 0);
-        if commit_count <= 0 then
-        begin
-            Exit(Result);
-        end;
-
-        last_used_unix := m_user_connection.column_int(m_stmt_query_path_bonus, 1);
-        Inc(Result, calc_query_segment_path_bonus(commit_count, last_used_unix, get_unix_time_now));
     finally
-        if m_stmt_query_path_bonus <> nil then
+        if m_stmt_base_query_path_bonus <> nil then
         begin
-            m_user_connection.reset(m_stmt_query_path_bonus);
-            m_user_connection.clear_bindings(m_stmt_query_path_bonus);
+            m_base_connection.reset(m_stmt_base_query_path_bonus);
+            m_base_connection.clear_bindings(m_stmt_base_query_path_bonus);
         end;
     end;
 
