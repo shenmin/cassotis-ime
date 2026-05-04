@@ -42,9 +42,11 @@ type
         m_query_choice_bonus_cache: TDictionary<string, Integer>;
         m_query_latest_choice_text_cache: TDictionary<string, string>;
         m_query_path_bonus_cache: TDictionary<string, Integer>;
+        m_compound_tail_support_cache: TDictionary<string, Integer>;
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
         m_stmt_base_query_path_bonus: Psqlite3_stmt;
+        m_stmt_compound_tail_support: Psqlite3_stmt;
         m_stmt_prefix_popularity: Psqlite3_stmt;
         m_stmt_pinyin_followup_popularity: Psqlite3_stmt;
         m_stmt_base_text_prefix_bonus: Psqlite3_stmt;
@@ -166,6 +168,7 @@ type
         function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
+        function get_compound_tail_support(const tail_text: string): Integer; override;
         function is_base_entry(const pinyin: string; const text: string): Boolean; override;
         function is_user_entry(const pinyin: string; const text: string): Boolean; override;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; override;
@@ -1024,6 +1027,34 @@ begin
     end;
 end;
 
+function calc_compound_tail_support_value(const path_count: Integer;
+    const total_weight: Integer; const max_weight: Integer): Integer;
+const
+    c_support_cap = 3200;
+begin
+    Result := 0;
+    if (path_count <= 0) or (total_weight <= 0) then
+    begin
+        Exit;
+    end;
+
+    Result := Min(1600, path_count * 220) +
+        Min(1200, total_weight div 2) + Min(700, max_weight);
+    if path_count >= 4 then
+    begin
+        Inc(Result, 360);
+    end;
+    if max_weight >= 420 then
+    begin
+        Inc(Result, 220);
+    end;
+
+    if Result > c_support_cap then
+    begin
+        Result := c_support_cap;
+    end;
+end;
+
 function calc_query_segment_path_penalty_value(const penalty_value: Integer; const last_used_unix: Int64;
     const now_unix: Int64): Integer;
 const
@@ -1836,6 +1867,7 @@ begin
     m_stmt_context_bonus := nil;
     m_stmt_context_trigram_bonus := nil;
     m_stmt_base_query_path_bonus := nil;
+    m_stmt_compound_tail_support := nil;
     m_stmt_prefix_popularity := nil;
     m_stmt_pinyin_followup_popularity := nil;
     m_stmt_base_text_prefix_bonus := nil;
@@ -1865,6 +1897,7 @@ begin
     m_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_latest_choice_text_cache := TDictionary<string, string>.Create;
     m_query_path_bonus_cache := TDictionary<string, Integer>.Create;
+    m_compound_tail_support_cache := TDictionary<string, Integer>.Create;
     m_query_path_penalty_cache := TDictionary<string, Integer>.Create;
     m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
     m_candidate_penalty_pinyin_loaded_cache := TDictionary<string, Boolean>.Create;
@@ -1932,6 +1965,11 @@ begin
     begin
         m_query_path_bonus_cache.Free;
         m_query_path_bonus_cache := nil;
+    end;
+    if m_compound_tail_support_cache <> nil then
+    begin
+        m_compound_tail_support_cache.Free;
+        m_compound_tail_support_cache := nil;
     end;
     if m_candidate_penalty_cache <> nil then
     begin
@@ -5082,6 +5120,11 @@ begin
         m_base_connection.finalize(m_stmt_base_query_path_bonus);
         m_stmt_base_query_path_bonus := nil;
     end;
+    if (m_stmt_compound_tail_support <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_compound_tail_support);
+        m_stmt_compound_tail_support := nil;
+    end;
     if (m_stmt_prefix_popularity <> nil) and (m_base_connection <> nil) then
     begin
         m_base_connection.finalize(m_stmt_prefix_popularity);
@@ -5161,6 +5204,10 @@ begin
     if m_query_path_bonus_cache <> nil then
     begin
         m_query_path_bonus_cache.Clear;
+    end;
+    if m_compound_tail_support_cache <> nil then
+    begin
+        m_compound_tail_support_cache.Clear;
     end;
     if m_candidate_penalty_cache <> nil then
     begin
@@ -9611,6 +9658,74 @@ begin
     if m_query_path_bonus_cache <> nil then
     begin
         m_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
+function TncSqliteDictionary.get_compound_tail_support(const tail_text: string): Integer;
+const
+    query_sql =
+        'SELECT COUNT(1), COALESCE(SUM(weight), 0), COALESCE(MAX(weight), 0) ' +
+        'FROM dict_base_query_path WHERE path_text LIKE ?1';
+    c_segment_path_separator = #3;
+var
+    normalized_tail: string;
+    pattern: string;
+    step_result: Integer;
+    path_count: Integer;
+    total_weight: Integer;
+    max_weight: Integer;
+begin
+    Result := 0;
+    normalized_tail := Trim(tail_text);
+    if (normalized_tail = '') or (get_valid_cjk_codepoint_count(normalized_tail) < 2) or
+        (not ensure_open) or (not m_base_ready) or (m_base_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    if (m_compound_tail_support_cache <> nil) and
+        m_compound_tail_support_cache.TryGetValue(normalized_tail, Result) then
+    begin
+        Exit;
+    end;
+
+    pattern := '%' + c_segment_path_separator + normalized_tail;
+    try
+        if m_stmt_compound_tail_support = nil then
+        begin
+            if not m_base_connection.prepare(query_sql, m_stmt_compound_tail_support) then
+            begin
+                m_stmt_compound_tail_support := nil;
+                Exit;
+            end;
+        end;
+
+        if (not m_base_connection.reset(m_stmt_compound_tail_support)) or
+            (not m_base_connection.clear_bindings(m_stmt_compound_tail_support)) or
+            (not m_base_connection.bind_text(m_stmt_compound_tail_support, 1, pattern)) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(m_stmt_compound_tail_support);
+        if step_result = SQLITE_ROW then
+        begin
+            path_count := m_base_connection.column_int(m_stmt_compound_tail_support, 0);
+            total_weight := m_base_connection.column_int(m_stmt_compound_tail_support, 1);
+            max_weight := m_base_connection.column_int(m_stmt_compound_tail_support, 2);
+            Result := calc_compound_tail_support_value(path_count, total_weight, max_weight);
+        end;
+    finally
+        if m_stmt_compound_tail_support <> nil then
+        begin
+            m_base_connection.reset(m_stmt_compound_tail_support);
+            m_base_connection.clear_bindings(m_stmt_compound_tail_support);
+        end;
+    end;
+
+    if m_compound_tail_support_cache <> nil then
+    begin
+        m_compound_tail_support_cache.AddOrSetValue(normalized_tail, Result);
     end;
 end;
 
