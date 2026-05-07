@@ -660,6 +660,10 @@ begin
         m_candidate_window := TncCandidateWindow.create;
         m_candidate_window.on_remove_user_candidate := handle_remove_user_candidate;
     end;
+    if m_engine <> nil then
+    begin
+        m_candidate_window.apply_appearance(m_engine.config.candidate_font_name, m_engine.config.candidate_font_size);
+    end;
 end;
 
 procedure TncHostSession.handle_remove_user_candidate(const candidate_index: Integer);
@@ -675,6 +679,11 @@ begin
     if m_engine <> nil then
     begin
         m_engine.update_config(config);
+    end;
+    if m_candidate_window <> nil then
+    begin
+        m_candidate_window.apply_appearance(config.candidate_font_name, config.candidate_font_size);
+        m_candidate_dirty := True;
     end;
 end;
 

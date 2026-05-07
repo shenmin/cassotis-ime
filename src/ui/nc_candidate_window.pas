@@ -49,6 +49,8 @@ type
         m_item_gap: Integer;
         m_base_list_padding: Integer;
         m_current_dpi: Integer;
+        m_layout_dpi: Integer;
+        m_layout_list_font_height: Integer;
         m_list_item_height: Integer;
         m_list_rect: TRect;
         m_preedit_rect: TRect;
@@ -77,6 +79,8 @@ type
         function candidate_can_remove(const candidate: TncCandidate): Boolean;
         function get_candidate_text_color(const source: TncCandidateSource): TColor;
         function get_selected_candidate_text_color(const source: TncCandidateSource): TColor;
+        function canvas_font_can_render_text(const text: string): Boolean;
+        procedure assign_list_font_for_text(const text: string; const font_color: TColor);
         function hit_test_candidate_index(const point: TPoint): Integer;
         function hit_test_remove_candidate_index(const point: TPoint): Integer;
         procedure recompute_remove_button_rects;
@@ -95,6 +99,7 @@ type
         constructor create; reintroduce;
         procedure prepare_for_anchor(const anchor: TPoint);
         destructor Destroy; override;
+        procedure apply_appearance(const font_name: string; const font_size: Integer);
         procedure update_candidates(const candidates: TncCandidateList; const page_index: Integer; const page_count: Integer;
             const selected_index: Integer; const preedit_text: string; const debug_mode: Boolean);
         procedure show_at(const x: Integer; const y: Integer);
@@ -114,8 +119,60 @@ var
     g_get_dpi_for_window: TGetDpiForWindow = nil;
 
 const
-    c_candidate_ui_font_name = 'Microsoft YaHei UI';
     c_candidate_text_height_sample = 'Hg' + WideChar($56FD);
+
+function font_family_available(const font_name: string): Boolean;
+begin
+    Result := (Trim(font_name) <> '') and (Screen.Fonts.IndexOf(font_name) >= 0);
+end;
+
+function resolve_candidate_font_name(const font_name: string): string;
+var
+    requested_name: string;
+begin
+    requested_name := Trim(font_name);
+    if requested_name = '' then
+    begin
+        requested_name := c_default_candidate_font_name;
+    end;
+
+    if SameText(requested_name, '霞鹜文楷') and font_family_available('LXGW WenKai') then
+    begin
+        Result := 'LXGW WenKai';
+        Exit;
+    end;
+
+    if font_family_available(requested_name) then
+    begin
+        Result := requested_name;
+        Exit;
+    end;
+
+    Result := c_default_candidate_font_name;
+end;
+
+function draw_canvas_text(const canvas: TCanvas; const text: string; var bounds: TRect; const flags: UINT): Integer;
+var
+    old_font: HGDIOBJ;
+begin
+    Result := 0;
+    if canvas = nil then
+    begin
+        Exit;
+    end;
+
+    old_font := SelectObject(canvas.Handle, canvas.Font.Handle);
+    try
+        SetBkMode(canvas.Handle, TRANSPARENT);
+        SetTextColor(canvas.Handle, ColorToRGB(canvas.Font.Color));
+        Result := DrawTextW(canvas.Handle, PWideChar(text), Length(text), bounds, flags);
+    finally
+        if (old_font <> 0) and (old_font <> HGDIOBJ(GDI_ERROR)) then
+        begin
+            SelectObject(canvas.Handle, old_font);
+        end;
+    end;
+end;
 
 function try_get_dpi_for_window(const wnd: HWND; out dpi: Integer): Boolean;
 var
@@ -194,17 +251,19 @@ begin
     m_debug_mode := False;
     m_show_weight_row := False;
     m_base_item_height := 20;
-    m_base_list_font_size := 9;
-    m_base_weight_font_size := 7;
+    m_base_list_font_size := c_default_candidate_font_size;
+    m_base_weight_font_size := Max(6, c_default_candidate_font_size - 2);
     m_base_weight_gap := 1;
     m_base_label_font_size := 8;
     m_base_label_height := 18;
-    m_base_preedit_font_size := 9;
+    m_base_preedit_font_size := c_default_candidate_font_size;
     m_base_preedit_height := 20;
     m_base_item_gap := 12;
     m_item_gap := m_base_item_gap;
     m_base_list_padding := 6;
     m_current_dpi := 0;
+    m_layout_dpi := 0;
+    m_layout_list_font_height := 0;
     m_list_item_height := m_base_item_height;
     m_list_rect := Rect(0, 0, 0, 0);
     m_preedit_rect := Rect(0, 0, 0, 0);
@@ -232,11 +291,13 @@ begin
     configure_preedit_label;
     configure_page_label;
 
-    m_list_font.Name := c_candidate_ui_font_name;
+    m_list_font.Name := c_default_candidate_font_name;
+    m_list_font.Charset := DEFAULT_CHARSET;
     m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, 96);
     m_list_font.Color := TColor(RGB(24, 24, 24));
 
-    m_weight_font.Name := c_candidate_ui_font_name;
+    m_weight_font.Name := c_default_candidate_font_name;
+    m_weight_font.Charset := DEFAULT_CHARSET;
     m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, 96);
     m_weight_font.Color := TColor(RGB(112, 122, 134));
 end;
@@ -540,7 +601,8 @@ begin
     m_preedit_label.Height := m_base_preedit_height;
     m_preedit_label.Alignment := taLeftJustify;
     m_preedit_label.Layout := tlCenter;
-    m_preedit_label.Font.Name := c_candidate_ui_font_name;
+    m_preedit_label.Font.Name := c_default_candidate_font_name;
+    m_preedit_label.Font.Charset := DEFAULT_CHARSET;
     m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, 96);
     m_preedit_label.Font.Color := TColor(RGB(98, 112, 128));
     m_preedit_label.Transparent := False;
@@ -558,7 +620,8 @@ begin
     m_page_label.Height := m_base_label_height;
     m_page_label.Alignment := taRightJustify;
     m_page_label.Layout := tlCenter;
-    m_page_label.Font.Name := c_candidate_ui_font_name;
+    m_page_label.Font.Name := c_default_candidate_font_name;
+    m_page_label.Font.Charset := DEFAULT_CHARSET;
     m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, 96);
     m_page_label.Font.Color := clGrayText;
     m_page_label.Transparent := False;
@@ -616,6 +679,60 @@ begin
     begin
         m_remove_hit_padding := 2;
     end;
+end;
+
+procedure TncCandidateWindow.apply_appearance(const font_name: string; const font_size: Integer);
+var
+    effective_font_name: string;
+    effective_font_size: Integer;
+begin
+    effective_font_name := resolve_candidate_font_name(font_name);
+
+    effective_font_size := font_size;
+    if effective_font_size < c_min_candidate_font_size then
+    begin
+        effective_font_size := c_min_candidate_font_size;
+    end
+    else if effective_font_size > c_max_candidate_font_size then
+    begin
+        effective_font_size := c_max_candidate_font_size;
+    end;
+
+    if SameText(m_list_font.Name, effective_font_name) and (m_base_list_font_size = effective_font_size) then
+    begin
+        Exit;
+    end;
+
+    m_base_list_font_size := effective_font_size;
+    m_base_preedit_font_size := effective_font_size;
+    m_base_label_font_size := Max(7, effective_font_size - 1);
+    m_base_weight_font_size := Max(6, effective_font_size - 2);
+
+    m_list_font.Name := effective_font_name;
+    m_list_font.Charset := DEFAULT_CHARSET;
+    m_weight_font.Name := effective_font_name;
+    m_weight_font.Charset := DEFAULT_CHARSET;
+    if m_preedit_label <> nil then
+    begin
+        m_preedit_label.Font.Name := effective_font_name;
+        m_preedit_label.Font.Charset := DEFAULT_CHARSET;
+    end;
+    if m_page_label <> nil then
+    begin
+        m_page_label.Font.Name := effective_font_name;
+        m_page_label.Font.Charset := DEFAULT_CHARSET;
+    end;
+
+    if m_current_dpi > 0 then
+    begin
+        apply_dpi(m_current_dpi);
+    end
+    else
+    begin
+        apply_dpi(96);
+    end;
+    update_size;
+    Invalidate;
 end;
 
 function TncCandidateWindow.get_target_dpi(const anchor: TPoint): Integer;
@@ -775,6 +892,72 @@ begin
     end;
 end;
 
+function TncCandidateWindow.canvas_font_can_render_text(const text: string): Boolean;
+const
+    c_missing_glyph = WORD($FFFF);
+var
+    glyphs: TArray<WORD>;
+    glyph_count: DWORD;
+    idx: Integer;
+    old_font: HGDIOBJ;
+begin
+    Result := True;
+    if text = '' then
+    begin
+        Exit;
+    end;
+
+    SetLength(glyphs, Length(text));
+    if Length(glyphs) = 0 then
+    begin
+        Exit;
+    end;
+
+    old_font := SelectObject(Canvas.Handle, Canvas.Font.Handle);
+    try
+        glyph_count := GetGlyphIndicesW(Canvas.Handle, PWideChar(text), Length(text),
+            @glyphs[0], GGI_MARK_NONEXISTING_GLYPHS);
+        if glyph_count = GDI_ERROR then
+        begin
+            Result := False;
+            Exit;
+        end;
+
+        for idx := 0 to High(glyphs) do
+        begin
+            if glyphs[idx] = c_missing_glyph then
+            begin
+                Result := False;
+                Exit;
+            end;
+        end;
+    finally
+        if (old_font <> 0) and (old_font <> HGDIOBJ(GDI_ERROR)) then
+        begin
+            SelectObject(Canvas.Handle, old_font);
+        end;
+    end;
+end;
+
+procedure TncCandidateWindow.assign_list_font_for_text(const text: string; const font_color: TColor);
+begin
+    Canvas.Font.Assign(m_list_font);
+    Canvas.Font.Color := font_color;
+    SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+    if canvas_font_can_render_text(text) then
+    begin
+        Exit;
+    end;
+
+    // Some localized or user-selected font face names can fail GDI glyph lookup
+    // during the first host paint. Fall back to the built-in CJK-capable face.
+    Canvas.Font.Assign(m_list_font);
+    Canvas.Font.Name := c_default_candidate_font_name;
+    Canvas.Font.Charset := DEFAULT_CHARSET;
+    Canvas.Font.Color := font_color;
+    SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+end;
+
 function TncCandidateWindow.format_page_text(const page_index: Integer; const page_count: Integer): string;
 var
     current_page: Integer;
@@ -812,6 +995,8 @@ var
     meta_text_height: Integer;
     meta_vertical_padding: Integer;
     meta_horizontal_padding: Integer;
+    list_vertical_padding: Integer;
+    font_size_delta: Integer;
 begin
     item_count := m_candidate_lines.Count;
     if item_count = 0 then
@@ -819,15 +1004,28 @@ begin
         Exit;
     end;
 
-    Canvas.Font.Assign(m_list_font);
+    assign_list_font_for_text(c_candidate_text_height_sample, m_list_font.Color);
     main_text_height := Canvas.TextHeight(c_candidate_text_height_sample);
     Canvas.Font.Assign(m_weight_font);
     weight_text_height := Canvas.TextHeight(c_candidate_text_height_sample);
 
+    font_size_delta := m_base_list_font_size - c_default_candidate_font_size;
+    if font_size_delta < 0 then
+    begin
+        font_size_delta := 0;
+    end;
+    list_vertical_padding := MulDiv(4 + (font_size_delta * 2), m_current_dpi, 96);
+    if list_vertical_padding < 4 then
+    begin
+        list_vertical_padding := 4;
+    end;
+
     dynamic_item_height := MulDiv(m_base_item_height, m_current_dpi, 96);
+    dynamic_item_height := Max(dynamic_item_height, main_text_height + list_vertical_padding);
     if m_show_weight_row then
     begin
-        dynamic_item_height := Max(dynamic_item_height, main_text_height + m_weight_gap + weight_text_height + 4);
+        dynamic_item_height := Max(dynamic_item_height, main_text_height + m_weight_gap + weight_text_height +
+            list_vertical_padding);
     end;
     m_list_item_height := dynamic_item_height;
 
@@ -836,7 +1034,7 @@ begin
     SetLength(m_candidate_offsets, item_count);
     for i := 0 to item_count - 1 do
     begin
-        Canvas.Font.Assign(m_list_font);
+        assign_list_font_for_text(m_candidate_lines[i], m_list_font.Color);
         main_text_width := Canvas.TextWidth(m_candidate_lines[i]);
         weight_text_width := 0;
         if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
@@ -933,6 +1131,8 @@ begin
     end;
 
     recompute_remove_button_rects;
+    m_layout_dpi := m_current_dpi;
+    m_layout_list_font_height := m_list_font.Height;
 end;
 
 procedure TncCandidateWindow.Paint;
@@ -977,7 +1177,7 @@ begin
         Canvas.Font.Assign(m_preedit_label.Font);
         Canvas.Font.Color := m_preedit_label.Font.Color;
         SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
-        DrawText(Canvas.Handle, PChar(m_preedit_label.Caption), Length(m_preedit_label.Caption), preedit_rect,
+        draw_canvas_text(Canvas, m_preedit_label.Caption, preedit_rect,
             DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX);
     end;
 
@@ -988,7 +1188,7 @@ begin
         Canvas.Font.Assign(m_page_label.Font);
         Canvas.Font.Color := m_page_label.Font.Color;
         SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
-        DrawText(Canvas.Handle, PChar(m_page_label.Caption), Length(m_page_label.Caption), page_rect,
+        draw_canvas_text(Canvas, m_page_label.Caption, page_rect,
             DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX);
     end;
 
@@ -997,9 +1197,14 @@ begin
         Exit;
     end;
 
+    if (m_layout_dpi <> m_current_dpi) or (m_layout_list_font_height <> m_list_font.Height) then
+    begin
+        update_size;
+    end;
+
     SetBkMode(Canvas.Handle, TRANSPARENT);
     line_height := m_list_item_height;
-    Canvas.Font.Assign(m_list_font);
+    assign_list_font_for_text('Hg', m_list_font.Color);
     main_text_height := Canvas.TextHeight('Hg');
     Canvas.Font.Assign(m_weight_font);
     weight_text_height := Canvas.TextHeight('Hg');
@@ -1071,10 +1276,18 @@ begin
             main_text_top := y + ((line_height - content_height) div 2);
         end;
 
-        Canvas.Font.Assign(m_list_font);
-        SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
+        if i = m_selected_index then
+        begin
+            assign_list_font_for_text(m_candidate_lines[i],
+                get_selected_candidate_text_color(candidate_source));
+        end
+        else
+        begin
+            assign_list_font_for_text(m_candidate_lines[i],
+                get_candidate_text_color(candidate_source));
+        end;
         text_rect := Rect(x, main_text_top, text_right, main_text_top + main_text_height);
-        DrawText(Canvas.Handle, PChar(m_candidate_lines[i]), Length(m_candidate_lines[i]), text_rect,
+        draw_canvas_text(Canvas, m_candidate_lines[i], text_rect,
             DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
 
         if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
@@ -1092,8 +1305,8 @@ begin
             weight_text_top := main_text_top + main_text_height + m_weight_gap;
             weight_text_rect := Rect(x + MulDiv(2, m_current_dpi, 96), weight_text_top, text_right,
                 weight_text_top + weight_text_height);
-            DrawText(Canvas.Handle, PChar(m_candidate_weight_lines[i]), Length(m_candidate_weight_lines[i]),
-                weight_text_rect, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+            draw_canvas_text(Canvas, m_candidate_weight_lines[i], weight_text_rect,
+                DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
         end;
 
         if not IsRectEmpty(remove_rect) then

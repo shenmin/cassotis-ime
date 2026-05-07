@@ -151,6 +151,10 @@ type
         m_combo_punctuation_mode: TComboBox;
         m_chk_full_width_mode: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
+        m_combo_candidate_font: TComboBox;
+        m_track_candidate_font_size: TTrackBar;
+        m_candidate_font_size_labels: array[0..6] of TLabel;
+        m_candidate_preview: TPaintBox;
         m_chk_log_enabled: TncModernCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
@@ -181,6 +185,13 @@ type
         procedure update_logging_controls;
         procedure load_defaults;
         procedure load_from_config;
+        procedure populate_candidate_font_combo;
+        function get_candidate_font_size_from_slider: Integer;
+        procedure set_candidate_font_size_slider(const font_size: Integer);
+        function get_selected_candidate_font_name: string;
+        procedure update_candidate_preview;
+        procedure on_candidate_appearance_change(Sender: TObject);
+        procedure on_candidate_preview_paint(Sender: TObject);
         function browse_for_save_file(const title: string; const filter: string; const default_ext: string;
             var path: string): Boolean;
         procedure assign_path_edit(const edit: TEdit; const path: string);
@@ -237,6 +248,7 @@ const
     c_check_width = c_section_width - c_label_left - 20;
     c_hint_width = c_section_width - (c_label_left * 2);
     c_general_row_gap = 8;
+    c_tbm_get_channel_rect = WM_USER + 26;
 
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
@@ -264,6 +276,16 @@ resourcestring
     SLabelPunctuationMode = '标点';
     SCheckFullWidthMode = '使用全角输入';
     SCheckShowStatusWidget = '显示状态浮窗';
+    SLabelCandidateFont = '候选字体';
+    SLabelCandidateSize = '大小';
+    SLabelCandidatePreview = '预览';
+    SSizeMinimum = '最小';
+    SSizeExtraSmaller = '更小';
+    SSizeSmaller = '较小';
+    SSizeDefault = '默认';
+    SSizeLarger = '较大';
+    SSizeExtraLarger = '更大';
+    SSizeMaximum = '最大';
     SCheckEnableLogging = '启用日志';
     SLabelLogLevel = '日志级别';
     SOptionLogDebug = '调试';
@@ -1192,6 +1214,8 @@ begin
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
+    Result.candidate_font_name := c_default_candidate_font_name;
+    Result.candidate_font_size := c_default_candidate_font_size;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
 end;
@@ -1210,6 +1234,9 @@ begin
     m_dirty := False;
     m_applied := False;
     m_scaled_dpi := get_ui_scale_dpi;
+    m_engine_config := build_default_engine_config_value;
+    m_log_config := build_default_log_config_value;
+    m_status_widget_visible := True;
     configure_form;
     configure_tabs;
     configure_buttons;
@@ -1529,7 +1556,25 @@ var
     section_top: Integer;
     defaults_group: TPanel;
     appearance_group: TPanel;
+    label_index: Integer;
+    size_label_texts: array[0..6] of string;
+    candidate_control_width: Integer;
+    label_width: Integer;
+    tick_center: Integer;
+    track_channel_rect: TRect;
+    track_channel_left: Integer;
+    track_channel_right_inset: Integer;
+    track_channel_width: Integer;
+    track_label_left: Integer;
 begin
+    size_label_texts[0] := SSizeMinimum;
+    size_label_texts[1] := SSizeExtraSmaller;
+    size_label_texts[2] := SSizeSmaller;
+    size_label_texts[3] := SSizeDefault;
+    size_label_texts[4] := SSizeLarger;
+    size_label_texts[5] := SSizeExtraLarger;
+    size_label_texts[6] := SSizeMaximum;
+
     section_top := scale_ui(18);
     defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 158);
 
@@ -1562,10 +1607,95 @@ begin
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
 
     section_top := defaults_group.Top + defaults_group.Height + scale_ui(10);
-    appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 76);
+    appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 242);
 
     top := scale_ui(c_section_inner_top);
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    create_label(Self, appearance_group, SLabelCandidateFont, top);
+    candidate_control_width := scale_ui(260);
+    m_combo_candidate_font := TComboBox.Create(Self);
+    m_combo_candidate_font.Parent := appearance_group;
+    m_combo_candidate_font.Left := scale_ui(c_control_left);
+    m_combo_candidate_font.Top := top;
+    m_combo_candidate_font.Width := candidate_control_width;
+    m_combo_candidate_font.Style := csDropDownList;
+    populate_candidate_font_combo;
+    m_combo_candidate_font.OnChange := on_candidate_appearance_change;
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    create_label(Self, appearance_group, SLabelCandidateSize, top);
+    m_track_candidate_font_size := TTrackBar.Create(Self);
+    m_track_candidate_font_size.Parent := appearance_group;
+    m_track_candidate_font_size.Left := scale_ui(c_control_left);
+    m_track_candidate_font_size.Top := top - scale_ui(3);
+    m_track_candidate_font_size.Width := candidate_control_width;
+    m_track_candidate_font_size.Height := scale_ui(34);
+    m_track_candidate_font_size.Min := 0;
+    m_track_candidate_font_size.Max := c_max_candidate_font_size - c_min_candidate_font_size;
+    m_track_candidate_font_size.Frequency := 1;
+    m_track_candidate_font_size.LineSize := 1;
+    m_track_candidate_font_size.PageSize := 1;
+    m_track_candidate_font_size.TickMarks := tmBottomRight;
+    m_track_candidate_font_size.TickStyle := tsAuto;
+    m_track_candidate_font_size.Position := c_default_candidate_font_size - c_min_candidate_font_size;
+    m_track_candidate_font_size.OnChange := on_candidate_appearance_change;
+
+    track_channel_rect := Rect(0, 0, m_track_candidate_font_size.Width, 0);
+    m_track_candidate_font_size.HandleNeeded;
+    SendMessage(m_track_candidate_font_size.Handle, c_tbm_get_channel_rect, 0, LPARAM(@track_channel_rect));
+    track_channel_width := track_channel_rect.Right - track_channel_rect.Left;
+    if track_channel_width > 0 then
+    begin
+        track_channel_right_inset := m_track_candidate_font_size.Width - track_channel_rect.Right;
+        if track_channel_right_inset < 0 then
+        begin
+            track_channel_right_inset := 0;
+        end;
+        m_track_candidate_font_size.Left := m_combo_candidate_font.Left - track_channel_rect.Left;
+        m_track_candidate_font_size.Width := candidate_control_width + track_channel_rect.Left +
+            track_channel_right_inset;
+
+        track_channel_rect := Rect(0, 0, m_track_candidate_font_size.Width, 0);
+        SendMessage(m_track_candidate_font_size.Handle, c_tbm_get_channel_rect, 0, LPARAM(@track_channel_rect));
+    end;
+    track_channel_left := track_channel_rect.Left;
+    track_channel_width := track_channel_rect.Right - track_channel_rect.Left;
+    if track_channel_width <= 0 then
+    begin
+        track_channel_left := 0;
+        track_channel_width := m_track_candidate_font_size.Width;
+    end;
+
+    label_width := scale_ui(40);
+    for label_index := Low(m_candidate_font_size_labels) to High(m_candidate_font_size_labels) do
+    begin
+        m_candidate_font_size_labels[label_index] := TLabel.Create(Self);
+        m_candidate_font_size_labels[label_index].Parent := appearance_group;
+        m_candidate_font_size_labels[label_index].Top := top + scale_ui(32);
+        m_candidate_font_size_labels[label_index].AutoSize := False;
+        m_candidate_font_size_labels[label_index].Width := label_width;
+        tick_center := m_track_candidate_font_size.Left + track_channel_left +
+            MulDiv(label_index, track_channel_width,
+                High(m_candidate_font_size_labels));
+        track_label_left := tick_center - (label_width div 2);
+        m_candidate_font_size_labels[label_index].Left := track_label_left;
+        m_candidate_font_size_labels[label_index].Alignment := taCenter;
+        m_candidate_font_size_labels[label_index].Font.Color := RGB(90, 100, 115);
+        m_candidate_font_size_labels[label_index].Caption := size_label_texts[label_index];
+    end;
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap + 32));
+    create_label(Self, appearance_group, SLabelCandidatePreview, top + scale_ui(12));
+    m_candidate_preview := TPaintBox.Create(Self);
+    m_candidate_preview.Parent := appearance_group;
+    m_candidate_preview.Left := scale_ui(c_control_left);
+    m_candidate_preview.Top := top;
+    m_candidate_preview.Width := appearance_group.Width - scale_ui(c_control_left + c_label_left);
+    m_candidate_preview.Height := scale_ui(56);
+    m_candidate_preview.Anchors := [akLeft, akTop, akRight];
+    m_candidate_preview.OnPaint := on_candidate_preview_paint;
 end;
 
 procedure TncSettingsForm.add_logging_controls;
@@ -1709,6 +1839,282 @@ begin
     update_apply_button;
 end;
 
+function settings_font_can_render_chinese(const font_name: string): Boolean;
+const
+    c_chinese_sample = '中文候选你好世界输入法';
+    c_missing_glyph = WORD($FFFF);
+var
+    bitmap: TBitmap;
+    glyphs: TArray<WORD>;
+    glyph_count: DWORD;
+    old_font: HGDIOBJ;
+    glyph_index: Integer;
+begin
+    Result := False;
+    if Trim(font_name) = '' then
+    begin
+        Exit;
+    end;
+    if Trim(font_name)[1] = '@' then
+    begin
+        Exit;
+    end;
+
+    bitmap := TBitmap.Create;
+    try
+        bitmap.SetSize(1, 1);
+        bitmap.Canvas.Font.Name := font_name;
+        bitmap.Canvas.Font.Charset := DEFAULT_CHARSET;
+        bitmap.Canvas.Font.Height := -12;
+
+        SetLength(glyphs, Length(c_chinese_sample));
+        old_font := SelectObject(bitmap.Canvas.Handle, bitmap.Canvas.Font.Handle);
+        try
+            glyph_count := GetGlyphIndicesW(bitmap.Canvas.Handle, PWideChar(c_chinese_sample),
+                Length(c_chinese_sample), @glyphs[0], GGI_MARK_NONEXISTING_GLYPHS);
+            if glyph_count = GDI_ERROR then
+            begin
+                Exit;
+            end;
+
+            for glyph_index := 0 to High(glyphs) do
+            begin
+                if glyphs[glyph_index] = c_missing_glyph then
+                begin
+                    Exit;
+                end;
+            end;
+
+            Result := True;
+        finally
+            if (old_font <> 0) and (old_font <> HGDIOBJ(GDI_ERROR)) then
+            begin
+                SelectObject(bitmap.Canvas.Handle, old_font);
+            end;
+        end;
+    finally
+        bitmap.Free;
+    end;
+end;
+
+procedure TncSettingsForm.populate_candidate_font_combo;
+var
+    font_index: Integer;
+    font_name: string;
+begin
+    if m_combo_candidate_font = nil then
+    begin
+        Exit;
+    end;
+
+    m_combo_candidate_font.Items.BeginUpdate;
+    try
+        m_combo_candidate_font.Items.Clear;
+        m_combo_candidate_font.Sorted := True;
+        for font_index := 0 to Screen.Fonts.Count - 1 do
+        begin
+            font_name := Screen.Fonts[font_index];
+            if settings_font_can_render_chinese(font_name) then
+            begin
+                m_combo_candidate_font.Items.Add(font_name);
+            end;
+        end;
+        if m_combo_candidate_font.Items.IndexOf(c_default_candidate_font_name) < 0 then
+        begin
+            m_combo_candidate_font.Items.Add(c_default_candidate_font_name);
+        end;
+    finally
+        m_combo_candidate_font.Items.EndUpdate;
+    end;
+end;
+
+function TncSettingsForm.get_candidate_font_size_from_slider: Integer;
+begin
+    Result := c_default_candidate_font_size;
+    if m_track_candidate_font_size <> nil then
+    begin
+        Result := c_min_candidate_font_size + m_track_candidate_font_size.Position;
+    end;
+    if Result < c_min_candidate_font_size then
+    begin
+        Result := c_min_candidate_font_size;
+    end
+    else if Result > c_max_candidate_font_size then
+    begin
+        Result := c_max_candidate_font_size;
+    end;
+end;
+
+procedure TncSettingsForm.set_candidate_font_size_slider(const font_size: Integer);
+var
+    effective_size: Integer;
+begin
+    if m_track_candidate_font_size = nil then
+    begin
+        Exit;
+    end;
+
+    effective_size := font_size;
+    if effective_size < c_min_candidate_font_size then
+    begin
+        effective_size := c_min_candidate_font_size;
+    end
+    else if effective_size > c_max_candidate_font_size then
+    begin
+        effective_size := c_max_candidate_font_size;
+    end;
+    m_track_candidate_font_size.Position := effective_size - c_min_candidate_font_size;
+end;
+
+function TncSettingsForm.get_selected_candidate_font_name: string;
+begin
+    Result := c_default_candidate_font_name;
+    if m_combo_candidate_font <> nil then
+    begin
+        Result := Trim(m_combo_candidate_font.Text);
+        if Result = '' then
+        begin
+            Result := c_default_candidate_font_name;
+        end;
+    end;
+end;
+
+procedure TncSettingsForm.update_candidate_preview;
+begin
+    if m_candidate_preview <> nil then
+    begin
+        m_candidate_preview.Invalidate;
+    end;
+end;
+
+procedure TncSettingsForm.on_candidate_appearance_change(Sender: TObject);
+begin
+    update_candidate_preview;
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.on_candidate_preview_paint(Sender: TObject);
+const
+    c_preview_texts: array[0..2] of string = ('1. 你好', '2. 言泉', '3. 输入法');
+var
+    paint_box: TPaintBox;
+    canvas: TCanvas;
+    bounds: TRect;
+    item_rect: TRect;
+    text_rect: TRect;
+    row_top: Integer;
+    line_height: Integer;
+    text_height: Integer;
+    vertical_padding: Integer;
+    horizontal_padding: Integer;
+    item_gap: Integer;
+    x: Integer;
+    item_index: Integer;
+    font_size: Integer;
+    dpi: Integer;
+    font_size_delta: Integer;
+
+    procedure draw_preview_text(const text: string; var rect: TRect);
+    begin
+        DrawTextW(canvas.Handle, PWideChar(text), Length(text), rect,
+            DT_SINGLELINE or DT_VCENTER or DT_LEFT or DT_NOPREFIX);
+    end;
+
+    procedure draw_item(const index: Integer);
+    var
+        item_width: Integer;
+        text_value: string;
+        selected: Boolean;
+    begin
+        text_value := c_preview_texts[index];
+        selected := index = 0;
+        item_width := canvas.TextWidth(text_value) + (horizontal_padding * 2);
+        item_rect := Rect(x, row_top, x + item_width, row_top + line_height);
+
+        if selected then
+        begin
+            canvas.Brush.Color := TColor(RGB(232, 240, 254));
+            canvas.Pen.Color := TColor(RGB(173, 198, 235));
+            canvas.RoundRect(item_rect.Left, item_rect.Top + 1, item_rect.Right,
+                item_rect.Bottom - 1, scale_ui(6), scale_ui(6));
+            canvas.Font.Color := TColor(RGB(20, 20, 20));
+        end
+        else
+        begin
+            canvas.Brush.Color := TColor(RGB(252, 253, 255));
+            canvas.Pen.Color := TColor(RGB(252, 253, 255));
+            canvas.FillRect(item_rect);
+            canvas.Font.Color := clBlack;
+        end;
+
+        text_rect := item_rect;
+        InflateRect(text_rect, -horizontal_padding, 0);
+        SetTextColor(canvas.Handle, ColorToRGB(canvas.Font.Color));
+        draw_preview_text(text_value, text_rect);
+
+        x := item_rect.Right + item_gap;
+    end;
+begin
+    if not (Sender is TPaintBox) then
+    begin
+        Exit;
+    end;
+
+    paint_box := TPaintBox(Sender);
+    canvas := paint_box.Canvas;
+    bounds := paint_box.ClientRect;
+    canvas.Brush.Color := TColor(RGB(252, 253, 255));
+    canvas.FillRect(bounds);
+    canvas.Pen.Color := TColor(RGB(214, 223, 236));
+    canvas.Brush.Style := bsSolid;
+    canvas.Rectangle(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+
+    SetBkMode(canvas.Handle, TRANSPARENT);
+    canvas.Font.Name := get_selected_candidate_font_name;
+    canvas.Font.Charset := DEFAULT_CHARSET;
+    font_size := get_candidate_font_size_from_slider;
+    dpi := m_scaled_dpi;
+    if dpi <= 0 then
+    begin
+        dpi := 96;
+    end;
+    canvas.Font.Height := -MulDiv(font_size, dpi, 72);
+    canvas.Font.Quality := fqClearTypeNatural;
+    canvas.Font.Style := [];
+    canvas.Font.Color := clBlack;
+
+    text_height := canvas.TextHeight('Hg国');
+    font_size_delta := font_size - c_default_candidate_font_size;
+    if font_size_delta < 0 then
+    begin
+        font_size_delta := 0;
+    end;
+    vertical_padding := scale_ui(4 + (font_size_delta * 2));
+    if vertical_padding < scale_ui(4) then
+    begin
+        vertical_padding := scale_ui(4);
+    end;
+    line_height := scale_ui(20);
+    if line_height < text_height + vertical_padding then
+    begin
+        line_height := text_height + vertical_padding;
+    end;
+
+    horizontal_padding := scale_ui(6);
+    item_gap := scale_ui(12);
+    row_top := bounds.Top + ((bounds.Bottom - bounds.Top - line_height) div 2);
+    if row_top < bounds.Top + scale_ui(2) then
+    begin
+        row_top := bounds.Top + scale_ui(2);
+    end;
+    x := bounds.Left + scale_ui(6);
+
+    for item_index := Low(c_preview_texts) to High(c_preview_texts) do
+    begin
+        draw_item(item_index);
+    end;
+end;
+
 function TncSettingsForm.browse_for_save_file(const title: string; const filter: string; const default_ext: string;
     var path: string): Boolean;
 var
@@ -1802,6 +2208,8 @@ begin
 end;
 
 procedure TncSettingsForm.load_from_config;
+var
+    candidate_font_name: string;
 begin
     if m_combo_input_mode <> nil then
     begin
@@ -1838,6 +2246,25 @@ begin
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
     end;
+    if m_combo_candidate_font <> nil then
+    begin
+        candidate_font_name := Trim(m_engine_config.candidate_font_name);
+        if candidate_font_name = '' then
+        begin
+            candidate_font_name := c_default_candidate_font_name;
+        end;
+        m_combo_candidate_font.ItemIndex := m_combo_candidate_font.Items.IndexOf(candidate_font_name);
+        if m_combo_candidate_font.ItemIndex < 0 then
+        begin
+            candidate_font_name := c_default_candidate_font_name;
+            m_combo_candidate_font.ItemIndex := m_combo_candidate_font.Items.IndexOf(candidate_font_name);
+            if (m_combo_candidate_font.ItemIndex < 0) and (m_combo_candidate_font.Items.Count > 0) then
+            begin
+                m_combo_candidate_font.ItemIndex := 0;
+            end;
+        end;
+    end;
+    set_candidate_font_size_slider(m_engine_config.candidate_font_size);
     if m_chk_log_enabled <> nil then
     begin
         m_chk_log_enabled.Checked := m_log_config.enabled;
@@ -1869,6 +2296,7 @@ begin
     end;
     m_dirty := False;
     update_logging_controls;
+    update_candidate_preview;
     update_apply_button;
 end;
 
@@ -1936,6 +2364,8 @@ begin
     next_config.enable_ctrl_space_toggle := False;
     next_config.enable_shift_space_full_width_toggle := True;
     next_config.enable_ctrl_period_punct_toggle := True;
+    next_config.candidate_font_name := get_selected_candidate_font_name;
+    next_config.candidate_font_size := get_candidate_font_size_from_slider;
     next_status_widget_visible := m_chk_show_status_widget.Checked;
     next_log_config.enabled := m_chk_log_enabled.Checked;
     next_log_config.log_path := normalize_path_override(m_edit_log_path.Text, get_default_log_path);

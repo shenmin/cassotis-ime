@@ -37,7 +37,7 @@ function get_default_user_dictionary_path: string;
 implementation
 
 const
-    c_config_version = 8;
+    c_config_version = 9;
 
 function get_module_directory: string; forward;
 
@@ -61,6 +61,19 @@ begin
     else
     begin
         Result := 'simplified';
+    end;
+end;
+
+function clamp_candidate_font_size(const value: Integer): Integer;
+begin
+    Result := value;
+    if Result < c_min_candidate_font_size then
+    begin
+        Result := c_min_candidate_font_size;
+    end
+    else if Result > c_max_candidate_font_size then
+    begin
+        Result := c_max_candidate_font_size;
     end;
 end;
 
@@ -326,6 +339,8 @@ begin
     Result.punctuation_full_width := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
+    Result.candidate_font_name := c_default_candidate_font_name;
+    Result.candidate_font_size := c_default_candidate_font_size;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
 
@@ -366,6 +381,14 @@ begin
         Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
+        Result.candidate_font_name := Trim(ini.ReadString('appearance', 'candidate_font_name',
+            c_default_candidate_font_name));
+        if Result.candidate_font_name = '' then
+        begin
+            Result.candidate_font_name := c_default_candidate_font_name;
+        end;
+        Result.candidate_font_size := clamp_candidate_font_size(ini.ReadInteger('appearance',
+            'candidate_font_size', c_default_candidate_font_size));
         Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
         variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
@@ -393,6 +416,8 @@ begin
             ini.ValueExists('engine', 'enable_segment_candidates') or
             ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
             ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
+            not ini.ValueExists('appearance', 'candidate_font_name') or
+            not ini.ValueExists('appearance', 'candidate_font_size') or
             not ini.ValueExists('engine', 'debug') or
             not ini.ValueExists('dictionary', 'variant') or
             ini.ValueExists('dictionary', 'db_path') or
@@ -438,6 +463,7 @@ end;
 procedure TncConfigManager.save_engine_config(const config: TncEngineConfig);
 var
     ini: TIniFile;
+    candidate_font_name: string;
 begin
     if m_config_path = '' then
     begin
@@ -479,6 +505,14 @@ begin
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
+        candidate_font_name := Trim(config.candidate_font_name);
+        if candidate_font_name = '' then
+        begin
+            candidate_font_name := c_default_candidate_font_name;
+        end;
+        ini.WriteString('appearance', 'candidate_font_name', candidate_font_name);
+        ini.WriteInteger('appearance', 'candidate_font_size',
+            clamp_candidate_font_size(config.candidate_font_size));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
         if ini.ValueExists('dictionary', 'db_path') then
         begin
