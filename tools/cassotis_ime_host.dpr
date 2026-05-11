@@ -63,7 +63,8 @@ begin
 end;
 
 const
-    c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)S:(ML;;NW;;;LW)';
+    // Windows shell search surfaces run with AppContainer-style tokens; AC/S-1-15-2-2 keep IPC reachable there.
+    c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)(A;;GRGW;;;AC)(A;;GRGW;;;S-1-15-2-2)S:(ML;;NW;;;LW)';
 
 function ConvertStringSecurityDescriptorToSecurityDescriptorW(
     StringSecurityDescriptor: LPCWSTR; StringSDRevision: DWORD;

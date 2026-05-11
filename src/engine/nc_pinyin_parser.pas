@@ -39,10 +39,10 @@ const
     // Finals allowed when there is no explicit initial.
     // Keep this conservative to avoid incorrect greedy splits like:
     // "danian" -> "dan + ian" (expected "da + nian").
-    c_finals_no_initial: array[0..11] of string = (
+    c_finals_no_initial: array[0..12] of string = (
         'ang', 'eng',
         'ai', 'an', 'ao', 'ei', 'en', 'er', 'ou',
-        'a', 'e', 'o'
+        'a', 'e', 'o', 'r'
     );
 
 function TncPinyinParser.parse(const input_text: string): TncPinyinParseResult; 
@@ -74,6 +74,14 @@ var
 
     function is_initial_final_compatible(const initial_value: string; const final_value: string): Boolean;
     begin
+        // "er" is a zero-initial syllable. Accepting synthetic initial+er
+        // syllables (ner/ger/...) makes compact streams such as "pingwener"
+        // prefer "ping+we+ner" over the intended "ping+wen+er".
+        if final_value = 'er' then
+        begin
+            Exit(False);
+        end;
+
         // b/p/m/f/w can take bare "u" (bu/pu/mu/fu/wu), but not medial-u
         // finals such as ue/uan/uai/uo. Without this, missing-apostrophe input
         // like "bue" is greedily parsed as invalid "bue" instead of "bu"+"e".
@@ -177,6 +185,19 @@ var
             if final_token = 'er' then
             begin
                 Exit(100);
+            end;
+            if final_token = 'r' then
+            begin
+                // Compact erhua input such as "nar" and "yihuir" leaves a
+                // trailing r after the base syllable. Treat it as a costly but
+                // valid boundary marker instead of an unknown character.
+                // Do not let it steal canonical er in inputs like "dierge" or
+                // "eryan", where greedy "die+r"/"due+r" breaks normal words.
+                if (token_start > 0) and (lower_text[token_start] = 'e') then
+                begin
+                    Exit(1200);
+                end;
+                Exit(80);
             end;
 
             // Multi-letter zero-initial finals (ao/an/ou/...) often occur after

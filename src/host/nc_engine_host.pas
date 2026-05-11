@@ -186,7 +186,8 @@ const
     c_user_dict_checkpoint_retry_ms = 5000;
     c_tray_host_mutex_name_format = 'Local\cassotis_ime_tray_host_v1_s%d';
     c_tray_host_restart_min_interval_ms = 800;
-    c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)S:(ML;;NW;;;LW)';
+    // Windows shell search surfaces run with AppContainer-style tokens; AC/S-1-15-2-2 keep IPC reachable there.
+    c_ipc_security_sddl = 'D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GRGW;;;AU)(A;;GRGW;;;AC)(A;;GRGW;;;S-1-15-2-2)S:(ML;;NW;;;LW)';
 
 var
     g_host_log_path: string = '';

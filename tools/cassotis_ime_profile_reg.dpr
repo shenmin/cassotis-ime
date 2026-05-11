@@ -1269,6 +1269,41 @@ begin
     end;
 end;
 
+function grant_runtime_appcontainer_access(const dll_path: string): Boolean;
+const
+    c_all_app_packages_rx = '*S-1-15-2-1:(OI)(CI)RX';
+    c_all_restricted_app_packages_rx = '*S-1-15-2-2:(OI)(CI)RX';
+var
+    runtime_dir: string;
+    icacls_path: string;
+    exit_code: Cardinal;
+begin
+    Result := False;
+    runtime_dir := ExtractFileDir(dll_path);
+    if runtime_dir = '' then
+    begin
+        Writeln('Runtime directory not found for ACL update: ' + dll_path);
+        Exit;
+    end;
+
+    icacls_path := system_dll_path('icacls.exe');
+    Writeln('Granting AppContainer read/execute access: ' + runtime_dir);
+    if not execute_process_hidden(icacls_path,
+        [runtime_dir, '/grant', c_all_app_packages_rx, c_all_restricted_app_packages_rx, '/T', '/C'],
+        True, exit_code) then
+    begin
+        Writeln('Failed to launch icacls for AppContainer ACL update.');
+        Exit;
+    end;
+    if exit_code <> 0 then
+    begin
+        Writeln('icacls AppContainer ACL update failed with exit code ' + IntToStr(exit_code));
+        Exit;
+    end;
+
+    Result := True;
+end;
+
 function register_one_dll(const target_path: string; const clsid_text_service: string): Boolean;
 var
     regsvr32_path: string;
@@ -1387,6 +1422,10 @@ begin
     has_error := False;
     for idx := 0 to High(target_paths) do
     begin
+        if not grant_runtime_appcontainer_access(target_paths[idx]) then
+        begin
+            Writeln('Warning: Start/SearchHost may not load Cassotis IME without AppContainer runtime access.');
+        end;
         if not register_one_dll(target_paths[idx], clsid_text_service) then
         begin
             has_error := True;
