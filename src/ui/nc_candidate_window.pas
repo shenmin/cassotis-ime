@@ -96,6 +96,7 @@ type
     protected
         procedure CreateParams(var Params: TCreateParams); override;
         procedure WMMouseActivate(var Message: TMessage); message WM_MOUSEACTIVATE;
+        procedure WMEraseBkgnd(var Message: TWMEraseBkgnd); message WM_ERASEBKGND;
         procedure WMNCHitTest(var Message: TMessage); message WM_NCHITTEST;
         procedure WMLButtonDown(var Message: TWMLButtonDown); message WM_LBUTTONDOWN;
         procedure WMLButtonUp(var Message: TWMLButtonUp); message WM_LBUTTONUP;
@@ -408,6 +409,7 @@ begin
     FormStyle := fsStayOnTop;
     Position := poDesigned;
     Scaled := False;
+    DoubleBuffered := True;
     Color := m_color_theme.background_color;
     Padding.Left := 1;
     Padding.Top := 1;
@@ -426,6 +428,14 @@ procedure TncCandidateWindow.WMMouseActivate(var Message: TMessage);
 begin
     // Keep editor focus on target app while still receiving mouse click.
     Message.Result := MA_NOACTIVATE;
+end;
+
+procedure TncCandidateWindow.WMEraseBkgnd(var Message: TWMEraseBkgnd);
+begin
+    // Paint draws the full client area. Suppressing the default background
+    // erase avoids a transient blank candidate window between resize/update
+    // and the next paint.
+    Message.Result := 1;
 end;
 
 procedure TncCandidateWindow.WMNCHitTest(var Message: TMessage);
@@ -1470,6 +1480,15 @@ begin
         m_candidate_lines.Clear;
         m_candidate_weight_lines.Clear;
         count := Length(candidates);
+        m_selected_index := selected_index;
+        if m_selected_index < 0 then
+        begin
+            m_selected_index := 0;
+        end
+        else if m_selected_index >= count then
+        begin
+            m_selected_index := count - 1;
+        end;
         m_show_weight_row := m_debug_mode and (count > 0);
         SetLength(m_candidate_sources, count);
         SetLength(m_candidate_is_user, count);
@@ -1523,16 +1542,6 @@ begin
     begin
         hide_window;
         Exit;
-    end;
-
-    m_selected_index := selected_index;
-    if m_selected_index < 0 then
-    begin
-        m_selected_index := 0;
-    end
-    else if m_selected_index >= m_candidate_lines.Count then
-    begin
-        m_selected_index := m_candidate_lines.Count - 1;
     end;
 
     if m_current_dpi <= 0 then
