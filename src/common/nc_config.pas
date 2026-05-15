@@ -4,6 +4,7 @@ interface
 
 uses
     System.SysUtils,
+    System.Classes,
     System.IniFiles,
     System.IOUtils,
     Winapi.Windows,
@@ -18,12 +19,15 @@ type
     private
         m_config_path: string;
         procedure ensure_config_directory;
-        procedure write_config_version(const ini: TIniFile);
+        procedure write_config_version(const ini: TMemIniFile);
     public
         constructor create(const config_path: string);
         function load_engine_config: TncEngineConfig;
         function load_log_config: TncLogConfig;
         procedure save_engine_config(const config: TncEngineConfig);
+        procedure save_engine_state_config(const input_mode: TncInputMode; const full_width_mode: Boolean;
+            const punctuation_full_width: Boolean);
+        procedure save_dictionary_variant_config(const variant: TncDictionaryVariant);
         procedure save_log_config(const config: TncLogConfig);
         property config_path: string read m_config_path;
     end;
@@ -33,11 +37,12 @@ function get_runtime_data_directory: string;
 function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
 function get_default_user_dictionary_path: string;
+function nc_create_utf8_ini_file(const config_path: string): TMemIniFile;
 
 implementation
 
 const
-    c_config_version = 9;
+    c_config_version = 11;
 
 function get_module_directory: string; forward;
 
@@ -50,6 +55,136 @@ begin
     end;
 
     Result := dv_simplified;
+end;
+
+function try_extract_ini_section_name(const line_text: string; out section_name: string): Boolean;
+var
+    normalized_text: string;
+begin
+    Result := False;
+    section_name := '';
+    normalized_text := Trim(line_text);
+    if (Length(normalized_text) < 3) or (normalized_text[1] <> '[') or
+        (normalized_text[Length(normalized_text)] <> ']') then
+    begin
+        Exit;
+    end;
+
+    section_name := Trim(Copy(normalized_text, 2, Length(normalized_text) - 2));
+    Result := section_name <> '';
+end;
+
+function try_extract_ini_key_name(const line_text: string; out key_name: string): Boolean;
+var
+    normalized_text: string;
+    equal_pos: Integer;
+begin
+    Result := False;
+    key_name := '';
+    normalized_text := Trim(line_text);
+    if normalized_text = '' then
+    begin
+        Exit;
+    end;
+    if (normalized_text[1] = ';') or (normalized_text[1] = '#') or
+        (normalized_text[1] = '[') then
+    begin
+        Exit;
+    end;
+
+    equal_pos := Pos('=', normalized_text);
+    if equal_pos <= 1 then
+    begin
+        Exit;
+    end;
+
+    key_name := Trim(Copy(normalized_text, 1, equal_pos - 1));
+    Result := key_name <> '';
+end;
+
+function normalize_duplicate_ini_keys(const config_path: string): Boolean;
+var
+    lines: TArray<string>;
+    line_sections: TArray<string>;
+    keep_lines: TArray<Boolean>;
+    output_lines: TStringList;
+    seen_keys: TStringList;
+    current_section: string;
+    section_name: string;
+    key_name: string;
+    section_key: string;
+    line_index: Integer;
+begin
+    Result := False;
+    if (config_path = '') or (not FileExists(config_path)) then
+    begin
+        Exit;
+    end;
+
+    try
+        lines := TFile.ReadAllLines(config_path, TEncoding.UTF8);
+    except
+        Exit;
+    end;
+
+    SetLength(line_sections, Length(lines));
+    current_section := '';
+    for line_index := 0 to High(lines) do
+    begin
+        if try_extract_ini_section_name(lines[line_index], section_name) then
+        begin
+            current_section := section_name;
+        end;
+        line_sections[line_index] := current_section;
+    end;
+
+    SetLength(keep_lines, Length(lines));
+    seen_keys := TStringList.Create;
+    try
+        seen_keys.CaseSensitive := False;
+        for line_index := High(lines) downto 0 do
+        begin
+            keep_lines[line_index] := True;
+            if try_extract_ini_key_name(lines[line_index], key_name) then
+            begin
+                section_key := LowerCase(line_sections[line_index]) + #1 + LowerCase(key_name);
+                if seen_keys.IndexOf(section_key) >= 0 then
+                begin
+                    keep_lines[line_index] := False;
+                    Result := True;
+                end
+                else
+                begin
+                    seen_keys.Add(section_key);
+                end;
+            end;
+        end;
+    finally
+        seen_keys.Free;
+    end;
+
+    if not Result then
+    begin
+        Exit;
+    end;
+
+    output_lines := TStringList.Create;
+    try
+        for line_index := 0 to High(lines) do
+        begin
+            if keep_lines[line_index] then
+            begin
+                output_lines.Add(lines[line_index]);
+            end;
+        end;
+        try
+            output_lines.SaveToFile(config_path, TEncoding.UTF8);
+        except
+            Result := False;
+        end;
+    finally
+        output_lines.Free;
+    end;
 end;
 
 function variant_to_text(const variant: TncDictionaryVariant): string;
@@ -74,6 +209,271 @@ begin
     else if Result > c_max_candidate_font_size then
     begin
         Result := c_max_candidate_font_size;
+    end;
+end;
+
+function clamp_candidate_color_scheme(const value: Integer): Integer;
+begin
+    Result := value;
+    if (Result < c_min_candidate_color_scheme) or (Result > c_max_candidate_color_scheme) then
+    begin
+        Result := c_default_candidate_color_scheme;
+    end;
+end;
+
+function candidate_color_scheme_to_text(const value: Integer): string;
+begin
+    case clamp_candidate_color_scheme(value) of
+        1:
+            Result := 'moon-white';
+        2:
+            Result := 'celadon';
+        3:
+            Result := 'clear-blue';
+        4:
+            Result := 'pine-ink';
+        5:
+            Result := 'indigo-night';
+    else
+        Result := 'clear-white';
+    end;
+end;
+
+function parse_candidate_color_scheme_text(const value: string; const default_value: Integer): Integer;
+var
+    numeric_value: Integer;
+    normalized_value: string;
+begin
+    normalized_value := Trim(value);
+    if normalized_value = '' then
+    begin
+        Result := clamp_candidate_color_scheme(default_value);
+        Exit;
+    end;
+
+    if TryStrToInt(normalized_value, numeric_value) then
+    begin
+        Result := clamp_candidate_color_scheme(numeric_value);
+        Exit;
+    end;
+
+    if SameText(normalized_value, 'moon-white') then
+    begin
+        Result := 1;
+    end
+    else if SameText(normalized_value, 'celadon') then
+    begin
+        Result := 2;
+    end
+    else if SameText(normalized_value, 'clear-blue') then
+    begin
+        Result := 3;
+    end
+    else if SameText(normalized_value, 'pine-ink') then
+    begin
+        Result := 4;
+    end
+    else if SameText(normalized_value, 'indigo-night') then
+    begin
+        Result := 5;
+    end
+    else if SameText(normalized_value, 'clear-white') then
+    begin
+        Result := 0;
+    end
+    else
+    begin
+        Result := clamp_candidate_color_scheme(default_value);
+    end;
+end;
+
+function contains_damaged_text_marker(const value: string): Boolean;
+var
+    replacement_mojibake: string;
+begin
+    replacement_mojibake := string(WideChar($00EF)) + string(WideChar($00BF)) + string(WideChar($00BD));
+    Result := (Pos(string(WideChar($FFFD)), value) > 0) or
+        (Pos(replacement_mojibake, value) > 0) or
+        (Pos('?', value) > 0);
+end;
+
+procedure move_damaged_ini_aside(const config_path: string);
+var
+    guid: TGUID;
+    backup_path: string;
+begin
+    if (config_path = '') or (not FileExists(config_path)) then
+    begin
+        Exit;
+    end;
+
+    CreateGUID(guid);
+    backup_path := config_path + '.invalid.' + GUIDToString(guid);
+    try
+        TFile.Move(config_path, backup_path);
+    except
+        try
+            TFile.Copy(config_path, backup_path, True);
+            TFile.Delete(config_path);
+        except
+            // If the damaged file cannot be moved, keep it and let callers use defaults.
+        end;
+    end;
+end;
+
+function nc_create_utf8_ini_file(const config_path: string): TMemIniFile;
+begin
+    Result := nil;
+    if config_path = '' then
+    begin
+        Exit;
+    end;
+
+    try
+        Result := TMemIniFile.Create(config_path, TEncoding.UTF8);
+        Exit;
+    except
+    end;
+
+    move_damaged_ini_aside(config_path);
+    try
+        Result := TMemIniFile.Create(config_path, TEncoding.UTF8);
+    except
+        Result := nil;
+    end;
+end;
+
+function is_reasonable_candidate_font_name(const value: string): Boolean;
+var
+    i: Integer;
+    code_point: Integer;
+begin
+    Result := Trim(value) <> '';
+    if not Result then
+    begin
+        Exit;
+    end;
+
+    for i := 1 to Length(value) do
+    begin
+        code_point := Ord(value[i]);
+        if ((code_point >= 32) and (code_point <= 126)) or
+            ((code_point >= $3400) and (code_point <= $9FFF)) or
+            ((code_point >= $F900) and (code_point <= $FAFF)) then
+        begin
+            Continue;
+        end;
+
+        Result := False;
+        Exit;
+    end;
+end;
+
+function is_ascii_text(const value: string): Boolean;
+var
+    i: Integer;
+begin
+    Result := True;
+    for i := 1 to Length(value) do
+    begin
+        if Ord(value[i]) > 126 then
+        begin
+            Result := False;
+            Exit;
+        end;
+    end;
+end;
+
+function read_legacy_ini_string(const config_path: string; const section: string; const ident: string): string;
+var
+    ini: TIniFile;
+begin
+    Result := '';
+    if not FileExists(config_path) then
+    begin
+        Exit;
+    end;
+
+    ini := nil;
+    try
+        ini := TIniFile.Create(config_path);
+        if ini <> nil then
+        begin
+            Result := ini.ReadString(section, ident, '');
+        end;
+    except
+        Result := '';
+    end;
+    if ini <> nil then
+    begin
+        try
+            ini.Free;
+        except
+            // Ignore legacy INI cleanup failures. The caller can keep defaults.
+        end;
+    end;
+end;
+
+function safe_ini_read_string(const ini: TMemIniFile; const section: string; const ident: string;
+    const default_value: string): string;
+begin
+    Result := default_value;
+    if ini = nil then
+    begin
+        Exit;
+    end;
+
+    try
+        Result := ini.ReadString(section, ident, default_value);
+    except
+        Result := default_value;
+    end;
+end;
+
+function safe_ini_read_integer(const ini: TMemIniFile; const section: string; const ident: string;
+    const default_value: Integer): Integer;
+begin
+    Result := default_value;
+    if ini = nil then
+    begin
+        Exit;
+    end;
+
+    try
+        Result := ini.ReadInteger(section, ident, default_value);
+    except
+        Result := default_value;
+    end;
+end;
+
+function safe_ini_read_bool(const ini: TMemIniFile; const section: string; const ident: string;
+    const default_value: Boolean): Boolean;
+begin
+    Result := default_value;
+    if ini = nil then
+    begin
+        Exit;
+    end;
+
+    try
+        Result := ini.ReadBool(section, ident, default_value);
+    except
+        Result := default_value;
+    end;
+end;
+
+function safe_ini_value_exists(const ini: TMemIniFile; const section: string; const ident: string): Boolean;
+begin
+    Result := False;
+    if ini = nil then
+    begin
+        Exit;
+    end;
+
+    try
+        Result := ini.ValueExists(section, ident);
+    except
+        Result := False;
     end;
 end;
 
@@ -307,19 +707,20 @@ begin
     end;
 end;
 
-procedure TncConfigManager.write_config_version(const ini: TIniFile);
+procedure TncConfigManager.write_config_version(const ini: TMemIniFile);
 begin
     if ini = nil then
     begin
         Exit;
     end;
 
+    ini.EraseSection('meta');
     ini.WriteInteger('meta', 'version', c_config_version);
 end;
 
 function TncConfigManager.load_engine_config: TncEngineConfig;
 var
-    ini: TIniFile;
+    ini: TMemIniFile;
     input_mode_value: Integer;
     config_version: Integer;
     log_config: TncLogConfig;
@@ -329,6 +730,7 @@ var
     legacy_sc_path: string;
     legacy_tc_path: string;
     legacy_user_path: string;
+    legacy_font_name: string;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
@@ -341,6 +743,7 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
     Result.candidate_font_size := c_default_candidate_font_size;
+    Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
 
@@ -360,10 +763,11 @@ begin
         Exit;
     end;
 
-    ini := TIniFile.Create(m_config_path);
+    needs_full_write := normalize_duplicate_ini_keys(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
     try
-        config_version := ini.ReadInteger('meta', 'version', 0);
-        input_mode_value := ini.ReadInteger('engine', 'input_mode', Ord(im_chinese));
+        config_version := safe_ini_read_integer(ini, 'meta', 'version', 0);
+        input_mode_value := safe_ini_read_integer(ini, 'engine', 'input_mode', Ord(im_chinese));
         if input_mode_value = Ord(im_english) then
         begin
             Result.input_mode := im_english;
@@ -377,25 +781,47 @@ begin
         Result.enable_ctrl_space_toggle := False;
         Result.enable_shift_space_full_width_toggle := True;
         Result.enable_ctrl_period_punct_toggle := True;
-        Result.full_width_mode := ini.ReadBool('engine', 'full_width_mode', False);
-        Result.punctuation_full_width := ini.ReadBool('engine', 'punctuation_full_width', True);
+        Result.full_width_mode := safe_ini_read_bool(ini, 'engine', 'full_width_mode', False);
+        Result.punctuation_full_width := safe_ini_read_bool(ini, 'engine', 'punctuation_full_width', True);
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
-        Result.candidate_font_name := Trim(ini.ReadString('appearance', 'candidate_font_name',
+        Result.candidate_font_name := Trim(safe_ini_read_string(ini, 'appearance', 'candidate_font_name',
             c_default_candidate_font_name));
+        if config_version < c_config_version then
+        begin
+            legacy_font_name := Trim(read_legacy_ini_string(m_config_path, 'appearance',
+                'candidate_font_name'));
+            if (legacy_font_name <> '') and is_reasonable_candidate_font_name(legacy_font_name) and
+                (not contains_damaged_text_marker(legacy_font_name)) then
+            begin
+                Result.candidate_font_name := legacy_font_name;
+            end;
+        end;
         if Result.candidate_font_name = '' then
         begin
             Result.candidate_font_name := c_default_candidate_font_name;
         end;
-        Result.candidate_font_size := clamp_candidate_font_size(ini.ReadInteger('appearance',
+        if (config_version < c_config_version) and (not is_ascii_text(Result.candidate_font_name)) then
+        begin
+            Result.candidate_font_name := c_default_candidate_font_name;
+        end;
+        if contains_damaged_text_marker(Result.candidate_font_name) or
+            (not is_reasonable_candidate_font_name(Result.candidate_font_name)) then
+        begin
+            Result.candidate_font_name := c_default_candidate_font_name;
+        end;
+        Result.candidate_font_size := clamp_candidate_font_size(safe_ini_read_integer(ini, 'appearance',
             'candidate_font_size', c_default_candidate_font_size));
-        Result.debug_mode := ini.ReadInteger('engine', 'debug', 0) <> 0;
-        variant_text := ini.ReadString('dictionary', 'variant', 'simplified');
+        Result.candidate_color_scheme := parse_candidate_color_scheme_text(safe_ini_read_string(ini, 'appearance',
+            'candidate_color_scheme', candidate_color_scheme_to_text(c_default_candidate_color_scheme)),
+            c_default_candidate_color_scheme);
+        Result.debug_mode := safe_ini_read_integer(ini, 'engine', 'debug', 0) <> 0;
+        variant_text := safe_ini_read_string(ini, 'dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
-        legacy_sc_path := ini.ReadString('dictionary', 'db_path_sc', '');
+        legacy_sc_path := safe_ini_read_string(ini, 'dictionary', 'db_path_sc', '');
         if legacy_sc_path = '' then
         begin
-            legacy_dict_path := ini.ReadString('dictionary', 'db_path', '');
+            legacy_dict_path := safe_ini_read_string(ini, 'dictionary', 'db_path', '');
             if legacy_dict_path <> '' then
             begin
                 legacy_sc_path := legacy_dict_path;
@@ -405,25 +831,27 @@ begin
                 legacy_sc_path := get_legacy_dictionary_path_simplified;
             end;
         end;
-        legacy_tc_path := ini.ReadString('dictionary', 'db_path_tc', get_legacy_dictionary_path_traditional);
-        legacy_user_path := ini.ReadString('dictionary', 'user_db_path', get_legacy_user_dictionary_path);
+        legacy_tc_path := safe_ini_read_string(ini, 'dictionary', 'db_path_tc', get_legacy_dictionary_path_traditional);
+        legacy_user_path := safe_ini_read_string(ini, 'dictionary', 'user_db_path', get_legacy_user_dictionary_path);
 
-        needs_full_write := not ini.ValueExists('engine', 'input_mode') or
-            ini.ValueExists('engine', 'max_candidates') or
-            ini.ValueExists('engine', 'enable_ctrl_space_toggle') or
-            ini.ValueExists('engine', 'enable_shift_space_full_width_toggle') or
-            ini.ValueExists('engine', 'enable_ctrl_period_punct_toggle') or
-            ini.ValueExists('engine', 'enable_segment_candidates') or
-            ini.ValueExists('engine', 'segment_head_only_multi_syllable') or
-            ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') or
-            not ini.ValueExists('appearance', 'candidate_font_name') or
-            not ini.ValueExists('appearance', 'candidate_font_size') or
-            not ini.ValueExists('engine', 'debug') or
-            not ini.ValueExists('dictionary', 'variant') or
-            ini.ValueExists('dictionary', 'db_path') or
-            ini.ValueExists('dictionary', 'db_path_sc') or
-            ini.ValueExists('dictionary', 'db_path_tc') or
-            ini.ValueExists('dictionary', 'user_db_path');
+        needs_full_write := needs_full_write or
+            not safe_ini_value_exists(ini, 'engine', 'input_mode') or
+            safe_ini_value_exists(ini, 'engine', 'max_candidates') or
+            safe_ini_value_exists(ini, 'engine', 'enable_ctrl_space_toggle') or
+            safe_ini_value_exists(ini, 'engine', 'enable_shift_space_full_width_toggle') or
+            safe_ini_value_exists(ini, 'engine', 'enable_ctrl_period_punct_toggle') or
+            safe_ini_value_exists(ini, 'engine', 'enable_segment_candidates') or
+            safe_ini_value_exists(ini, 'engine', 'segment_head_only_multi_syllable') or
+            safe_ini_value_exists(ini, 'engine', 'suppress_nonlexicon_complete_long_candidates') or
+            not safe_ini_value_exists(ini, 'appearance', 'candidate_font_name') or
+            not safe_ini_value_exists(ini, 'appearance', 'candidate_font_size') or
+            not safe_ini_value_exists(ini, 'appearance', 'candidate_color_scheme') or
+            not safe_ini_value_exists(ini, 'engine', 'debug') or
+            not safe_ini_value_exists(ini, 'dictionary', 'variant') or
+            safe_ini_value_exists(ini, 'dictionary', 'db_path') or
+            safe_ini_value_exists(ini, 'dictionary', 'db_path_sc') or
+            safe_ini_value_exists(ini, 'dictionary', 'db_path_tc') or
+            safe_ini_value_exists(ini, 'dictionary', 'user_db_path');
     finally
         ini.Free;
     end;
@@ -462,7 +890,7 @@ end;
 
 procedure TncConfigManager.save_engine_config(const config: TncEngineConfig);
 var
-    ini: TIniFile;
+    ini: TMemIniFile;
     candidate_font_name: string;
 begin
     if m_config_path = '' then
@@ -471,37 +899,16 @@ begin
     end;
 
     ensure_config_directory;
-    ini := TIniFile.Create(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
+    if ini = nil then
+    begin
+        Exit;
+    end;
     try
+        ini.EraseSection('engine');
+        ini.EraseSection('appearance');
+        ini.EraseSection('dictionary');
         ini.WriteInteger('engine', 'input_mode', Ord(config.input_mode));
-        if ini.ValueExists('engine', 'max_candidates') then
-        begin
-            ini.DeleteKey('engine', 'max_candidates');
-        end;
-        if ini.ValueExists('engine', 'enable_segment_candidates') then
-        begin
-            ini.DeleteKey('engine', 'enable_segment_candidates');
-        end;
-        if ini.ValueExists('engine', 'segment_head_only_multi_syllable') then
-        begin
-            ini.DeleteKey('engine', 'segment_head_only_multi_syllable');
-        end;
-        if ini.ValueExists('engine', 'enable_ctrl_space_toggle') then
-        begin
-            ini.DeleteKey('engine', 'enable_ctrl_space_toggle');
-        end;
-        if ini.ValueExists('engine', 'enable_shift_space_full_width_toggle') then
-        begin
-            ini.DeleteKey('engine', 'enable_shift_space_full_width_toggle');
-        end;
-        if ini.ValueExists('engine', 'enable_ctrl_period_punct_toggle') then
-        begin
-            ini.DeleteKey('engine', 'enable_ctrl_period_punct_toggle');
-        end;
-        if ini.ValueExists('engine', 'suppress_nonlexicon_complete_long_candidates') then
-        begin
-            ini.DeleteKey('engine', 'suppress_nonlexicon_complete_long_candidates');
-        end;
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
@@ -513,32 +920,79 @@ begin
         ini.WriteString('appearance', 'candidate_font_name', candidate_font_name);
         ini.WriteInteger('appearance', 'candidate_font_size',
             clamp_candidate_font_size(config.candidate_font_size));
+        ini.WriteString('appearance', 'candidate_color_scheme',
+            candidate_color_scheme_to_text(config.candidate_color_scheme));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
-        if ini.ValueExists('dictionary', 'db_path') then
-        begin
-            ini.DeleteKey('dictionary', 'db_path');
-        end;
-        if ini.ValueExists('dictionary', 'db_path_sc') then
-        begin
-            ini.DeleteKey('dictionary', 'db_path_sc');
-        end;
-        if ini.ValueExists('dictionary', 'db_path_tc') then
-        begin
-            ini.DeleteKey('dictionary', 'db_path_tc');
-        end;
-        if ini.ValueExists('dictionary', 'user_db_path') then
-        begin
-            ini.DeleteKey('dictionary', 'user_db_path');
-        end;
         write_config_version(ini);
+        ini.UpdateFile;
     finally
         ini.Free;
     end;
 end;
 
+procedure TncConfigManager.save_engine_state_config(const input_mode: TncInputMode; const full_width_mode: Boolean;
+    const punctuation_full_width: Boolean);
+var
+    ini: TMemIniFile;
+    debug_mode: Boolean;
+begin
+    if m_config_path = '' then
+    begin
+        Exit;
+    end;
+
+    ensure_config_directory;
+    normalize_duplicate_ini_keys(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
+    if ini = nil then
+    begin
+        Exit;
+    end;
+    try
+        debug_mode := safe_ini_read_bool(ini, 'engine', 'debug', False);
+        ini.EraseSection('engine');
+        ini.WriteInteger('engine', 'input_mode', Ord(input_mode));
+        ini.WriteBool('engine', 'full_width_mode', full_width_mode);
+        ini.WriteBool('engine', 'punctuation_full_width', punctuation_full_width);
+        ini.WriteInteger('engine', 'debug', Ord(debug_mode));
+        write_config_version(ini);
+        ini.UpdateFile;
+    finally
+        ini.Free;
+    end;
+    normalize_duplicate_ini_keys(m_config_path);
+end;
+
+procedure TncConfigManager.save_dictionary_variant_config(const variant: TncDictionaryVariant);
+var
+    ini: TMemIniFile;
+begin
+    if m_config_path = '' then
+    begin
+        Exit;
+    end;
+
+    ensure_config_directory;
+    normalize_duplicate_ini_keys(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
+    if ini = nil then
+    begin
+        Exit;
+    end;
+    try
+        ini.EraseSection('dictionary');
+        ini.WriteString('dictionary', 'variant', variant_to_text(variant));
+        write_config_version(ini);
+        ini.UpdateFile;
+    finally
+        ini.Free;
+    end;
+    normalize_duplicate_ini_keys(m_config_path);
+end;
+
 function TncConfigManager.load_log_config: TncLogConfig;
 var
-    ini: TIniFile;
+    ini: TMemIniFile;
     level_value: Integer;
 begin
     Result := get_default_log_config;
@@ -553,16 +1007,18 @@ begin
         Exit;
     end;
 
-    ini := TIniFile.Create(m_config_path);
+    normalize_duplicate_ini_keys(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
     try
-        Result.enabled := ini.ReadBool('log', 'enabled', Result.enabled);
-        level_value := ini.ReadInteger('log', 'level', Ord(Result.level));
+        Result.enabled := safe_ini_read_bool(ini, 'log', 'enabled', Result.enabled);
+        level_value := safe_ini_read_integer(ini, 'log', 'level', Ord(Result.level));
         if (level_value >= Ord(Low(TncLogLevel))) and (level_value <= Ord(High(TncLogLevel))) then
         begin
             Result.level := TncLogLevel(level_value);
         end;
-        Result.max_size_kb := ini.ReadInteger('log', 'max_size_kb', Result.max_size_kb);
-        Result.log_path := normalize_filesystem_path_text(ini.ReadString('log', 'log_path', Result.log_path));
+        Result.max_size_kb := safe_ini_read_integer(ini, 'log', 'max_size_kb', Result.max_size_kb);
+        Result.log_path := normalize_filesystem_path_text(safe_ini_read_string(ini, 'log', 'log_path',
+            Result.log_path));
     finally
         ini.Free;
     end;
@@ -570,7 +1026,7 @@ end;
 
 procedure TncConfigManager.save_log_config(const config: TncLogConfig);
 var
-    ini: TIniFile;
+    ini: TMemIniFile;
 begin
     if m_config_path = '' then
     begin
@@ -578,13 +1034,19 @@ begin
     end;
 
     ensure_config_directory;
-    ini := TIniFile.Create(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
+    if ini = nil then
+    begin
+        Exit;
+    end;
     try
+        ini.EraseSection('log');
         ini.WriteBool('log', 'enabled', config.enabled);
         ini.WriteInteger('log', 'level', Ord(config.level));
         ini.WriteInteger('log', 'max_size_kb', config.max_size_kb);
         ini.WriteString('log', 'log_path', normalize_filesystem_path_text(config.log_path));
         write_config_version(ini);
+        ini.UpdateFile;
     finally
         ini.Free;
     end;

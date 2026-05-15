@@ -2266,7 +2266,7 @@ begin
         end;
         if not variant_applied then
         begin
-            config_manager.save_engine_config(engine_config);
+            config_manager.save_dictionary_variant_config(engine_config.dictionary_variant);
         end;
     finally
         config_manager.Free;
@@ -2973,7 +2973,7 @@ begin
             engine_config.input_mode := input_mode;
             engine_config.full_width_mode := full_width_mode;
             engine_config.punctuation_full_width := punctuation_full_width;
-            config_manager.save_engine_config(engine_config);
+            config_manager.save_engine_state_config(input_mode, full_width_mode, punctuation_full_width);
             m_last_config_write := get_config_write_time;
         end;
     finally

@@ -6,6 +6,7 @@ uses
     System.SysUtils,
     System.Classes,
     System.IOUtils,
+    System.Math,
     System.Types,
     System.UITypes,
     Winapi.Windows,
@@ -22,6 +23,7 @@ uses
     Vcl.FileCtrl,
     nc_types,
     nc_config,
+    nc_candidate_theme,
     nc_log;
 
 type
@@ -141,6 +143,7 @@ type
         m_scaled_dpi: Integer;
         m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
+        m_tab_appearance: TTabSheet;
         m_tab_logging: TTabSheet;
         m_tab_advanced: TTabSheet;
         m_btn_reset: TncModernButton;
@@ -154,6 +157,7 @@ type
         m_combo_candidate_font: TComboBox;
         m_track_candidate_font_size: TTrackBar;
         m_candidate_font_size_labels: array[0..6] of TLabel;
+        m_combo_candidate_color_scheme: TComboBox;
         m_candidate_preview: TPaintBox;
         m_chk_log_enabled: TncModernCheckBox;
         m_combo_log_level: TComboBox;
@@ -175,8 +179,10 @@ type
         procedure configure_form;
         procedure configure_tabs;
         procedure configure_buttons;
+        procedure normalize_dialog_client_width_for_dpi(const dpi: Integer);
         procedure update_dialog_height_for_content;
         procedure add_general_controls;
+        procedure add_appearance_controls;
         procedure add_logging_controls;
         procedure add_advanced_controls;
         procedure update_scaled_control_metrics;
@@ -186,9 +192,12 @@ type
         procedure load_defaults;
         procedure load_from_config;
         procedure populate_candidate_font_combo;
+        procedure populate_candidate_color_scheme_combo;
         function get_candidate_font_size_from_slider: Integer;
         procedure set_candidate_font_size_slider(const font_size: Integer);
         function get_selected_candidate_font_name: string;
+        function get_selected_candidate_color_scheme: Integer;
+        procedure set_candidate_color_scheme_combo(const color_scheme: Integer);
         procedure update_candidate_preview;
         procedure on_candidate_appearance_change(Sender: TObject);
         procedure on_candidate_preview_paint(Sender: TObject);
@@ -215,7 +224,9 @@ type
         procedure on_cancel_click(Sender: TObject);
         procedure CMDialogKey(var Message: TCMDialogKey); message CM_DIALOGKEY;
     protected
+        procedure CreateParams(var Params: TCreateParams); override;
         procedure DoShow; override;
+        procedure WMDpiChanged(var Message: TMessage); message WM_DPICHANGED;
     public
         constructor Create(AOwner: TComponent); override;
         class function ExecuteDialog(const owner: TComponent; var config: TncEngineConfig; var log_config: TncLogConfig;
@@ -253,6 +264,7 @@ const
 resourcestring
     SSettingsTitle = 'Cassotis 设置';
     STabGeneral = '常规';
+    STabAppearance = '外观';
     STabLogging = '日志';
     STabAdvanced = '高级';
     SButtonBrowse = '浏览';
@@ -278,6 +290,7 @@ resourcestring
     SCheckShowStatusWidget = '显示状态浮窗';
     SLabelCandidateFont = '候选字体';
     SLabelCandidateSize = '大小';
+    SLabelCandidateColorScheme = '配色';
     SLabelCandidatePreview = '预览';
     SSizeMinimum = '最小';
     SSizeDefault = '默认';
@@ -917,6 +930,13 @@ begin
     Params.ExStyle := Params.ExStyle and (not WS_EX_CLIENTEDGE);
 end;
 
+procedure TncSettingsForm.CreateParams(var Params: TCreateParams);
+begin
+    inherited CreateParams(Params);
+    Params.ExStyle := (Params.ExStyle or WS_EX_APPWINDOW) and (not WS_EX_TOOLWINDOW);
+    Params.WndParent := 0;
+end;
+
 function create_label(const owner: TComponent; const parent: TWinControl; const caption: string;
     const top: Integer): TLabel;
 begin
@@ -1212,6 +1232,7 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
     Result.candidate_font_size := c_default_candidate_font_size;
+    Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
 end;
@@ -1237,6 +1258,7 @@ begin
     configure_tabs;
     configure_buttons;
     add_general_controls;
+    add_appearance_controls;
     add_logging_controls;
     add_advanced_controls;
     load_from_config;
@@ -1272,6 +1294,10 @@ begin
     ClientWidth := scale_ui(c_dialog_width);
     ClientHeight := scale_ui(c_dialog_height);
     Position := poScreenCenter;
+    if (Application.Icon <> nil) and (Application.Icon.Handle <> 0) then
+    begin
+        Icon.Assign(Application.Icon);
+    end;
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
     Color := RGB(245, 247, 250);
@@ -1367,6 +1393,21 @@ begin
     end;
 end;
 
+procedure TncSettingsForm.normalize_dialog_client_width_for_dpi(const dpi: Integer);
+var
+    desired_client_width: Integer;
+begin
+    desired_client_width := scale_ui_for_dpi(c_dialog_width, dpi);
+    if desired_client_width <= 0 then
+    begin
+        Exit;
+    end;
+    if ClientWidth <> desired_client_width then
+    begin
+        ClientWidth := desired_client_width;
+    end;
+end;
+
 procedure TncSettingsForm.DoShow;
 var
     dpi: Integer;
@@ -1383,6 +1424,7 @@ begin
         ScaleForPPI(dpi);
         m_scaled_dpi := dpi;
     end;
+    normalize_dialog_client_width_for_dpi(dpi);
     update_scaled_control_metrics;
     update_dialog_height_for_content;
     SetWindowPos(
@@ -1408,6 +1450,28 @@ begin
     SetActiveWindow(Handle);
 end;
 
+procedure TncSettingsForm.WMDpiChanged(var Message: TMessage);
+var
+    dpi: Integer;
+begin
+    inherited;
+    dpi := Integer(Message.WParam) and $FFFF;
+    if dpi <= 0 then
+    begin
+        dpi := get_window_dpi(Handle);
+    end;
+    if dpi <= 0 then
+    begin
+        dpi := 96;
+    end;
+
+    m_scaled_dpi := dpi;
+    normalize_dialog_client_width_for_dpi(dpi);
+    update_scaled_control_metrics;
+    update_dialog_height_for_content;
+    update_candidate_preview;
+end;
+
 procedure TncSettingsForm.update_scaled_control_metrics;
 var
     dpi: Integer;
@@ -1423,10 +1487,25 @@ var
     end;
 begin
     dpi := get_window_dpi(Handle);
+    if dpi <= 0 then
+    begin
+        dpi := 96;
+    end;
+    m_scaled_dpi := dpi;
     update_check_box_metrics(m_chk_full_width_mode);
     update_check_box_metrics(m_chk_show_status_widget);
     update_check_box_metrics(m_chk_log_enabled);
     update_check_box_metrics(m_chk_debug_mode);
+    if m_candidate_preview <> nil then
+    begin
+        m_candidate_preview.Height := scale_ui_for_dpi(64, dpi);
+        if m_candidate_preview.Parent <> nil then
+        begin
+            m_candidate_preview.Parent.Height := Max(m_candidate_preview.Parent.Height,
+                m_candidate_preview.Top + m_candidate_preview.Height + scale_ui_for_dpi(18, dpi));
+        end;
+        m_candidate_preview.Invalidate;
+    end;
 end;
 
 procedure TncSettingsForm.CMDialogKey(var Message: TCMDialogKey);
@@ -1470,6 +1549,10 @@ begin
     m_tab_general := TTabSheet.Create(m_page_control);
     m_tab_general.PageControl := m_page_control;
     m_tab_general.Caption := STabGeneral;
+
+    m_tab_appearance := TTabSheet.Create(m_page_control);
+    m_tab_appearance.PageControl := m_page_control;
+    m_tab_appearance.Caption := STabAppearance;
 
     m_tab_logging := TTabSheet.Create(m_page_control);
     m_tab_logging.PageControl := m_page_control;
@@ -1551,26 +1634,7 @@ var
     top: Integer;
     section_top: Integer;
     defaults_group: TPanel;
-    appearance_group: TPanel;
-    label_index: Integer;
-    size_label_texts: array[0..6] of string;
-    candidate_control_width: Integer;
-    label_width: Integer;
-    tick_center: Integer;
-    track_channel_rect: TRect;
-    track_channel_left: Integer;
-    track_channel_right_inset: Integer;
-    track_channel_width: Integer;
-    track_label_left: Integer;
 begin
-    size_label_texts[0] := SSizeMinimum;
-    size_label_texts[1] := '';
-    size_label_texts[2] := '';
-    size_label_texts[3] := SSizeDefault;
-    size_label_texts[4] := '';
-    size_label_texts[5] := '';
-    size_label_texts[6] := SSizeMaximum;
-
     section_top := scale_ui(18);
     defaults_group := create_section_group(Self, m_tab_general, SGroupDefaultBehavior, section_top, 158);
 
@@ -1601,9 +1665,34 @@ begin
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
+end;
 
-    section_top := defaults_group.Top + defaults_group.Height + scale_ui(10);
-    appearance_group := create_section_group(Self, m_tab_general, SGroupAppearance, section_top, 252);
+procedure TncSettingsForm.add_appearance_controls;
+var
+    top: Integer;
+    section_top: Integer;
+    appearance_group: TPanel;
+    label_index: Integer;
+    size_label_texts: array[0..6] of string;
+    candidate_control_width: Integer;
+    label_width: Integer;
+    tick_center: Integer;
+    track_channel_rect: TRect;
+    track_channel_left: Integer;
+    track_channel_right_inset: Integer;
+    track_channel_width: Integer;
+    track_label_left: Integer;
+begin
+    size_label_texts[0] := SSizeMinimum;
+    size_label_texts[1] := '';
+    size_label_texts[2] := '';
+    size_label_texts[3] := SSizeDefault;
+    size_label_texts[4] := '';
+    size_label_texts[5] := '';
+    size_label_texts[6] := SSizeMaximum;
+
+    section_top := scale_ui(18);
+    appearance_group := create_section_group(Self, m_tab_appearance, SGroupAppearance, section_top, 300);
 
     top := scale_ui(c_section_inner_top);
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
@@ -1683,6 +1772,17 @@ begin
     end;
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap + 32));
+    create_label(Self, appearance_group, SLabelCandidateColorScheme, top);
+    m_combo_candidate_color_scheme := TComboBox.Create(Self);
+    m_combo_candidate_color_scheme.Parent := appearance_group;
+    m_combo_candidate_color_scheme.Left := scale_ui(c_control_left);
+    m_combo_candidate_color_scheme.Top := top;
+    m_combo_candidate_color_scheme.Width := candidate_control_width;
+    m_combo_candidate_color_scheme.Style := csDropDownList;
+    populate_candidate_color_scheme_combo;
+    m_combo_candidate_color_scheme.OnChange := on_candidate_appearance_change;
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
     create_label(Self, appearance_group, SLabelCandidatePreview, top + scale_ui(12));
     m_candidate_preview := TPaintBox.Create(Self);
     m_candidate_preview.Parent := appearance_group;
@@ -1924,6 +2024,29 @@ begin
     end;
 end;
 
+procedure TncSettingsForm.populate_candidate_color_scheme_combo;
+var
+    color_scheme: Integer;
+    theme: TncCandidateColorTheme;
+begin
+    if m_combo_candidate_color_scheme = nil then
+    begin
+        Exit;
+    end;
+
+    m_combo_candidate_color_scheme.Items.BeginUpdate;
+    try
+        m_combo_candidate_color_scheme.Items.Clear;
+        for color_scheme := c_min_candidate_color_scheme to c_max_candidate_color_scheme do
+        begin
+            theme := nc_candidate_color_theme(color_scheme);
+            m_combo_candidate_color_scheme.Items.Add(theme.name);
+        end;
+    finally
+        m_combo_candidate_color_scheme.Items.EndUpdate;
+    end;
+end;
+
 function TncSettingsForm.get_candidate_font_size_from_slider: Integer;
 begin
     Result := c_default_candidate_font_size;
@@ -1975,6 +2098,40 @@ begin
     end;
 end;
 
+function TncSettingsForm.get_selected_candidate_color_scheme: Integer;
+begin
+    Result := c_default_candidate_color_scheme;
+    if (m_combo_candidate_color_scheme <> nil) and
+        (m_combo_candidate_color_scheme.ItemIndex >= 0) then
+    begin
+        Result := nc_normalize_candidate_color_scheme(m_combo_candidate_color_scheme.ItemIndex +
+            c_min_candidate_color_scheme);
+    end;
+end;
+
+procedure TncSettingsForm.set_candidate_color_scheme_combo(const color_scheme: Integer);
+var
+    normalized_scheme: Integer;
+    item_index: Integer;
+begin
+    if m_combo_candidate_color_scheme = nil then
+    begin
+        Exit;
+    end;
+
+    normalized_scheme := nc_normalize_candidate_color_scheme(color_scheme);
+    item_index := normalized_scheme - c_min_candidate_color_scheme;
+    if (item_index >= 0) and (item_index < m_combo_candidate_color_scheme.Items.Count) then
+    begin
+        m_combo_candidate_color_scheme.ItemIndex := item_index;
+    end
+    else if m_combo_candidate_color_scheme.Items.Count > 0 then
+    begin
+        m_combo_candidate_color_scheme.ItemIndex := c_default_candidate_color_scheme -
+            c_min_candidate_color_scheme;
+    end;
+end;
+
 procedure TncSettingsForm.update_candidate_preview;
 begin
     if m_candidate_preview <> nil then
@@ -1998,6 +2155,7 @@ var
     canvas: TCanvas;
     bounds: TRect;
     preview_rect: TRect;
+    preview_inner_rect: TRect;
     preedit_rect: TRect;
     item_rect: TRect;
     text_rect: TRect;
@@ -2020,9 +2178,11 @@ var
     font_size: Integer;
     dpi: Integer;
     font_size_delta: Integer;
+    theme: TncCandidateColorTheme;
 
     procedure draw_preview_text(const text: string; var rect: TRect);
     begin
+        SetBkMode(canvas.Handle, TRANSPARENT);
         DrawTextW(canvas.Handle, PWideChar(text), Length(text), rect,
             DT_SINGLELINE or DT_VCENTER or DT_LEFT or DT_NOPREFIX);
     end;
@@ -2040,18 +2200,18 @@ var
 
         if selected then
         begin
-            canvas.Brush.Color := TColor(RGB(232, 240, 254));
-            canvas.Pen.Color := TColor(RGB(173, 198, 235));
+            canvas.Brush.Color := theme.selected_background_color;
+            canvas.Pen.Color := theme.selected_border_color;
             canvas.RoundRect(item_rect.Left, item_rect.Top + 1, item_rect.Right,
-                item_rect.Bottom - 1, scale_ui(6), scale_ui(6));
-            canvas.Font.Color := TColor(RGB(20, 20, 20));
+                item_rect.Bottom - 1, scale_ui_for_dpi(6, dpi), scale_ui_for_dpi(6, dpi));
+            canvas.Font.Color := theme.selected_text_color;
         end
         else
         begin
-            canvas.Brush.Color := TColor(RGB(252, 253, 255));
-            canvas.Pen.Color := TColor(RGB(252, 253, 255));
+            canvas.Brush.Color := theme.background_color;
+            canvas.Pen.Color := theme.background_color;
             canvas.FillRect(item_rect);
-            canvas.Font.Color := clBlack;
+            canvas.Font.Color := theme.text_color;
         end;
 
         text_rect := item_rect;
@@ -2070,6 +2230,7 @@ begin
     paint_box := TPaintBox(Sender);
     canvas := paint_box.Canvas;
     bounds := paint_box.ClientRect;
+    theme := nc_candidate_color_theme(get_selected_candidate_color_scheme);
     canvas.Brush.Color := clWhite;
     canvas.FillRect(bounds);
 
@@ -2077,7 +2238,11 @@ begin
     canvas.Font.Name := get_selected_candidate_font_name;
     canvas.Font.Charset := DEFAULT_CHARSET;
     font_size := get_candidate_font_size_from_slider;
-    dpi := m_scaled_dpi;
+    dpi := get_control_scale_dpi(paint_box);
+    if dpi <= 0 then
+    begin
+        dpi := m_scaled_dpi;
+    end;
     if dpi <= 0 then
     begin
         dpi := 96;
@@ -2085,7 +2250,7 @@ begin
     canvas.Font.Height := -MulDiv(font_size, dpi, 72);
     canvas.Font.Quality := fqClearTypeNatural;
     canvas.Font.Style := [];
-    canvas.Font.Color := clBlack;
+    canvas.Font.Color := theme.text_color;
 
     text_height := canvas.TextHeight('Hg国');
     font_size_delta := font_size - c_default_candidate_font_size;
@@ -2093,34 +2258,34 @@ begin
     begin
         font_size_delta := 0;
     end;
-    vertical_padding := scale_ui(4 + (font_size_delta * 2));
-    if vertical_padding < scale_ui(4) then
+    vertical_padding := scale_ui_for_dpi(4 + (font_size_delta * 2), dpi);
+    if vertical_padding < scale_ui_for_dpi(4, dpi) then
     begin
-        vertical_padding := scale_ui(4);
+        vertical_padding := scale_ui_for_dpi(4, dpi);
     end;
-    line_height := scale_ui(20);
+    line_height := scale_ui_for_dpi(20, dpi);
     if line_height < text_height + vertical_padding then
     begin
         line_height := text_height + vertical_padding;
     end;
 
     preedit_text_height := text_height;
-    meta_vertical_padding := scale_ui(8);
-    if meta_vertical_padding < scale_ui(4) then
+    meta_vertical_padding := scale_ui_for_dpi(8, dpi);
+    if meta_vertical_padding < scale_ui_for_dpi(4, dpi) then
     begin
-        meta_vertical_padding := scale_ui(4);
+        meta_vertical_padding := scale_ui_for_dpi(4, dpi);
     end;
-    meta_horizontal_padding := scale_ui(8);
-    if meta_horizontal_padding < scale_ui(4) then
+    meta_horizontal_padding := scale_ui_for_dpi(8, dpi);
+    if meta_horizontal_padding < scale_ui_for_dpi(4, dpi) then
     begin
-        meta_horizontal_padding := scale_ui(4);
+        meta_horizontal_padding := scale_ui_for_dpi(4, dpi);
     end;
     preedit_height := preedit_text_height + meta_vertical_padding;
 
-    horizontal_padding := scale_ui(6);
-    item_gap := scale_ui(12);
+    horizontal_padding := scale_ui_for_dpi(6, dpi);
+    item_gap := scale_ui_for_dpi(12, dpi);
     content_height := preedit_height + line_height;
-    window_padding := scale_ui(1);
+    window_padding := scale_ui_for_dpi(1, dpi);
     if window_padding < 1 then
     begin
         window_padding := 1;
@@ -2131,22 +2296,26 @@ begin
         preview_height := bounds.Bottom - bounds.Top;
     end;
     preview_rect := Rect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + preview_height);
-    canvas.Brush.Color := TColor(RGB(252, 253, 255));
-    canvas.FillRect(preview_rect);
-    canvas.Pen.Color := TColor(RGB(214, 223, 236));
+    preview_inner_rect := preview_rect;
+    InflateRect(preview_inner_rect, -window_padding, -window_padding);
+    canvas.Brush.Color := theme.background_color;
+    canvas.FillRect(preview_inner_rect);
+    canvas.Pen.Color := theme.border_color;
     canvas.Brush.Style := bsClear;
     canvas.Rectangle(preview_rect.Left, preview_rect.Top, preview_rect.Right, preview_rect.Bottom);
     canvas.Brush.Style := bsSolid;
 
-    content_top := preview_rect.Top + window_padding;
-    preedit_rect := Rect(preview_rect.Left, content_top, preview_rect.Right, content_top + preedit_height);
+    content_top := preview_inner_rect.Top;
+    preedit_rect := Rect(preview_inner_rect.Left, content_top, preview_inner_rect.Right, content_top + preedit_height);
+    canvas.Brush.Color := theme.background_color;
+    canvas.FillRect(preedit_rect);
     InflateRect(preedit_rect, -meta_horizontal_padding, 0);
-    canvas.Font.Color := TColor(RGB(98, 112, 128));
+    canvas.Font.Color := theme.muted_text_color;
     SetTextColor(canvas.Handle, ColorToRGB(canvas.Font.Color));
     draw_preview_text(c_preview_preedit_text, preedit_rect);
 
     row_top := content_top + preedit_height;
-    x := bounds.Left + scale_ui(6);
+    x := preview_inner_rect.Left + scale_ui_for_dpi(6, dpi);
 
     for item_index := Low(c_preview_texts) to High(c_preview_texts) do
     begin
@@ -2304,6 +2473,7 @@ begin
         end;
     end;
     set_candidate_font_size_slider(m_engine_config.candidate_font_size);
+    set_candidate_color_scheme_combo(m_engine_config.candidate_color_scheme);
     if m_chk_log_enabled <> nil then
     begin
         m_chk_log_enabled.Checked := m_log_config.enabled;
@@ -2405,6 +2575,7 @@ begin
     next_config.enable_ctrl_period_punct_toggle := True;
     next_config.candidate_font_name := get_selected_candidate_font_name;
     next_config.candidate_font_size := get_candidate_font_size_from_slider;
+    next_config.candidate_color_scheme := get_selected_candidate_color_scheme;
     next_status_widget_visible := m_chk_show_status_widget.Checked;
     next_log_config.enabled := m_chk_log_enabled.Checked;
     next_log_config.log_path := normalize_path_override(m_edit_log_path.Text, get_default_log_path);

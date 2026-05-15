@@ -1451,7 +1451,7 @@ end;
 
 procedure TncTrayHost.load_status_widget_state;
 var
-    ini: TIniFile;
+    ini: TMemIniFile;
     visible_value: Boolean;
     x_value: Integer;
     y_value: Integer;
@@ -1470,11 +1470,19 @@ begin
 
     if (m_config_path <> '') and FileExists(m_config_path) then
     begin
-        ini := TIniFile.Create(m_config_path);
+        ini := nc_create_utf8_ini_file(m_config_path);
+        if ini = nil then
+        begin
+            Exit;
+        end;
         try
-            visible_value := ini.ReadBool(c_ui_section, c_status_widget_visible_key, True);
-            x_value := ini.ReadInteger(c_ui_section, c_status_widget_x_key, x_value);
-            y_value := ini.ReadInteger(c_ui_section, c_status_widget_y_key, y_value);
+            try
+                visible_value := ini.ReadBool(c_ui_section, c_status_widget_visible_key, True);
+                x_value := ini.ReadInteger(c_ui_section, c_status_widget_x_key, x_value);
+                y_value := ini.ReadInteger(c_ui_section, c_status_widget_y_key, y_value);
+            except
+                // Ignore damaged legacy UI state and keep the default position.
+            end;
         finally
             ini.Free;
         end;
@@ -1537,7 +1545,7 @@ end;
 
 procedure TncTrayHost.save_status_widget_state;
 var
-    ini: TIniFile;
+    ini: TMemIniFile;
     saved_x: Integer;
     saved_y: Integer;
 begin
@@ -1547,21 +1555,31 @@ begin
     end;
 
     ForceDirectories(ExtractFileDir(m_config_path));
-    ini := TIniFile.Create(m_config_path);
+    ini := nc_create_utf8_ini_file(m_config_path);
+    if ini = nil then
+    begin
+        Exit;
+    end;
     try
-        saved_x := m_status_saved_origin.X;
-        saved_y := m_status_saved_origin.Y;
+        try
+            saved_x := m_status_saved_origin.X;
+            saved_y := m_status_saved_origin.Y;
 
-        if m_item_status_widget <> nil then
-        begin
-            ini.WriteBool(c_ui_section, c_status_widget_visible_key, m_item_status_widget.Checked);
-        end
-        else
-        begin
-            ini.WriteBool(c_ui_section, c_status_widget_visible_key, m_status_form.Visible);
+            ini.EraseSection(c_ui_section);
+            if m_item_status_widget <> nil then
+            begin
+                ini.WriteBool(c_ui_section, c_status_widget_visible_key, m_item_status_widget.Checked);
+            end
+            else
+            begin
+                ini.WriteBool(c_ui_section, c_status_widget_visible_key, m_status_form.Visible);
+            end;
+            ini.WriteInteger(c_ui_section, c_status_widget_x_key, saved_x);
+            ini.WriteInteger(c_ui_section, c_status_widget_y_key, saved_y);
+            ini.UpdateFile;
+        except
+            // Do not fail the tray host because of a damaged legacy INI.
         end;
-        ini.WriteInteger(c_ui_section, c_status_widget_x_key, saved_x);
-        ini.WriteInteger(c_ui_section, c_status_widget_y_key, saved_y);
     finally
         ini.Free;
     end;

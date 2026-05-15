@@ -15,7 +15,8 @@ uses
     Winapi.Messages,
     Winapi.MultiMon,
     Winapi.TlHelp32,
-    nc_types;
+    nc_types,
+    nc_candidate_theme;
 
 type
     TncCandidateRemoveEvent = procedure(const candidate_index: Integer) of object;
@@ -36,6 +37,8 @@ type
         m_page_label: TLabel;
         m_preedit_label: TLabel;
         m_border_color: TColor;
+        m_color_scheme: Integer;
+        m_color_theme: TncCandidateColorTheme;
         m_debug_mode: Boolean;
         m_show_weight_row: Boolean;
         m_base_item_height: Integer;
@@ -101,7 +104,8 @@ type
         constructor create; reintroduce;
         procedure prepare_for_anchor(const anchor: TPoint);
         destructor Destroy; override;
-        procedure apply_appearance(const font_name: string; const font_size: Integer);
+        procedure apply_appearance(const font_name: string; const font_size: Integer;
+            const color_scheme: Integer);
         procedure update_candidates(const candidates: TncCandidateList; const page_index: Integer; const page_count: Integer;
             const selected_index: Integer; const preedit_text: string; const debug_mode: Boolean);
         procedure show_at(const x: Integer; const y: Integer);
@@ -312,7 +316,9 @@ begin
     m_candidate_weight_lines := TStringList.Create;
     m_list_font := TFont.Create;
     m_weight_font := TFont.Create;
-    m_border_color := TColor(RGB(214, 223, 236));
+    m_color_scheme := c_default_candidate_color_scheme;
+    m_color_theme := nc_candidate_color_theme(m_color_scheme);
+    m_border_color := m_color_theme.border_color;
     m_debug_mode := False;
     m_show_weight_row := False;
     m_base_item_height := 20;
@@ -359,12 +365,12 @@ begin
     m_list_font.Name := c_default_candidate_font_name;
     m_list_font.Charset := DEFAULT_CHARSET;
     m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, 96);
-    m_list_font.Color := TColor(RGB(24, 24, 24));
+    m_list_font.Color := m_color_theme.text_color;
 
     m_weight_font.Name := c_default_candidate_font_name;
     m_weight_font.Charset := DEFAULT_CHARSET;
     m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, 96);
-    m_weight_font.Color := TColor(RGB(112, 122, 134));
+    m_weight_font.Color := m_color_theme.weight_text_color;
 end;
 
 destructor TncCandidateWindow.Destroy;
@@ -402,7 +408,7 @@ begin
     FormStyle := fsStayOnTop;
     Position := poDesigned;
     Scaled := False;
-    Color := TColor(RGB(252, 253, 255));
+    Color := m_color_theme.background_color;
     Padding.Left := 1;
     Padding.Top := 1;
     Padding.Right := 1;
@@ -669,7 +675,7 @@ begin
     m_preedit_label.Font.Name := c_default_candidate_font_name;
     m_preedit_label.Font.Charset := DEFAULT_CHARSET;
     m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, 96);
-    m_preedit_label.Font.Color := TColor(RGB(98, 112, 128));
+    m_preedit_label.Font.Color := m_color_theme.muted_text_color;
     m_preedit_label.Transparent := False;
     m_preedit_label.Color := Color;
     m_preedit_label.Visible := False;
@@ -688,7 +694,7 @@ begin
     m_page_label.Font.Name := c_default_candidate_font_name;
     m_page_label.Font.Charset := DEFAULT_CHARSET;
     m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, 96);
-    m_page_label.Font.Color := clGrayText;
+    m_page_label.Font.Color := m_color_theme.muted_text_color;
     m_page_label.Transparent := False;
     m_page_label.Color := Color;
     m_page_label.Visible := False;
@@ -746,12 +752,15 @@ begin
     end;
 end;
 
-procedure TncCandidateWindow.apply_appearance(const font_name: string; const font_size: Integer);
+procedure TncCandidateWindow.apply_appearance(const font_name: string; const font_size: Integer;
+    const color_scheme: Integer);
 var
     effective_font_name: string;
     effective_font_size: Integer;
+    effective_color_scheme: Integer;
 begin
     effective_font_name := resolve_candidate_font_name(font_name);
+    effective_color_scheme := nc_normalize_candidate_color_scheme(color_scheme);
 
     effective_font_size := font_size;
     if effective_font_size < c_min_candidate_font_size then
@@ -763,10 +772,16 @@ begin
         effective_font_size := c_max_candidate_font_size;
     end;
 
-    if SameText(m_list_font.Name, effective_font_name) and (m_base_list_font_size = effective_font_size) then
+    if SameText(m_list_font.Name, effective_font_name) and (m_base_list_font_size = effective_font_size) and
+        (m_color_scheme = effective_color_scheme) then
     begin
         Exit;
     end;
+
+    m_color_scheme := effective_color_scheme;
+    m_color_theme := nc_candidate_color_theme(m_color_scheme);
+    m_border_color := m_color_theme.border_color;
+    Color := m_color_theme.background_color;
 
     m_base_list_font_size := effective_font_size;
     m_base_preedit_font_size := effective_font_size;
@@ -775,17 +790,23 @@ begin
 
     m_list_font.Name := effective_font_name;
     m_list_font.Charset := DEFAULT_CHARSET;
+    m_list_font.Color := m_color_theme.text_color;
     m_weight_font.Name := effective_font_name;
     m_weight_font.Charset := DEFAULT_CHARSET;
+    m_weight_font.Color := m_color_theme.weight_text_color;
     if m_preedit_label <> nil then
     begin
         m_preedit_label.Font.Name := effective_font_name;
         m_preedit_label.Font.Charset := DEFAULT_CHARSET;
+        m_preedit_label.Font.Color := m_color_theme.muted_text_color;
+        m_preedit_label.Color := Color;
     end;
     if m_page_label <> nil then
     begin
         m_page_label.Font.Name := effective_font_name;
         m_page_label.Font.Charset := DEFAULT_CHARSET;
+        m_page_label.Font.Color := m_color_theme.muted_text_color;
+        m_page_label.Color := Color;
     end;
 
     if m_current_dpi > 0 then
@@ -994,9 +1015,9 @@ function TncCandidateWindow.get_candidate_text_color(const source: TncCandidateS
 begin
     case source of
         cs_user:
-            Result := TColor(RGB(46, 125, 50));
+            Result := m_color_theme.user_text_color;
         else
-            Result := clBlack;
+            Result := m_color_theme.text_color;
     end;
 end;
 
@@ -1004,9 +1025,9 @@ function TncCandidateWindow.get_selected_candidate_text_color(const source: TncC
 begin
     case source of
         cs_user:
-            Result := TColor(RGB(27, 94, 32));
+            Result := m_color_theme.selected_user_text_color;
         else
-            Result := TColor(RGB(20, 20, 20));
+            Result := m_color_theme.selected_text_color;
     end;
 end;
 
@@ -1368,8 +1389,8 @@ begin
         Canvas.Brush.Style := bsSolid;
         if i = m_selected_index then
         begin
-            Canvas.Brush.Color := TColor(RGB(232, 240, 254));
-            Canvas.Pen.Color := TColor(RGB(173, 198, 235));
+            Canvas.Brush.Color := m_color_theme.selected_background_color;
+            Canvas.Pen.Color := m_color_theme.selected_border_color;
             Canvas.RoundRect(item_left, y + 1, item_right, y + line_height - 1, corner_radius, corner_radius);
             Canvas.Font.Color := get_selected_candidate_text_color(candidate_source);
             SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
@@ -1413,7 +1434,7 @@ begin
             Canvas.Font.Assign(m_weight_font);
             if i = m_selected_index then
             begin
-                Canvas.Font.Color := TColor(RGB(76, 86, 98));
+                Canvas.Font.Color := m_color_theme.selected_weight_text_color;
             end
             else
             begin

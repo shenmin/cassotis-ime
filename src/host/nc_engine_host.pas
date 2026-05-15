@@ -669,7 +669,8 @@ begin
     end;
     if m_engine <> nil then
     begin
-        m_candidate_window.apply_appearance(m_engine.config.candidate_font_name, m_engine.config.candidate_font_size);
+        m_candidate_window.apply_appearance(m_engine.config.candidate_font_name,
+            m_engine.config.candidate_font_size, m_engine.config.candidate_color_scheme);
     end;
 end;
 
@@ -689,7 +690,8 @@ begin
     end;
     if m_candidate_window <> nil then
     begin
-        m_candidate_window.apply_appearance(config.candidate_font_name, config.candidate_font_size);
+        m_candidate_window.apply_appearance(config.candidate_font_name, config.candidate_font_size,
+            config.candidate_color_scheme);
         m_candidate_dirty := True;
     end;
 end;
