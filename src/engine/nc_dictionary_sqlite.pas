@@ -5440,6 +5440,18 @@ const
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
         'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
     c_exact_latest_choice_bonus = 1800;
+    c_low_frequency_base_choice_bonus_weight_max = 220;
+    c_composed_segment_candidate_limit = 4;
+    c_composed_exact_min_syllables = 4;
+    c_composed_exact_max_syllables = 6;
+    c_composed_exact_min_segment_syllables = 2;
+type
+    TncExactSegmentCandidate = record
+        text: string;
+        weight: Integer;
+        source: TncCandidateSource;
+    end;
+    TncExactSegmentCandidateList = TArray<TncExactSegmentCandidate>;
 var
     stmt: Psqlite3_stmt;
     list: TList<TncCandidate>;
@@ -5505,6 +5517,198 @@ var
         Result := Copy(text_value, Length(prefix_text) + 1, MaxInt);
     end;
 
+    function build_syllable_key_local(const start_idx: Integer;
+        const syllable_count: Integer): string;
+    var
+        local_idx: Integer;
+    begin
+        Result := '';
+        if (start_idx < 0) or (syllable_count <= 0) or
+            (start_idx + syllable_count > Length(query_syllables)) then
+        begin
+            Exit;
+        end;
+        for local_idx := start_idx to start_idx + syllable_count - 1 do
+        begin
+            Result := Result + query_syllables[local_idx];
+        end;
+    end;
+
+    function load_exact_segment_candidates(const segment_key: string;
+        const segment_syllables: Integer; out segment_candidates: TncExactSegmentCandidateList): Boolean;
+    var
+        segment_list: TList<TncExactSegmentCandidate>;
+        segment_seen: TDictionary<string, Boolean>;
+        local_stmt: Psqlite3_stmt;
+        local_step: Integer;
+        local_item: TncExactSegmentCandidate;
+        local_text: string;
+        local_comment: string;
+        local_pinyin: string;
+    begin
+        SetLength(segment_candidates, 0);
+        Result := False;
+        if (segment_key = '') or (segment_syllables < c_composed_exact_min_segment_syllables) then
+        begin
+            Exit;
+        end;
+
+        segment_list := TList<TncExactSegmentCandidate>.Create;
+        segment_seen := TDictionary<string, Boolean>.Create;
+        try
+            if m_user_ready then
+            begin
+                local_stmt := nil;
+                try
+                    if m_user_connection.prepare(user_sql, local_stmt) and
+                        m_user_connection.bind_text(local_stmt, 1, segment_key) and
+                        m_user_connection.bind_int(local_stmt, 2,
+                        c_composed_segment_candidate_limit) then
+                    begin
+                        local_step := m_user_connection.step(local_stmt);
+                        while local_step = SQLITE_ROW do
+                        begin
+                            local_text := Trim(m_user_connection.column_text(local_stmt, 0));
+                            if (local_text <> '') and
+                                (not segment_seen.ContainsKey(local_text)) and
+                                (get_text_unit_count_local(local_text) = segment_syllables) and
+                                strict_full_pinyin_text_alignment_valid(segment_key, local_text) then
+                            begin
+                                local_item.text := local_text;
+                                local_item.weight := m_user_connection.column_int(local_stmt, 1);
+                                local_item.source := cs_user;
+                                segment_seen.Add(local_text, True);
+                                segment_list.Add(local_item);
+                            end;
+                            local_step := m_user_connection.step(local_stmt);
+                        end;
+                    end;
+                finally
+                    if local_stmt <> nil then
+                    begin
+                        m_user_connection.finalize(local_stmt);
+                    end;
+                end;
+            end;
+
+            if m_base_ready then
+            begin
+                local_stmt := nil;
+                try
+                    if m_base_connection.prepare(base_sql, local_stmt) and
+                        m_base_connection.bind_text(local_stmt, 1, segment_key) and
+                        m_base_connection.bind_int(local_stmt, 2,
+                        c_composed_segment_candidate_limit) then
+                    begin
+                        local_step := m_base_connection.step(local_stmt);
+                        while local_step = SQLITE_ROW do
+                        begin
+                            local_pinyin := Trim(m_base_connection.column_text(local_stmt, 0));
+                            local_text := Trim(m_base_connection.column_text(local_stmt, 1));
+                            local_comment := Trim(m_base_connection.column_text(local_stmt, 2));
+                            if (local_comment = '') and (local_text <> '') and
+                                SameText(local_pinyin, segment_key) and
+                                (not segment_seen.ContainsKey(local_text)) and
+                                (get_text_unit_count_local(local_text) = segment_syllables) and
+                                strict_full_pinyin_text_alignment_valid(segment_key, local_text) then
+                            begin
+                                local_item.text := local_text;
+                                local_item.weight := m_base_connection.column_int(local_stmt, 3);
+                                local_item.source := cs_rule;
+                                segment_seen.Add(local_text, True);
+                                segment_list.Add(local_item);
+                            end;
+                            local_step := m_base_connection.step(local_stmt);
+                        end;
+                    end;
+                finally
+                    if local_stmt <> nil then
+                    begin
+                        m_base_connection.finalize(local_stmt);
+                    end;
+                end;
+            end;
+
+            if segment_list.Count > 0 then
+            begin
+                SetLength(segment_candidates, segment_list.Count);
+                for local_step := 0 to segment_list.Count - 1 do
+                begin
+                    segment_candidates[local_step] := segment_list[local_step];
+                end;
+                Result := True;
+            end;
+        finally
+            segment_seen.Free;
+            segment_list.Free;
+        end;
+    end;
+
+    procedure add_or_merge_candidate(const candidate_text: string; const candidate_comment: string;
+        const candidate_score: Integer; const candidate_source: TncCandidateSource); forward;
+
+    procedure add_two_segment_composed_exact_candidates;
+    var
+        split_syllables: Integer;
+        left_key: string;
+        right_key: string;
+        left_candidates: TncExactSegmentCandidateList;
+        right_candidates: TncExactSegmentCandidateList;
+        left_idx: Integer;
+        right_idx: Integer;
+        composed_text: string;
+        composed_score: Integer;
+        composed_source: TncCandidateSource;
+    begin
+        if (not full_pinyin_query) or
+            (query_syllable_count < c_composed_exact_min_syllables) or
+            (query_syllable_count > c_composed_exact_max_syllables) then
+        begin
+            Exit;
+        end;
+
+        for split_syllables := c_composed_exact_min_segment_syllables to
+            query_syllable_count - c_composed_exact_min_segment_syllables do
+        begin
+            left_key := build_syllable_key_local(0, split_syllables);
+            right_key := build_syllable_key_local(split_syllables,
+                query_syllable_count - split_syllables);
+            if (not load_exact_segment_candidates(left_key, split_syllables,
+                left_candidates)) or
+                (not load_exact_segment_candidates(right_key,
+                query_syllable_count - split_syllables, right_candidates)) then
+            begin
+                Continue;
+            end;
+
+            for left_idx := 0 to High(left_candidates) do
+            begin
+                for right_idx := 0 to High(right_candidates) do
+                begin
+                    composed_text := left_candidates[left_idx].text +
+                        right_candidates[right_idx].text;
+                    if (get_text_unit_count_local(composed_text) <> query_syllable_count) or
+                        normalized_base_entry_exists(exact_query_key, composed_text) then
+                    begin
+                        Continue;
+                    end;
+                    composed_score := ((left_candidates[left_idx].weight +
+                        right_candidates[right_idx].weight) * 2) +
+                        (Min(left_candidates[left_idx].weight,
+                        right_candidates[right_idx].weight) div 2) + 240;
+                    composed_source := cs_rule;
+                    if (left_candidates[left_idx].source = cs_user) or
+                        (right_candidates[right_idx].source = cs_user) then
+                    begin
+                        composed_source := cs_user;
+                    end;
+                    add_or_merge_candidate(composed_text, '', composed_score,
+                        composed_source);
+                end;
+            end;
+        end;
+    end;
+
     procedure add_or_merge_candidate(const candidate_text: string; const candidate_comment: string;
         const candidate_score: Integer; const candidate_source: TncCandidateSource);
     var
@@ -5520,7 +5724,9 @@ var
             Exit;
         end;
         effective_score := candidate_score;
-        if (candidate_comment = '') and full_pinyin_query then
+        if (candidate_comment = '') and full_pinyin_query and
+            (not ((candidate_source = cs_rule) and
+            (candidate_score <= c_low_frequency_base_choice_bonus_weight_max))) then
         begin
             low_evidence_admin_alias := False;
             choice_bonus := get_query_choice_bonus(query_key, key);
@@ -5978,6 +6184,11 @@ begin
                 end;
             end;
 
+            if list.Count = 0 then
+            begin
+                add_two_segment_composed_exact_candidates;
+            end;
+
             add_administrative_place_prefix_candidates;
         end;
 
@@ -6045,6 +6256,7 @@ const
         'SELECT COALESCE(SUM(commit_count), 0), COALESCE(MAX(last_used), 0) ' +
         'FROM dict_user_stats WHERE text = ?1';
     c_exact_latest_choice_bonus = 1800;
+    c_low_frequency_base_choice_bonus_weight_max = 220;
     c_jianpin_score_penalty = 30;
     c_nonfull_exact_penalty = 100;
     c_initial_single_char_penalty = 120;
@@ -6605,6 +6817,7 @@ var
         effective_has_dict_weight: Boolean;
         effective_dict_weight: Integer;
         choice_bonus: Integer;
+        allow_user_stat_bonus: Boolean;
     begin
         if text = '' then
         begin
@@ -6626,12 +6839,15 @@ var
         end;
 
         score_with_bonus := score;
-        if learning_bonus_map.TryGetValue(text, learning_bonus) then
+        allow_user_stat_bonus := not ((source = cs_rule) and has_dict_weight and
+            (dict_weight <= c_low_frequency_base_choice_bonus_weight_max));
+        if allow_user_stat_bonus and learning_bonus_map.TryGetValue(text,
+            learning_bonus) then
         begin
             Inc(score_with_bonus, learning_bonus);
             Inc(applied_learning_bonus_count);
         end;
-        if (comment = '') and (candidate_pinyin_key <> '') and
+        if allow_user_stat_bonus and (comment = '') and (candidate_pinyin_key <> '') and
             same_normalized_pinyin_key(candidate_pinyin_key, query_key) then
         begin
             choice_bonus := get_query_choice_bonus(query_key, text);
