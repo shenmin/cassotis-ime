@@ -111,6 +111,8 @@ type
             const text: string): Boolean;
         function is_nonbase_multi_segment_composed_exact_phrase(const pinyin: string;
             const text: string): Boolean;
+        function is_nonbase_wo_tail_phrase_exact_phrase(const pinyin: string;
+            const text: string): Boolean;
         function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
         function is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
             const commit_count: Integer = 0; const user_weight: Integer = 0): Boolean;
@@ -3803,6 +3805,51 @@ function TncSqliteDictionary.should_suppress_exact_query_learning(const pinyin: 
 begin
     Result := is_nonbase_multiword_composed_exact_phrase(pinyin, text) or
         is_nonbase_multi_segment_composed_exact_phrase(pinyin, text);
+end;
+
+function TncSqliteDictionary.is_nonbase_wo_tail_phrase_exact_phrase(const pinyin: string;
+    const text: string): Boolean;
+var
+    pinyin_key: string;
+    text_key: string;
+    syllables: TArray<string>;
+    text_units: TArray<string>;
+    tail_pinyin: string;
+    tail_text: string;
+begin
+    Result := False;
+    pinyin_key := LowerCase(Trim(pinyin));
+    text_key := Trim(text);
+    if (pinyin_key = '') or (text_key = '') or (not is_full_pinyin_key(pinyin_key)) then
+    begin
+        Exit;
+    end;
+    if normalized_base_entry_exists(pinyin_key, text_key) then
+    begin
+        Exit;
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
+    text_units := split_text_units_local(text_key);
+    if (Length(syllables) <> 3) or (Length(text_units) <> 3) then
+    begin
+        Exit;
+    end;
+    if (not SameText(syllables[0], 'wo')) or
+        (text_units[0] <> string(Char($6211))) then
+    begin
+        Exit;
+    end;
+
+    tail_pinyin := syllables[1] + syllables[2];
+    tail_text := text_units[1] + text_units[2];
+    if (tail_pinyin = '') or (tail_text = '') then
+    begin
+        Exit;
+    end;
+
+    Result := normalized_base_entry_exists(tail_pinyin, tail_text) or
+        explicit_user_entry_exists(tail_pinyin, tail_text);
 end;
 
 function TncSqliteDictionary.is_base_entry(const pinyin: string; const text: string): Boolean;
@@ -8845,6 +8892,7 @@ var
     invalid_full_pinyin_alignment: Boolean;
     base_entry_exists: Boolean;
     suppress_exact_query_user_row: Boolean;
+    suppress_wo_tail_phrase_user_row: Boolean;
     existing_user_entry: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
@@ -8881,7 +8929,10 @@ begin
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
     existing_user_entry := is_valid_user_text(text) and
         explicit_user_entry_exists(pinyin_key, text);
+    suppress_wo_tail_phrase_user_row := full_pinyin_input and
+        is_nonbase_wo_tail_phrase_exact_phrase(pinyin_key, text);
     suppress_exact_query_user_row := invalid_full_pinyin_alignment or
+        suppress_wo_tail_phrase_user_row or
         (full_pinyin_input and (not explicit_choice) and
         (not existing_user_entry) and
         should_suppress_exact_query_learning(pinyin_key, text));
