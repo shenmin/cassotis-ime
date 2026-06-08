@@ -111,7 +111,7 @@ type
             const text: string): Boolean;
         function is_nonbase_multi_segment_composed_exact_phrase(const pinyin: string;
             const text: string): Boolean;
-        function is_nonbase_pronoun_tail_phrase_exact_phrase(const pinyin: string;
+        function is_nonbase_structured_rule_exact_phrase(const pinyin: string;
             const text: string): Boolean;
         function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
         function is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
@@ -3807,14 +3807,13 @@ begin
         is_nonbase_multi_segment_composed_exact_phrase(pinyin, text);
 end;
 
-function TncSqliteDictionary.is_nonbase_pronoun_tail_phrase_exact_phrase(const pinyin: string;
+function TncSqliteDictionary.is_nonbase_structured_rule_exact_phrase(const pinyin: string;
     const text: string): Boolean;
 var
     pinyin_key: string;
     text_key: string;
     syllables: TArray<string>;
     text_units: TArray<string>;
-    idx: Integer;
     tail_pinyin: string;
     tail_text: string;
 
@@ -3833,6 +3832,96 @@ var
             ((SameText(syllables[0], 'jiu')) and
             (text_units[0] = string(Char($5C31))));
     end;
+
+    function fixed_suffix_text_matches_local(const suffix_pinyin: string;
+        const suffix_text: string): Boolean;
+    begin
+        Result := ((SameText(suffix_pinyin, 'de')) and
+            (suffix_text = string(Char($7684)))) or
+            ((SameText(suffix_pinyin, 'le')) and
+            (suffix_text = string(Char($4E86)))) or
+            ((SameText(suffix_pinyin, 'ba')) and
+            (suffix_text = string(Char($5427)))) or
+            ((SameText(suffix_pinyin, 'ma')) and
+            ((suffix_text = string(Char($5417))) or
+            (suffix_text = string(Char($55CE))))) or
+            ((SameText(suffix_pinyin, 'la')) and
+            (suffix_text = string(Char($5566))));
+    end;
+
+    function has_exact_fixed_suffix_phrase_local: Boolean;
+    var
+        prefix_pinyin: string;
+        prefix_text: string;
+        prefix_idx: Integer;
+        suffix_pinyin: string;
+        suffix_text: string;
+
+        function try_suffix_local(const value: string): Boolean;
+        begin
+            Result := False;
+            if (Length(pinyin_key) <= Length(value)) or
+                (Copy(pinyin_key, Length(pinyin_key) - Length(value) + 1,
+                Length(value)) <> value) then
+            begin
+                Exit;
+            end;
+            suffix_pinyin := value;
+            Result := fixed_suffix_text_matches_local(suffix_pinyin,
+                suffix_text);
+        end;
+    begin
+        Result := False;
+        if Length(text_units) < 3 then
+        begin
+            Exit;
+        end;
+
+        suffix_text := text_units[High(text_units)];
+        suffix_pinyin := '';
+        if not (try_suffix_local('de') or try_suffix_local('le') or
+            try_suffix_local('ba') or try_suffix_local('ma') or
+            try_suffix_local('la')) then
+        begin
+            Exit;
+        end;
+
+        prefix_pinyin := '';
+        prefix_pinyin := Copy(pinyin_key, 1, Length(pinyin_key) -
+            Length(suffix_pinyin));
+        prefix_text := '';
+        for prefix_idx := 0 to High(text_units) - 1 do
+        begin
+            prefix_text := prefix_text + text_units[prefix_idx];
+        end;
+        if (prefix_pinyin = '') or (prefix_text = '') then
+        begin
+            Exit;
+        end;
+
+        Result := normalized_base_entry_exists(prefix_pinyin, prefix_text) or
+            explicit_user_entry_exists(prefix_pinyin, prefix_text);
+    end;
+
+    function has_exact_tail_phrase_local: Boolean;
+    var
+        tail_idx: Integer;
+    begin
+        tail_pinyin := '';
+        tail_text := '';
+        for tail_idx := 1 to High(syllables) do
+        begin
+            tail_pinyin := tail_pinyin + syllables[tail_idx];
+            tail_text := tail_text + text_units[tail_idx];
+        end;
+        if (tail_pinyin = '') or (tail_text = '') then
+        begin
+            Exit(False);
+        end;
+
+        Result := normalized_base_entry_exists(tail_pinyin, tail_text) or
+            explicit_user_entry_exists(tail_pinyin, tail_text);
+    end;
 begin
     Result := False;
     pinyin_key := LowerCase(Trim(pinyin));
@@ -3846,8 +3935,13 @@ begin
         Exit;
     end;
 
-    syllables := split_full_pinyin_syllables(pinyin_key);
     text_units := split_text_units_local(text_key);
+    if has_exact_fixed_suffix_phrase_local then
+    begin
+        Exit(True);
+    end;
+
+    syllables := split_full_pinyin_syllables(pinyin_key);
     if (Length(syllables) < 3) or (Length(syllables) > 4) or
         (Length(text_units) <> Length(syllables)) then
     begin
@@ -3858,20 +3952,12 @@ begin
         Exit;
     end;
 
-    tail_pinyin := '';
-    tail_text := '';
-    for idx := 1 to High(syllables) do
+    if head_matches_local and has_exact_tail_phrase_local then
     begin
-        tail_pinyin := tail_pinyin + syllables[idx];
-        tail_text := tail_text + text_units[idx];
-    end;
-    if (tail_pinyin = '') or (tail_text = '') then
-    begin
-        Exit;
+        Exit(True);
     end;
 
-    Result := normalized_base_entry_exists(tail_pinyin, tail_text) or
-        explicit_user_entry_exists(tail_pinyin, tail_text);
+    Result := False;
 end;
 
 function TncSqliteDictionary.is_base_entry(const pinyin: string; const text: string): Boolean;
@@ -8914,7 +9000,7 @@ var
     invalid_full_pinyin_alignment: Boolean;
     base_entry_exists: Boolean;
     suppress_exact_query_user_row: Boolean;
-    suppress_pronoun_tail_phrase_user_row: Boolean;
+    suppress_structured_rule_phrase_user_row: Boolean;
     existing_user_entry: Boolean;
 begin
     pinyin_key := LowerCase(Trim(pinyin));
@@ -8951,10 +9037,10 @@ begin
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
     existing_user_entry := is_valid_user_text(text) and
         explicit_user_entry_exists(pinyin_key, text);
-    suppress_pronoun_tail_phrase_user_row := full_pinyin_input and
-        is_nonbase_pronoun_tail_phrase_exact_phrase(pinyin_key, text);
+    suppress_structured_rule_phrase_user_row := full_pinyin_input and
+        is_nonbase_structured_rule_exact_phrase(pinyin_key, text);
     suppress_exact_query_user_row := invalid_full_pinyin_alignment or
-        suppress_pronoun_tail_phrase_user_row or
+        suppress_structured_rule_phrase_user_row or
         (full_pinyin_input and (not explicit_choice) and
         (not existing_user_entry) and
         should_suppress_exact_query_learning(pinyin_key, text));
