@@ -3814,6 +3814,7 @@ var
     text_key: string;
     syllables: TArray<string>;
     text_units: TArray<string>;
+    idx: Integer;
     tail_pinyin: string;
     tail_text: string;
 
@@ -3822,7 +3823,15 @@ var
         Result := ((SameText(syllables[0], 'wo')) and
             (text_units[0] = string(Char($6211)))) or
             ((SameText(syllables[0], 'ni')) and
-            (text_units[0] = string(Char($4F60))));
+            (text_units[0] = string(Char($4F60)))) or
+            ((SameText(syllables[0], 'zui')) and
+            (text_units[0] = string(Char($6700)))) or
+            ((SameText(syllables[0], 'bu')) and
+            (text_units[0] = string(Char($4E0D)))) or
+            ((SameText(syllables[0], 'hen')) and
+            (text_units[0] = string(Char($5F88)))) or
+            ((SameText(syllables[0], 'jiu')) and
+            (text_units[0] = string(Char($5C31))));
     end;
 begin
     Result := False;
@@ -3839,7 +3848,8 @@ begin
 
     syllables := split_full_pinyin_syllables(pinyin_key);
     text_units := split_text_units_local(text_key);
-    if (Length(syllables) <> 3) or (Length(text_units) <> 3) then
+    if (Length(syllables) < 3) or (Length(syllables) > 4) or
+        (Length(text_units) <> Length(syllables)) then
     begin
         Exit;
     end;
@@ -3848,8 +3858,13 @@ begin
         Exit;
     end;
 
-    tail_pinyin := syllables[1] + syllables[2];
-    tail_text := text_units[1] + text_units[2];
+    tail_pinyin := '';
+    tail_text := '';
+    for idx := 1 to High(syllables) do
+    begin
+        tail_pinyin := tail_pinyin + syllables[idx];
+        tail_text := tail_text + text_units[idx];
+    end;
     if (tail_pinyin = '') or (tail_text = '') then
     begin
         Exit;
