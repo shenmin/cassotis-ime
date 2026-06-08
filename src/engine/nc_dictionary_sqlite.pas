@@ -3849,6 +3849,34 @@ var
             (suffix_text = string(Char($5566))));
     end;
 
+    function closed_particle_combo_matches_local: Boolean;
+    var
+        de_text: string;
+        le_text: string;
+        ba_text: string;
+        ma_sc_text: string;
+        ma_tc_text: string;
+    begin
+        de_text := string(Char($7684));
+        le_text := string(Char($4E86));
+        ba_text := string(Char($5427));
+        ma_sc_text := string(Char($5417));
+        ma_tc_text := string(Char($55CE));
+
+        Result := ((SameText(pinyin_key, 'dema')) and
+            ((text_key = de_text + ma_sc_text) or
+            (text_key = de_text + ma_tc_text))) or
+            ((SameText(pinyin_key, 'deba')) and
+            (text_key = de_text + ba_text)) or
+            ((SameText(pinyin_key, 'dele')) and
+            (text_key = de_text + le_text)) or
+            ((SameText(pinyin_key, 'leba')) and
+            (text_key = le_text + ba_text)) or
+            ((SameText(pinyin_key, 'lema')) and
+            ((text_key = le_text + ma_sc_text) or
+            (text_key = le_text + ma_tc_text)));
+    end;
+
     function has_exact_fixed_suffix_phrase_local: Boolean;
     var
         prefix_pinyin: string;
@@ -3929,6 +3957,10 @@ begin
     if (pinyin_key = '') or (text_key = '') or (not is_full_pinyin_key(pinyin_key)) then
     begin
         Exit;
+    end;
+    if closed_particle_combo_matches_local then
+    begin
+        Exit(True);
     end;
     if normalized_base_entry_exists(pinyin_key, text_key) then
     begin
