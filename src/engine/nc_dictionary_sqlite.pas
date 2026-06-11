@@ -3870,6 +3870,8 @@ var
             (text_key = de_text + ba_text)) or
             ((SameText(pinyin_key, 'dele')) and
             (text_key = de_text + le_text)) or
+            ((SameText(pinyin_key, 'dehao')) and
+            (text_key = string(Char($5F97)) + string(Char($597D)))) or
             ((SameText(pinyin_key, 'leba')) and
             (text_key = le_text + ba_text)) or
             ((SameText(pinyin_key, 'lema')) and
@@ -3903,6 +3905,27 @@ var
         if Length(text_units) < 3 then
         begin
             Exit;
+        end;
+
+        if (Length(text_units) >= 3) and
+            (Length(pinyin_key) > Length('dehao')) and
+            SameText(Copy(pinyin_key, Length(pinyin_key) - Length('dehao') + 1,
+            Length('dehao')), 'dehao') and
+            (text_units[High(text_units) - 1] = string(Char($5F97))) and
+            (text_units[High(text_units)] = string(Char($597D))) then
+        begin
+            prefix_pinyin := Copy(pinyin_key, 1, Length(pinyin_key) -
+                Length('hao'));
+            prefix_text := '';
+            for prefix_idx := 0 to High(text_units) - 1 do
+            begin
+                prefix_text := prefix_text + text_units[prefix_idx];
+            end;
+            if (prefix_pinyin <> '') and (prefix_text <> '') then
+            begin
+                Exit(normalized_base_entry_exists(prefix_pinyin, prefix_text) or
+                    explicit_user_entry_exists(prefix_pinyin, prefix_text));
+            end;
         end;
 
         suffix_text := text_units[High(text_units)];
