@@ -6928,8 +6928,10 @@ var
         c_len2_prefix_ratio_penalty_threshold = 2.4;
         c_len2_prefix_ratio_penalty_factor = 92.0;
         c_len2_prefix_ratio_penalty_cap = 180;
-        c_len2_reduplicated_exact_bonus = 160;
-        c_len2_reduplicated_weight_factor = 0.85;
+        c_reduplicated_exact_bonus = 160;
+        c_reduplicated_weight_factor = 0.85;
+        c_reduplicated_tail_bonus = 700;
+        c_reduplicated_tail_weight_factor = 0.60;
     var
         candidate_item: TncCandidate;
         candidate_pinyin_key: string;
@@ -6960,38 +6962,94 @@ var
         retroflex_pair_count: Integer;
         prefix_productivity_ratio: Double;
 
-        function get_len2_reduplicated_exact_bonus_local: Integer;
+        function get_reduplicated_exact_bonus_local: Integer;
         var
+            idx_local: Integer;
             initial_value: string;
         begin
             Result := 0;
-            if (query_unit_count <> 2) or (Length(query_key) <> 2) or
-                (query_key[1] <> query_key[2]) then
+            if (query_unit_count < 2) or (query_unit_count > 3) or
+                (Length(query_key) <> query_unit_count) then
             begin
                 Exit;
             end;
-            if (candidate_unit_count <> 2) or (Length(candidate_syllables) <> 2) or
-                (Length(candidate_text_units) <> 2) then
+            for idx_local := 2 to Length(query_key) do
+            begin
+                if query_key[idx_local] <> query_key[1] then
+                begin
+                    Exit;
+                end;
+            end;
+            if (candidate_unit_count <> query_unit_count) or
+                (Length(candidate_syllables) <> query_unit_count) or
+                (Length(candidate_text_units) <> query_unit_count) then
             begin
                 Exit;
             end;
             if (candidate_text_units[0] = '') or
-                (candidate_text_units[0] <> candidate_text_units[1]) then
+                (candidate_syllables[0] = '') then
             begin
                 Exit;
             end;
-            if (candidate_syllables[0] = '') or
-                (candidate_syllables[0] <> candidate_syllables[1]) then
+            for idx_local := 1 to query_unit_count - 1 do
             begin
-                Exit;
+                if (candidate_text_units[idx_local] <> candidate_text_units[0]) or
+                    (candidate_syllables[idx_local] <> candidate_syllables[0]) then
+                begin
+                    Exit;
+                end;
             end;
             initial_value := extract_syllable_initial(candidate_syllables[0]);
             if (initial_value = '') or (initial_value[1] <> query_key[1]) then
             begin
                 Exit;
             end;
-            Result := c_len2_reduplicated_exact_bonus +
-                Round(candidate_item.dict_weight * c_len2_reduplicated_weight_factor);
+            for idx_local := 1 to query_unit_count - 1 do
+            begin
+                initial_value := extract_syllable_initial(candidate_syllables[idx_local]);
+                if (initial_value = '') or (initial_value[1] <> query_key[idx_local]) then
+                begin
+                    Exit;
+                end;
+            end;
+            Result := c_reduplicated_exact_bonus +
+                Round(candidate_item.dict_weight * c_reduplicated_weight_factor);
+        end;
+
+        function get_reduplicated_tail_bonus_local: Integer;
+        var
+            idx_local: Integer;
+            initial_value: string;
+        begin
+            Result := 0;
+            if (query_unit_count <> 3) or
+                (Length(query_key) <> query_unit_count) or
+                (candidate_unit_count <> query_unit_count) or
+                (Length(candidate_syllables) <> query_unit_count) or
+                (Length(candidate_text_units) <> query_unit_count) then
+            begin
+                Exit;
+            end;
+
+            if (candidate_text_units[1] = '') or
+                (candidate_syllables[1] = '') or
+                (candidate_text_units[1] <> candidate_text_units[2]) or
+                (candidate_syllables[1] <> candidate_syllables[2]) then
+            begin
+                Exit;
+            end;
+
+            for idx_local := 0 to query_unit_count - 1 do
+            begin
+                initial_value := extract_syllable_initial(candidate_syllables[idx_local]);
+                if (initial_value = '') or (initial_value[1] <> query_key[idx_local + 1]) then
+                begin
+                    Exit;
+                end;
+            end;
+
+            Result := c_reduplicated_tail_bonus +
+                Round(candidate_item.dict_weight * c_reduplicated_tail_weight_factor);
         end;
     begin
         if full_pinyin_query or mixed_mode or
@@ -7116,7 +7174,8 @@ var
                                 Round((c_len2_weak_unit_penalty_floor - min_constituent_weight) *
                                     c_len2_weak_unit_penalty_factor)));
                         end;
-                        Inc(reranked_score, get_len2_reduplicated_exact_bonus_local);
+                        Inc(reranked_score, get_reduplicated_exact_bonus_local);
+                        Inc(reranked_score, get_reduplicated_tail_bonus_local);
                     end;
                 end;
 
