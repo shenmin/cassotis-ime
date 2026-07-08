@@ -3833,7 +3833,9 @@ var
             ((SameText(syllables[0], 'hen')) and
             (text_units[0] = string(Char($5F88)))) or
             ((SameText(syllables[0], 'jiu')) and
-            (text_units[0] = string(Char($5C31))));
+            (text_units[0] = string(Char($5C31)))) or
+            ((SameText(syllables[0], 'qing')) and
+            (text_units[0] = string(Char($8BF7))));
     end;
 
     function fixed_suffix_text_matches_local(const suffix_pinyin: string;
