@@ -292,6 +292,11 @@ try {
         invoke_tool 'cassotis_ime_dict_init (custom tc)' $dict_init @($base_db_tc_path, $schema_path, $custom_dict_tc)
     }
 
+    invoke_tool 'cassotis_ime_dict_init (contains index sc)' $dict_init @(
+        $base_db_sc_path, $schema_path, '--build-contains-index')
+    invoke_tool 'cassotis_ime_dict_init (contains index tc)' $dict_init @(
+        $base_db_tc_path, $schema_path, '--build-contains-index')
+
     Write-Host 'Rebuild completed.'
 }
 finally {

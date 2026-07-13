@@ -20,6 +20,7 @@ const
 procedure print_usage;
 begin
     Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path]');
+    Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --build-contains-index');
 end;
 
 function load_schema(const schema_path: string; out schema_text: string): Boolean;
@@ -651,11 +652,41 @@ begin
     end;
 end;
 
+function rebuild_contains_popularity_index(
+    const conn: TncSqliteConnection): Boolean;
+const
+    rebuild_sql =
+        'PRAGMA temp_store=MEMORY;' +
+        'DROP TABLE IF EXISTS dict_base_contains_popularity;' +
+        'CREATE TABLE dict_base_contains_popularity(' +
+        'token TEXT PRIMARY KEY, weight INTEGER NOT NULL) WITHOUT ROWID;' +
+        'WITH RECURSIVE nums(n) AS (' +
+        'VALUES(1) UNION ALL SELECT n + 1 FROM nums ' +
+        'WHERE n < (SELECT COALESCE(MAX(length(text)), 1) FROM dict_base)' +
+        '), spans AS (' +
+        'SELECT DISTINCT b.id AS id, substr(b.text, pos.n, len.n) AS token, ' +
+        'b.weight AS weight FROM dict_base b, nums pos, nums len ' +
+        'WHERE len.n BETWEEN 2 AND 6 ' +
+        'AND pos.n + len.n - 1 <= length(b.text)' +
+        ') INSERT INTO dict_base_contains_popularity(token, weight) ' +
+        'SELECT token, SUM(weight) FROM spans GROUP BY token;' +
+        'ANALYZE dict_base_contains_popularity;' +
+        'VACUUM;';
+begin
+    Writeln('Building text-contains popularity index...');
+    Result := conn.exec(rebuild_sql);
+    if Result then
+    begin
+        Writeln('Text-contains popularity index built.');
+    end;
+end;
+
 var
     db_path: string;
     schema_path: string;
     import_path: string;
     import_mode: TncImportMode;
+    build_contains_index: Boolean;
     schema_text: string;
     conn: TncSqliteConnection;
 begin
@@ -667,7 +698,13 @@ begin
 
     db_path := ParamStr(1);
     schema_path := ParamStr(2);
-    if ParamCount >= 3 then
+    build_contains_index := (ParamCount >= 3) and
+        SameText(Trim(ParamStr(3)), '--build-contains-index');
+    if build_contains_index then
+    begin
+        import_path := '';
+    end
+    else if ParamCount >= 3 then
     begin
         import_path := ParamStr(3);
     end
@@ -711,6 +748,12 @@ begin
                 Writeln('Import failed: ' + conn.errmsg);
                 Halt(1);
             end;
+        end;
+        if build_contains_index and
+            (not rebuild_contains_popularity_index(conn)) then
+        begin
+            Writeln('Build text-contains popularity index failed: ' + conn.errmsg);
+            Halt(1);
         end;
     finally
         conn.Free;
