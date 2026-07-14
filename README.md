@@ -92,15 +92,18 @@ See [BENCHMARK.md](BENCHMARK.md) for the Benchmark-16300 methodology, corpus sou
 
 Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Elegance in Timelessness**](https://www.qidian.com/book/1037259117/) (Chinese title: [**永恒的舞动**](https://www.qidian.com/book/1037259117/)).
 
-| Version | Top1 | Top2 |
-|---|---:|---:|
-| `v0.8.5` | 6097/16300 (37.40%) | 6847/16300 (42.01%) |
-| `v0.7.0` | 5368/16300 (32.93%) | 6110/16300 (37.48%) |
-| `v0.6.0` | 4905/16300 (30.09%) | 5378/16300 (32.99%) |
-| `v0.5.0` | 4834/16300 (29.66%) | 5243/16300 (32.17%) |
-| `v0.4.0` | 4371/16300 (26.82%) | 4744/16300 (29.10%) |
-| `v0.3.1` | 3845/16300 (23.59%) | 4651/16300 (28.53%) |
-| `v0.2.0` | 2671/16300 (16.39%) | 2863/16300 (17.56%) |
+| Version | Top1 | Top2 | Mean (ms) | P95 (ms) | Max (ms) |
+|---|---:|---:|---:|---:|---:|
+| `v1.0.0` | 6106/16300 (37.46%) | 6857/16300 (42.07%) | 71.49 | 219 | 5344 |
+| `v0.8.5` | 6097/16300 (37.40%) | 6847/16300 (42.01%) | 520.05 | 1203 | 13297 |
+| `v0.7.0` | 5368/16300 (32.93%) | 6110/16300 (37.48%) | — | — | — |
+| `v0.6.0` | 4905/16300 (30.09%) | 5378/16300 (32.99%) | — | — | — |
+| `v0.5.0` | 4834/16300 (29.66%) | 5243/16300 (32.17%) | — | — | — |
+| `v0.4.0` | 4371/16300 (26.82%) | 4744/16300 (29.10%) | — | — | — |
+| `v0.3.1` | 3845/16300 (23.59%) | 4651/16300 (28.53%) | — | — | — |
+| `v0.2.0` | 2671/16300 (16.39%) | 2863/16300 (17.56%) | — | — | — |
+
+Latency values are engine-only full-query decode times. Each complete Pinyin query is assigned at once, so these values do not represent incremental keystroke-to-display latency. `—` means that the version was not measured under this latency protocol. See [BENCHMARK.md](BENCHMARK.md) for the complete methodology.
 
 ## Configuration
 Default config file:
