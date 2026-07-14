@@ -220,6 +220,8 @@ $lexicon_clean_sc = Join-Path $lexicon_root 'data\generated\dict_clean_sc.txt'
 $lexicon_clean_tc = Join-Path $lexicon_root 'data\generated\dict_clean_tc.txt'
 $lexicon_query_path_sc = Join-Path $lexicon_root 'data\generated\dict_query_path_prior_sc.txt'
 $lexicon_query_path_tc = Join-Path $lexicon_root 'data\generated\dict_query_path_prior_tc.txt'
+$lexicon_lm_transition_sc = Join-Path $lexicon_root 'data\generated\dict_lm_transition_sc.txt'
+$lexicon_lm_transition_tc = Join-Path $lexicon_root 'data\generated\dict_lm_transition_tc.txt'
 $custom_dict_sc = Join-Path $repo_root 'data\custom_dict_sc.txt'
 $custom_dict_tc = Join-Path $repo_root 'data\custom_dict_tc.txt'
 
@@ -279,6 +281,20 @@ try {
         }
         else {
             Write-Warning "Query-path prior files not found under lexicon data/generated; skipping base path-prior import."
+        }
+
+        if ((Test-Path -LiteralPath $lexicon_lm_transition_sc) -and
+            (Test-Path -LiteralPath $lexicon_lm_transition_tc)) {
+            Write-Host ("Importing lexicon LM transitions from: " + $lexicon_lm_transition_sc)
+            invoke_tool 'cassotis_ime_dict_init (lexicon LM transition sc)' $dict_init @(
+                $base_db_sc_path, $schema_path, $lexicon_lm_transition_sc, 'lm_transition')
+
+            Write-Host ("Importing lexicon LM transitions from: " + $lexicon_lm_transition_tc)
+            invoke_tool 'cassotis_ime_dict_init (lexicon LM transition tc)' $dict_init @(
+                $base_db_tc_path, $schema_path, $lexicon_lm_transition_tc, 'lm_transition')
+        }
+        else {
+            Write-Warning "LM transition files not found under lexicon data/generated; skipping LM transition import."
         }
     }
 

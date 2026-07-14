@@ -12,14 +12,14 @@ uses
     nc_sqlite in '..\src\common\nc_sqlite.pas';
 
 type
-    TncImportMode = (imBaseDict, imQueryPathPrior);
+    TncImportMode = (imBaseDict, imQueryPathPrior, imLmTransition);
 
 const
     c_segment_path_separator = #3;
 
 procedure print_usage;
 begin
-    Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path]');
+    Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path|lm_transition]');
     Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --build-contains-index');
 end;
 
@@ -184,6 +184,10 @@ begin
         begin
             Exit(imQueryPathPrior);
         end;
+        if Pos('lm_transition', normalized) > 0 then
+        begin
+            Exit(imLmTransition);
+        end;
         Exit(imBaseDict);
     end;
 
@@ -191,6 +195,12 @@ begin
         (normalized = 'path') or (normalized = 'querypath') then
     begin
         Exit(imQueryPathPrior);
+    end;
+
+    if (normalized = 'lm_transition') or (normalized = 'lm-transition') or
+        (normalized = 'lm') or (normalized = 'transition') then
+    begin
+        Exit(imLmTransition);
     end;
 
     Result := imBaseDict;
@@ -367,6 +377,8 @@ const
     select_last_rowid_sql = 'SELECT last_insert_rowid()';
     insert_query_path_sql =
         'INSERT OR REPLACE INTO dict_base_query_path(query_pinyin, path_text, weight) VALUES (?1, ?2, ?3);';
+    insert_lm_transition_sql =
+        'INSERT OR REPLACE INTO dict_base_lm_transition(query_pinyin, path_text, weight) VALUES (?1, ?2, ?3);';
 var
     reader: TStreamReader;
     stmt_base: Psqlite3_stmt;
@@ -421,6 +433,13 @@ begin
                 Exit;
             end;
         end
+        else if import_mode = imLmTransition then
+        begin
+            if not conn.prepare(insert_lm_transition_sql, stmt_query_path) then
+            begin
+                Exit;
+            end;
+        end
         else if not conn.prepare(insert_base_sql, stmt_base) or
             (not conn.prepare(insert_jianpin_sql, stmt_jianpin)) or
             (not conn.prepare(insert_alias_sql, stmt_alias)) or
@@ -443,7 +462,7 @@ begin
                 Continue;
             end;
 
-            if import_mode = imQueryPathPrior then
+            if import_mode in [imQueryPathPrior, imLmTransition] then
             begin
                 if not split_query_path_line(line, pinyin, text, weight) then
                 begin
@@ -637,6 +656,11 @@ begin
         if import_mode = imQueryPathPrior then
         begin
             Writeln(Format('Imported %d query-path prior rows from %d lines.',
+                [inserted_query_paths, line_count]));
+        end
+        else if import_mode = imLmTransition then
+        begin
+            Writeln(Format('Imported %d LM transition rows from %d lines.',
                 [inserted_query_paths, line_count]));
         end
         else

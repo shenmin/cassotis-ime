@@ -42,6 +42,8 @@ type
         m_query_choice_bonus_cache: TDictionary<string, Integer>;
         m_query_latest_choice_text_cache: TDictionary<string, string>;
         m_query_path_bonus_cache: TDictionary<string, Integer>;
+        m_lm_transition_bonus_cache: TDictionary<string, Integer>;
+        m_lm_transition_cache_loaded: Boolean;
         m_compound_tail_support_cache: TDictionary<string, Integer>;
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
@@ -136,6 +138,7 @@ type
             const commit_count: Integer = 0; const user_weight: Integer = 0): Boolean;
         procedure configure_base_connection;
         procedure configure_user_connection;
+        procedure load_lm_transition_bonus_cache;
         procedure purge_user_entry_internal(const pinyin: string; const text: string;
             const apply_penalty: Boolean; const purge_all_by_text: Boolean);
         procedure prune_user_entries_existing_in_base;
@@ -188,6 +191,7 @@ type
         function get_query_choice_bonus(const query_key: string; const candidate_text: string): Integer; override;
         function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
+        function get_lm_transition_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
         function get_compound_tail_support(const tail_text: string): Integer; override;
         function is_base_entry(const pinyin: string; const text: string): Boolean; override;
@@ -218,7 +222,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''10'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''11'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -348,6 +352,17 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_base_query_path_query ON dict_base_query_path(query_pinyin);' +
+        sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_base_lm_transition (' + sLineBreak +
+        '    query_pinyin TEXT NOT NULL,' + sLineBreak +
+        '    path_text TEXT NOT NULL,' + sLineBreak +
+        '    weight INTEGER DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(query_pinyin, path_text)' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_base_lm_transition_query ' +
+        'ON dict_base_lm_transition(query_pinyin);' +
         sLineBreak;
 
 type
@@ -1048,6 +1063,26 @@ begin
     if Result > c_base_query_path_bonus_cap then
     begin
         Result := c_base_query_path_bonus_cap;
+    end;
+end;
+
+function calc_lm_transition_bonus(const weight: Integer): Integer;
+const
+    c_lm_transition_bonus_cap = 1560;
+begin
+    Result := 0;
+    if weight <= 0 then
+    begin
+        Exit;
+    end;
+
+    // LM weights are already pinyin-bucket-normalized by the trainer. Keep
+    // their range separate from legacy query-path weights so final long-
+    // sentence reranking can require a clear statistical lead.
+    Result := weight * 3;
+    if Result > c_lm_transition_bonus_cap then
+    begin
+        Result := c_lm_transition_bonus_cap;
     end;
 end;
 
@@ -1926,6 +1961,8 @@ begin
     m_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_latest_choice_text_cache := TDictionary<string, string>.Create;
     m_query_path_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lm_transition_bonus_cache := TDictionary<string, Integer>.Create;
+    m_lm_transition_cache_loaded := False;
     m_compound_tail_support_cache := TDictionary<string, Integer>.Create;
     m_query_path_penalty_cache := TDictionary<string, Integer>.Create;
     m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
@@ -2004,6 +2041,11 @@ begin
     begin
         m_query_path_bonus_cache.Free;
         m_query_path_bonus_cache := nil;
+    end;
+    if m_lm_transition_bonus_cache <> nil then
+    begin
+        m_lm_transition_bonus_cache.Free;
+        m_lm_transition_bonus_cache := nil;
     end;
     if m_compound_tail_support_cache <> nil then
     begin
@@ -2313,6 +2355,65 @@ begin
     m_base_connection.exec('PRAGMA mmap_size=134217728;');
     m_base_connection.exec('PRAGMA cache_size=-8192;');
     m_base_connection.exec('PRAGMA temp_store=MEMORY;');
+end;
+
+procedure TncSqliteDictionary.load_lm_transition_bonus_cache;
+const
+    query_sql =
+        'SELECT query_pinyin, path_text, weight FROM dict_base_lm_transition';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    normalized_query: string;
+    normalized_path: string;
+    cache_key: string;
+    weight: Integer;
+begin
+    if m_lm_transition_cache_loaded then
+    begin
+        Exit;
+    end;
+
+    m_lm_transition_cache_loaded := True;
+    if m_lm_transition_bonus_cache <> nil then
+    begin
+        m_lm_transition_bonus_cache.Clear;
+    end;
+    if (not m_base_ready) or (m_base_connection = nil) or
+        (m_lm_transition_bonus_cache = nil) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        // Older dictionaries do not have this optional table. A failed prepare
+        // therefore means an empty model, not a failed dictionary open.
+        if not m_base_connection.prepare(query_sql, stmt) then
+        begin
+            Exit;
+        end;
+
+        step_result := m_base_connection.step(stmt);
+        while step_result = SQLITE_ROW do
+        begin
+            normalized_query := LowerCase(Trim(m_base_connection.column_text(stmt, 0)));
+            normalized_path := Trim(m_base_connection.column_text(stmt, 1));
+            weight := m_base_connection.column_int(stmt, 2);
+            if (normalized_query <> '') and (normalized_path <> '') and (weight > 0) then
+            begin
+                cache_key := normalized_query + #1 + normalized_path;
+                m_lm_transition_bonus_cache.AddOrSetValue(
+                    cache_key, calc_lm_transition_bonus(weight));
+            end;
+            step_result := m_base_connection.step(stmt);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
 end;
 
 procedure TncSqliteDictionary.begin_learning_batch;
@@ -2681,9 +2782,29 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_base_lm_transition (' +
+        'query_pinyin TEXT NOT NULL,' +
+        'path_text TEXT NOT NULL,' +
+        'weight INTEGER DEFAULT 0,' +
+        'PRIMARY KEY(query_pinyin, path_text)' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_base_lm_transition_query ' +
+        'ON dict_base_lm_transition(query_pinyin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 10);
+        set_schema_version(connection, 11);
         Result := True;
         Exit;
     end;
@@ -2736,6 +2857,11 @@ begin
     if schema_version < 10 then
     begin
         set_schema_version(connection, 10);
+    end;
+
+    if schema_version < 11 then
+    begin
+        set_schema_version(connection, 11);
     end;
 
     Result := True;
@@ -5522,6 +5648,7 @@ begin
         if m_base_ready then
         begin
             configure_base_connection;
+            load_lm_transition_bonus_cache;
         end;
     end;
 
@@ -5686,6 +5813,11 @@ begin
     begin
         m_query_path_bonus_cache.Clear;
     end;
+    if m_lm_transition_bonus_cache <> nil then
+    begin
+        m_lm_transition_bonus_cache.Clear;
+    end;
+    m_lm_transition_cache_loaded := False;
     if m_compound_tail_support_cache <> nil then
     begin
         m_compound_tail_support_cache.Clear;
@@ -10422,6 +10554,34 @@ begin
     if m_query_path_bonus_cache <> nil then
     begin
         m_query_path_bonus_cache.AddOrSetValue(cache_key, Result);
+    end;
+end;
+
+function TncSqliteDictionary.get_lm_transition_bonus(const query_key: string;
+    const encoded_path: string): Integer;
+var
+    normalized_query: string;
+    normalized_path: string;
+    cache_key: string;
+begin
+    Result := 0;
+    normalized_query := LowerCase(Trim(query_key));
+    normalized_path := Trim(encoded_path);
+    if (normalized_query = '') or (normalized_path = '') or
+        (get_encoded_path_segment_count(normalized_path) <= 1) or
+        (not ensure_open) or (not m_base_ready) or (m_base_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    if not m_lm_transition_cache_loaded then
+    begin
+        load_lm_transition_bonus_cache;
+    end;
+    cache_key := normalized_query + #1 + normalized_path;
+    if m_lm_transition_bonus_cache <> nil then
+    begin
+        m_lm_transition_bonus_cache.TryGetValue(cache_key, Result);
     end;
 end;
 
