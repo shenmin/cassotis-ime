@@ -6154,18 +6154,18 @@ function TncSqliteDictionary.lookup_exact_full_pinyin(const pinyin: string;
 const
     c_result_cache_limit = 4096;
     base_sql = 'SELECT pinyin, text, comment, weight FROM dict_base WHERE pinyin = ?1 ' +
-        'ORDER BY weight DESC, text ASC LIMIT ?2';
+        'ORDER BY weight DESC, text ASC';
     base_alias_sql =
         'SELECT b.pinyin, b.text, b.comment, b.weight ' +
         'FROM dict_base_pinyin_alias a INNER JOIN dict_base b ON b.id = a.word_id ' +
         'WHERE a.compact_pinyin = ?1 ' +
-        'ORDER BY b.weight DESC, b.text ASC LIMIT ?2';
+        'ORDER BY b.weight DESC, b.text ASC';
     base_longer_prefix_sql =
         'SELECT pinyin, text, comment, weight FROM dict_base ' +
         'WHERE pinyin >= ?1 AND pinyin < ?2 ' +
         'ORDER BY weight DESC, text ASC LIMIT ?3';
     user_sql = 'SELECT text, weight, last_used FROM dict_user WHERE pinyin = ?1 ' +
-        'ORDER BY weight DESC, last_used DESC, text ASC LIMIT ?2';
+        'ORDER BY weight DESC, last_used DESC, text ASC';
     c_exact_latest_choice_bonus = 1800;
     c_low_frequency_base_choice_bonus_weight_max = 220;
 var
@@ -6175,7 +6175,6 @@ var
     step_result: Integer;
     item: TncCandidate;
     query_key: string;
-    limit_value: Integer;
     idx: Integer;
     key: string;
     text_value: string;
@@ -6598,12 +6597,6 @@ begin
         query_syllable_count := 0;
     end;
 
-    limit_value := Max(m_limit * 3, 24);
-    if limit_value > 96 then
-    begin
-        limit_value := 96;
-    end;
-
     list := TList<TncCandidate>.Create;
     seen := TDictionary<string, Integer>.Create;
     try
@@ -6617,8 +6610,7 @@ begin
             if (stmt <> nil) and
                 m_user_connection.reset(stmt) and
                 m_user_connection.clear_bindings(stmt) and
-                m_user_connection.bind_text(stmt, 1, query_key) and
-                m_user_connection.bind_int(stmt, 2, limit_value) then
+                m_user_connection.bind_text(stmt, 1, query_key) then
             begin
                 repeat
                     step_result := m_user_connection.step(stmt);
@@ -6660,8 +6652,7 @@ begin
             if full_pinyin_query and (stmt <> nil) and
                 m_base_connection.reset(stmt) and
                 m_base_connection.clear_bindings(stmt) and
-                m_base_connection.bind_text(stmt, 1, exact_query_key) and
-                m_base_connection.bind_int(stmt, 2, limit_value) then
+                m_base_connection.bind_text(stmt, 1, exact_query_key) then
             begin
                 repeat
                     step_result := m_base_connection.step(stmt);
@@ -6691,8 +6682,7 @@ begin
                 if (stmt <> nil) and
                     m_base_connection.reset(stmt) and
                     m_base_connection.clear_bindings(stmt) and
-                    m_base_connection.bind_text(stmt, 1, query_key) and
-                    m_base_connection.bind_int(stmt, 2, limit_value) then
+                    m_base_connection.bind_text(stmt, 1, query_key) then
                 begin
                     repeat
                         step_result := m_base_connection.step(stmt);
