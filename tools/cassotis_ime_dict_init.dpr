@@ -12,14 +12,14 @@ uses
     nc_sqlite in '..\src\common\nc_sqlite.pas';
 
 type
-    TncImportMode = (imBaseDict, imQueryPathPrior, imLmTransition);
+    TncImportMode = (imBaseDict, imQueryPathPrior, imLmTransition, imCharLm);
 
 const
     c_segment_path_separator = #3;
 
 procedure print_usage;
 begin
-    Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path|lm_transition]');
+    Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path|lm_transition|char_lm]');
     Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --build-contains-index');
 end;
 
@@ -90,6 +90,38 @@ begin
     end;
 
     Result := (query_pinyin <> '') and (path_text <> '');
+end;
+
+function split_char_lm_line(const line: string; out ngram: string;
+    out score: Integer; out backoff: Integer): Boolean;
+var
+    first_tab: Integer;
+    second_tab: Integer;
+    remainder: string;
+begin
+    Result := False;
+    ngram := '';
+    score := 0;
+    backoff := 0;
+    first_tab := Pos(#9, line);
+    if first_tab <= 1 then
+    begin
+        Exit;
+    end;
+    remainder := Copy(line, first_tab + 1, MaxInt);
+    second_tab := Pos(#9, remainder);
+    if second_tab <= 1 then
+    begin
+        Exit;
+    end;
+    ngram := Copy(line, 1, first_tab - 1);
+    if (ngram = '') or
+        (not TryStrToInt(Trim(Copy(remainder, 1, second_tab - 1)), score)) or
+        (not TryStrToInt(Trim(Copy(remainder, second_tab + 1, MaxInt)), backoff)) then
+    begin
+        Exit;
+    end;
+    Result := True;
 end;
 
 function normalize_pinyin_key(const value: string): string;
@@ -188,6 +220,10 @@ begin
         begin
             Exit(imLmTransition);
         end;
+        if Pos('char_lm', normalized) > 0 then
+        begin
+            Exit(imCharLm);
+        end;
         Exit(imBaseDict);
     end;
 
@@ -201,6 +237,12 @@ begin
         (normalized = 'lm') or (normalized = 'transition') then
     begin
         Exit(imLmTransition);
+    end;
+
+    if (normalized = 'char_lm') or (normalized = 'char-lm') or
+        (normalized = 'character_lm') or (normalized = 'character-lm') then
+    begin
+        Exit(imCharLm);
     end;
 
     Result := imBaseDict;
@@ -379,6 +421,8 @@ const
         'INSERT OR REPLACE INTO dict_base_query_path(query_pinyin, path_text, weight) VALUES (?1, ?2, ?3);';
     insert_lm_transition_sql =
         'INSERT OR REPLACE INTO dict_base_lm_transition(query_pinyin, path_text, weight) VALUES (?1, ?2, ?3);';
+    insert_char_lm_sql =
+        'INSERT OR REPLACE INTO dict_base_char_lm(ngram, score, backoff) VALUES (?1, ?2, ?3);';
 var
     reader: TStreamReader;
     stmt_base: Psqlite3_stmt;
@@ -390,6 +434,7 @@ var
     pinyin: string;
     text: string;
     weight: Integer;
+    backoff: Integer;
     word_id: Integer;
     rc: Integer;
     has_error: Boolean;
@@ -398,6 +443,7 @@ var
     inserted_jianpin: Integer;
     inserted_aliases: Integer;
     inserted_query_paths: Integer;
+    inserted_char_lm: Integer;
     jianpin_variants: TArray<string>;
     jianpin_value: string;
     compact_pinyin: string;
@@ -425,6 +471,7 @@ begin
     inserted_jianpin := 0;
     inserted_aliases := 0;
     inserted_query_paths := 0;
+    inserted_char_lm := 0;
     try
         if import_mode = imQueryPathPrior then
         begin
@@ -440,6 +487,13 @@ begin
                 Exit;
             end;
         end
+        else if import_mode = imCharLm then
+        begin
+            if not conn.prepare(insert_char_lm_sql, stmt_query_path) then
+            begin
+                Exit;
+            end;
+        end
         else if not conn.prepare(insert_base_sql, stmt_base) or
             (not conn.prepare(insert_jianpin_sql, stmt_jianpin)) or
             (not conn.prepare(insert_alias_sql, stmt_alias)) or
@@ -450,15 +504,48 @@ begin
 
         while not reader.EndOfStream do
         begin
-            line := Trim(reader.ReadLine);
+            line := reader.ReadLine;
             Inc(line_count);
+            if import_mode <> imCharLm then
+            begin
+                line := Trim(line);
+            end;
             if line = '' then
             begin
                 Continue;
             end;
 
-            if line[1] = '#' then
+            if (import_mode <> imCharLm) and (line[1] = '#') then
             begin
+                Continue;
+            end;
+
+            if import_mode = imCharLm then
+            begin
+                if not split_char_lm_line(line, text, weight, backoff) then
+                begin
+                    Continue;
+                end;
+                if (not conn.bind_text(stmt_query_path, 1, text)) or
+                    (not conn.bind_int(stmt_query_path, 2, weight)) or
+                    (not conn.bind_int(stmt_query_path, 3, backoff)) then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+                rc := conn.step(stmt_query_path);
+                if rc <> SQLITE_DONE then
+                begin
+                    has_error := True;
+                    Break;
+                end;
+                Inc(inserted_char_lm);
+                if (not conn.reset(stmt_query_path)) or
+                    (not conn.clear_bindings(stmt_query_path)) then
+                begin
+                    has_error := True;
+                    Break;
+                end;
                 Continue;
             end;
 
@@ -662,6 +749,11 @@ begin
         begin
             Writeln(Format('Imported %d LM transition rows from %d lines.',
                 [inserted_query_paths, line_count]));
+        end
+        else if import_mode = imCharLm then
+        begin
+            Writeln(Format('Imported %d character LM rows from %d lines.',
+                [inserted_char_lm, line_count]));
         end
         else
         begin

@@ -1,11 +1,11 @@
--- cassotis ime sqlite schema v11
+-- cassotis ime sqlite schema v12
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '11');
+INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '12');
 
 CREATE TABLE IF NOT EXISTS dict_base (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,3 +141,9 @@ CREATE TABLE IF NOT EXISTS dict_base_lm_transition (
 
 CREATE INDEX IF NOT EXISTS idx_dict_base_lm_transition_query
     ON dict_base_lm_transition(query_pinyin);
+
+CREATE TABLE IF NOT EXISTS dict_base_char_lm (
+    ngram TEXT NOT NULL PRIMARY KEY,
+    score INTEGER NOT NULL DEFAULT 0,
+    backoff INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;

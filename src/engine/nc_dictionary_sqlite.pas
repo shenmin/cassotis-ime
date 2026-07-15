@@ -17,6 +17,12 @@ uses
     nc_sqlite;
 
 type
+    TncCharLmCacheEntry = record
+        found: Boolean;
+        score: Integer;
+        backoff: Integer;
+    end;
+
     TncSqliteDictionary = class(TncDictionaryProvider)
     private
         m_base_db_path: string;
@@ -44,6 +50,9 @@ type
         m_query_path_bonus_cache: TDictionary<string, Integer>;
         m_lm_transition_bonus_cache: TDictionary<string, Integer>;
         m_lm_transition_cache_loaded: Boolean;
+        m_char_lm_entry_cache: TDictionary<string, TncCharLmCacheEntry>;
+        m_char_lm_cache_order: TQueue<string>;
+        m_char_lm_available: Integer;
         m_compound_tail_support_cache: TDictionary<string, Integer>;
         m_stmt_context_bonus: Psqlite3_stmt;
         m_stmt_context_trigram_bonus: Psqlite3_stmt;
@@ -139,6 +148,12 @@ type
         procedure configure_base_connection;
         procedure configure_user_connection;
         procedure load_lm_transition_bonus_cache;
+        function ensure_char_lm_available: Boolean;
+        procedure cache_char_lm_entry(const ngram: string;
+            const entry: TncCharLmCacheEntry);
+        function ensure_char_lm_entries_cached(const ngrams: TArray<string>): Boolean;
+        function try_get_char_lm_entry(const ngram: string;
+            out score: Integer; out backoff: Integer): Boolean;
         procedure purge_user_entry_internal(const pinyin: string; const text: string;
             const apply_penalty: Boolean; const purge_all_by_text: Boolean);
         procedure prune_user_entries_existing_in_base;
@@ -192,6 +207,8 @@ type
         function get_query_latest_choice_text(const query_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_lm_transition_bonus(const query_key: string; const encoded_path: string): Integer; override;
+        function get_char_lm_text_scores(const texts: TArray<string>;
+            out scores: TArray<Integer>): Boolean; override;
         function get_query_segment_path_penalty(const query_key: string; const encoded_path: string): Integer; override;
         function get_compound_tail_support(const tail_text: string): Integer; override;
         function is_base_entry(const pinyin: string; const text: string): Boolean; override;
@@ -222,7 +239,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''11'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''12'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -363,6 +380,13 @@ const
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_base_lm_transition_query ' +
         'ON dict_base_lm_transition(query_pinyin);' +
+        sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_base_char_lm (' + sLineBreak +
+        '    ngram TEXT NOT NULL PRIMARY KEY,' + sLineBreak +
+        '    score INTEGER NOT NULL DEFAULT 0,' + sLineBreak +
+        '    backoff INTEGER NOT NULL DEFAULT 0' + sLineBreak +
+        ') WITHOUT ROWID;' +
         sLineBreak;
 
 type
@@ -1963,6 +1987,9 @@ begin
     m_query_path_bonus_cache := TDictionary<string, Integer>.Create;
     m_lm_transition_bonus_cache := TDictionary<string, Integer>.Create;
     m_lm_transition_cache_loaded := False;
+    m_char_lm_entry_cache := TDictionary<string, TncCharLmCacheEntry>.Create;
+    m_char_lm_cache_order := TQueue<string>.Create;
+    m_char_lm_available := -1;
     m_compound_tail_support_cache := TDictionary<string, Integer>.Create;
     m_query_path_penalty_cache := TDictionary<string, Integer>.Create;
     m_candidate_penalty_cache := TDictionary<string, Integer>.Create;
@@ -2046,6 +2073,16 @@ begin
     begin
         m_lm_transition_bonus_cache.Free;
         m_lm_transition_bonus_cache := nil;
+    end;
+    if m_char_lm_entry_cache <> nil then
+    begin
+        m_char_lm_entry_cache.Free;
+        m_char_lm_entry_cache := nil;
+    end;
+    if m_char_lm_cache_order <> nil then
+    begin
+        m_char_lm_cache_order.Free;
+        m_char_lm_cache_order := nil;
     end;
     if m_compound_tail_support_cache <> nil then
     begin
@@ -2802,9 +2839,20 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_base_char_lm (' +
+        'ngram TEXT NOT NULL PRIMARY KEY,' +
+        'score INTEGER NOT NULL DEFAULT 0,' +
+        'backoff INTEGER NOT NULL DEFAULT 0' +
+        ') WITHOUT ROWID;') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 11);
+        set_schema_version(connection, 12);
         Result := True;
         Exit;
     end;
@@ -2862,6 +2910,11 @@ begin
     if schema_version < 11 then
     begin
         set_schema_version(connection, 11);
+    end;
+
+    if schema_version < 12 then
+    begin
+        set_schema_version(connection, 12);
     end;
 
     Result := True;
@@ -5818,6 +5871,15 @@ begin
         m_lm_transition_bonus_cache.Clear;
     end;
     m_lm_transition_cache_loaded := False;
+    if m_char_lm_entry_cache <> nil then
+    begin
+        m_char_lm_entry_cache.Clear;
+    end;
+    if m_char_lm_cache_order <> nil then
+    begin
+        m_char_lm_cache_order.Clear;
+    end;
+    m_char_lm_available := -1;
     if m_compound_tail_support_cache <> nil then
     begin
         m_compound_tail_support_cache.Clear;
@@ -10573,6 +10635,354 @@ begin
     begin
         m_lm_transition_bonus_cache.TryGetValue(cache_key, Result);
     end;
+end;
+
+function TncSqliteDictionary.ensure_char_lm_available: Boolean;
+const
+    query_sql = 'SELECT 1 FROM dict_base_char_lm LIMIT 1';
+var
+    stmt: Psqlite3_stmt;
+begin
+    if m_char_lm_available >= 0 then
+    begin
+        Exit(m_char_lm_available > 0);
+    end;
+
+    m_char_lm_available := 0;
+    if (not ensure_open) or (not m_base_ready) or
+        (m_base_connection = nil) then
+    begin
+        Exit(False);
+    end;
+
+    stmt := nil;
+    try
+        if not m_base_connection.prepare(query_sql, stmt) then
+        begin
+            Exit(False);
+        end;
+        if m_base_connection.step(stmt) = SQLITE_ROW then
+        begin
+            m_char_lm_available := 1;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+    Result := m_char_lm_available > 0;
+end;
+
+procedure TncSqliteDictionary.cache_char_lm_entry(const ngram: string;
+    const entry: TncCharLmCacheEntry);
+const
+    c_cache_max_entries = 65536;
+var
+    evicted_ngram: string;
+begin
+    if (ngram = '') or (m_char_lm_entry_cache = nil) or
+        (m_char_lm_cache_order = nil) then
+    begin
+        Exit;
+    end;
+
+    if m_char_lm_entry_cache.ContainsKey(ngram) then
+    begin
+        m_char_lm_entry_cache.AddOrSetValue(ngram, entry);
+        Exit;
+    end;
+
+    while m_char_lm_entry_cache.Count >= c_cache_max_entries do
+    begin
+        if m_char_lm_cache_order.Count <= 0 then
+        begin
+            Exit;
+        end;
+        evicted_ngram := m_char_lm_cache_order.Dequeue;
+        m_char_lm_entry_cache.Remove(evicted_ngram);
+    end;
+    m_char_lm_entry_cache.Add(ngram, entry);
+    m_char_lm_cache_order.Enqueue(ngram);
+end;
+
+function TncSqliteDictionary.ensure_char_lm_entries_cached(
+    const ngrams: TArray<string>): Boolean;
+const
+    c_query_chunk_size = 400;
+var
+    missing: TList<string>;
+    seen: TDictionary<string, Boolean>;
+    sql_builder: TStringBuilder;
+    stmt: Psqlite3_stmt;
+    entry: TncCharLmCacheEntry;
+    ngram: string;
+    row_ngram: string;
+    chunk_start: Integer;
+    chunk_count: Integer;
+    chunk_idx: Integer;
+    step_result: Integer;
+begin
+    Result := False;
+    if not ensure_char_lm_available then
+    begin
+        Exit;
+    end;
+
+    missing := TList<string>.Create;
+    seen := TDictionary<string, Boolean>.Create;
+    try
+        for ngram in ngrams do
+        begin
+            if (ngram = '') or seen.ContainsKey(ngram) then
+            begin
+                Continue;
+            end;
+            seen.Add(ngram, True);
+            if (m_char_lm_entry_cache = nil) or
+                (not m_char_lm_entry_cache.ContainsKey(ngram)) then
+            begin
+                missing.Add(ngram);
+            end;
+        end;
+
+        chunk_start := 0;
+        while chunk_start < missing.Count do
+        begin
+            chunk_count := Min(c_query_chunk_size,
+                missing.Count - chunk_start);
+            sql_builder := TStringBuilder.Create;
+            stmt := nil;
+            try
+                sql_builder.Append(
+                    'SELECT ngram, score, backoff FROM dict_base_char_lm WHERE ngram IN (');
+                for chunk_idx := 0 to chunk_count - 1 do
+                begin
+                    if chunk_idx > 0 then
+                    begin
+                        sql_builder.Append(',');
+                    end;
+                    sql_builder.Append('?');
+                    sql_builder.Append(chunk_idx + 1);
+                end;
+                sql_builder.Append(')');
+                if not m_base_connection.prepare(sql_builder.ToString, stmt) then
+                begin
+                    Exit(False);
+                end;
+                for chunk_idx := 0 to chunk_count - 1 do
+                begin
+                    if not m_base_connection.bind_text(stmt, chunk_idx + 1,
+                        missing[chunk_start + chunk_idx]) then
+                    begin
+                        Exit(False);
+                    end;
+                end;
+
+                step_result := m_base_connection.step(stmt);
+                while step_result = SQLITE_ROW do
+                begin
+                    row_ngram := m_base_connection.column_text(stmt, 0);
+                    entry.found := True;
+                    entry.score := m_base_connection.column_int(stmt, 1);
+                    entry.backoff := m_base_connection.column_int(stmt, 2);
+                    cache_char_lm_entry(row_ngram, entry);
+                    step_result := m_base_connection.step(stmt);
+                end;
+                if step_result <> SQLITE_DONE then
+                begin
+                    Exit(False);
+                end;
+            finally
+                if stmt <> nil then
+                begin
+                    m_base_connection.finalize(stmt);
+                end;
+                sql_builder.Free;
+            end;
+
+            entry.found := False;
+            entry.score := 0;
+            entry.backoff := 0;
+            for chunk_idx := 0 to chunk_count - 1 do
+            begin
+                ngram := missing[chunk_start + chunk_idx];
+                if not m_char_lm_entry_cache.ContainsKey(ngram) then
+                begin
+                    cache_char_lm_entry(ngram, entry);
+                end;
+            end;
+            Inc(chunk_start, chunk_count);
+        end;
+        Result := True;
+    finally
+        seen.Free;
+        missing.Free;
+    end;
+end;
+
+function TncSqliteDictionary.try_get_char_lm_entry(const ngram: string;
+    out score: Integer; out backoff: Integer): Boolean;
+var
+    entry: TncCharLmCacheEntry;
+begin
+    score := 0;
+    backoff := 0;
+    Result := (m_char_lm_entry_cache <> nil) and
+        m_char_lm_entry_cache.TryGetValue(ngram, entry) and entry.found;
+    if Result then
+    begin
+        score := entry.score;
+        backoff := entry.backoff;
+    end;
+end;
+
+function TncSqliteDictionary.get_char_lm_text_scores(const texts: TArray<string>;
+    out scores: TArray<Integer>): Boolean;
+const
+    c_begin_marker = #2;
+    c_end_marker = #3;
+    c_unknown_score = -30000;
+var
+    wanted: TDictionary<string, Boolean>;
+    wanted_keys: TArray<string>;
+    padded_units: TArray<string>;
+    text_units: TArray<string>;
+    text_idx: Integer;
+    unit_idx: Integer;
+    padded_idx: Integer;
+    predicted: Integer;
+    current_score: Integer;
+    entry_score: Integer;
+    entry_backoff: Integer;
+    total_score: Int64;
+    unigram: string;
+    bigram: string;
+    trigram: string;
+    trigram_context: string;
+begin
+    SetLength(scores, 0);
+    Result := False;
+    if Length(texts) <= 0 then
+    begin
+        Exit;
+    end;
+
+    wanted := TDictionary<string, Boolean>.Create;
+    try
+        for text_idx := 0 to High(texts) do
+        begin
+            text_units := split_text_units_local(Trim(texts[text_idx]));
+            if Length(text_units) <= 0 then
+            begin
+                Continue;
+            end;
+            SetLength(padded_units, Length(text_units) + 3);
+            padded_units[0] := c_begin_marker;
+            padded_units[1] := c_begin_marker;
+            for unit_idx := 0 to High(text_units) do
+            begin
+                padded_units[unit_idx + 2] := text_units[unit_idx];
+            end;
+            padded_units[High(padded_units)] := c_end_marker;
+            for padded_idx := 2 to High(padded_units) do
+            begin
+                unigram := padded_units[padded_idx];
+                bigram := padded_units[padded_idx - 1] + unigram;
+                trigram_context := padded_units[padded_idx - 2] +
+                    padded_units[padded_idx - 1];
+                trigram := trigram_context + unigram;
+                wanted.AddOrSetValue(unigram, True);
+                wanted.AddOrSetValue(padded_units[padded_idx - 1], True);
+                wanted.AddOrSetValue(bigram, True);
+                wanted.AddOrSetValue(trigram_context, True);
+                wanted.AddOrSetValue(trigram, True);
+            end;
+        end;
+
+        wanted_keys := wanted.Keys.ToArray;
+        if (Length(wanted_keys) <= 0) or
+            (not ensure_char_lm_entries_cached(wanted_keys)) then
+        begin
+            Exit;
+        end;
+    finally
+        wanted.Free;
+    end;
+
+    SetLength(scores, Length(texts));
+    for text_idx := 0 to High(texts) do
+    begin
+        text_units := split_text_units_local(Trim(texts[text_idx]));
+        SetLength(padded_units, Length(text_units) + 3);
+        padded_units[0] := c_begin_marker;
+        padded_units[1] := c_begin_marker;
+        for unit_idx := 0 to High(text_units) do
+        begin
+            padded_units[unit_idx + 2] := text_units[unit_idx];
+        end;
+        padded_units[High(padded_units)] := c_end_marker;
+        total_score := 0;
+        predicted := 0;
+        for padded_idx := 2 to High(padded_units) do
+        begin
+            unigram := padded_units[padded_idx];
+            bigram := padded_units[padded_idx - 1] + unigram;
+            trigram_context := padded_units[padded_idx - 2] +
+                padded_units[padded_idx - 1];
+            trigram := trigram_context + unigram;
+            if try_get_char_lm_entry(trigram, entry_score,
+                entry_backoff) then
+            begin
+                current_score := entry_score;
+            end
+            else
+            begin
+                if try_get_char_lm_entry(bigram, entry_score,
+                    entry_backoff) then
+                begin
+                    current_score := entry_score;
+                end
+                else
+                begin
+                    if try_get_char_lm_entry(unigram, entry_score,
+                        entry_backoff) then
+                    begin
+                        current_score := entry_score;
+                    end
+                    else
+                    begin
+                        current_score := c_unknown_score;
+                    end;
+                    if try_get_char_lm_entry(padded_units[padded_idx - 1],
+                        entry_score, entry_backoff) then
+                    begin
+                        Inc(current_score, entry_backoff);
+                    end;
+                end;
+                if try_get_char_lm_entry(trigram_context, entry_score,
+                    entry_backoff) then
+                begin
+                    Inc(current_score, entry_backoff);
+                end;
+            end;
+            Inc(total_score, current_score);
+            Inc(predicted);
+        end;
+        if predicted <= 0 then
+        begin
+            scores[text_idx] := c_unknown_score;
+        end
+        else if total_score >= 0 then
+        begin
+            scores[text_idx] := total_score div predicted;
+        end
+        else
+        begin
+            scores[text_idx] := -((-total_score + predicted - 1) div predicted);
+        end;
+    end;
+    Result := True;
 end;
 
 function TncSqliteDictionary.get_compound_tail_support(const tail_text: string): Integer;
