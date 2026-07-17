@@ -18,10 +18,16 @@ type
     TncConfigManager = class
     private
         m_config_path: string;
+        m_config_mutex: THandle;
+        m_config_mutex_owned: Boolean;
+        procedure acquire_config_mutex;
+        procedure release_config_mutex;
         procedure ensure_config_directory;
-        procedure write_config_version(const ini: TMemIniFile);
+        procedure write_config_version(const ini: TMemIniFile;
+            const candidate_font_size_migrated: Boolean = False);
     public
         constructor create(const config_path: string);
+        destructor Destroy; override;
         function load_engine_config: TncEngineConfig;
         function load_log_config: TncLogConfig;
         procedure save_engine_config(const config: TncEngineConfig);
@@ -42,7 +48,11 @@ function nc_create_utf8_ini_file(const config_path: string): TMemIniFile;
 implementation
 
 const
-    c_config_version = 11;
+    c_config_version = 12;
+    c_font_name_utf8_migration_version = 11;
+    c_candidate_font_size_config_version = 2;
+    c_config_mutex_name = 'Local\CassotisIme_Config_v1';
+    c_config_mutex_timeout_ms = 30000;
 
 function get_module_directory: string; forward;
 
@@ -697,6 +707,8 @@ end;
 constructor TncConfigManager.create(const config_path: string);
 begin
     inherited create;
+    m_config_mutex := 0;
+    m_config_mutex_owned := False;
     if config_path = '' then
     begin
         m_config_path := get_default_config_path;
@@ -705,17 +717,68 @@ begin
     begin
         m_config_path := config_path;
     end;
+    acquire_config_mutex;
 end;
 
-procedure TncConfigManager.write_config_version(const ini: TMemIniFile);
+destructor TncConfigManager.Destroy;
+begin
+    release_config_mutex;
+    inherited Destroy;
+end;
+
+procedure TncConfigManager.acquire_config_mutex;
+var
+    wait_result: DWORD;
+begin
+    m_config_mutex := CreateMutex(nil, False, c_config_mutex_name);
+    if m_config_mutex = 0 then
+    begin
+        RaiseLastOSError;
+    end;
+
+    wait_result := WaitForSingleObject(m_config_mutex, c_config_mutex_timeout_ms);
+    if (wait_result = WAIT_OBJECT_0) or (wait_result = WAIT_ABANDONED) then
+    begin
+        m_config_mutex_owned := True;
+        Exit;
+    end;
+
+    CloseHandle(m_config_mutex);
+    m_config_mutex := 0;
+    if wait_result = WAIT_TIMEOUT then
+    begin
+        raise Exception.Create('Timed out waiting for the Cassotis IME configuration lock');
+    end;
+    RaiseLastOSError;
+end;
+
+procedure TncConfigManager.release_config_mutex;
+begin
+    if m_config_mutex_owned and (m_config_mutex <> 0) then
+    begin
+        ReleaseMutex(m_config_mutex);
+        m_config_mutex_owned := False;
+    end;
+    if m_config_mutex <> 0 then
+    begin
+        CloseHandle(m_config_mutex);
+        m_config_mutex := 0;
+    end;
+end;
+
+procedure TncConfigManager.write_config_version(const ini: TMemIniFile;
+    const candidate_font_size_migrated: Boolean = False);
 begin
     if ini = nil then
     begin
         Exit;
     end;
 
-    ini.EraseSection('meta');
     ini.WriteInteger('meta', 'version', c_config_version);
+    if candidate_font_size_migrated then
+    begin
+        ini.WriteInteger('meta', 'candidate_font_size_version', c_candidate_font_size_config_version);
+    end;
 end;
 
 function TncConfigManager.load_engine_config: TncEngineConfig;
@@ -723,6 +786,7 @@ var
     ini: TMemIniFile;
     input_mode_value: Integer;
     config_version: Integer;
+    candidate_font_size_version: Integer;
     log_config: TncLogConfig;
     variant_text: string;
     legacy_dict_path: string;
@@ -731,6 +795,7 @@ var
     legacy_tc_path: string;
     legacy_user_path: string;
     legacy_font_name: string;
+    stored_candidate_font_size: Integer;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
@@ -767,6 +832,8 @@ begin
     ini := nc_create_utf8_ini_file(m_config_path);
     try
         config_version := safe_ini_read_integer(ini, 'meta', 'version', 0);
+        candidate_font_size_version := safe_ini_read_integer(ini, 'meta',
+            'candidate_font_size_version', 1);
         input_mode_value := safe_ini_read_integer(ini, 'engine', 'input_mode', Ord(im_chinese));
         if input_mode_value = Ord(im_english) then
         begin
@@ -787,7 +854,7 @@ begin
         Result.segment_head_only_multi_syllable := True;
         Result.candidate_font_name := Trim(safe_ini_read_string(ini, 'appearance', 'candidate_font_name',
             c_default_candidate_font_name));
-        if config_version < c_config_version then
+        if config_version < c_font_name_utf8_migration_version then
         begin
             legacy_font_name := Trim(read_legacy_ini_string(m_config_path, 'appearance',
                 'candidate_font_name'));
@@ -801,7 +868,8 @@ begin
         begin
             Result.candidate_font_name := c_default_candidate_font_name;
         end;
-        if (config_version < c_config_version) and (not is_ascii_text(Result.candidate_font_name)) then
+        if (config_version < c_font_name_utf8_migration_version) and
+            (not is_ascii_text(Result.candidate_font_name)) then
         begin
             Result.candidate_font_name := c_default_candidate_font_name;
         end;
@@ -810,8 +878,14 @@ begin
         begin
             Result.candidate_font_name := c_default_candidate_font_name;
         end;
-        Result.candidate_font_size := clamp_candidate_font_size(safe_ini_read_integer(ini, 'appearance',
-            'candidate_font_size', c_default_candidate_font_size));
+        stored_candidate_font_size := safe_ini_read_integer(ini, 'appearance',
+            'candidate_font_size', c_default_candidate_font_size);
+        if (candidate_font_size_version < c_candidate_font_size_config_version) and
+            safe_ini_value_exists(ini, 'appearance', 'candidate_font_size') then
+        begin
+            Inc(stored_candidate_font_size);
+        end;
+        Result.candidate_font_size := clamp_candidate_font_size(stored_candidate_font_size);
         Result.candidate_color_scheme := parse_candidate_color_scheme_text(safe_ini_read_string(ini, 'appearance',
             'candidate_color_scheme', candidate_color_scheme_to_text(c_default_candidate_color_scheme)),
             c_default_candidate_color_scheme);
@@ -864,7 +938,8 @@ begin
     migrate_runtime_dictionary_file(legacy_user_path, get_default_user_dictionary_path, True);
     migrate_runtime_dictionary_file(resolve_runtime_path('config\user_dict.db'), get_default_user_dictionary_path, True);
 
-    if (config_version < c_config_version) or needs_full_write then
+    if (config_version < c_config_version) or
+        (candidate_font_size_version < c_candidate_font_size_config_version) or needs_full_write then
     begin
         log_config := load_log_config;
         save_engine_config(Result);
@@ -923,7 +998,7 @@ begin
         ini.WriteString('appearance', 'candidate_color_scheme',
             candidate_color_scheme_to_text(config.candidate_color_scheme));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
-        write_config_version(ini);
+        write_config_version(ini, True);
         ini.UpdateFile;
     finally
         ini.Free;

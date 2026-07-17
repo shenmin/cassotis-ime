@@ -16,6 +16,7 @@ uses
     Winapi.MultiMon,
     Winapi.TlHelp32,
     nc_types,
+    nc_dpi_scale,
     nc_candidate_theme;
 
 type
@@ -97,6 +98,7 @@ type
         procedure CreateParams(var Params: TCreateParams); override;
         procedure WMMouseActivate(var Message: TMessage); message WM_MOUSEACTIVATE;
         procedure WMEraseBkgnd(var Message: TWMEraseBkgnd); message WM_ERASEBKGND;
+        procedure WMDpiChanged(var Message: TMessage); message WM_DPICHANGED;
         procedure WMNCHitTest(var Message: TMessage); message WM_NCHITTEST;
         procedure WMLButtonDown(var Message: TWMLButtonDown); message WM_LBUTTONDOWN;
         procedure WMLButtonUp(var Message: TWMLButtonUp); message WM_LBUTTONUP;
@@ -271,26 +273,6 @@ begin
     end;
 end;
 
-function font_pixel_height_from_point_size(const point_size: Integer; const dpi: Integer): Integer;
-var
-    effective_dpi: Integer;
-    pixel_height: Integer;
-begin
-    effective_dpi := dpi;
-    if effective_dpi <= 0 then
-    begin
-        effective_dpi := 96;
-    end;
-
-    pixel_height := MulDiv(point_size, effective_dpi, 72);
-    if pixel_height < 1 then
-    begin
-        pixel_height := 1;
-    end;
-
-    Result := -pixel_height;
-end;
-
 procedure ensure_vcl_initialized;
 begin
     if g_vcl_initialized then
@@ -365,12 +347,12 @@ begin
 
     m_list_font.Name := c_default_candidate_font_name;
     m_list_font.Charset := DEFAULT_CHARSET;
-    m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, 96);
+    m_list_font.Height := nc_font_height_for_dpi(m_base_list_font_size, c_nc_base_dpi);
     m_list_font.Color := m_color_theme.text_color;
 
     m_weight_font.Name := c_default_candidate_font_name;
     m_weight_font.Charset := DEFAULT_CHARSET;
-    m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, 96);
+    m_weight_font.Height := nc_font_height_for_dpi(m_base_weight_font_size, c_nc_base_dpi);
     m_weight_font.Color := m_color_theme.weight_text_color;
 end;
 
@@ -432,10 +414,36 @@ end;
 
 procedure TncCandidateWindow.WMEraseBkgnd(var Message: TWMEraseBkgnd);
 begin
-    // Paint draws the full client area. Suppressing the default background
-    // erase avoids a transient blank candidate window between resize/update
-    // and the next paint.
+    // A per-monitor DPI move can discard the old backing surface before the
+    // next WM_PAINT. Clear it explicitly so no pixels from the previous size
+    // or monitor survive the first frame.
+    FillRect(Message.DC, ClientRect, Brush.Handle);
     Message.Result := 1;
+end;
+
+procedure TncCandidateWindow.WMDpiChanged(var Message: TMessage);
+var
+    dpi: Integer;
+begin
+    inherited;
+    dpi := Integer(Message.WParam) and $FFFF;
+    if dpi <= 0 then
+    begin
+        if not try_get_dpi_for_window(Handle, dpi) then
+        begin
+            dpi := c_nc_base_dpi;
+        end;
+    end;
+
+    if dpi <> m_current_dpi then
+    begin
+        apply_dpi(dpi);
+        if m_candidate_lines.Count > 0 then
+        begin
+            update_size;
+        end;
+        Invalidate;
+    end;
 end;
 
 procedure TncCandidateWindow.WMNCHitTest(var Message: TMessage);
@@ -573,7 +581,7 @@ begin
         line_color := TColor(RGB(136, 146, 156));
     end;
 
-    radius := MulDiv(4, m_current_dpi, 96);
+    radius := nc_scale_for_dpi(4, m_current_dpi);
     if radius < 2 then
     begin
         radius := 2;
@@ -684,7 +692,7 @@ begin
     m_preedit_label.Layout := tlCenter;
     m_preedit_label.Font.Name := c_default_candidate_font_name;
     m_preedit_label.Font.Charset := DEFAULT_CHARSET;
-    m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, 96);
+    m_preedit_label.Font.Height := nc_font_height_for_dpi(m_base_preedit_font_size, c_nc_base_dpi);
     m_preedit_label.Font.Color := m_color_theme.muted_text_color;
     m_preedit_label.Transparent := False;
     m_preedit_label.Color := Color;
@@ -703,7 +711,7 @@ begin
     m_page_label.Layout := tlCenter;
     m_page_label.Font.Name := c_default_candidate_font_name;
     m_page_label.Font.Charset := DEFAULT_CHARSET;
-    m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, 96);
+    m_page_label.Font.Height := nc_font_height_for_dpi(m_base_label_font_size, c_nc_base_dpi);
     m_page_label.Font.Color := m_color_theme.muted_text_color;
     m_page_label.Transparent := False;
     m_page_label.Color := Color;
@@ -717,7 +725,7 @@ begin
     HandleNeeded;
     if not try_get_dpi_for_window(Handle, dpi) then
     begin
-        dpi := 96;
+        dpi := c_nc_base_dpi;
     end;
 
     apply_dpi(dpi);
@@ -743,19 +751,19 @@ begin
     end;
 
     m_current_dpi := dpi;
-    m_list_font.Height := font_pixel_height_from_point_size(m_base_list_font_size, dpi);
-    m_weight_font.Height := font_pixel_height_from_point_size(m_base_weight_font_size, dpi);
-    m_list_item_height := MulDiv(m_base_item_height, dpi, 96);
-    m_page_label.Font.Height := font_pixel_height_from_point_size(m_base_label_font_size, dpi);
-    m_page_label.Height := MulDiv(m_base_label_height, dpi, 96);
-    m_preedit_label.Font.Height := font_pixel_height_from_point_size(m_base_preedit_font_size, dpi);
-    m_preedit_label.Height := MulDiv(m_base_preedit_height, dpi, 96);
-    m_item_gap := MulDiv(m_base_item_gap, dpi, 96);
-    m_list_padding := MulDiv(m_base_list_padding, dpi, 96);
-    m_weight_gap := MulDiv(m_base_weight_gap, dpi, 96);
-    m_remove_button_size := MulDiv(m_base_remove_button_size, dpi, 96);
-    m_remove_button_gap := MulDiv(m_base_remove_button_gap, dpi, 96);
-    m_remove_hit_padding := MulDiv(m_base_remove_hit_padding, dpi, 96);
+    m_list_font.Height := nc_font_height_for_dpi(m_base_list_font_size, dpi);
+    m_weight_font.Height := nc_font_height_for_dpi(m_base_weight_font_size, dpi);
+    m_list_item_height := nc_scale_for_dpi(m_base_item_height, dpi);
+    m_page_label.Font.Height := nc_font_height_for_dpi(m_base_label_font_size, dpi);
+    m_page_label.Height := nc_scale_for_dpi(m_base_label_height, dpi);
+    m_preedit_label.Font.Height := nc_font_height_for_dpi(m_base_preedit_font_size, dpi);
+    m_preedit_label.Height := nc_scale_for_dpi(m_base_preedit_height, dpi);
+    m_item_gap := nc_scale_for_dpi(m_base_item_gap, dpi);
+    m_list_padding := nc_scale_for_dpi(m_base_list_padding, dpi);
+    m_weight_gap := nc_scale_for_dpi(m_base_weight_gap, dpi);
+    m_remove_button_size := nc_scale_for_dpi(m_base_remove_button_size, dpi);
+    m_remove_button_gap := nc_scale_for_dpi(m_base_remove_button_gap, dpi);
+    m_remove_hit_padding := nc_scale_for_dpi(m_base_remove_hit_padding, dpi);
     if m_remove_hit_padding < 2 then
     begin
         m_remove_hit_padding := 2;
@@ -825,7 +833,7 @@ begin
     end
     else
     begin
-        apply_dpi(96);
+        apply_dpi(c_nc_base_dpi);
     end;
     update_size;
     Invalidate;
@@ -872,7 +880,7 @@ begin
     end;
     if Result <= 0 then
     begin
-        Result := 96;
+        Result := c_nc_base_dpi;
     end;
 end;
 
@@ -1163,13 +1171,13 @@ begin
     begin
         font_size_delta := 0;
     end;
-    list_vertical_padding := MulDiv(4 + (font_size_delta * 2), m_current_dpi, 96);
+    list_vertical_padding := nc_scale_for_dpi(4 + (font_size_delta * 2), m_current_dpi);
     if list_vertical_padding < 4 then
     begin
         list_vertical_padding := 4;
     end;
 
-    dynamic_item_height := MulDiv(m_base_item_height, m_current_dpi, 96);
+    dynamic_item_height := nc_scale_for_dpi(m_base_item_height, m_current_dpi);
     dynamic_item_height := Max(dynamic_item_height, main_text_height + list_vertical_padding);
     if m_show_weight_row then
     begin
@@ -1211,14 +1219,14 @@ begin
     begin
         row_width := m_candidate_offsets[item_count - 1] + m_candidate_widths[item_count - 1];
     end;
-    if row_width < 120 then
+    if row_width < nc_scale_for_dpi(120, m_current_dpi) then
     begin
-        row_width := 120;
+        row_width := nc_scale_for_dpi(120, m_current_dpi);
     end;
     edge_padding := m_list_padding;
     max_width := row_width + (edge_padding * 2);
-    meta_vertical_padding := MulDiv(8, m_current_dpi, 96);
-    meta_horizontal_padding := MulDiv(16, m_current_dpi, 96);
+    meta_vertical_padding := nc_scale_for_dpi(8, m_current_dpi);
+    meta_horizontal_padding := nc_scale_for_dpi(16, m_current_dpi);
     if meta_vertical_padding < 4 then
     begin
         meta_vertical_padding := 4;
@@ -1322,7 +1330,7 @@ begin
     if m_show_preedit_text and (m_preedit_label.Caption <> '') and (not IsRectEmpty(m_preedit_rect)) then
     begin
         preedit_rect := m_preedit_rect;
-        InflateRect(preedit_rect, -MulDiv(8, m_current_dpi, 96), 0);
+        InflateRect(preedit_rect, -nc_scale_for_dpi(8, m_current_dpi), 0);
         Canvas.Font.Assign(m_preedit_label.Font);
         Canvas.Font.Color := m_preedit_label.Font.Color;
         SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
@@ -1333,7 +1341,7 @@ begin
     if m_show_page_text and (m_page_label.Caption <> '') and (not IsRectEmpty(m_page_rect)) then
     begin
         page_rect := m_page_rect;
-        InflateRect(page_rect, -MulDiv(8, m_current_dpi, 96), 0);
+        InflateRect(page_rect, -nc_scale_for_dpi(8, m_current_dpi), 0);
         Canvas.Font.Assign(m_page_label.Font);
         Canvas.Font.Color := m_page_label.Font.Color;
         SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
@@ -1363,7 +1371,7 @@ begin
         content_height := content_height + m_weight_gap + weight_text_height;
     end;
     y := m_list_rect.Top;
-    corner_radius := MulDiv(6, m_current_dpi, 96);
+    corner_radius := nc_scale_for_dpi(6, m_current_dpi);
     edge_padding := m_list_padding;
     for i := 0 to m_candidate_lines.Count - 1 do
     begin
@@ -1452,7 +1460,7 @@ begin
             end;
             SetTextColor(Canvas.Handle, ColorToRGB(Canvas.Font.Color));
             weight_text_top := main_text_top + main_text_height + m_weight_gap;
-            weight_text_rect := Rect(x + MulDiv(2, m_current_dpi, 96), weight_text_top, text_right,
+            weight_text_rect := Rect(x + nc_scale_for_dpi(2, m_current_dpi), weight_text_top, text_right,
                 weight_text_top + weight_text_height);
             draw_canvas_text(Canvas, m_candidate_weight_lines[i], weight_text_rect,
                 DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
@@ -1581,7 +1589,7 @@ begin
         work_area := Rect(0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
     end;
 
-    gap := MulDiv(4, m_current_dpi, 96);
+    gap := nc_scale_for_dpi(4, m_current_dpi);
     if (target_y + Height > work_area.Bottom) then
     begin
         target_y := y - Height - gap;
@@ -1631,12 +1639,13 @@ begin
         end;
     end;
 
-    Left := target_x;
-    Top := target_y;
-    flags := SWP_NOACTIVATE or SWP_NOSIZE or SWP_SHOWWINDOW;
-    SetWindowPos(Handle, HWND_TOPMOST, target_x, target_y, 0, 0, flags);
-    ShowWindow(Handle, SW_SHOWNOACTIVATE);
-    SetWindowPos(Handle, HWND_TOPMOST, target_x, target_y, 0, 0, flags);
+    // Position, size and show atomically. SWP_NOCOPYBITS is important when a
+    // hidden 96-DPI surface is first presented on a high-DPI monitor: copying
+    // the old client bits can leave stale text at the previous window bounds.
+    flags := SWP_NOACTIVATE or SWP_SHOWWINDOW or SWP_NOCOPYBITS;
+    SetWindowPos(Handle, HWND_TOPMOST, target_x, target_y, Width, Height, flags);
+    RedrawWindow(Handle, nil, 0, RDW_INVALIDATE or RDW_ERASE or RDW_FRAME or
+        RDW_ALLCHILDREN or RDW_UPDATENOW);
 end;
 
 procedure TncCandidateWindow.hide_window;

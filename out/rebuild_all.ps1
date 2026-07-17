@@ -266,6 +266,24 @@ function assert_expected_machine([string]$path, [UInt16]$expected_machine)
     }
 }
 
+function assert_per_monitor_v2_manifest([string]$path)
+{
+    if (-not (Test-Path -LiteralPath $path))
+    {
+        throw "DPI manifest target not found: $path"
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $utf8_text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    $unicode_text = [System.Text.Encoding]::Unicode.GetString($bytes)
+    $has_per_monitor_v2 = $utf8_text.Contains('PerMonitorV2') -or $unicode_text.Contains('PerMonitorV2')
+    $has_legacy_per_monitor = $utf8_text.Contains('true/pm') -or $unicode_text.Contains('true/pm')
+    if ((-not $has_per_monitor_v2) -or (-not $has_legacy_per_monitor))
+    {
+        throw "PerMonitorV2 DPI manifest is missing: $path"
+    }
+}
+
 foreach ($stale_path in @(
     (Join-Path $root_dir 'dcu_test'),
     (Join-Path $root_dir 'hpp_test'),
@@ -960,6 +978,7 @@ foreach ($item in $build_list)
     $win64_output = Join-Path $win64_stage_dir $item.exe
     $win64_final = Join-Path $script_dir $item.exe
     $exe_name = [System.IO.Path]::GetFileNameWithoutExtension($item.exe)
+    $win64_alt = Join-Path $script_dir ($exe_name + '.new.exe')
     $win32_legacy_final = Join-Path $script_dir ($exe_name + '32.exe')
 
     invoke_build $item.path 'Win64' $win64_stage_dir $win64_output
@@ -970,8 +989,22 @@ foreach ($item in $build_list)
     {
         remove_item_with_retry $win64_final $false $false | Out-Null
     }
+    if (Test-Path -LiteralPath $win64_alt)
+    {
+        remove_item_with_retry $win64_alt $false $false | Out-Null
+    }
     move_item_with_retry $win64_output $win64_final $true | Out-Null
-    assert_expected_machine $win64_final 0x8664
+
+    $win64_verified_output = $win64_final
+    if (Test-Path -LiteralPath $win64_alt)
+    {
+        $win64_verified_output = $win64_alt
+    }
+    assert_expected_machine $win64_verified_output 0x8664
+    if ($item.exe -in @('cassotis_ime_host.exe', 'cassotis_ime_tray_host.exe'))
+    {
+        assert_per_monitor_v2_manifest $win64_verified_output
+    }
 
     if (Test-Path -LiteralPath $win32_legacy_final)
     {

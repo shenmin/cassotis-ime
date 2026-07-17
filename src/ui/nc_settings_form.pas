@@ -22,6 +22,7 @@ uses
     Vcl.Dialogs,
     Vcl.FileCtrl,
     nc_types,
+    nc_dpi_scale,
     nc_config,
     nc_candidate_theme,
     nc_log;
@@ -1044,23 +1045,23 @@ begin
     Result := Screen.PixelsPerInch;
     if Result <= 0 then
     begin
-        Result := 96;
+        Result := c_nc_base_dpi;
     end;
 end;
 
 function scale_ui(const value: Integer): Integer;
 begin
-    Result := MulDiv(value, get_ui_scale_dpi, 96);
+    Result := nc_scale_for_dpi(value, get_ui_scale_dpi);
 end;
 
 function get_window_dpi(const wnd: HWND): Integer;
 begin
-    Result := 96;
+    Result := c_nc_base_dpi;
     if not try_get_dpi_for_window(wnd, Result) then
     begin
         if not try_get_monitor_dpi_for_window(wnd, Result) then
         begin
-            Result := 96;
+            Result := c_nc_base_dpi;
         end;
     end;
     if Result <= 0 then
@@ -1096,15 +1097,8 @@ begin
 end;
 
 function scale_ui_for_dpi(const value: Integer; const dpi: Integer): Integer;
-var
-    effective_dpi: Integer;
 begin
-    effective_dpi := dpi;
-    if effective_dpi <= 0 then
-    begin
-        effective_dpi := 96;
-    end;
-    Result := MulDiv(value, effective_dpi, 96);
+    Result := nc_scale_for_dpi(value, dpi);
 end;
 
 function measure_font_height(const font: TFont): Integer;
@@ -1329,7 +1323,7 @@ begin
     dpi := get_window_dpi(Handle);
     if dpi <= 0 then
     begin
-        dpi := 96;
+        dpi := c_nc_base_dpi;
     end;
     display_rect := m_page_control.DisplayRect;
     tab_strip_height := m_page_control.Height - (display_rect.Bottom - display_rect.Top);
@@ -1417,7 +1411,7 @@ begin
     dpi := get_window_dpi(Handle);
     if dpi <= 0 then
     begin
-        dpi := 96;
+        dpi := c_nc_base_dpi;
     end;
     if m_scaled_dpi <> dpi then
     begin
@@ -1462,7 +1456,7 @@ begin
     end;
     if dpi <= 0 then
     begin
-        dpi := 96;
+        dpi := c_nc_base_dpi;
     end;
 
     m_scaled_dpi := dpi;
@@ -1489,7 +1483,7 @@ begin
     dpi := get_window_dpi(Handle);
     if dpi <= 0 then
     begin
-        dpi := 96;
+        dpi := c_nc_base_dpi;
     end;
     m_scaled_dpi := dpi;
     update_check_box_metrics(m_chk_full_width_mode);
@@ -2245,9 +2239,9 @@ begin
     end;
     if dpi <= 0 then
     begin
-        dpi := 96;
+        dpi := c_nc_base_dpi;
     end;
-    canvas.Font.Height := -MulDiv(font_size, dpi, 72);
+    canvas.Font.Height := nc_font_height_for_dpi(font_size, dpi);
     canvas.Font.Quality := fqClearTypeNatural;
     canvas.Font.Style := [];
     canvas.Font.Color := theme.text_color;

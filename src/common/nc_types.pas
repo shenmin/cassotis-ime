@@ -4,7 +4,7 @@ interface
 
 const
     c_default_candidate_font_name = 'Microsoft YaHei UI';
-    c_default_candidate_font_size = 9;
+    c_default_candidate_font_size = 10;
     c_min_candidate_font_size = c_default_candidate_font_size - 3;
     c_max_candidate_font_size = c_default_candidate_font_size + 3;
     c_default_candidate_color_scheme = 0;

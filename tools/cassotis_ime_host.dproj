@@ -75,6 +75,9 @@
         <DCC_DcuOutput>../dcu/$(Platform)/$(Config)</DCC_DcuOutput>
         <DCC_HppOutput>../dcu</DCC_HppOutput>
         <DCC_ObjOutput>../dcu</DCC_ObjOutput>
+        <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
+        <AppEnableRuntimeThemes>true</AppEnableRuntimeThemes>
+        <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
         <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace>
@@ -137,6 +140,7 @@
         <DCCReference Include="..\src\engine\nc_pinyin_parser.pas"/>
         <DCCReference Include="..\src\common\nc_config.pas"/>
         <DCCReference Include="..\src\common\nc_types.pas"/>
+        <DCCReference Include="..\src\common\nc_dpi_scale.pas"/>
         <DCCReference Include="..\src\common\nc_log.pas"/>
         <DCCReference Include="..\src\common\nc_sqlite.pas"/>
         <DCCReference Include="..\src\common\nc_ipc_common.pas"/>

@@ -69,6 +69,9 @@
         <DCC_DcuOutput>../dcu</DCC_DcuOutput>
         <DCC_HppOutput>../dcu</DCC_HppOutput>
         <DCC_ObjOutput>../dcu</DCC_ObjOutput>
+        <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
+        <AppEnableRuntimeThemes>true</AppEnableRuntimeThemes>
+        <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
         <PreBuildEvent><![CDATA["$(BDS)\bin\brcc32.exe" -fo"$(MSBuildProjectDirectory)\cassotis_ime_tray_host_mark.res" "$(MSBuildProjectDirectory)\cassotis_ime_tray_host_mark.rc"]]></PreBuildEvent>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
@@ -127,6 +130,7 @@
         <DCCReference Include="..\src\common\nc_log.pas"/>
         <DCCReference Include="..\src\common\nc_sqlite.pas"/>
         <DCCReference Include="..\src\common\nc_types.pas"/>
+        <DCCReference Include="..\src\common\nc_dpi_scale.pas"/>
         <BuildConfiguration Include="Debug">
             <Key>Cfg_2</Key>
             <CfgParent>Base</CfgParent>
