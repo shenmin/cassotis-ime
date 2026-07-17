@@ -7,6 +7,9 @@ const
     c_default_candidate_font_size = 10;
     c_min_candidate_font_size = c_default_candidate_font_size - 3;
     c_max_candidate_font_size = c_default_candidate_font_size + 3;
+    c_default_candidate_page_size = 9;
+    c_min_candidate_page_size = 3;
+    c_max_candidate_page_size = 9;
     c_default_candidate_color_scheme = 0;
     c_min_candidate_color_scheme = 0;
     c_max_candidate_color_scheme = 5;
@@ -55,6 +58,7 @@ type
         segment_head_only_multi_syllable: Boolean;
         candidate_font_name: string;
         candidate_font_size: Integer;
+        candidate_page_size: Integer;
         candidate_color_scheme: Integer;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;

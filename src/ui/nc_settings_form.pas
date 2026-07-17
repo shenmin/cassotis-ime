@@ -158,6 +158,7 @@ type
         m_combo_candidate_font: TComboBox;
         m_track_candidate_font_size: TTrackBar;
         m_candidate_font_size_labels: array[0..6] of TLabel;
+        m_combo_candidate_page_size: TComboBox;
         m_combo_candidate_color_scheme: TComboBox;
         m_candidate_preview: TPaintBox;
         m_chk_log_enabled: TncModernCheckBox;
@@ -193,10 +194,13 @@ type
         procedure load_defaults;
         procedure load_from_config;
         procedure populate_candidate_font_combo;
+        procedure populate_candidate_page_size_combo;
         procedure populate_candidate_color_scheme_combo;
         function get_candidate_font_size_from_slider: Integer;
         procedure set_candidate_font_size_slider(const font_size: Integer);
         function get_selected_candidate_font_name: string;
+        function get_selected_candidate_page_size: Integer;
+        procedure set_candidate_page_size_combo(const page_size: Integer);
         function get_selected_candidate_color_scheme: Integer;
         procedure set_candidate_color_scheme_combo(const color_scheme: Integer);
         procedure update_candidate_preview;
@@ -291,6 +295,8 @@ resourcestring
     SCheckShowStatusWidget = '显示状态浮窗';
     SLabelCandidateFont = '候选字体';
     SLabelCandidateSize = '大小';
+    SLabelCandidatePageSize = '每页候选';
+    SCandidatePageSizeItem = '%d 项';
     SLabelCandidateColorScheme = '配色';
     SLabelCandidatePreview = '预览';
     SSizeMinimum = '最小';
@@ -1226,6 +1232,7 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
     Result.candidate_font_size := c_default_candidate_font_size;
+    Result.candidate_page_size := c_default_candidate_page_size;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
@@ -1686,7 +1693,7 @@ begin
     size_label_texts[6] := SSizeMaximum;
 
     section_top := scale_ui(18);
-    appearance_group := create_section_group(Self, m_tab_appearance, SGroupAppearance, section_top, 300);
+    appearance_group := create_section_group(Self, m_tab_appearance, SGroupAppearance, section_top, 338);
 
     top := scale_ui(c_section_inner_top);
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
@@ -1766,6 +1773,17 @@ begin
     end;
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap + 32));
+    create_label(Self, appearance_group, SLabelCandidatePageSize, top);
+    m_combo_candidate_page_size := TComboBox.Create(Self);
+    m_combo_candidate_page_size.Parent := appearance_group;
+    m_combo_candidate_page_size.Left := scale_ui(c_control_left);
+    m_combo_candidate_page_size.Top := top;
+    m_combo_candidate_page_size.Width := scale_ui(132);
+    m_combo_candidate_page_size.Style := csDropDownList;
+    populate_candidate_page_size_combo;
+    m_combo_candidate_page_size.OnChange := mark_dirty;
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
     create_label(Self, appearance_group, SLabelCandidateColorScheme, top);
     m_combo_candidate_color_scheme := TComboBox.Create(Self);
     m_combo_candidate_color_scheme.Parent := appearance_group;
@@ -2041,6 +2059,28 @@ begin
     end;
 end;
 
+procedure TncSettingsForm.populate_candidate_page_size_combo;
+var
+    page_size: Integer;
+begin
+    if m_combo_candidate_page_size = nil then
+    begin
+        Exit;
+    end;
+
+    m_combo_candidate_page_size.Items.BeginUpdate;
+    try
+        m_combo_candidate_page_size.Items.Clear;
+        for page_size := c_min_candidate_page_size to c_max_candidate_page_size do
+        begin
+            m_combo_candidate_page_size.Items.Add(
+                Format(SCandidatePageSizeItem, [page_size]));
+        end;
+    finally
+        m_combo_candidate_page_size.Items.EndUpdate;
+    end;
+end;
+
 function TncSettingsForm.get_candidate_font_size_from_slider: Integer;
 begin
     Result := c_default_candidate_font_size;
@@ -2077,6 +2117,48 @@ begin
         effective_size := c_max_candidate_font_size;
     end;
     m_track_candidate_font_size.Position := effective_size - c_min_candidate_font_size;
+end;
+
+function TncSettingsForm.get_selected_candidate_page_size: Integer;
+begin
+    Result := c_default_candidate_page_size;
+    if (m_combo_candidate_page_size <> nil) and
+        (m_combo_candidate_page_size.ItemIndex >= 0) then
+    begin
+        Result := c_min_candidate_page_size +
+            m_combo_candidate_page_size.ItemIndex;
+    end;
+
+    if (Result < c_min_candidate_page_size) or
+        (Result > c_max_candidate_page_size) then
+    begin
+        Result := c_default_candidate_page_size;
+    end;
+end;
+
+procedure TncSettingsForm.set_candidate_page_size_combo(
+    const page_size: Integer);
+var
+    effective_page_size: Integer;
+    item_index: Integer;
+begin
+    if m_combo_candidate_page_size = nil then
+    begin
+        Exit;
+    end;
+
+    effective_page_size := page_size;
+    if (effective_page_size < c_min_candidate_page_size) or
+        (effective_page_size > c_max_candidate_page_size) then
+    begin
+        effective_page_size := c_default_candidate_page_size;
+    end;
+    item_index := effective_page_size - c_min_candidate_page_size;
+    if (item_index >= 0) and
+        (item_index < m_combo_candidate_page_size.Items.Count) then
+    begin
+        m_combo_candidate_page_size.ItemIndex := item_index;
+    end;
 end;
 
 function TncSettingsForm.get_selected_candidate_font_name: string;
@@ -2467,6 +2549,7 @@ begin
         end;
     end;
     set_candidate_font_size_slider(m_engine_config.candidate_font_size);
+    set_candidate_page_size_combo(m_engine_config.candidate_page_size);
     set_candidate_color_scheme_combo(m_engine_config.candidate_color_scheme);
     if m_chk_log_enabled <> nil then
     begin
@@ -2569,6 +2652,7 @@ begin
     next_config.enable_ctrl_period_punct_toggle := True;
     next_config.candidate_font_name := get_selected_candidate_font_name;
     next_config.candidate_font_size := get_candidate_font_size_from_slider;
+    next_config.candidate_page_size := get_selected_candidate_page_size;
     next_config.candidate_color_scheme := get_selected_candidate_color_scheme;
     next_status_widget_visible := m_chk_show_status_widget.Checked;
     next_log_config.enabled := m_chk_log_enabled.Checked;

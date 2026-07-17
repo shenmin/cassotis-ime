@@ -222,6 +222,16 @@ begin
     end;
 end;
 
+function clamp_candidate_page_size(const value: Integer): Integer;
+begin
+    Result := value;
+    if (Result < c_min_candidate_page_size) or
+        (Result > c_max_candidate_page_size) then
+    begin
+        Result := c_default_candidate_page_size;
+    end;
+end;
+
 function clamp_candidate_color_scheme(const value: Integer): Integer;
 begin
     Result := value;
@@ -808,6 +818,7 @@ begin
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
     Result.candidate_font_size := c_default_candidate_font_size;
+    Result.candidate_page_size := c_default_candidate_page_size;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
@@ -886,6 +897,9 @@ begin
             Inc(stored_candidate_font_size);
         end;
         Result.candidate_font_size := clamp_candidate_font_size(stored_candidate_font_size);
+        Result.candidate_page_size := clamp_candidate_page_size(
+            safe_ini_read_integer(ini, 'appearance', 'candidate_page_size',
+            c_default_candidate_page_size));
         Result.candidate_color_scheme := parse_candidate_color_scheme_text(safe_ini_read_string(ini, 'appearance',
             'candidate_color_scheme', candidate_color_scheme_to_text(c_default_candidate_color_scheme)),
             c_default_candidate_color_scheme);
@@ -919,6 +933,7 @@ begin
             safe_ini_value_exists(ini, 'engine', 'suppress_nonlexicon_complete_long_candidates') or
             not safe_ini_value_exists(ini, 'appearance', 'candidate_font_name') or
             not safe_ini_value_exists(ini, 'appearance', 'candidate_font_size') or
+            not safe_ini_value_exists(ini, 'appearance', 'candidate_page_size') or
             not safe_ini_value_exists(ini, 'appearance', 'candidate_color_scheme') or
             not safe_ini_value_exists(ini, 'engine', 'debug') or
             not safe_ini_value_exists(ini, 'dictionary', 'variant') or
@@ -995,6 +1010,8 @@ begin
         ini.WriteString('appearance', 'candidate_font_name', candidate_font_name);
         ini.WriteInteger('appearance', 'candidate_font_size',
             clamp_candidate_font_size(config.candidate_font_size));
+        ini.WriteInteger('appearance', 'candidate_page_size',
+            clamp_candidate_page_size(config.candidate_page_size));
         ini.WriteString('appearance', 'candidate_color_scheme',
             candidate_color_scheme_to_text(config.candidate_color_scheme));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
