@@ -46,6 +46,30 @@ type
     TncInputMode = (im_chinese, im_english);
     TncDictionaryVariant = (dv_simplified, dv_traditional);
 
+    TncShortcutAction = (
+        sa_input_mode_toggle,
+        sa_punctuation_toggle,
+        sa_dictionary_variant_toggle,
+        sa_full_width_toggle,
+        sa_open_settings
+    );
+
+    TncShortcut = record
+        key_code: Word;
+        shift_down: Boolean;
+        ctrl_down: Boolean;
+        alt_down: Boolean;
+    end;
+
+    TncShortcutConfig = record
+        signature: Cardinal;
+        input_mode_toggle: TncShortcut;
+        punctuation_toggle: TncShortcut;
+        dictionary_variant_toggle: TncShortcut;
+        full_width_toggle: TncShortcut;
+        open_settings: TncShortcut;
+    end;
+
     TncEngineConfig = record
         input_mode: TncInputMode;
         max_candidates: Integer;
@@ -62,6 +86,7 @@ type
         candidate_color_scheme: Integer;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
+        shortcuts: TncShortcutConfig;
     end;
 
 implementation

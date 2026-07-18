@@ -12,6 +12,7 @@ uses
     Winapi.KnownFolders,
     Winapi.ActiveX,
     nc_types,
+    nc_shortcut,
     nc_log;
 
 type
@@ -48,7 +49,7 @@ function nc_create_utf8_ini_file(const config_path: string): TMemIniFile;
 implementation
 
 const
-    c_config_version = 12;
+    c_config_version = 13;
     c_font_name_utf8_migration_version = 11;
     c_candidate_font_size_config_version = 2;
     c_config_mutex_name = 'Local\CassotisIme_Config_v1';
@@ -806,6 +807,22 @@ var
     legacy_user_path: string;
     legacy_font_name: string;
     stored_candidate_font_size: Integer;
+    shortcut_values_valid: Boolean;
+
+    procedure read_shortcut_value(const key_name: string; const action: TncShortcutAction);
+    var
+        shortcut_text: string;
+        shortcut_value: TncShortcut;
+    begin
+        shortcut_text := safe_ini_read_string(ini, 'shortcuts', key_name,
+            nc_shortcut_to_text(nc_default_shortcut(action)));
+        if not nc_try_parse_shortcut(shortcut_text, shortcut_value) then
+        begin
+            shortcut_value := nc_default_shortcut(action);
+            shortcut_values_valid := False;
+        end;
+        nc_set_shortcut_for_action(Result.shortcuts, action, shortcut_value);
+    end;
 begin
     Result.input_mode := im_chinese;
     Result.max_candidates := 9;
@@ -822,6 +839,7 @@ begin
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
+    Result.shortcuts := nc_default_shortcut_config;
 
     if m_config_path = '' then
     begin
@@ -906,6 +924,16 @@ begin
         Result.debug_mode := safe_ini_read_integer(ini, 'engine', 'debug', 0) <> 0;
         variant_text := safe_ini_read_string(ini, 'dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
+        shortcut_values_valid := True;
+        Result.shortcuts := nc_default_shortcut_config;
+        read_shortcut_value('input_mode_toggle', sa_input_mode_toggle);
+        read_shortcut_value('punctuation_toggle', sa_punctuation_toggle);
+        read_shortcut_value('dictionary_variant_toggle', sa_dictionary_variant_toggle);
+        read_shortcut_value('full_width_toggle', sa_full_width_toggle);
+        read_shortcut_value('open_settings', sa_open_settings);
+        shortcut_values_valid := shortcut_values_valid and
+            (not nc_shortcut_config_has_duplicates(Result.shortcuts));
+        nc_normalize_shortcut_config(Result.shortcuts);
         legacy_sc_path := safe_ini_read_string(ini, 'dictionary', 'db_path_sc', '');
         if legacy_sc_path = '' then
         begin
@@ -937,6 +965,12 @@ begin
             not safe_ini_value_exists(ini, 'appearance', 'candidate_color_scheme') or
             not safe_ini_value_exists(ini, 'engine', 'debug') or
             not safe_ini_value_exists(ini, 'dictionary', 'variant') or
+            not safe_ini_value_exists(ini, 'shortcuts', 'input_mode_toggle') or
+            not safe_ini_value_exists(ini, 'shortcuts', 'punctuation_toggle') or
+            not safe_ini_value_exists(ini, 'shortcuts', 'dictionary_variant_toggle') or
+            not safe_ini_value_exists(ini, 'shortcuts', 'full_width_toggle') or
+            not safe_ini_value_exists(ini, 'shortcuts', 'open_settings') or
+            (not shortcut_values_valid) or
             safe_ini_value_exists(ini, 'dictionary', 'db_path') or
             safe_ini_value_exists(ini, 'dictionary', 'db_path_sc') or
             safe_ini_value_exists(ini, 'dictionary', 'db_path_tc') or
@@ -982,6 +1016,7 @@ procedure TncConfigManager.save_engine_config(const config: TncEngineConfig);
 var
     ini: TMemIniFile;
     candidate_font_name: string;
+    shortcut_config: TncShortcutConfig;
 begin
     if m_config_path = '' then
     begin
@@ -995,9 +1030,12 @@ begin
         Exit;
     end;
     try
+        shortcut_config := config.shortcuts;
+        nc_normalize_shortcut_config(shortcut_config);
         ini.EraseSection('engine');
         ini.EraseSection('appearance');
         ini.EraseSection('dictionary');
+        ini.EraseSection('shortcuts');
         ini.WriteInteger('engine', 'input_mode', Ord(config.input_mode));
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
@@ -1015,6 +1053,16 @@ begin
         ini.WriteString('appearance', 'candidate_color_scheme',
             candidate_color_scheme_to_text(config.candidate_color_scheme));
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
+        ini.WriteString('shortcuts', 'input_mode_toggle',
+            nc_shortcut_to_text(shortcut_config.input_mode_toggle));
+        ini.WriteString('shortcuts', 'punctuation_toggle',
+            nc_shortcut_to_text(shortcut_config.punctuation_toggle));
+        ini.WriteString('shortcuts', 'dictionary_variant_toggle',
+            nc_shortcut_to_text(shortcut_config.dictionary_variant_toggle));
+        ini.WriteString('shortcuts', 'full_width_toggle',
+            nc_shortcut_to_text(shortcut_config.full_width_toggle));
+        ini.WriteString('shortcuts', 'open_settings',
+            nc_shortcut_to_text(shortcut_config.open_settings));
         write_config_version(ini, True);
         ini.UpdateFile;
     finally

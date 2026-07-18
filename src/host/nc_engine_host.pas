@@ -12,6 +12,7 @@ uses
     System.Generics.Collections,
     System.IOUtils,
     nc_types,
+    nc_shortcut,
     nc_engine_intf,
     nc_candidate_window,
     nc_config,
@@ -90,7 +91,6 @@ type
         m_active_sessions: TDictionary<string, Byte>;
         m_recent_active_sessions: TDictionary<string, DWORD>;
         m_active_owner_session_id: string;
-        m_shift_toggle_ticks: TDictionary<string, DWORD>;
         m_session_prewarm_queue: TQueue<string>;
         m_session_prewarm_pending: TDictionary<string, Byte>;
         m_lock: TCriticalSection;
@@ -185,7 +185,6 @@ const
     c_maintenance_poll_ms = 200;
     c_recent_active_ttl_ms = 320;
     c_candidate_apply_merge_ms = 35;
-    c_shift_toggle_dedupe_ms = 90;
     c_user_dict_checkpoint_idle_ms = 5000;
     c_user_dict_checkpoint_retry_ms = 5000;
     c_tray_host_mutex_name_format = 'Local\cassotis_ime_tray_host_v1_s%d';
@@ -466,13 +465,6 @@ begin
     text_value := StringReplace(text_value, #10, '\n', [rfReplaceAll]);
     text_value := StringReplace(text_value, #9, '\t', [rfReplaceAll]);
     Result := text_value;
-end;
-
-function is_shift_key(const key_code: Word): Boolean;
-begin
-    // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
-    Result := (key_code = VK_SHIFT) or (key_code = VK_LSHIFT) or (key_code = VK_RSHIFT) or
-        (key_code = $10) or (key_code = $A0) or (key_code = $A1);
 end;
 
 function candidates_equal(const left_candidates: TncCandidateList; const right_candidates: TncCandidateList): Boolean;
@@ -1090,7 +1082,6 @@ begin
     m_sessions := TObjectDictionary<string, TncHostSession>.Create([doOwnsValues]);
     m_active_sessions := TDictionary<string, Byte>.Create;
     m_recent_active_sessions := TDictionary<string, DWORD>.Create;
-    m_shift_toggle_ticks := TDictionary<string, DWORD>.Create;
     m_active_owner_session_id := '';
     m_session_prewarm_queue := TQueue<string>.Create;
     m_session_prewarm_pending := TDictionary<string, Byte>.Create;
@@ -1184,11 +1175,6 @@ begin
     begin
         m_recent_active_sessions.Free;
         m_recent_active_sessions := nil;
-    end;
-    if m_shift_toggle_ticks <> nil then
-    begin
-        m_shift_toggle_ticks.Free;
-        m_shift_toggle_ticks := nil;
     end;
     inherited Destroy;
 end;
@@ -1366,13 +1352,11 @@ begin
                 m_active_owner_session_id := '';
                 m_active_sessions.Clear;
                 m_recent_active_sessions.Clear;
-                m_shift_toggle_ticks.Clear;
             end
             else
             begin
                 m_active_sessions.Remove(session_id);
                 m_recent_active_sessions.Remove(session_id);
-                m_shift_toggle_ticks.Remove(session_id);
             end;
         end;
     finally
@@ -1681,13 +1665,6 @@ function TncEngineHost.test_key(const session_id: string; const key_code: Word; 
     out handled: Boolean): Boolean;
 var
     session: TncHostSession;
-    input_mode: TncInputMode;
-    next_input_mode: TncInputMode;
-    full_width_mode: Boolean;
-    punctuation_full_width: Boolean;
-    now_tick: DWORD;
-    last_tick: DWORD;
-    has_last_tick: Boolean;
 begin
     handled := False;
     if session_id = '' then
@@ -1705,59 +1682,11 @@ begin
         m_lock.Release;
     end;
 
-    if is_shift_key(key_code) and (not key_state.ctrl_down) and (not key_state.alt_down) then
-    begin
-        now_tick := GetTickCount;
-        m_lock.Acquire;
-        try
-            has_last_tick := m_shift_toggle_ticks.TryGetValue(session_id, last_tick);
-        finally
-            m_lock.Release;
-        end;
-
-        if has_last_tick and (DWORD(now_tick - last_tick) <= c_shift_toggle_dedupe_ms) then
-        begin
-            handled := True;
-            Result := True;
-            Exit;
-        end;
-
-        if get_state(session_id, input_mode, full_width_mode, punctuation_full_width) then
-        begin
-            if input_mode = im_chinese then
-            begin
-                next_input_mode := im_english;
-            end
-            else
-            begin
-                next_input_mode := im_chinese;
-            end;
-
-            if set_state(session_id, next_input_mode, full_width_mode, punctuation_full_width) then
-            begin
-                m_lock.Acquire;
-                try
-                    m_shift_toggle_ticks.AddOrSetValue(session_id, now_tick);
-                finally
-                    m_lock.Release;
-                end;
-
-                host_log_debug(Format('[DEBUG] Shift toggled input mode -> %d source=host(test_key) session=%s',
-                    [Ord(next_input_mode), session_id]));
-                handled := True;
-                Result := True;
-                Exit;
-            end;
-        end;
-    end;
-
     if key_state.ctrl_down or key_state.alt_down then
     begin
-        if key_state.ctrl_down and (key_code = VK_SPACE) and m_config.enable_ctrl_space_toggle then
-        begin
-            // fall through
-        end
-        else if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and m_config.enable_ctrl_period_punct_toggle then
+        if nc_shortcut_matches(m_config.shortcuts.input_mode_toggle, key_code, key_state) or
+            nc_shortcut_matches(m_config.shortcuts.full_width_toggle, key_code, key_state) or
+            nc_shortcut_matches(m_config.shortcuts.punctuation_toggle, key_code, key_state) then
         begin
             // fall through
         end
@@ -1834,11 +1763,9 @@ begin
     // The engine only handles Ctrl/Alt when they are bound to explicit toggles.
     if key_state.ctrl_down or key_state.alt_down then
     begin
-        if key_state.ctrl_down and (key_code = VK_SPACE) and m_config.enable_ctrl_space_toggle then
-        begin
-            // fall through
-        end
-        else if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and m_config.enable_ctrl_period_punct_toggle then
+        if nc_shortcut_matches(m_config.shortcuts.input_mode_toggle, key_code, key_state) or
+            nc_shortcut_matches(m_config.shortcuts.full_width_toggle, key_code, key_state) or
+            nc_shortcut_matches(m_config.shortcuts.punctuation_toggle, key_code, key_state) then
         begin
             // fall through
         end
@@ -2299,7 +2226,7 @@ begin
             begin
                 m_config.dictionary_variant := dictionary_variant;
                 sync_start_tick := GetTickCount64;
-                // Keep Ctrl+Shift+T responsive: only the current foreground
+                // Keep the dictionary-variant shortcut responsive: only the current foreground
                 // session needs an eager dictionary provider switch. Other
                 // sessions inherit m_config and will resync on next activate.
                 sync_session_config_locked(session);

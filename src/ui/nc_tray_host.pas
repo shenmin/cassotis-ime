@@ -26,6 +26,7 @@ uses
     nc_ipc_common,
     nc_ipc_client,
     nc_log,
+    nc_shortcut,
     nc_settings_form,
     nc_types;
 
@@ -142,6 +143,7 @@ type
         procedure stop_active_state_thread;
         procedure load_config;
         procedure save_config;
+        procedure update_shortcut_hints;
         procedure apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;
             const status_widget_visible: Boolean);
         procedure sync_status_widget_origin_from_window;
@@ -177,6 +179,7 @@ type
         procedure WMExitMenuLoop(var Message: TMessage); message WM_EXITMENULOOP;
     protected
         procedure CreateParams(var Params: TCreateParams); override;
+        procedure WndProc(var Message: TMessage); override;
     public
         constructor Create(AOwner: TComponent); override;
         destructor Destroy; override;
@@ -459,6 +462,18 @@ procedure TncTrayHost.CreateParams(var Params: TCreateParams);
 begin
     inherited;
     Params.ExStyle := (Params.ExStyle or WS_EX_TOOLWINDOW) and (not WS_EX_APPWINDOW);
+end;
+
+procedure TncTrayHost.WndProc(var Message: TMessage);
+begin
+    if (get_nc_open_settings_message <> 0) and
+        (Cardinal(Message.Msg) = get_nc_open_settings_message) then
+    begin
+        PostMessage(Handle, WM_NC_OPEN_SETTINGS, 0, 0);
+        Message.Result := 0;
+        Exit;
+    end;
+    inherited WndProc(Message);
 end;
 
 constructor TncTrayHost.Create(AOwner: TComponent);
@@ -1251,7 +1266,7 @@ begin
     m_status_label_mode.Transparent := True;
     m_status_label_mode.ParentShowHint := False;
     m_status_label_mode.ShowHint := False;
-    m_status_label_mode.Hint := '切换中文/英文（Shift）';
+    m_status_label_mode.Hint := '切换中文/英文';
     m_status_label_mode.Cursor := crHandPoint;
 
     divider := TBevel.Create(m_status_panel);
@@ -1275,7 +1290,7 @@ begin
     m_status_label_variant.Transparent := True;
     m_status_label_variant.ParentShowHint := False;
     m_status_label_variant.ShowHint := False;
-    m_status_label_variant.Hint := '切换简体/繁体（Ctrl+Shift+T）';
+    m_status_label_variant.Hint := '切换简体/繁体';
     m_status_label_variant.Cursor := crHandPoint;
 
     divider := TBevel.Create(m_status_panel);
@@ -1299,7 +1314,7 @@ begin
     m_status_label_full_width.Transparent := True;
     m_status_label_full_width.ParentShowHint := False;
     m_status_label_full_width.ShowHint := False;
-    m_status_label_full_width.Hint := '切换全角/半角（Shift+Space）';
+    m_status_label_full_width.Hint := '切换全角/半角';
     m_status_label_full_width.Cursor := crHandPoint;
 
     divider := TBevel.Create(m_status_panel);
@@ -1318,7 +1333,7 @@ begin
     m_status_label_punct.Height := 20;
     m_status_label_punct.ParentShowHint := False;
     m_status_label_punct.ShowHint := False;
-    m_status_label_punct.Hint := '切换中文/英文标点（Ctrl+.）';
+    m_status_label_punct.Hint := '切换中文/英文标点';
     m_status_label_punct.Cursor := crHandPoint;
     m_status_label_punct.OnPaint := status_punct_paint;
 
@@ -2050,6 +2065,7 @@ begin
     // Tray default state should start in Chinese mode before first live sync.
     m_engine_config.input_mode := im_chinese;
     m_last_write_time := get_config_write_time;
+    update_shortcut_hints;
     update_menu;
 end;
 
@@ -2065,7 +2081,37 @@ begin
         config_manager.Free;
     end;
     m_last_write_time := get_config_write_time;
+    update_shortcut_hints;
     update_menu;
+end;
+
+procedure TncTrayHost.update_shortcut_hints;
+begin
+    if m_status_label_mode <> nil then
+    begin
+        m_status_label_mode.Hint := Format('切换中文/英文（%s）',
+            [nc_shortcut_to_text(m_engine_config.shortcuts.input_mode_toggle)]);
+    end;
+    if m_status_label_variant <> nil then
+    begin
+        m_status_label_variant.Hint := Format('切换简体/繁体（%s）',
+            [nc_shortcut_to_text(m_engine_config.shortcuts.dictionary_variant_toggle)]);
+    end;
+    if m_status_label_full_width <> nil then
+    begin
+        m_status_label_full_width.Hint := Format('切换全角/半角（%s）',
+            [nc_shortcut_to_text(m_engine_config.shortcuts.full_width_toggle)]);
+    end;
+    if m_status_label_punct <> nil then
+    begin
+        m_status_label_punct.Hint := Format('切换中文/英文标点（%s）',
+            [nc_shortcut_to_text(m_engine_config.shortcuts.punctuation_toggle)]);
+    end;
+    if m_status_btn_settings <> nil then
+    begin
+        m_status_btn_settings.Hint := Format('设置（%s）',
+            [nc_shortcut_to_text(m_engine_config.shortcuts.open_settings)]);
+    end;
 end;
 
 procedure TncTrayHost.apply_settings(const config: TncEngineConfig; const log_config: TncLogConfig;

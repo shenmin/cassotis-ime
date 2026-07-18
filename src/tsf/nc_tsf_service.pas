@@ -17,6 +17,7 @@ uses
     ComObj,
     nc_config,
     nc_types,
+    nc_shortcut,
     nc_log,
     nc_tsf_guids,
     nc_tsf_compartments,
@@ -92,12 +93,14 @@ type
         m_last_reported_active_session_id: string;
         m_last_reported_active: Boolean;
         m_active_state_synced: Boolean;
-        m_shift_key_down: Boolean;
-        m_shift_toggle_pending: Boolean;
-        m_shift_toggle_canceled: Boolean;
-        m_shift_space_toggle_pending: Boolean;
-        m_ctrl_period_toggle_pending: Boolean;
-        m_ctrl_shift_t_toggle_pending: Boolean;
+        m_shortcut_config: TncShortcutConfig;
+        m_modifier_shortcut_pending: Boolean;
+        m_modifier_shortcut_canceled: Boolean;
+        m_modifier_shortcut_action: TncShortcutAction;
+        m_modifier_shortcut_key_code: Word;
+        m_chord_shortcut_pending: Boolean;
+        m_chord_shortcut_action: TncShortcutAction;
+        m_chord_shortcut_key_code: Word;
         m_langbar_icon: HICON;
         procedure clear_state;
         procedure mark_session_dirty;
@@ -135,10 +138,12 @@ type
             const punctuation_full_width: Boolean);
         procedure update_active_state(const active: Boolean);
         function commit_pending_selection_before_mode_switch: Boolean;
-        procedure toggle_input_mode_by_shift;
-        procedure toggle_full_width_mode_by_shift_space;
-        procedure toggle_punctuation_mode_by_ctrl_period;
-        procedure toggle_dictionary_variant_by_ctrl_shift_t;
+        procedure execute_shortcut_action(const action: TncShortcutAction);
+        procedure toggle_input_mode_by_shortcut;
+        procedure toggle_full_width_mode_by_shortcut;
+        procedure toggle_punctuation_mode_by_shortcut;
+        procedure toggle_dictionary_variant_by_shortcut;
+        procedure open_settings_by_shortcut;
         procedure configure_system_input_mode_icon;
         function get_candidate_point(out point: TPoint; out placement_line_height: Integer;
             out terminal_like_target: Boolean; out chosen_source: TncCaretAnchorSource;
@@ -639,20 +644,6 @@ begin
     Result := StringReplace(Result, #9, ' ', [rfReplaceAll]);
 end;
 
-function is_shift_key(const key_code: Word): Boolean;
-begin
-    // Keep literal VK values as fallback for hosts that report generic/side-specific Shift differently.
-    Result := (key_code = VK_SHIFT) or (key_code = VK_LSHIFT) or (key_code = VK_RSHIFT) or
-        (key_code = $10) or (key_code = $A0) or (key_code = $A1);
-end;
-
-function is_ctrl_key(const key_code: Word): Boolean;
-begin
-    // Keep literal VK values as fallback for hosts that report generic/side-specific Ctrl differently.
-    Result := (key_code = VK_CONTROL) or (key_code = VK_LCONTROL) or (key_code = VK_RCONTROL) or
-        (key_code = $11) or (key_code = $A2) or (key_code = $A3);
-end;
-
 const
     TF_ES_ASYNCDONTCARE = $0;
     TF_ES_SYNC = $1;
@@ -755,12 +746,14 @@ begin
     m_last_reported_active_session_id := '';
     m_last_reported_active := False;
     m_active_state_synced := False;
-    m_shift_key_down := False;
-    m_shift_toggle_pending := False;
-    m_shift_toggle_canceled := False;
-    m_shift_space_toggle_pending := False;
-    m_ctrl_period_toggle_pending := False;
-    m_ctrl_shift_t_toggle_pending := False;
+    m_shortcut_config := nc_default_shortcut_config;
+    m_modifier_shortcut_pending := False;
+    m_modifier_shortcut_canceled := False;
+    m_modifier_shortcut_action := Low(TncShortcutAction);
+    m_modifier_shortcut_key_code := 0;
+    m_chord_shortcut_pending := False;
+    m_chord_shortcut_action := Low(TncShortcutAction);
+    m_chord_shortcut_key_code := 0;
 end;
 
 procedure TncTextService.mark_session_dirty;
@@ -1496,12 +1489,11 @@ begin
         unadvise_context_sinks;
         m_doc_mgr := nil;
         m_context := nil;
-        m_shift_key_down := False;
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := False;
-        m_shift_space_toggle_pending := False;
-        m_ctrl_period_toggle_pending := False;
-        m_ctrl_shift_t_toggle_pending := False;
+        m_modifier_shortcut_pending := False;
+        m_modifier_shortcut_canceled := False;
+        m_modifier_shortcut_key_code := 0;
+        m_chord_shortcut_pending := False;
+        m_chord_shortcut_key_code := 0;
     end;
 
     Result := S_OK;
@@ -1518,6 +1510,8 @@ var
     total_elapsed_ms: Int64;
     ipc_start_tick: UInt64;
     ipc_elapsed_ms: Int64;
+    shortcut_action: TncShortcutAction;
+    normalized_key_code: Word;
 begin
     eaten := 0;
     total_start_tick := GetTickCount64;
@@ -1532,69 +1526,20 @@ begin
             Ord(key_state.alt_down), Ord(key_state.caps_lock)]));
     end;
 
-    // Guard against stale pending flags when KeyUp events are dropped by host/app.
-    if not key_state.shift_down then
+    normalized_key_code := nc_normalize_shortcut_key_code(key_code);
+    if m_modifier_shortcut_pending and
+        (normalized_key_code <> m_modifier_shortcut_key_code) then
     begin
-        m_shift_space_toggle_pending := False;
+        m_modifier_shortcut_canceled := True;
     end;
-    if not key_state.ctrl_down then
+    if m_chord_shortcut_pending and
+        (normalized_key_code <> m_chord_shortcut_key_code) then
     begin
-        m_ctrl_period_toggle_pending := False;
-        m_ctrl_shift_t_toggle_pending := False;
-    end
-    else if not key_state.shift_down then
-    begin
-        m_ctrl_shift_t_toggle_pending := False;
+        m_chord_shortcut_pending := False;
+        m_chord_shortcut_key_code := 0;
     end;
 
-    if is_shift_key(key_code) then
-    begin
-        if (not key_state.ctrl_down) and (not key_state.alt_down) then
-        begin
-            m_shift_key_down := True;
-            m_shift_toggle_pending := True;
-            m_shift_toggle_canceled := False;
-            eaten := 1;
-            Result := S_OK;
-            Exit;
-        end;
-
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := True;
-    end
-    else if m_shift_key_down then
-    begin
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := True;
-    end;
-
-    if key_state.shift_down and (key_code = VK_SPACE) and (not key_state.ctrl_down) and (not key_state.alt_down) then
-    begin
-        handled := False;
-        if (m_ipc_client <> nil) and (m_session_id <> '') and
-            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
-        begin
-            m_shift_space_toggle_pending := True;
-            eaten := 1;
-            Result := S_OK;
-            Exit;
-        end;
-    end;
-
-    if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and (not key_state.alt_down) then
-    begin
-        handled := False;
-        if (m_ipc_client <> nil) and (m_session_id <> '') and
-            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
-        begin
-            m_ctrl_period_toggle_pending := True;
-            eaten := 1;
-            Result := S_OK;
-            Exit;
-        end;
-    end;
-
-    if key_state.ctrl_down and key_state.shift_down and (not key_state.alt_down) and (key_code = Ord('T')) then
+    if nc_find_shortcut_action(m_shortcut_config, key_code, key_state, shortcut_action) then
     begin
         eaten := 1;
         Result := S_OK;
@@ -1690,6 +1635,9 @@ var
     caret_push_elapsed_ms: Int64;
     surrounding_sent: Boolean;
     lookup_perf_info: string;
+    shortcut_action: TncShortcutAction;
+    shortcut_value: TncShortcut;
+    normalized_key_code: Word;
 begin
     ensure_active_context(context);
     eaten := 0;
@@ -1716,82 +1664,40 @@ begin
             Ord(key_state.caps_lock)]));
     end;
 
-    // Guard against stale pending flags when KeyUp events are dropped by host/app.
-    if not key_state.shift_down then
+    normalized_key_code := nc_normalize_shortcut_key_code(key_code);
+    if m_modifier_shortcut_pending and
+        (normalized_key_code <> m_modifier_shortcut_key_code) then
     begin
-        m_shift_space_toggle_pending := False;
+        m_modifier_shortcut_canceled := True;
     end;
-    if not key_state.ctrl_down then
+    if m_chord_shortcut_pending and
+        (normalized_key_code <> m_chord_shortcut_key_code) then
     begin
-        m_ctrl_period_toggle_pending := False;
-        m_ctrl_shift_t_toggle_pending := False;
-    end
-    else if not key_state.shift_down then
-    begin
-        m_ctrl_shift_t_toggle_pending := False;
+        m_chord_shortcut_pending := False;
+        m_chord_shortcut_key_code := 0;
     end;
 
-    if is_shift_key(key_code) then
+    if nc_find_shortcut_action(m_shortcut_config, key_code, key_state, shortcut_action) then
     begin
-        if (not key_state.ctrl_down) and (not key_state.alt_down) then
+        shortcut_value := nc_shortcut_for_action(m_shortcut_config, shortcut_action);
+        if nc_shortcut_is_modifier_only(shortcut_value) then
         begin
-            m_shift_key_down := True;
-            m_shift_toggle_pending := True;
-            m_shift_toggle_canceled := False;
-            eaten := 1;
-            Result := S_OK;
-            Exit;
-        end;
-
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := True;
-    end
-    else if m_shift_key_down then
-    begin
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := True;
-    end;
-
-    if not key_state.shift_down then
-    begin
-        m_shift_key_down := False;
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := False;
-        m_shift_space_toggle_pending := False;
-    end;
-
-    if key_state.shift_down and (key_code = VK_SPACE) and (not key_state.ctrl_down) and (not key_state.alt_down) then
-    begin
-        handled := False;
-        if (m_ipc_client <> nil) and (m_session_id <> '') and
-            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
+            m_modifier_shortcut_pending := True;
+            m_modifier_shortcut_canceled := False;
+            m_modifier_shortcut_action := shortcut_action;
+            m_modifier_shortcut_key_code := normalized_key_code;
+        end
+        else
         begin
-            m_shift_space_toggle_pending := True;
-            eaten := 1;
-            Result := S_OK;
-            Exit;
-        end;
-    end;
-
-    if key_state.ctrl_down and (key_code = VK_OEM_PERIOD) and (not key_state.alt_down) then
-    begin
-        handled := False;
-        if (m_ipc_client <> nil) and (m_session_id <> '') and
-            m_ipc_client.test_key(m_session_id, key_code, key_state, handled) and handled then
-        begin
-            m_ctrl_period_toggle_pending := True;
-            eaten := 1;
-            Result := S_OK;
-            Exit;
-        end;
-    end;
-
-    if key_state.ctrl_down and key_state.shift_down and (not key_state.alt_down) and (key_code = Ord('T')) then
-    begin
-        if not m_ctrl_shift_t_toggle_pending then
-        begin
-            m_ctrl_shift_t_toggle_pending := True;
-            toggle_dictionary_variant_by_ctrl_shift_t;
+            if (not m_chord_shortcut_pending) or
+                (m_chord_shortcut_action <> shortcut_action) or
+                (m_chord_shortcut_key_code <> normalized_key_code) then
+            begin
+                execute_shortcut_action(shortcut_action);
+            end;
+            m_chord_shortcut_pending := True;
+            m_chord_shortcut_action := shortcut_action;
+            m_chord_shortcut_key_code := normalized_key_code;
         end;
         eaten := 1;
         Result := S_OK;
@@ -1908,43 +1814,25 @@ end;
 function TncTextService.OnTestKeyUp(const context: ITfContext; wParam: WPARAM; lParam: LPARAM; out eaten: Integer): HResult;
 var
     key_code: Word;
+    normalized_key_code: Word;
 begin
     key_code := Word(wParam);
+    normalized_key_code := nc_normalize_shortcut_key_code(key_code);
     eaten := 0;
-    if is_shift_key(key_code) then
+    if m_modifier_shortcut_pending and
+        (normalized_key_code = m_modifier_shortcut_key_code) then
     begin
         eaten := 1;
         Result := S_OK;
         Exit;
     end;
 
-    if is_ctrl_key(key_code) then
-    begin
-        if m_ctrl_period_toggle_pending or m_ctrl_shift_t_toggle_pending then
-        begin
-            eaten := 1;
-        end;
-        Result := S_OK;
-        Exit;
-    end;
-
-    if (key_code = VK_SPACE) and m_shift_space_toggle_pending then
+    if m_chord_shortcut_pending and
+        (normalized_key_code = m_chord_shortcut_key_code) then
     begin
         eaten := 1;
         Result := S_OK;
         Exit;
-    end;
-
-    if (key_code = VK_OEM_PERIOD) and m_ctrl_period_toggle_pending then
-    begin
-        eaten := 1;
-        Result := S_OK;
-        Exit;
-    end;
-
-    if (key_code = Ord('T')) and m_ctrl_shift_t_toggle_pending then
-    begin
-        eaten := 1;
     end;
     Result := S_OK;
 end;
@@ -1952,58 +1840,31 @@ end;
 function TncTextService.OnKeyUp(const context: ITfContext; wParam: WPARAM; lParam: LPARAM; out eaten: Integer): HResult;
 var
     key_code: Word;
+    normalized_key_code: Word;
 begin
     eaten := 0;
     key_code := Word(wParam);
-    if is_shift_key(key_code) then
+    normalized_key_code := nc_normalize_shortcut_key_code(key_code);
+    if m_modifier_shortcut_pending and
+        (normalized_key_code = m_modifier_shortcut_key_code) then
     begin
         eaten := 1;
-        if m_shift_toggle_pending and (not m_shift_toggle_canceled) then
+        if not m_modifier_shortcut_canceled then
         begin
-            toggle_input_mode_by_shift;
+            execute_shortcut_action(m_modifier_shortcut_action);
         end;
-        m_shift_key_down := False;
-        m_shift_toggle_pending := False;
-        m_shift_toggle_canceled := False;
-        m_shift_space_toggle_pending := False;
-        m_ctrl_shift_t_toggle_pending := False;
+        m_modifier_shortcut_pending := False;
+        m_modifier_shortcut_canceled := False;
+        m_modifier_shortcut_key_code := 0;
         Result := S_OK;
         Exit;
     end;
 
-    if is_ctrl_key(key_code) then
+    if m_chord_shortcut_pending and
+        (normalized_key_code = m_chord_shortcut_key_code) then
     begin
-        if m_ctrl_period_toggle_pending or m_ctrl_shift_t_toggle_pending then
-        begin
-            eaten := 1;
-        end;
-        m_ctrl_period_toggle_pending := False;
-        m_ctrl_shift_t_toggle_pending := False;
-        Result := S_OK;
-        Exit;
-    end;
-
-    if (key_code = VK_SPACE) and m_shift_space_toggle_pending then
-    begin
-        m_shift_space_toggle_pending := False;
-        toggle_full_width_mode_by_shift_space;
-        eaten := 1;
-        Result := S_OK;
-        Exit;
-    end;
-
-    if (key_code = VK_OEM_PERIOD) and m_ctrl_period_toggle_pending then
-    begin
-        m_ctrl_period_toggle_pending := False;
-        toggle_punctuation_mode_by_ctrl_period;
-        eaten := 1;
-        Result := S_OK;
-        Exit;
-    end;
-
-    if (key_code = Ord('T')) and m_ctrl_shift_t_toggle_pending then
-    begin
-        m_ctrl_shift_t_toggle_pending := False;
+        m_chord_shortcut_pending := False;
+        m_chord_shortcut_key_code := 0;
         eaten := 1;
         Result := S_OK;
         Exit;
@@ -2074,7 +1935,23 @@ begin
     end;
 end;
 
-procedure TncTextService.toggle_input_mode_by_shift;
+procedure TncTextService.execute_shortcut_action(const action: TncShortcutAction);
+begin
+    case action of
+        sa_input_mode_toggle:
+            toggle_input_mode_by_shortcut;
+        sa_punctuation_toggle:
+            toggle_punctuation_mode_by_shortcut;
+        sa_dictionary_variant_toggle:
+            toggle_dictionary_variant_by_shortcut;
+        sa_full_width_toggle:
+            toggle_full_width_mode_by_shortcut;
+        sa_open_settings:
+            open_settings_by_shortcut;
+    end;
+end;
+
+procedure TncTextService.toggle_input_mode_by_shortcut;
 var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
@@ -2090,7 +1967,8 @@ begin
 
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
-        m_logger.debug(Format('Shift toggle trigger session=%s', [m_session_id]));
+        m_logger.debug(Format('Input-mode shortcut trigger shortcut=%s session=%s',
+            [nc_shortcut_to_text(m_shortcut_config.input_mode_toggle), m_session_id]));
     end;
 
     if (m_ipc_client <> nil) and (m_session_id <> '') then
@@ -2138,13 +2016,13 @@ begin
         begin
             state_source := 'local';
         end;
-        m_logger.debug(Format('Shift toggled input mode -> %d source=%s',
-            [Ord(next_input_mode), state_source]));
+        m_logger.debug(Format('Shortcut %s toggled input mode -> %d source=%s',
+            [nc_shortcut_to_text(m_shortcut_config.input_mode_toggle), Ord(next_input_mode), state_source]));
     end;
 
 end;
 
-procedure TncTextService.toggle_full_width_mode_by_shift_space;
+procedure TncTextService.toggle_full_width_mode_by_shortcut;
 var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
@@ -2184,12 +2062,12 @@ begin
         begin
             state_source := 'local';
         end;
-        m_logger.debug(Format('Shift+Space toggled full_width -> %d source=%s',
-            [Ord(full_width_mode), state_source]));
+        m_logger.debug(Format('Shortcut %s toggled full_width -> %d source=%s',
+            [nc_shortcut_to_text(m_shortcut_config.full_width_toggle), Ord(full_width_mode), state_source]));
     end;
 end;
 
-procedure TncTextService.toggle_punctuation_mode_by_ctrl_period;
+procedure TncTextService.toggle_punctuation_mode_by_shortcut;
 var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
@@ -2229,12 +2107,12 @@ begin
         begin
             state_source := 'local';
         end;
-        m_logger.debug(Format('Ctrl+. toggled punctuation_full_width -> %d source=%s',
-            [Ord(punctuation_full_width), state_source]));
+        m_logger.debug(Format('Shortcut %s toggled punctuation_full_width -> %d source=%s',
+            [nc_shortcut_to_text(m_shortcut_config.punctuation_toggle), Ord(punctuation_full_width), state_source]));
     end;
 end;
 
-procedure TncTextService.toggle_dictionary_variant_by_ctrl_shift_t;
+procedure TncTextService.toggle_dictionary_variant_by_shortcut;
 var
     config_manager: TncConfigManager;
     engine_config: TncEngineConfig;
@@ -2281,7 +2159,43 @@ begin
 
     if (m_logger <> nil) and (m_logger.level <= ll_debug) then
     begin
-        m_logger.debug(Format('Ctrl+Shift+T toggled dictionary variant -> %s', [variant_text]));
+        m_logger.debug(Format('Shortcut %s toggled dictionary variant -> %s',
+            [nc_shortcut_to_text(m_shortcut_config.dictionary_variant_toggle), variant_text]));
+    end;
+end;
+
+procedure TncTextService.open_settings_by_shortcut;
+var
+    module_path: array[0..MAX_PATH - 1] of Char;
+    module_len: Cardinal;
+    base_dir: string;
+    tray_host_path: string;
+    shell_result: HINST;
+begin
+    module_len := GetModuleFileName(HInstance, module_path, MAX_PATH);
+    if module_len = 0 then
+    begin
+        Exit;
+    end;
+
+    base_dir := IncludeTrailingPathDelimiter(ExtractFilePath(module_path));
+    tray_host_path := base_dir + 'cassotis_ime_tray_host.exe';
+    if not FileExists(tray_host_path) then
+    begin
+        if m_logger <> nil then
+        begin
+            m_logger.warn('Open-settings shortcut failed: tray host executable not found.');
+        end;
+        Exit;
+    end;
+
+    cancel_composition;
+    shell_result := ShellExecute(0, 'open', PChar(tray_host_path), '/settings',
+        PChar(base_dir), SW_SHOWNORMAL);
+    if (NativeInt(shell_result) <= 32) and (m_logger <> nil) then
+    begin
+        m_logger.warn(Format('Open-settings shortcut failed: ShellExecute=%d',
+            [NativeInt(shell_result)]));
     end;
 end;
 
@@ -2883,6 +2797,8 @@ begin
     config_manager := TncConfigManager.create(m_config_path);
     try
         config := config_manager.load_engine_config;
+        m_shortcut_config := config.shortcuts;
+        nc_normalize_shortcut_config(m_shortcut_config);
         m_log_config := config_manager.load_log_config;
     finally
         config_manager.Free;

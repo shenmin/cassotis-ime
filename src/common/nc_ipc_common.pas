@@ -7,6 +7,7 @@ const
     c_nc_host_mutex_base = 'Local\cassotis_ime_engine_host_v2';
     c_nc_active_event_base = 'Local\cassotis_ime_engine_active_v1';
     c_nc_inactive_event_base = 'Local\cassotis_ime_engine_inactive_v1';
+    c_nc_open_settings_message_name = 'CassotisIme.OpenSettings.v1';
 
 function encode_ipc_text(const value: string): string;
 function decode_ipc_text(const value: string): string;
@@ -16,6 +17,7 @@ function get_nc_pipe_name: string;
 function get_nc_host_mutex: string;
 function get_nc_active_event: string;
 function get_nc_inactive_event: string;
+function get_nc_open_settings_message: Cardinal;
 
 implementation
 
@@ -28,6 +30,7 @@ uses
 var
     g_scope_suffix: string = '';
     g_scope_ready: Boolean = False;
+    g_open_settings_message: Cardinal = 0;
 
 function get_process_scope_suffix: string;
 var
@@ -67,6 +70,15 @@ end;
 function get_nc_inactive_event: string;
 begin
     Result := c_nc_inactive_event_base + get_process_scope_suffix;
+end;
+
+function get_nc_open_settings_message: Cardinal;
+begin
+    if g_open_settings_message = 0 then
+    begin
+        g_open_settings_message := RegisterWindowMessage(c_nc_open_settings_message_name);
+    end;
+    Result := g_open_settings_message;
 end;
 
 function encode_ipc_text(const value: string): string;

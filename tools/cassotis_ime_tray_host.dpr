@@ -8,7 +8,8 @@ uses
   nc_config in '..\src\common\nc_config.pas',
   nc_log in '..\src\common\nc_log.pas',
   nc_sqlite in '..\src\common\nc_sqlite.pas',
-  nc_types in '..\src\common\nc_types.pas';
+  nc_types in '..\src\common\nc_types.pas',
+  nc_ipc_common in '..\src\common\nc_ipc_common.pas';
 
 {$R 'cassotis_ime_tray_host.res'}
 {$R 'cassotis_ime_tray_host_mark.res'}
@@ -16,6 +17,7 @@ uses
 var
     tray_host: TncTrayHost;
     tray_mutex: THandle;
+    open_settings_requested: Boolean;
 
 procedure try_enable_per_monitor_dpi;
 type
@@ -110,10 +112,32 @@ begin
     Result := True;
 end;
 
+procedure notify_existing_tray_to_open_settings;
+var
+    tray_window: HWND;
+    open_settings_message: Cardinal;
+begin
+    open_settings_message := get_nc_open_settings_message;
+    tray_window := FindWindow('TncTrayHost', nil);
+    if tray_window <> 0 then
+    begin
+        PostMessage(tray_window, open_settings_message, 0, 0);
+    end
+    else
+    begin
+        PostMessage(HWND_BROADCAST, open_settings_message, 0, 0);
+    end;
+end;
+
 begin
     tray_mutex := 0;
+    open_settings_requested := FindCmdLineSwitch('settings', ['-', '/'], True);
     if not acquire_tray_mutex then
     begin
+        if open_settings_requested then
+        begin
+            notify_existing_tray_to_open_settings;
+        end;
         Exit;
     end;
 
@@ -123,6 +147,10 @@ begin
     Application.ShowMainForm := False;
     enforce_application_toolwindow_style;
     Application.CreateForm(TncTrayHost, tray_host);
+    if open_settings_requested then
+    begin
+        PostMessage(tray_host.Handle, WM_NC_OPEN_SETTINGS, 0, 0);
+    end;
     try
         Application.Run;
     finally

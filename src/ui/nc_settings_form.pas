@@ -22,6 +22,7 @@ uses
     Vcl.Dialogs,
     Vcl.FileCtrl,
     nc_types,
+    nc_shortcut,
     nc_dpi_scale,
     nc_config,
     nc_candidate_theme,
@@ -145,6 +146,7 @@ type
         m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
         m_tab_appearance: TTabSheet;
+        m_tab_shortcuts: TTabSheet;
         m_tab_logging: TTabSheet;
         m_tab_advanced: TTabSheet;
         m_btn_reset: TncModernButton;
@@ -161,6 +163,8 @@ type
         m_combo_candidate_page_size: TComboBox;
         m_combo_candidate_color_scheme: TComboBox;
         m_candidate_preview: TPaintBox;
+        m_combo_shortcut_modifiers: array[TncShortcutAction] of TComboBox;
+        m_combo_shortcut_keys: array[TncShortcutAction] of TComboBox;
         m_chk_log_enabled: TncModernCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
@@ -185,17 +189,24 @@ type
         procedure update_dialog_height_for_content;
         procedure add_general_controls;
         procedure add_appearance_controls;
+        procedure add_shortcut_controls;
         procedure add_logging_controls;
         procedure add_advanced_controls;
         procedure update_scaled_control_metrics;
         procedure mark_dirty(Sender: TObject);
         procedure update_apply_button;
         procedure update_logging_controls;
-        procedure load_defaults;
+        procedure restore_current_page_defaults;
         procedure load_from_config;
         procedure populate_candidate_font_combo;
         procedure populate_candidate_page_size_combo;
         procedure populate_candidate_color_scheme_combo;
+        procedure populate_shortcut_modifier_combo(const combo: TComboBox);
+        procedure populate_shortcut_key_combo(const combo: TComboBox);
+        function shortcut_action_caption(const action: TncShortcutAction): string;
+        function shortcut_from_controls(const action: TncShortcutAction): TncShortcut;
+        procedure set_shortcut_controls(const action: TncShortcutAction; const shortcut: TncShortcut);
+        procedure load_shortcut_controls(const config: TncShortcutConfig);
         function get_candidate_font_size_from_slider: Integer;
         procedure set_candidate_font_size_slider(const font_size: Integer);
         function get_selected_candidate_font_name: string;
@@ -249,6 +260,7 @@ const
     c_section_width = c_dialog_width - 62;
     c_section_gap = 12;
     c_section_inner_top = 34;
+    c_untitled_section_inner_top = 12;
     c_label_left = 18;
     c_control_left = 148;
     c_row_height = 30;
@@ -270,6 +282,7 @@ resourcestring
     SSettingsTitle = 'Cassotis 设置';
     STabGeneral = '常规';
     STabAppearance = '外观';
+    STabShortcuts = '快捷键';
     STabLogging = '日志';
     STabAdvanced = '高级';
     SButtonBrowse = '浏览';
@@ -278,7 +291,6 @@ resourcestring
     SButtonOK = '确定';
     SButtonCancel = '取消';
     SGroupDefaultBehavior = '输入';
-    SGroupAppearance = '外观';
     SGroupLogging = '记录策略';
     SGroupLogFiles = '文件位置';
     SGroupDebug = '调试';
@@ -299,6 +311,21 @@ resourcestring
     SCandidatePageSizeItem = '%d 项';
     SLabelCandidateColorScheme = '配色';
     SLabelCandidatePreview = '预览';
+    SLabelShortcutAction = '功能';
+    SLabelShortcutModifier = '修饰键';
+    SLabelShortcutKey = '按键';
+    SShortcutInputMode = '中英文状态切换';
+    SShortcutPunctuation = '中英文标点切换';
+    SShortcutDictionaryVariant = '简繁体切换';
+    SShortcutFullWidth = '全角/半角切换';
+    SShortcutOpenSettings = '打开设置';
+    SShortcutNoModifier = '无';
+    SShortcutHint = '快捷键不可重复。无修饰键时仅支持 Shift 或 F1-F24，以免占用正常输入。';
+    SShortcutMissingKey = '“%s”尚未选择按键。';
+    SShortcutInvalidModifierKey = '“%s”的快捷键无效：单独的修饰键仅支持 Shift，且不能再叠加其他修饰键。';
+    SShortcutNeedsModifier = '“%s”不能使用未带修饰键的 %s，因为这会占用正常输入。请添加 Ctrl、Shift 或 Alt；无修饰键时仅支持 Shift 或 F1-F24。';
+    SShortcutInvalid = '“%s”的快捷键无效，请选择其他组合。';
+    SShortcutConflict = '“%s”和“%s”都使用了 %s。每个功能必须使用不同的快捷键。';
     SSizeMinimum = '最小';
     SSizeDefault = '默认';
     SSizeMaximum = '最大';
@@ -327,7 +354,7 @@ resourcestring
     SPathMissing = '%s不存在。';
     SConfigFolderMissing = '配置目录不存在。';
     SConfigFileMissing = '配置文件尚不存在。';
-    SConfirmRestoreDefaults = '要恢复默认设置吗？';
+    SConfirmRestoreDefaults = '要恢复“%s”页的默认设置吗？';
     SSettingMaxLogSize = '日志大小上限';
     SErrorValueTooSmall = '%s不能小于 %d。';
     SErrorValueTooLarge = '%s不能大于 %d。';
@@ -441,6 +468,7 @@ function calculate_checkbox_height_for_dpi(const font: TFont; const dpi: Integer
 constructor TncModernButton.Create(AOwner: TComponent);
 begin
     inherited Create(AOwner);
+    ControlStyle := ControlStyle - [csClickEvents];
     m_kind := mbkSecondary;
     m_caption := '';
     m_focusable := True;
@@ -717,6 +745,7 @@ end;
 constructor TncModernCheckBox.Create(AOwner: TComponent);
 begin
     inherited Create(AOwner);
+    ControlStyle := ControlStyle - [csClickEvents];
     m_caption := '';
     m_checked := False;
     ParentFont := True;
@@ -987,13 +1016,16 @@ begin
     accent.ParentBackground := False;
     accent.Color := RGB(50, 118, 255);
 
-    title_label := TLabel.Create(Result);
-    title_label.Parent := Result;
-    title_label.Left := scale_ui(c_label_left);
-    title_label.Top := scale_ui(10);
-    title_label.Caption := caption;
-    title_label.Font.Style := [fsBold];
-    title_label.Font.Color := RGB(34, 39, 46);
+    if caption <> '' then
+    begin
+        title_label := TLabel.Create(Result);
+        title_label.Parent := Result;
+        title_label.Left := scale_ui(c_label_left);
+        title_label.Top := scale_ui(10);
+        title_label.Caption := caption;
+        title_label.Font.Style := [fsBold];
+        title_label.Font.Color := RGB(34, 39, 46);
+    end;
 end;
 
 function measure_wrapped_label_height(const font: TFont; const text: string; const width: Integer): Integer;
@@ -1236,6 +1268,7 @@ begin
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
+    Result.shortcuts := nc_default_shortcut_config;
 end;
 
 function build_default_log_config_value: TncLogConfig;
@@ -1260,6 +1293,7 @@ begin
     configure_buttons;
     add_general_controls;
     add_appearance_controls;
+    add_shortcut_controls;
     add_logging_controls;
     add_advanced_controls;
     load_from_config;
@@ -1555,6 +1589,10 @@ begin
     m_tab_appearance.PageControl := m_page_control;
     m_tab_appearance.Caption := STabAppearance;
 
+    m_tab_shortcuts := TTabSheet.Create(m_page_control);
+    m_tab_shortcuts.PageControl := m_page_control;
+    m_tab_shortcuts.Caption := STabShortcuts;
+
     m_tab_logging := TTabSheet.Create(m_page_control);
     m_tab_logging.PageControl := m_page_control;
     m_tab_logging.Caption := STabLogging;
@@ -1693,9 +1731,9 @@ begin
     size_label_texts[6] := SSizeMaximum;
 
     section_top := scale_ui(18);
-    appearance_group := create_section_group(Self, m_tab_appearance, SGroupAppearance, section_top, 338);
+    appearance_group := create_section_group(Self, m_tab_appearance, '', section_top, 316);
 
-    top := scale_ui(c_section_inner_top);
+    top := scale_ui(c_untitled_section_inner_top);
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
@@ -1804,6 +1842,255 @@ begin
     m_candidate_preview.Height := scale_ui(64);
     m_candidate_preview.Anchors := [akLeft, akTop, akRight];
     m_candidate_preview.OnPaint := on_candidate_preview_paint;
+end;
+
+function TncSettingsForm.shortcut_action_caption(const action: TncShortcutAction): string;
+begin
+    case action of
+        sa_input_mode_toggle:
+            Result := SShortcutInputMode;
+        sa_punctuation_toggle:
+            Result := SShortcutPunctuation;
+        sa_dictionary_variant_toggle:
+            Result := SShortcutDictionaryVariant;
+        sa_full_width_toggle:
+            Result := SShortcutFullWidth;
+        sa_open_settings:
+            Result := SShortcutOpenSettings;
+    else
+        Result := '';
+    end;
+end;
+
+procedure TncSettingsForm.populate_shortcut_modifier_combo(const combo: TComboBox);
+begin
+    if combo = nil then
+    begin
+        Exit;
+    end;
+    combo.Items.Clear;
+    combo.Items.Add(SShortcutNoModifier);
+    combo.Items.Add('Shift');
+    combo.Items.Add('Ctrl');
+    combo.Items.Add('Alt');
+    combo.Items.Add('Ctrl + Shift');
+    combo.Items.Add('Ctrl + Alt');
+    combo.Items.Add('Shift + Alt');
+    combo.Items.Add('Ctrl + Shift + Alt');
+end;
+
+procedure TncSettingsForm.populate_shortcut_key_combo(const combo: TComboBox);
+var
+    key_code: Integer;
+
+    procedure add_key(const value: Word);
+    var
+        key_name: string;
+    begin
+        key_name := nc_shortcut_key_name(value);
+        if key_name <> '' then
+        begin
+            combo.Items.AddObject(key_name, TObject(NativeInt(value)));
+        end;
+    end;
+begin
+    if combo = nil then
+    begin
+        Exit;
+    end;
+    combo.Items.Clear;
+    add_key(VK_SHIFT);
+    add_key(VK_SPACE);
+    add_key(VK_TAB);
+    add_key(VK_RETURN);
+    add_key(VK_ESCAPE);
+    add_key(VK_BACK);
+    add_key(VK_PRIOR);
+    add_key(VK_NEXT);
+    add_key(VK_HOME);
+    add_key(VK_END);
+    add_key(VK_LEFT);
+    add_key(VK_RIGHT);
+    add_key(VK_UP);
+    add_key(VK_DOWN);
+    add_key(VK_INSERT);
+    add_key(VK_DELETE);
+    for key_code := Ord('A') to Ord('Z') do
+    begin
+        add_key(key_code);
+    end;
+    for key_code := Ord('0') to Ord('9') do
+    begin
+        add_key(key_code);
+    end;
+    for key_code := VK_F1 to VK_F24 do
+    begin
+        add_key(key_code);
+    end;
+    add_key(VK_OEM_COMMA);
+    add_key(VK_OEM_PERIOD);
+    add_key(VK_OEM_1);
+    add_key(VK_OEM_2);
+    add_key(VK_OEM_3);
+    add_key(VK_OEM_4);
+    add_key(VK_OEM_5);
+    add_key(VK_OEM_6);
+    add_key(VK_OEM_7);
+    add_key(VK_OEM_MINUS);
+    add_key(VK_OEM_PLUS);
+    add_key(VK_ADD);
+    add_key(VK_SUBTRACT);
+    add_key(VK_MULTIPLY);
+    add_key(VK_DIVIDE);
+    add_key(VK_DECIMAL);
+end;
+
+procedure TncSettingsForm.add_shortcut_controls;
+var
+    action: TncShortcutAction;
+    top: Integer;
+    section_top: Integer;
+    shortcut_group: TPanel;
+    header_label: TLabel;
+begin
+    section_top := scale_ui(18);
+    shortcut_group := create_section_group(Self, m_tab_shortcuts, '', section_top, 260);
+
+    top := scale_ui(c_untitled_section_inner_top);
+    header_label := create_label(Self, shortcut_group, SLabelShortcutAction, top);
+    header_label.Font.Style := [fsBold];
+    header_label.Font.Color := RGB(90, 100, 115);
+
+    header_label := TLabel.Create(Self);
+    header_label.Parent := shortcut_group;
+    header_label.Left := scale_ui(c_control_left);
+    header_label.Top := top + scale_ui(4);
+    header_label.Caption := SLabelShortcutModifier;
+    header_label.Font.Style := [fsBold];
+    header_label.Font.Color := RGB(90, 100, 115);
+
+    header_label := TLabel.Create(Self);
+    header_label.Parent := shortcut_group;
+    header_label.Left := scale_ui(c_control_left + 142);
+    header_label.Top := top + scale_ui(4);
+    header_label.Caption := SLabelShortcutKey;
+    header_label.Font.Style := [fsBold];
+    header_label.Font.Color := RGB(90, 100, 115);
+
+    Inc(top, scale_ui(28));
+    for action := Low(TncShortcutAction) to High(TncShortcutAction) do
+    begin
+        create_label(Self, shortcut_group, shortcut_action_caption(action), top);
+
+        m_combo_shortcut_modifiers[action] := TComboBox.Create(Self);
+        m_combo_shortcut_modifiers[action].Parent := shortcut_group;
+        m_combo_shortcut_modifiers[action].Left := scale_ui(c_control_left);
+        m_combo_shortcut_modifiers[action].Top := top;
+        m_combo_shortcut_modifiers[action].Width := scale_ui(130);
+        m_combo_shortcut_modifiers[action].Style := csDropDownList;
+        populate_shortcut_modifier_combo(m_combo_shortcut_modifiers[action]);
+        m_combo_shortcut_modifiers[action].OnChange := mark_dirty;
+
+        m_combo_shortcut_keys[action] := TComboBox.Create(Self);
+        m_combo_shortcut_keys[action].Parent := shortcut_group;
+        m_combo_shortcut_keys[action].Left := scale_ui(c_control_left + 142);
+        m_combo_shortcut_keys[action].Top := top;
+        m_combo_shortcut_keys[action].Width := scale_ui(150);
+        m_combo_shortcut_keys[action].Style := csDropDownList;
+        populate_shortcut_key_combo(m_combo_shortcut_keys[action]);
+        m_combo_shortcut_keys[action].OnChange := mark_dirty;
+
+        Inc(top, scale_ui(36));
+    end;
+
+    create_hint_label(Self, shortcut_group, SShortcutHint, scale_ui(c_label_left),
+        top + scale_ui(2), scale_ui(c_hint_width));
+end;
+
+function TncSettingsForm.shortcut_from_controls(const action: TncShortcutAction): TncShortcut;
+var
+    modifier_index: Integer;
+    key_index: Integer;
+    key_code: Word;
+    shift_down: Boolean;
+    ctrl_down: Boolean;
+    alt_down: Boolean;
+begin
+    modifier_index := m_combo_shortcut_modifiers[action].ItemIndex;
+    key_index := m_combo_shortcut_keys[action].ItemIndex;
+    key_code := 0;
+    if key_index >= 0 then
+    begin
+        key_code := Word(NativeInt(m_combo_shortcut_keys[action].Items.Objects[key_index]));
+    end;
+
+    shift_down := modifier_index in [1, 4, 6, 7];
+    ctrl_down := modifier_index in [2, 4, 5, 7];
+    alt_down := modifier_index in [3, 5, 6, 7];
+    Result := nc_make_shortcut(key_code, shift_down, ctrl_down, alt_down);
+end;
+
+procedure TncSettingsForm.set_shortcut_controls(const action: TncShortcutAction;
+    const shortcut: TncShortcut);
+var
+    modifier_index: Integer;
+    item_index: Integer;
+    key_code: Word;
+begin
+    modifier_index := 0;
+    if shortcut.ctrl_down and shortcut.shift_down and shortcut.alt_down then
+    begin
+        modifier_index := 7;
+    end
+    else if shortcut.shift_down and shortcut.alt_down then
+    begin
+        modifier_index := 6;
+    end
+    else if shortcut.ctrl_down and shortcut.alt_down then
+    begin
+        modifier_index := 5;
+    end
+    else if shortcut.ctrl_down and shortcut.shift_down then
+    begin
+        modifier_index := 4;
+    end
+    else if shortcut.alt_down then
+    begin
+        modifier_index := 3;
+    end
+    else if shortcut.ctrl_down then
+    begin
+        modifier_index := 2;
+    end
+    else if shortcut.shift_down then
+    begin
+        modifier_index := 1;
+    end;
+    m_combo_shortcut_modifiers[action].ItemIndex := modifier_index;
+
+    key_code := shortcut.key_code;
+    m_combo_shortcut_keys[action].ItemIndex := -1;
+    for item_index := 0 to m_combo_shortcut_keys[action].Items.Count - 1 do
+    begin
+        if Word(NativeInt(m_combo_shortcut_keys[action].Items.Objects[item_index])) = key_code then
+        begin
+            m_combo_shortcut_keys[action].ItemIndex := item_index;
+            Break;
+        end;
+    end;
+end;
+
+procedure TncSettingsForm.load_shortcut_controls(const config: TncShortcutConfig);
+var
+    normalized_config: TncShortcutConfig;
+    action: TncShortcutAction;
+begin
+    normalized_config := config;
+    nc_normalize_shortcut_config(normalized_config);
+    for action := Low(TncShortcutAction) to High(TncShortcutAction) do
+    begin
+        set_shortcut_controls(action, nc_shortcut_for_action(normalized_config, action));
+    end;
 end;
 
 procedure TncSettingsForm.add_logging_controls;
@@ -1937,13 +2224,88 @@ begin
     end;
 end;
 
-procedure TncSettingsForm.load_defaults;
+procedure TncSettingsForm.restore_current_page_defaults;
+var
+    default_engine_config: TncEngineConfig;
+    default_log_config: TncLogConfig;
+    candidate_font_name: string;
+    restored: Boolean;
 begin
-    m_engine_config := build_default_engine_config_value;
-    m_log_config := build_default_log_config_value;
-    m_status_widget_visible := True;
-    load_from_config;
+    default_engine_config := build_default_engine_config_value;
+    default_log_config := build_default_log_config_value;
+    restored := True;
+
+    if m_page_control.ActivePage = m_tab_general then
+    begin
+        if default_engine_config.input_mode = im_english then
+        begin
+            m_combo_input_mode.ItemIndex := 2;
+        end
+        else if default_engine_config.dictionary_variant = dv_traditional then
+        begin
+            m_combo_input_mode.ItemIndex := 1;
+        end
+        else
+        begin
+            m_combo_input_mode.ItemIndex := 0;
+        end;
+        m_combo_punctuation_mode.ItemIndex := Ord(not default_engine_config.punctuation_full_width);
+        m_chk_full_width_mode.Checked := default_engine_config.full_width_mode;
+    end
+    else if m_page_control.ActivePage = m_tab_appearance then
+    begin
+        m_chk_show_status_widget.Checked := True;
+        candidate_font_name := Trim(default_engine_config.candidate_font_name);
+        if candidate_font_name = '' then
+        begin
+            candidate_font_name := c_default_candidate_font_name;
+        end;
+        m_combo_candidate_font.ItemIndex := m_combo_candidate_font.Items.IndexOf(candidate_font_name);
+        if (m_combo_candidate_font.ItemIndex < 0) and (m_combo_candidate_font.Items.Count > 0) then
+        begin
+            m_combo_candidate_font.ItemIndex := 0;
+        end;
+        set_candidate_font_size_slider(default_engine_config.candidate_font_size);
+        set_candidate_page_size_combo(default_engine_config.candidate_page_size);
+        set_candidate_color_scheme_combo(default_engine_config.candidate_color_scheme);
+    end
+    else if m_page_control.ActivePage = m_tab_shortcuts then
+    begin
+        load_shortcut_controls(default_engine_config.shortcuts);
+    end
+    else if m_page_control.ActivePage = m_tab_logging then
+    begin
+        m_chk_log_enabled.Checked := default_log_config.enabled;
+        case default_log_config.level of
+            ll_debug:
+                m_combo_log_level.ItemIndex := 0;
+            ll_warn:
+                m_combo_log_level.ItemIndex := 2;
+            ll_error:
+                m_combo_log_level.ItemIndex := 3;
+        else
+            m_combo_log_level.ItemIndex := 1;
+        end;
+        m_edit_log_max_size_kb.Text := IntToStr(default_log_config.max_size_kb);
+        m_edit_log_path.Text := default_log_config.log_path;
+    end
+    else if m_page_control.ActivePage = m_tab_advanced then
+    begin
+        m_chk_debug_mode.Checked := default_engine_config.debug_mode;
+    end
+    else
+    begin
+        restored := False;
+    end;
+
+    if not restored then
+    begin
+        Exit;
+    end;
+
     m_dirty := True;
+    update_logging_controls;
+    update_candidate_preview;
     update_apply_button;
 end;
 
@@ -2551,6 +2913,7 @@ begin
     set_candidate_font_size_slider(m_engine_config.candidate_font_size);
     set_candidate_page_size_combo(m_engine_config.candidate_page_size);
     set_candidate_color_scheme_combo(m_engine_config.candidate_color_scheme);
+    load_shortcut_controls(m_engine_config.shortcuts);
     if m_chk_log_enabled <> nil then
     begin
         m_chk_log_enabled.Checked := m_log_config.enabled;
@@ -2610,6 +2973,14 @@ function TncSettingsForm.build_config_from_controls(out next_config: TncEngineCo
     out next_status_widget_visible: Boolean; out error_text: string): Boolean;
 var
     log_max_size_kb: Integer;
+    shortcut_config: TncShortcutConfig;
+    shortcut_value: TncShortcut;
+    shortcut_issue: TncShortcutValidationIssue;
+    shortcut_key_name: string;
+    action_index: Integer;
+    other_index: Integer;
+    action: TncShortcutAction;
+    other_action: TncShortcutAction;
 begin
     next_config := m_engine_config;
     next_log_config := m_log_config;
@@ -2654,6 +3025,55 @@ begin
     next_config.candidate_font_size := get_candidate_font_size_from_slider;
     next_config.candidate_page_size := get_selected_candidate_page_size;
     next_config.candidate_color_scheme := get_selected_candidate_color_scheme;
+    shortcut_config := nc_default_shortcut_config;
+    for action_index := Ord(Low(TncShortcutAction)) to Ord(High(TncShortcutAction)) do
+    begin
+        action := TncShortcutAction(action_index);
+        shortcut_value := shortcut_from_controls(action);
+        shortcut_issue := nc_get_shortcut_validation_issue(shortcut_value);
+        if shortcut_issue <> svi_none then
+        begin
+            case shortcut_issue of
+                svi_missing_key:
+                    error_text := Format(SShortcutMissingKey, [shortcut_action_caption(action)]);
+                svi_invalid_modifier_key:
+                    error_text := Format(SShortcutInvalidModifierKey, [shortcut_action_caption(action)]);
+                svi_unmodified_regular_key:
+                    begin
+                        shortcut_key_name := nc_shortcut_key_name(shortcut_value.key_code);
+                        if shortcut_key_name = '' then
+                        begin
+                            shortcut_key_name := '该按键';
+                        end;
+                        error_text := Format(SShortcutNeedsModifier,
+                            [shortcut_action_caption(action), shortcut_key_name]);
+                    end;
+            else
+                error_text := Format(SShortcutInvalid, [shortcut_action_caption(action)]);
+            end;
+            Result := False;
+            Exit;
+        end;
+        nc_set_shortcut_for_action(shortcut_config, action, shortcut_value);
+    end;
+    for action_index := Ord(Low(TncShortcutAction)) to Ord(High(TncShortcutAction)) - 1 do
+    begin
+        action := TncShortcutAction(action_index);
+        for other_index := action_index + 1 to Ord(High(TncShortcutAction)) do
+        begin
+            other_action := TncShortcutAction(other_index);
+            if nc_shortcut_equal(nc_shortcut_for_action(shortcut_config, action),
+                nc_shortcut_for_action(shortcut_config, other_action)) then
+            begin
+                error_text := Format(SShortcutConflict, [shortcut_action_caption(action),
+                    shortcut_action_caption(other_action),
+                    nc_shortcut_to_text(nc_shortcut_for_action(shortcut_config, action))]);
+                Result := False;
+                Exit;
+            end;
+        end;
+    end;
+    next_config.shortcuts := shortcut_config;
     next_status_widget_visible := m_chk_show_status_widget.Checked;
     next_log_config.enabled := m_chk_log_enabled.Checked;
     next_log_config.log_path := normalize_path_override(m_edit_log_path.Text, get_default_log_path);
@@ -2751,11 +3171,19 @@ begin
 end;
 
 procedure TncSettingsForm.on_reset_click(Sender: TObject);
+var
+    active_page_caption: string;
 begin
-    if Application.MessageBox(PChar(SConfirmRestoreDefaults), PChar(SSettingsTitle),
+    if (m_page_control = nil) or (m_page_control.ActivePage = nil) then
+    begin
+        Exit;
+    end;
+
+    active_page_caption := m_page_control.ActivePage.Caption;
+    if Application.MessageBox(PChar(Format(SConfirmRestoreDefaults, [active_page_caption])), PChar(SSettingsTitle),
         MB_YESNO or MB_ICONQUESTION) = IDYES then
     begin
-        load_defaults;
+        restore_current_page_defaults;
     end;
 end;
 
