@@ -32,6 +32,7 @@ The project focus is:
 - Dictionary split is supported: simplified base DB, traditional base DB, and user DB.
 - Base dictionary now includes `dict_jianpin` index entries for initial-letter abbreviations (for example `jt -> 今天`; retroflex variants like `zsjs/zhshjsh` are both generated).
 - Full-path segmented phrase decoding is enabled (for example `womenjintian -> 我们今天`) while keeping prefix candidates for partial-commit fallback.
+- A deployable local neural residual reranker conservatively corrects complete long-sentence rankings without affecting short exact-query mode.
 - Surrounding-text/context synchronization and key state synchronization are implemented.
 
 ## Architecture
@@ -90,7 +91,9 @@ Main rebuild entry:
 ## Corpus-Trained AI Ranking for Long Sentences
 Cassotis v1.1.0 introduces an offline-trained local statistical language model for long-sentence path ranking. The training pipeline learns lexicon-constrained word bigram/trigram transition priors and a smoothed character trigram model from cleaned general Chinese and fiction corpora. The Benchmark-16300 corpus is kept separate and is not used for training.
 
-At runtime, the trained model is quantized into the local dictionary database. Its probability scores participate in long-sentence lattice/N-best path scoring and conservatively rerank complete candidates. Candidate generation remains dictionary-constrained, and short exact-query ranking bypasses this model. No neural-network runtime, network connection, or GPU is required.
+Cassotis v1.3.0 adds the project's first deployable neural residual reranker. The compact feed-forward model is trained offline on lexicon-constrained N-best candidate comparisons and conservatively promotes better complete long-sentence candidates while retaining the original engine result as a fallback.
+
+The statistical model is quantized into the local dictionary database, while the neural reranker is exported as deterministic native Pascal parameters. When a user enters a long sentence, the engine evaluates this compact feed-forward network directly while producing that query's candidates and conservatively reranks complete candidates. This is local inference, not training: it starts no PyTorch/ONNX runtime or external model service, requires no network connection or GPU, and is bypassed by short exact-query ranking.
 
 ## Long Sentence Benchmark Results
 See [BENCHMARK.md](BENCHMARK.md) for the Benchmark-16300 methodology, corpus source, and scoring rules.
@@ -99,6 +102,7 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 | Version | Top1 | Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|
+| `v1.3.0` | 7155/16300 (43.90%) | 7601/16300 (46.63%) | 64.54 | 46 | 203 | 2188 |
 | `v1.2.0` | 6895/16300 (42.30%) | 7303/16300 (44.80%) | 59.89 | 32 | 188 | 2078 |
 | `v1.1.0` | 6677/16300 (40.96%) | 7067/16300 (43.36%) | 73.18 | 47 | 234 | 2750 |
 | `v1.0.0` | 6106/16300 (37.46%) | 6857/16300 (42.07%) | 71.49 | 47 | 219 | 5344 |
