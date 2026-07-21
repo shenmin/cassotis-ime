@@ -99,21 +99,7 @@ Cassotis v1.4.0 extends the same offline-training approach to short-word input. 
 
 The statistical model is quantized into the local dictionary database, while the compact rerankers are exported as deterministic native Pascal parameters. Runtime scoring is local and bounded: it starts no PyTorch/ONNX environment or external model service and requires no network connection or GPU. Long-sentence and short-word ranking remain separate paths, so improvements to one do not replace the other's matching rules.
 
-## Short-word Context Benchmark-65000
-This benchmark contains 65,000 occurrences of two- to four-character words, each paired with the sentence prefix already committed before that word. Its cases use the same novel text as Benchmark-16300 as their source and are excluded from short-context model training. User-dictionary ranking is disabled during evaluation.
-
-See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case construction, scoring rules, and latency protocol.
-
-`Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus, making left context materially useful. The table reports the context-enabled track. In v1.3.0 and earlier releases, supplying context did not change short-word ranking, so context and no-context results were identical.
-
-| Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `v1.4.0` | 60676/65000 (93.35%) | 63251/65000 (97.31%) | 8993/11728 (76.68%) | 10602/11728 (90.40%) | 5.573 | 4.521 | 11.157 | 158.687 |
-| `v1.3.0` | 59078/65000 (90.89%) | 62881/65000 (96.74%) | 8326/11728 (70.99%) | 10386/11728 (88.56%) | 5.460 | 4.396 | 10.939 | 176.912 |
-
-Latency values are engine-only per-query times for the context-enabled track and do not include TSF or candidate-window rendering.
-
-## Long Sentence Benchmark Results
+## Long Sentence Benchmark-16300
 See [BENCHMARK.md](BENCHMARK.md) for the Benchmark-16300 methodology, corpus source, and scoring rules.
 
 Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Elegance in Timelessness**](https://www.qidian.com/book/1037259117/) (Chinese title: [**永恒的舞动**](https://www.qidian.com/book/1037259117/)).
@@ -134,6 +120,20 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 | `v0.2.0` | 2671/16300 (16.39%) | 2863/16300 (17.56%) | — | — | — | — |
 
 Latency values are engine-only full-query decode times. Each complete Pinyin query is assigned at once, so these values do not represent incremental keystroke-to-display latency. `—` means that the version was not measured under this latency protocol. See [BENCHMARK.md](BENCHMARK.md) for the complete methodology.
+
+## Short-word Context Benchmark-65000
+This benchmark contains 65,000 occurrences of two- to four-character words, each paired with the sentence prefix already committed before that word. Its cases use the same novel text as Benchmark-16300 as their source and are excluded from short-context model training. User-dictionary ranking is disabled during evaluation.
+
+See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case construction, scoring rules, and latency protocol.
+
+`Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus, making left context materially useful. The table reports the context-enabled track. In v1.3.0 and earlier releases, supplying context did not change short-word ranking, so context and no-context results were identical.
+
+| Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `v1.4.0` | 60676/65000 (93.35%) | 63251/65000 (97.31%) | 8993/11728 (76.68%) | 10602/11728 (90.40%) | 5.573 | 4.521 | 11.157 | 158.687 |
+| `v1.3.0` | 59078/65000 (90.89%) | 62881/65000 (96.74%) | 8326/11728 (70.99%) | 10386/11728 (88.56%) | 5.460 | 4.396 | 10.939 | 176.912 |
+
+Latency values are engine-only per-query times for the context-enabled track and do not include TSF or candidate-window rendering.
 
 ## Configuration
 Default config file:
