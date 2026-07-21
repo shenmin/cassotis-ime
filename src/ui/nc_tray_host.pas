@@ -196,6 +196,7 @@ const
     c_status_widget_y_key = 'status_widget_y';
     c_status_widget_default_width = 286;
     c_status_widget_default_height = 40;
+    c_status_widget_border_width = 1;
     c_active_sync_fail_hide_threshold = 8;
     c_tray_timer_interval_ms = 120;
     c_state_poll_interval_ms = 320;
@@ -1691,6 +1692,10 @@ begin
             scheme_hint := '拼音方案：全拼';
         end;
     end;
+    if m_engine_config.input_mode = im_english then
+    begin
+        scheme_text := '-';
+    end;
 
     if m_engine_config.full_width_mode then
     begin
@@ -1751,11 +1756,8 @@ begin
         m_status_form.SetBounds(m_status_form.Left, m_status_form.Top, desired_width, desired_height);
     end;
 
-    inset := scale_int_for_dpi(1, dpi);
-    if inset < 1 then
-    begin
-        inset := 1;
-    end;
+    // Keep the frame a one-device-pixel hairline on every monitor DPI.
+    inset := c_status_widget_border_width;
     panel_width := m_status_form.ClientWidth - inset * 2;
     panel_height := m_status_form.ClientHeight - inset * 2;
     if panel_width < 0 then

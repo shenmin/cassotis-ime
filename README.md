@@ -23,17 +23,18 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 The project focus is:
 - build a stable TSF-based IME foundation,
 - keep the architecture modular (TSF DLL + host process + tools),
-- improve corpus-trained local language models while continuing to explore optional LLM-assisted input.
+- improve corpus-trained local ranking for long sentences and context-aware short-word selection.
 
 ## Current Status
 - TSF text service pipeline is available (registration, activation, composition lifecycle).
 - TSF binaries support Win64 and Win32 (`svr.dll` / `svr32.dll`), while host process is Win64 only.
 - Candidate window, paging, selection, and commit flow are implemented.
-- Full Pinyin, Microsoft Double Pinyin, Xiaohe Double Pinyin, Ziranma Double Pinyin, and Sogou Double Pinyin share the same candidate ranking and user-learning data.
+- Full Pinyin and four selectable Double Pinyin schemes—Microsoft, Xiaohe, Ziranma, and Sogou—share the same candidate ranking and user-learning data.
 - Dictionary split is supported: simplified base DB, traditional base DB, and user DB.
 - Base dictionary now includes `dict_jianpin` index entries for initial-letter abbreviations (for example `jt -> 今天`; retroflex variants like `zsjs/zhshjsh` are both generated).
 - Full-path segmented phrase decoding is enabled (for example `womenjintian -> 我们今天`) while keeping prefix candidates for partial-commit fallback.
 - A deployable local neural residual reranker conservatively corrects complete long-sentence rankings without affecting short exact-query mode.
+- An independent short-word context reranker uses already committed text to resolve ambiguous exact candidates while preserving normal no-context order.
 - Surrounding-text/context synchronization and key state synchronization are implemented.
 
 ## Architecture
@@ -89,12 +90,26 @@ Main rebuild entry:
 .\rebuild_dict.ps1
 ```
 
-## Corpus-Trained AI Ranking for Long Sentences
+## Corpus-Trained Local Ranking
 Cassotis v1.1.0 introduces an offline-trained local statistical language model for long-sentence path ranking. The training pipeline learns lexicon-constrained word bigram/trigram transition priors and a smoothed character trigram model from cleaned general Chinese and fiction corpora. The Benchmark-16300 corpus is kept separate and is not used for training.
 
 Cassotis v1.3.0 adds the project's first deployable neural residual reranker. The compact feed-forward model is trained offline on lexicon-constrained N-best candidate comparisons and conservatively promotes better complete long-sentence candidates while retaining the original engine result as a fallback.
 
-The statistical model is quantized into the local dictionary database, while the neural reranker is exported as deterministic native Pascal parameters. When a user enters a long sentence, the engine evaluates this compact feed-forward network directly while producing that query's candidates and conservatively reranks complete candidates. This is local inference, not training: it starts no PyTorch/ONNX runtime or external model service, requires no network connection or GPU, and is bypassed by short exact-query ranking.
+Cassotis v1.4.0 extends the same offline-training approach to short-word input. A separate context reranker combines character-LM evidence with the text immediately before the cursor when comparing exact candidates. It only participates when left context is available and the query has competing exact candidates; without usable context, the original short-word order is retained.
+
+The statistical model is quantized into the local dictionary database, while the compact rerankers are exported as deterministic native Pascal parameters. Runtime scoring is local and bounded: it starts no PyTorch/ONNX environment or external model service and requires no network connection or GPU. Long-sentence and short-word ranking remain separate paths, so improvements to one do not replace the other's matching rules.
+
+## Short-word Context Benchmark-65000
+This benchmark contains 65,000 occurrences of two- to four-character words, each paired with the sentence prefix already committed before that word. The fixed cases are derived from the Benchmark-16300 sentence list and are excluded from short-context model training. User-dictionary ranking is disabled during evaluation.
+
+`Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus, making left context materially useful. The table reports the context-enabled track. In v1.3.0 and earlier releases, supplying context did not change short-word ranking, so context and no-context results were identical.
+
+| Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `v1.4.0` | 60680/65000 (93.35%) | 63251/65000 (97.31%) | 8993/11728 (76.68%) | 10602/11728 (90.40%) | 5.581 | 4.515 | 11.128 | 160.695 |
+| `v1.3.0` | 59078/65000 (90.89%) | 62881/65000 (96.74%) | 8326/11728 (70.99%) | 10386/11728 (88.56%) | 5.460 | 4.396 | 10.939 | 176.912 |
+
+Latency values are engine-only per-query times for the context-enabled track and do not include TSF or candidate-window rendering.
 
 ## Long Sentence Benchmark Results
 See [BENCHMARK.md](BENCHMARK.md) for the Benchmark-16300 methodology, corpus source, and scoring rules.
@@ -141,7 +156,7 @@ This project is licensed under GPL-3.0. See `LICENSE` for the full license text.
 Keep third-party notices and attribution files consistent with `THIRD_PARTY.md`.
 
 ## Roadmap
-- improve candidate ranking quality and practical phrase coverage
+- continue training compact local rerankers from independent corpora and N-best comparisons
+- expand independent benchmarks and failure attribution to tune model gates and fallback behavior
 - improve user-dictionary quality control and tooling
 - extend compatibility matrix across editors/browsers/IDEs
-- evaluate local LLM (GGUF) assisted suggestion workflow
