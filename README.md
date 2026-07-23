@@ -97,6 +97,8 @@ Cassotis v1.3.0 adds the project's first deployable neural residual reranker. Th
 
 Cassotis v1.4.0 extends the same offline-training approach to short-word input. A separate context reranker combines character-LM evidence with the text immediately before the cursor when comparing exact candidates. It only participates when left context is available and the query has competing exact candidates; without usable context, the original short-word order is retained.
 
+Cassotis v1.5.0 extends short-word context ranking into a two-stage local neural reranker. The first stage selects the exact candidate that best fits the preceding text, while an independently trained residual model conservatively corrects that result only when its score advantage clears a promotion threshold. Short-word input without context remains outside this model path.
+
 The statistical model is quantized into the local dictionary database, while the compact rerankers are exported as deterministic native Pascal parameters. Runtime scoring is local and bounded: it starts no PyTorch/ONNX environment or external model service and requires no network connection or GPU. Long-sentence and short-word ranking remain separate paths, so improvements to one do not replace the other's matching rules.
 
 ## Long Sentence Benchmark-16300
@@ -121,6 +123,17 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 Latency values are engine-only full-query decode times. Each complete Pinyin query is assigned at once, so these values do not represent incremental keystroke-to-display latency. `—` means that the version was not measured under this latency protocol. See [BENCHMARK.md](BENCHMARK.md) for the complete methodology.
 
+## Short-word Benchmark-65000 (No Context)
+This track uses the same 65,000 two- to four-character word cases as the following section, but does not provide the engine with text already committed before the cursor. It measures base-dictionary and no-context short-word ranking with user-dictionary ranking disabled.
+
+See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case construction, scoring rules, and latency protocol. `Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus.
+
+| Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `v1.5.0` | 59088/65000 (90.90%) | 62915/65000 (96.79%) | 8335/11728 (71.07%) | 10414/11728 (88.80%) | 4.941 | 4.027 | 9.850 | 137.979 |
+
+Latency values are engine-only per-query times for the no-context track and do not include TSF or candidate-window rendering.
+
 ## Short-word Context Benchmark-65000
 This benchmark contains 65,000 occurrences of two- to four-character words, each paired with the sentence prefix already committed before that word. Its cases use the same novel text as Benchmark-16300 as their source and are excluded from short-context model training. User-dictionary ranking is disabled during evaluation.
 
@@ -130,6 +143,7 @@ See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case c
 
 | Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `v1.5.0` | 61045/65000 (93.92%) | 63364/65000 (97.48%) | 9159/11728 (78.10%) | 10677/11728 (91.04%) | 5.033 | 4.113 | 9.968 | 142.372 |
 | `v1.4.0` | 60676/65000 (93.35%) | 63251/65000 (97.31%) | 8993/11728 (76.68%) | 10602/11728 (90.40%) | 5.573 | 4.521 | 11.157 | 158.687 |
 | `v1.3.0` | 59078/65000 (90.89%) | 62881/65000 (96.74%) | 8326/11728 (70.99%) | 10386/11728 (88.56%) | 5.460 | 4.396 | 10.939 | 176.912 |
 

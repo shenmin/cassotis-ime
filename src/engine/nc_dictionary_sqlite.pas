@@ -233,6 +233,7 @@ type
         function is_user_entry(const pinyin: string; const text: string): Boolean; override;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
+        function clear_user_dictionary: Boolean; override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
         property db_path: string read m_base_db_path;
@@ -4416,6 +4417,11 @@ begin
     begin
         Exit;
     end;
+    if (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+    refresh_user_data_version_if_changed(False);
 
     // Red-x/delete is only for explicit user entries. Stats/latest rows are
     // ranking signals and must not make lexicon candidates look user-owned.
@@ -12186,6 +12192,65 @@ begin
     // Prefer exact pinyin+text removal when key is available, but also clear
     // all rows by phrase text so legacy polluted variants are removed together.
     purge_user_entry_internal(pinyin, text, True, True);
+end;
+
+function TncSqliteDictionary.clear_user_dictionary: Boolean;
+var
+    transaction_active: Boolean;
+begin
+    Result := False;
+    if (not ensure_open) or (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+
+    if m_write_batch_depth > 0 then
+    begin
+        rollback_learning_batch;
+    end;
+    clear_cached_user_statements;
+
+    transaction_active := False;
+    try
+        if not m_user_connection.exec('BEGIN IMMEDIATE TRANSACTION;') then
+        begin
+            Exit;
+        end;
+        transaction_active := True;
+
+        if (not m_user_connection.exec('DELETE FROM dict_user;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_stats;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_query_latest;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_penalty;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_bigram;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_trigram;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_query_path;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_query_path_penalty;')) or
+            (not m_user_connection.exec(
+                'DELETE FROM sqlite_sequence WHERE name = ''dict_user'';')) then
+        begin
+            Exit;
+        end;
+
+        if not m_user_connection.exec('COMMIT;') then
+        begin
+            Exit;
+        end;
+        transaction_active := False;
+
+        m_bigram_prune_countdown := 64;
+        m_trigram_prune_countdown := 64;
+        m_query_path_prune_countdown := 64;
+        m_query_path_penalty_prune_countdown := 64;
+        note_user_data_changed;
+        Result := True;
+    finally
+        if transaction_active then
+        begin
+            m_user_connection.exec('ROLLBACK;');
+            clear_user_read_caches;
+        end;
+    end;
 end;
 
 end.

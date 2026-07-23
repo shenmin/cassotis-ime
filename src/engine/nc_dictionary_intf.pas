@@ -50,6 +50,7 @@ type
             const user_weight: Integer = -1; const commit_count: Integer = -1): Boolean; virtual;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
+        function clear_user_dictionary: Boolean; virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
     end;
 
@@ -245,6 +246,11 @@ end;
 
 procedure TncDictionaryProvider.remove_user_entry(const pinyin: string; const text: string);
 begin
+end;
+
+function TncDictionaryProvider.clear_user_dictionary: Boolean;
+begin
+    Result := False;
 end;
 
 function TncDictionaryProvider.get_candidate_penalty(const pinyin: string; const text: string): Integer;

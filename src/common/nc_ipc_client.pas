@@ -43,6 +43,7 @@ type
             const anchor_score: Integer = 0; const terminal_like_target: Boolean = False): Boolean;
         function set_surrounding(const session_id: string; const left_context: string): Boolean;
         function reload_config(const session_id: string): Boolean;
+        function clear_user_dictionary(const session_id: string): Boolean;
         function reset_session(const session_id: string): Boolean;
         property last_error: DWORD read m_last_error;
     end;
@@ -660,6 +661,30 @@ var
     fields: TArray<string>;
 begin
     request_text := 'RELOAD_CONFIG'#9 + session_id;
+    if not call_pipe(request_text, response_text) then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
+end;
+
+function TncIpcClient.clear_user_dictionary(const session_id: string): Boolean;
+var
+    request_text: string;
+    response_text: string;
+    fields: TArray<string>;
+begin
+    if session_id = '' then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Result := False;
+        Exit;
+    end;
+
+    request_text := 'CLEAR_USER_DICTIONARY'#9 + session_id;
     if not call_pipe(request_text, response_text) then
     begin
         Result := False;

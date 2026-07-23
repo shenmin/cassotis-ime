@@ -152,6 +152,7 @@ type
         procedure sync_status_widget_origin_from_window;
         function apply_runtime_state_to_host: Boolean;
         function reload_host_config: Boolean;
+        function clear_user_dictionary: Boolean;
         procedure show_settings_dialog;
         procedure update_menu;
         procedure status_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
@@ -2243,6 +2244,17 @@ begin
     Result := m_ipc_client.reload_config(m_session_id);
 end;
 
+function TncTrayHost.clear_user_dictionary: Boolean;
+begin
+    Result := False;
+    if (m_ipc_client = nil) or (m_session_id = '') then
+    begin
+        Exit;
+    end;
+
+    Result := m_ipc_client.clear_user_dictionary(m_session_id);
+end;
+
 procedure TncTrayHost.show_settings_dialog;
 var
     next_config: TncEngineConfig;
@@ -2260,6 +2272,10 @@ begin
         procedure(const config: TncEngineConfig; const log_config: TncLogConfig; const next_status_widget_visible: Boolean)
         begin
             apply_settings(config, log_config, next_status_widget_visible);
+        end,
+        function: Boolean
+        begin
+            Result := Self.clear_user_dictionary;
         end);
 end;
 

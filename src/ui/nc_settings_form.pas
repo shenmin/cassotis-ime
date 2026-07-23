@@ -139,6 +139,7 @@ type
 
     TncApplySettingsProc = reference to procedure(const engine_config: TncEngineConfig;
         const log_config: TncLogConfig; const status_widget_visible: Boolean);
+    TncClearUserDictionaryProc = reference to function: Boolean;
 
     TncSettingsForm = class(TForm)
     private
@@ -175,6 +176,7 @@ type
         m_btn_open_log_folder: TncModernButton;
         m_btn_log_defaults: TncModernButton;
         m_chk_debug_mode: TncModernCheckBox;
+        m_btn_clear_user_dictionary: TncModernButton;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
         m_hint_advanced: TLabel;
@@ -182,6 +184,7 @@ type
         m_log_config: TncLogConfig;
         m_status_widget_visible: Boolean;
         m_apply_proc: TncApplySettingsProc;
+        m_clear_user_dictionary_proc: TncClearUserDictionaryProc;
         m_dirty: Boolean;
         m_applied: Boolean;
         procedure configure_form;
@@ -234,6 +237,7 @@ type
         procedure on_browse_log_path(Sender: TObject);
         procedure on_open_log_folder(Sender: TObject);
         procedure on_log_defaults_click(Sender: TObject);
+        procedure on_clear_user_dictionary_click(Sender: TObject);
         procedure on_open_config_folder(Sender: TObject);
         procedure on_open_config_file(Sender: TObject);
         procedure on_website_link_click(Sender: TObject);
@@ -250,7 +254,8 @@ type
     public
         constructor Create(AOwner: TComponent); override;
         class function ExecuteDialog(const owner: TComponent; var config: TncEngineConfig; var log_config: TncLogConfig;
-            var status_widget_visible: Boolean; const on_apply: TncApplySettingsProc): Boolean; static;
+            var status_widget_visible: Boolean; const on_apply: TncApplySettingsProc;
+            const on_clear_user_dictionary: TncClearUserDictionaryProc): Boolean; static;
     end;
 
 implementation
@@ -352,6 +357,10 @@ resourcestring
     SButtonUseDefaultLogging = '恢复默认日志';
     SCheckEnableDebugMode = '启用调试模式';
     SHintDebugMode = '开启后，候选栏中的候选词和单字将显示权重信息，仅用于调试和问题排查。';
+    SButtonClearUserDictionary = '清空用户词库';
+    SConfirmClearUserDictionary = '确定要清空用户词库吗？此操作将删除此前记住的本地用户词和相关学习记录，且无法撤销。';
+    SClearUserDictionarySucceeded = '用户词库已清空，并已立即生效。';
+    SClearUserDictionaryFailed = '清空用户词库失败，请稍后重试。';
     SLabelSimplifiedDictionary = '简体词库';
     SLabelTraditionalDictionary = '繁体词库';
     SLabelUserDictionary = '用户词库';
@@ -1312,7 +1321,8 @@ begin
 end;
 
 class function TncSettingsForm.ExecuteDialog(const owner: TComponent; var config: TncEngineConfig;
-    var log_config: TncLogConfig; var status_widget_visible: Boolean; const on_apply: TncApplySettingsProc): Boolean;
+    var log_config: TncLogConfig; var status_widget_visible: Boolean; const on_apply: TncApplySettingsProc;
+    const on_clear_user_dictionary: TncClearUserDictionaryProc): Boolean;
 var
     form: TncSettingsForm;
 begin
@@ -1322,6 +1332,7 @@ begin
         form.m_log_config := log_config;
         form.m_status_widget_visible := status_widget_visible;
         form.m_apply_proc := on_apply;
+        form.m_clear_user_dictionary_proc := on_clear_user_dictionary;
         form.load_from_config;
         form.ShowModal;
         config := form.m_engine_config;
@@ -2222,13 +2233,20 @@ var
     section_top: Integer;
     debug_group: TPanel;
     tools_group: TPanel;
+    debug_hint: TLabel;
 begin
     section_top := scale_ui(18);
-    debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 116);
+    debug_group := create_section_group(Self, m_tab_advanced, SGroupDebug, section_top, 154);
 
     top := scale_ui(c_section_inner_top);
     m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
-    create_hint_label(Self, debug_group, SHintDebugMode, scale_ui(c_label_left), top + scale_ui(c_row_height + 4), scale_ui(c_hint_width));
+    debug_hint := create_hint_label(Self, debug_group, SHintDebugMode, scale_ui(c_label_left),
+        top + scale_ui(c_row_height + 4), scale_ui(c_hint_width));
+    top := debug_hint.Top + debug_hint.Height + scale_ui(8);
+    m_btn_clear_user_dictionary := create_action_button(Self, debug_group, scale_ui(c_label_left), top,
+        SButtonClearUserDictionary, on_clear_user_dictionary_click);
+    debug_group.Height := Max(debug_group.Height,
+        m_btn_clear_user_dictionary.Top + m_btn_clear_user_dictionary.Height + scale_ui(14));
 
     section_top := debug_group.Top + debug_group.Height + scale_ui(c_section_gap);
     tools_group := create_section_group(Self, m_tab_advanced, SGroupConfigTools, section_top, 134);
@@ -2240,6 +2258,26 @@ begin
         SButtonOpenConfigFile, on_open_config_file);
 
     m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, scale_ui(c_label_left), top + scale_ui(c_row_height + 8), scale_ui(c_hint_width));
+end;
+
+procedure TncSettingsForm.on_clear_user_dictionary_click(Sender: TObject);
+begin
+    if MessageBox(Handle, PChar(SConfirmClearUserDictionary), PChar(Caption),
+        MB_YESNO or MB_ICONWARNING or MB_DEFBUTTON2) <> IDYES then
+    begin
+        Exit;
+    end;
+
+    if (not Assigned(m_clear_user_dictionary_proc)) or
+        (not m_clear_user_dictionary_proc()) then
+    begin
+        MessageBox(Handle, PChar(SClearUserDictionaryFailed), PChar(Caption),
+            MB_OK or MB_ICONERROR);
+        Exit;
+    end;
+
+    MessageBox(Handle, PChar(SClearUserDictionarySucceeded), PChar(Caption),
+        MB_OK or MB_ICONINFORMATION);
 end;
 
 procedure TncSettingsForm.mark_dirty(Sender: TObject);

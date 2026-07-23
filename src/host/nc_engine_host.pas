@@ -138,6 +138,7 @@ type
         function get_active(out active: Boolean): Boolean;
         function set_active(const session_id: string; const active: Boolean): Boolean;
         function reload_config_now: Boolean;
+        function clear_user_dictionary(const session_id: string): Boolean;
         procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
             const line_height: Integer; const terminal_like_target: Boolean; const source: TncCaretAnchorSource;
             const anchor_score: Integer);
@@ -2334,6 +2335,68 @@ begin
     Result := reload_config(True);
 end;
 
+function TncEngineHost.clear_user_dictionary(const session_id: string): Boolean;
+var
+    initiating_session: TncHostSession;
+    current_session: TncHostSession;
+    sessions_to_hide: TArray<TncHostSession>;
+    session_index: Integer;
+begin
+    Result := False;
+    if session_id = '' then
+    begin
+        Exit;
+    end;
+
+    initiating_session := get_or_create_session(session_id);
+    SetLength(sessions_to_hide, 0);
+    m_lock.Acquire;
+    try
+        if (initiating_session = nil) or
+            (not m_sessions.TryGetValue(session_id, initiating_session)) then
+        begin
+            Exit;
+        end;
+
+        Result := initiating_session.engine.clear_user_dictionary;
+        if not Result then
+        begin
+            Exit;
+        end;
+
+        SetLength(sessions_to_hide, m_sessions.Count);
+        session_index := 0;
+        for current_session in m_sessions.Values do
+        begin
+            if current_session <> initiating_session then
+            begin
+                current_session.engine.notify_user_dictionary_cleared;
+            end;
+            current_session.clear_candidates;
+            sessions_to_hide[session_index] := current_session;
+            Inc(session_index);
+        end;
+        m_last_user_activity_tick := GetTickCount64;
+    finally
+        m_lock.Release;
+    end;
+
+    host_log('[INFO] user dictionary cleared');
+    run_on_ui_thread(
+        procedure
+        var
+            hide_index: Integer;
+        begin
+            for hide_index := 0 to High(sessions_to_hide) do
+            begin
+                if sessions_to_hide[hide_index] <> nil then
+                begin
+                    sessions_to_hide[hide_index].hide_candidate_window;
+                end;
+            end;
+        end);
+end;
+
 procedure TncEngineHost.update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
     const line_height: Integer; const terminal_like_target: Boolean; const source: TncCaretAnchorSource;
     const anchor_score: Integer);
@@ -2817,6 +2880,19 @@ begin
         if SameText(cmd, 'RELOAD_CONFIG') then
         begin
             if m_host.reload_config_now then
+            begin
+                Result := 'OK';
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
+        if SameText(cmd, 'CLEAR_USER_DICTIONARY') then
+        begin
+            if m_host.clear_user_dictionary(session_id) then
             begin
                 Result := 'OK';
             end
