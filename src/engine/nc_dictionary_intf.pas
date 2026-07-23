@@ -14,6 +14,12 @@ type
             out results: TncCandidateList): Boolean; virtual;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; virtual;
+        function lookup_literal_user_words(const query: string;
+            out results: TncCandidateList): Boolean; virtual;
+        function resolve_literal_user_word_pinyin(const query: string;
+            const text: string; out full_pinyin: string): Boolean; virtual;
+        function record_literal_user_word(const full_pinyin: string;
+            const text: string): Boolean; virtual;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; virtual;
         procedure begin_learning_batch; virtual;
         procedure commit_learning_batch; virtual;
@@ -45,6 +51,8 @@ type
         function get_base_text_prefix_bonus(const prefix_text: string): Integer; virtual;
         function is_base_entry(const pinyin: string; const text: string): Boolean; virtual;
         function is_user_entry(const pinyin: string; const text: string): Boolean; virtual;
+        function is_literal_user_entry(const query: string;
+            const text: string): Boolean; virtual;
         function is_low_evidence_admin_place_alias_user_entry(const pinyin: string;
             const text: string; const latest_choice_text: string = '';
             const user_weight: Integer = -1; const commit_count: Integer = -1): Boolean; virtual;
@@ -66,6 +74,26 @@ function TncDictionaryProvider.lookup_full_pinyin_prefix(const pinyin_prefix: st
     out results: TncCandidateList): Boolean;
 begin
     SetLength(results, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.lookup_literal_user_words(const query: string;
+    out results: TncCandidateList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.resolve_literal_user_word_pinyin(
+    const query: string; const text: string; out full_pinyin: string): Boolean;
+begin
+    full_pinyin := '';
+    Result := False;
+end;
+
+function TncDictionaryProvider.record_literal_user_word(
+    const full_pinyin: string; const text: string): Boolean;
+begin
     Result := False;
 end;
 
@@ -227,6 +255,12 @@ begin
 end;
 
 function TncDictionaryProvider.is_user_entry(const pinyin: string; const text: string): Boolean;
+begin
+    Result := False;
+end;
+
+function TncDictionaryProvider.is_literal_user_entry(const query: string;
+    const text: string): Boolean;
 begin
     Result := False;
 end;

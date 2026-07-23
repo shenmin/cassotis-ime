@@ -97,9 +97,12 @@ type
         m_lookup_result_cache: TDictionary<string, TncCandidateList>;
         m_exact_lookup_result_cache: TDictionary<string, TncCandidateList>;
         m_prefix_lookup_result_cache: TDictionary<string, TncCandidateList>;
+        m_literal_lookup_result_cache: TDictionary<string, TncCandidateList>;
+        m_literal_user_words_available: Integer;
         m_exact_base_entry_cache: TDictionary<string, Boolean>;
         m_normalized_base_entry_cache: TDictionary<string, Boolean>;
         m_explicit_user_entry_cache: TDictionary<string, Boolean>;
+        m_literal_user_entry_cache: TDictionary<string, Boolean>;
         m_debug_mode: Boolean;
         m_last_lookup_debug_hint: string;
         m_short_lookup_cache_prewarmed: Boolean;
@@ -198,6 +201,12 @@ type
             out results: TncCandidateList): Boolean; override;
         function lookup_full_pinyin_prefix(const pinyin_prefix: string;
             out results: TncCandidateList): Boolean; override;
+        function lookup_literal_user_words(const query: string;
+            out results: TncCandidateList): Boolean; override;
+        function resolve_literal_user_word_pinyin(const query: string;
+            const text: string; out full_pinyin: string): Boolean; override;
+        function record_literal_user_word(const full_pinyin: string;
+            const text: string): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; override;
         function is_low_evidence_admin_place_alias_user_entry(const pinyin: string;
             const text: string; const latest_choice_text: string = '';
@@ -231,6 +240,8 @@ type
         function get_compound_tail_support(const tail_text: string): Integer; override;
         function is_base_entry(const pinyin: string; const text: string): Boolean; override;
         function is_user_entry(const pinyin: string; const text: string): Boolean; override;
+        function is_literal_user_entry(const query: string;
+            const text: string): Boolean; override;
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; override;
         procedure remove_user_entry(const pinyin: string; const text: string); override;
         function clear_user_dictionary: Boolean; override;
@@ -258,7 +269,7 @@ const
         '    value TEXT NOT NULL' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
-        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''12'');' + sLineBreak +
+        'INSERT OR IGNORE INTO meta(key, value) VALUES(''schema_version'', ''13'');' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -306,6 +317,20 @@ const
         ');' + sLineBreak +
         sLineBreak +
         'CREATE INDEX IF NOT EXISTS idx_dict_user_pinyin ON dict_user(pinyin);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_user_literal (' + sLineBreak +
+        '    pinyin TEXT NOT NULL,' + sLineBreak +
+        '    jianpin TEXT NOT NULL,' + sLineBreak +
+        '    text TEXT NOT NULL,' + sLineBreak +
+        '    created_at INTEGER DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(pinyin, text)' + sLineBreak +
+        ');' + sLineBreak +
+        sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_pinyin ON dict_user_literal(pinyin);' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_compact_pinyin ' +
+        'ON dict_user_literal(REPLACE(pinyin, char(39), substr(pinyin, 1, 0)));' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_jianpin ON dict_user_literal(jianpin);' + sLineBreak +
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_text ON dict_user_literal(text);' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_user_stats (' + sLineBreak +
         '    pinyin TEXT NOT NULL,' + sLineBreak +
@@ -446,6 +471,11 @@ function is_initial_letter(const ch: Char): Boolean;
 begin
     Result := CharInSet(ch, ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x',
         'r', 'z', 'c', 's', 'y', 'w']);
+end;
+
+function is_jianpin_key_letter(const ch: Char): Boolean;
+begin
+    Result := is_initial_letter(ch) or CharInSet(ch, ['a', 'e', 'o']);
 end;
 
 function extract_syllable_initial(const syllable: string): string; forward;
@@ -1581,6 +1611,36 @@ begin
     end;
 end;
 
+function normalize_canonical_pinyin_key(const value: string): string;
+var
+    i: Integer;
+    ch: Char;
+begin
+    Result := '';
+    for i := 1 to Length(value) do
+    begin
+        ch := value[i];
+        if CharInSet(ch, ['A' .. 'Z']) then
+        begin
+            ch := Chr(Ord(ch) + 32);
+        end;
+        if CharInSet(ch, ['a' .. 'z']) then
+        begin
+            Result := Result + ch;
+        end
+        else if (ch = '''') and (Result <> '') and
+            (Result[Length(Result)] <> '''') then
+        begin
+            Result := Result + ch;
+        end;
+    end;
+
+    if (Result <> '') and (Result[Length(Result)] = '''') then
+    begin
+        Delete(Result, Length(Result), 1);
+    end;
+end;
+
 function same_normalized_pinyin_key(const left_value: string; const right_value: string): Boolean;
 begin
     Result := SameText(normalize_compact_pinyin_key(left_value), normalize_compact_pinyin_key(right_value));
@@ -1634,7 +1694,7 @@ begin
         end;
     end;
 
-    if not SameText(reconstructed, value) then
+    if not SameText(reconstructed, normalize_compact_pinyin_key(value)) then
     begin
         Result := '';
     end;
@@ -1887,6 +1947,69 @@ begin
     end;
 end;
 
+function literal_query_matches_full_pinyin(const query_value: string;
+    const full_pinyin_value: string): Boolean;
+var
+    query_key: string;
+    full_pinyin_key: string;
+    compact_full_pinyin_key: string;
+    full_prefix: string;
+    jianpin_key: string;
+    mixed_tokens: TncMixedQueryTokenList;
+    jianpin_variants: TArray<string>;
+    parser: TncPinyinParser;
+    idx: Integer;
+    all_initials: Boolean;
+begin
+    Result := False;
+    query_key := normalize_compact_pinyin_key(query_value);
+    full_pinyin_key := normalize_canonical_pinyin_key(full_pinyin_value);
+    compact_full_pinyin_key := normalize_compact_pinyin_key(full_pinyin_key);
+    if (query_key = '') or (full_pinyin_key = '') or
+        (not is_full_pinyin_key(full_pinyin_key)) then
+    begin
+        Exit;
+    end;
+
+    if SameText(query_key, compact_full_pinyin_key) then
+    begin
+        Exit(True);
+    end;
+
+    parser := TncPinyinParser.Create;
+    try
+        if parse_mixed_jianpin_query(query_key, full_prefix, jianpin_key,
+            mixed_tokens) then
+        begin
+            if candidate_matches_mixed_jianpin(parser, full_pinyin_key,
+                mixed_tokens) then
+            begin
+                Exit(True);
+            end;
+        end;
+
+        all_initials := True;
+        for idx := 1 to Length(query_key) do
+        begin
+            if not is_jianpin_key_letter(query_key[idx]) then
+            begin
+                all_initials := False;
+                Break;
+            end;
+        end;
+        if not all_initials then
+        begin
+            Exit;
+        end;
+
+        jianpin_variants := build_jianpin_query_variants(query_key);
+        Result := candidate_matches_any_jianpin_key(parser, full_pinyin_key,
+            jianpin_variants);
+    finally
+        parser.Free;
+    end;
+end;
+
 function count_retroflex_pairs_in_compact_key(const value: string): Integer;
 var
     idx: Integer;
@@ -2029,9 +2152,12 @@ begin
     m_lookup_result_cache := TDictionary<string, TncCandidateList>.Create;
     m_exact_lookup_result_cache := TDictionary<string, TncCandidateList>.Create;
     m_prefix_lookup_result_cache := TDictionary<string, TncCandidateList>.Create;
+    m_literal_lookup_result_cache := TDictionary<string, TncCandidateList>.Create;
+    m_literal_user_words_available := -1;
     m_exact_base_entry_cache := TDictionary<string, Boolean>.Create;
     m_normalized_base_entry_cache := TDictionary<string, Boolean>.Create;
     m_explicit_user_entry_cache := TDictionary<string, Boolean>.Create;
+    m_literal_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_debug_mode := False;
     m_last_lookup_debug_hint := '';
     m_short_lookup_cache_prewarmed := False;
@@ -2161,6 +2287,11 @@ begin
         m_prefix_lookup_result_cache.Free;
         m_prefix_lookup_result_cache := nil;
     end;
+    if m_literal_lookup_result_cache <> nil then
+    begin
+        m_literal_lookup_result_cache.Free;
+        m_literal_lookup_result_cache := nil;
+    end;
     if m_exact_base_entry_cache <> nil then
     begin
         m_exact_base_entry_cache.Free;
@@ -2175,6 +2306,11 @@ begin
     begin
         m_explicit_user_entry_cache.Free;
         m_explicit_user_entry_cache := nil;
+    end;
+    if m_literal_user_entry_cache <> nil then
+    begin
+        m_literal_user_entry_cache.Free;
+        m_literal_user_entry_cache := nil;
     end;
 
     inherited Destroy;
@@ -2711,6 +2847,51 @@ begin
         Exit;
     end;
 
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_user_literal (' +
+        'pinyin TEXT NOT NULL,' +
+        'jianpin TEXT NOT NULL,' +
+        'text TEXT NOT NULL,' +
+        'created_at INTEGER DEFAULT 0,' +
+        'PRIMARY KEY(pinyin, text)' +
+        ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_pinyin ' +
+        'ON dict_user_literal(pinyin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_compact_pinyin ' +
+        'ON dict_user_literal(REPLACE(pinyin, char(39), substr(pinyin, 1, 0)));') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_jianpin ' +
+        'ON dict_user_literal(jianpin);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE INDEX IF NOT EXISTS idx_dict_user_literal_text ' +
+        'ON dict_user_literal(text);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
     if not connection.exec('CREATE INDEX IF NOT EXISTS idx_dict_user_stats_pinyin ON dict_user_stats(pinyin);') then
     begin
         Result := False;
@@ -2894,7 +3075,7 @@ begin
 
     if not get_schema_version(connection, schema_version) then
     begin
-        set_schema_version(connection, 12);
+        set_schema_version(connection, 13);
         Result := True;
         Exit;
     end;
@@ -2957,6 +3138,11 @@ begin
     if schema_version < 12 then
     begin
         set_schema_version(connection, 12);
+    end;
+
+    if schema_version < 13 then
+    begin
+        set_schema_version(connection, 13);
     end;
 
     Result := True;
@@ -3479,6 +3665,405 @@ begin
             end;
             m_explicit_user_entry_cache.AddOrSetValue(cache_key, Result);
         end;
+    end;
+end;
+
+function TncSqliteDictionary.resolve_literal_user_word_pinyin(
+    const query: string; const text: string; out full_pinyin: string): Boolean;
+const
+    base_sql = 'SELECT pinyin, weight FROM dict_base WHERE text = ?1 ' +
+        'ORDER BY weight DESC, pinyin ASC LIMIT 64';
+    user_sql = 'SELECT pinyin, weight FROM dict_user WHERE text = ?1 ' +
+        'ORDER BY weight DESC, pinyin ASC LIMIT 64';
+var
+    query_key: string;
+    text_key: string;
+
+    function find_matching_pinyin(const connection: TncSqliteConnection;
+        const sql_text: string; out matched_pinyin: string): Boolean;
+    var
+        stmt: Psqlite3_stmt;
+        step_result: Integer;
+        candidate_pinyin: string;
+    begin
+        Result := False;
+        matched_pinyin := '';
+        if (connection = nil) or (not connection.opened) then
+        begin
+            Exit;
+        end;
+
+        stmt := nil;
+        try
+            if not (connection.prepare(sql_text, stmt) and
+                connection.bind_text(stmt, 1, text_key)) then
+            begin
+                Exit;
+            end;
+
+            step_result := connection.step(stmt);
+            while step_result = SQLITE_ROW do
+            begin
+                candidate_pinyin := normalize_canonical_pinyin_key(
+                    connection.column_text(stmt, 0));
+                if literal_query_matches_full_pinyin(query_key,
+                    candidate_pinyin) then
+                begin
+                    matched_pinyin := candidate_pinyin;
+                    Exit(True);
+                end;
+                step_result := connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                connection.finalize(stmt);
+            end;
+        end;
+    end;
+begin
+    Result := False;
+    full_pinyin := '';
+    query_key := normalize_compact_pinyin_key(query);
+    text_key := Trim(text);
+    if (query_key = '') or (text_key = '') or
+        (get_valid_cjk_codepoint_count(text_key) <= 0) or
+        (not ensure_open) then
+    begin
+        Exit;
+    end;
+
+    if m_base_ready and find_matching_pinyin(m_base_connection, base_sql,
+        full_pinyin) then
+    begin
+        Exit(True);
+    end;
+    if m_user_ready and find_matching_pinyin(m_user_connection, user_sql,
+        full_pinyin) then
+    begin
+        Exit(True);
+    end;
+end;
+
+function TncSqliteDictionary.record_literal_user_word(
+    const full_pinyin: string; const text: string): Boolean;
+const
+    insert_sql =
+        'INSERT OR IGNORE INTO dict_user_literal(pinyin, jianpin, text, created_at) ' +
+        'VALUES (?1, ?2, ?3, strftime(''%s'',''now''))';
+var
+    stmt: Psqlite3_stmt;
+    pinyin_key: string;
+    jianpin_key: string;
+    text_key: string;
+begin
+    Result := False;
+    pinyin_key := normalize_canonical_pinyin_key(full_pinyin);
+    text_key := Trim(text);
+    jianpin_key := build_jianpin_key_from_full_pinyin(pinyin_key);
+    if (pinyin_key = '') or (jianpin_key = '') or
+        (not is_full_pinyin_key(pinyin_key)) or
+        (not is_valid_user_text(text_key)) or
+        (not ensure_open) or (not m_user_ready) or
+        (not full_pinyin_text_alignment_valid(pinyin_key, text_key)) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if not (m_user_connection.prepare(insert_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, pinyin_key) and
+            m_user_connection.bind_text(stmt, 2, jianpin_key) and
+            m_user_connection.bind_text(stmt, 3, text_key)) then
+        begin
+            Exit;
+        end;
+        Result := m_user_connection.step(stmt) = SQLITE_DONE;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
+
+    if Result then
+    begin
+        note_user_data_changed;
+        m_literal_user_words_available := 1;
+    end;
+end;
+
+function TncSqliteDictionary.lookup_literal_user_words(const query: string;
+    out results: TncCandidateList): Boolean;
+const
+    c_result_cache_limit = 2048;
+    c_literal_candidate_score = 500000000;
+    c_literal_query_length_max = 24;
+    availability_sql = 'SELECT 1 FROM dict_user_literal LIMIT 1';
+    exact_sql = 'SELECT pinyin, text FROM dict_user_literal ' +
+        'WHERE REPLACE(pinyin, char(39), substr(pinyin, 1, 0)) = ?1 ' +
+        'ORDER BY text ASC';
+    jianpin_sql = 'SELECT pinyin, text FROM dict_user_literal ' +
+        'WHERE jianpin = ?1 ORDER BY text ASC';
+var
+    query_key: string;
+    full_prefix: string;
+    jianpin_key: string;
+    mixed_tokens: TncMixedQueryTokenList;
+    jianpin_variants: TArray<string>;
+    query_syllables: TArray<string>;
+    all_initials: Boolean;
+    full_query: Boolean;
+    mixed_query: Boolean;
+    query_can_match_literal: Boolean;
+    idx: Integer;
+    list: TList<TncCandidate>;
+    seen: TDictionary<string, Boolean>;
+
+    function has_literal_user_words: Boolean;
+    var
+        stmt: Psqlite3_stmt;
+    begin
+        if m_literal_user_words_available >= 0 then
+        begin
+            Exit(m_literal_user_words_available > 0);
+        end;
+
+        Result := False;
+        stmt := nil;
+        try
+            if not m_user_connection.prepare(availability_sql, stmt) then
+            begin
+                Exit;
+            end;
+            Result := m_user_connection.step(stmt) = SQLITE_ROW;
+            m_literal_user_words_available := Ord(Result);
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+    end;
+
+    procedure append_matching_rows(const sql_text: string;
+        const lookup_key: string);
+    var
+        stmt: Psqlite3_stmt;
+        step_result: Integer;
+        candidate_pinyin: string;
+        candidate_text: string;
+        item: TncCandidate;
+    begin
+        if lookup_key = '' then
+        begin
+            Exit;
+        end;
+
+        stmt := nil;
+        try
+            if not (m_user_connection.prepare(sql_text, stmt) and
+                m_user_connection.bind_text(stmt, 1, lookup_key)) then
+            begin
+                Exit;
+            end;
+
+            step_result := m_user_connection.step(stmt);
+            while step_result = SQLITE_ROW do
+            begin
+                candidate_pinyin := normalize_canonical_pinyin_key(
+                    m_user_connection.column_text(stmt, 0));
+                candidate_text := Trim(m_user_connection.column_text(stmt, 1));
+                if (candidate_text = '') or seen.ContainsKey(candidate_text) or
+                    (not literal_query_matches_full_pinyin(query_key,
+                    candidate_pinyin)) then
+                begin
+                    step_result := m_user_connection.step(stmt);
+                    Continue;
+                end;
+
+                item.text := candidate_text;
+                item.comment := '';
+                item.score := c_literal_candidate_score;
+                item.source := cs_user;
+                item.has_dict_weight := False;
+                item.dict_weight := 0;
+                seen.Add(candidate_text, True);
+                list.Add(item);
+                step_result := m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+    end;
+begin
+    SetLength(results, 0);
+    Result := False;
+    query_key := normalize_compact_pinyin_key(query);
+    if (Length(query_key) < 2) or
+        (Length(query_key) > c_literal_query_length_max) or
+        (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+    refresh_user_data_version_if_changed(False);
+    if not has_literal_user_words then
+    begin
+        Exit;
+    end;
+
+    if (m_literal_lookup_result_cache <> nil) and
+        m_literal_lookup_result_cache.TryGetValue(query_key, results) then
+    begin
+        results := Copy(results, 0, Length(results));
+        Exit(Length(results) > 0);
+    end;
+
+    full_query := is_full_pinyin_key(query_key);
+    query_can_match_literal := False;
+    if full_query then
+    begin
+        query_syllables := split_full_pinyin_syllables(query_key);
+        // A compact key can hide a required boundary (xian -> xi'an), so a
+        // one-syllable default parse can still address a multi-character word.
+        query_can_match_literal := (Length(query_syllables) >= 1) and
+            (Length(query_syllables) <= 4);
+    end;
+
+    mixed_query := parse_mixed_jianpin_query(query_key, full_prefix,
+        jianpin_key, mixed_tokens);
+    if mixed_query and (Length(mixed_tokens) >= 2) and
+        (Length(mixed_tokens) <= 4) then
+    begin
+        query_can_match_literal := True;
+    end;
+
+    all_initials := True;
+    for idx := 1 to Length(query_key) do
+    begin
+        if not is_jianpin_key_letter(query_key[idx]) then
+        begin
+            all_initials := False;
+            Break;
+        end;
+    end;
+    SetLength(jianpin_variants, 0);
+    if all_initials then
+    begin
+        jianpin_variants := build_jianpin_query_variants(query_key);
+        for idx := 0 to High(jianpin_variants) do
+        begin
+            if (Length(jianpin_variants[idx]) >= 2) and
+                (Length(jianpin_variants[idx]) <= 4) then
+            begin
+                query_can_match_literal := True;
+                Break;
+            end;
+        end;
+    end;
+    if not query_can_match_literal then
+    begin
+        Exit;
+    end;
+
+    list := TList<TncCandidate>.Create;
+    seen := TDictionary<string, Boolean>.Create;
+    try
+        if full_query then
+        begin
+            append_matching_rows(exact_sql, query_key);
+        end;
+
+        if mixed_query then
+        begin
+            append_matching_rows(jianpin_sql, jianpin_key);
+        end;
+
+        if all_initials then
+        begin
+            for idx := 0 to High(jianpin_variants) do
+            begin
+                if (Length(jianpin_variants[idx]) >= 2) and
+                    (Length(jianpin_variants[idx]) <= 4) then
+                begin
+                    append_matching_rows(jianpin_sql,
+                        jianpin_variants[idx]);
+                end;
+            end;
+        end;
+
+        SetLength(results, list.Count);
+        for idx := 0 to list.Count - 1 do
+        begin
+            results[idx] := list[idx];
+        end;
+        Result := Length(results) > 0;
+    finally
+        seen.Free;
+        list.Free;
+    end;
+
+    if m_literal_lookup_result_cache <> nil then
+    begin
+        if m_literal_lookup_result_cache.Count >= c_result_cache_limit then
+        begin
+            m_literal_lookup_result_cache.Clear;
+        end;
+        m_literal_lookup_result_cache.AddOrSetValue(query_key,
+            Copy(results, 0, Length(results)));
+    end;
+end;
+
+function TncSqliteDictionary.is_literal_user_entry(const query: string;
+    const text: string): Boolean;
+const
+    c_entry_cache_limit = 4096;
+var
+    query_key: string;
+    text_key: string;
+    cache_key: string;
+    candidates: TncCandidateList;
+    idx: Integer;
+begin
+    Result := False;
+    query_key := normalize_compact_pinyin_key(query);
+    text_key := Trim(text);
+    if (query_key = '') or (text_key = '') or
+        (not ensure_open) or (not m_user_ready) then
+    begin
+        Exit;
+    end;
+
+    cache_key := query_key + #1 + text_key;
+    if (m_literal_user_entry_cache <> nil) and
+        m_literal_user_entry_cache.TryGetValue(cache_key, Result) then
+    begin
+        Exit;
+    end;
+
+    if lookup_literal_user_words(query_key, candidates) then
+    begin
+        for idx := 0 to High(candidates) do
+        begin
+            if SameText(Trim(candidates[idx].text), text_key) then
+            begin
+                Result := True;
+                Break;
+            end;
+        end;
+    end;
+
+    if m_literal_user_entry_cache <> nil then
+    begin
+        if m_literal_user_entry_cache.Count >= c_entry_cache_limit then
+        begin
+            m_literal_user_entry_cache.Clear;
+        end;
+        m_literal_user_entry_cache.AddOrSetValue(cache_key, Result);
     end;
 end;
 
@@ -4427,7 +5012,8 @@ begin
     // ranking signals and must not make lexicon candidates look user-owned.
     Result := explicit_user_entry_exists(pinyin_key, text_key) or
         ((not SameText(normalized_key, pinyin_key)) and
-        explicit_user_entry_exists(normalized_key, text_key));
+        explicit_user_entry_exists(normalized_key, text_key)) or
+        is_literal_user_entry(normalized_key, text_key);
 end;
 
 function TncSqliteDictionary.is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
@@ -5722,6 +6308,7 @@ begin
     m_ready := False;
     m_base_ready := False;
     m_user_ready := False;
+    m_literal_user_words_available := -1;
     Result := False;
 
     if (m_base_db_path = '') and (m_user_db_path = '') then
@@ -6119,6 +6706,10 @@ begin
     begin
         m_prefix_lookup_result_cache.Clear;
     end;
+    if m_literal_lookup_result_cache <> nil then
+    begin
+        m_literal_lookup_result_cache.Clear;
+    end;
     if m_exact_base_entry_cache <> nil then
     begin
         m_exact_base_entry_cache.Clear;
@@ -6130,6 +6721,10 @@ begin
     if m_explicit_user_entry_cache <> nil then
     begin
         m_explicit_user_entry_cache.Clear;
+    end;
+    if m_literal_user_entry_cache <> nil then
+    begin
+        m_literal_user_entry_cache.Clear;
     end;
 end;
 
@@ -6202,6 +6797,7 @@ begin
     if process_generation <> m_process_user_data_generation then
     begin
         m_process_user_data_generation := process_generation;
+        m_literal_user_words_available := -1;
         clear_user_read_caches;
     end;
 
@@ -6227,6 +6823,7 @@ begin
     if current_version <> m_user_data_version then
     begin
         m_user_data_version := current_version;
+        m_literal_user_words_available := -1;
         clear_user_read_caches;
     end;
 end;
@@ -9914,6 +10511,12 @@ begin
     begin
         Exit;
     end;
+    if is_literal_user_entry(pinyin_key, text) then
+    begin
+        // Literal shorthand words are immutable vocabulary entries. Selecting
+        // one must not create heat, latest-choice, context, or path signals.
+        Exit;
+    end;
     clear_user_read_caches;
 
     full_pinyin_input := is_full_pinyin_key(pinyin_key);
@@ -11879,6 +12482,7 @@ const
     delete_query_path_sql =
         'DELETE FROM dict_user_query_path WHERE query_pinyin = ?1 AND replace(path_text, ?2, '''') = ?3';
     delete_user_by_text_sql = 'DELETE FROM dict_user WHERE text = ?1';
+    delete_literal_by_text_sql = 'DELETE FROM dict_user_literal WHERE text = ?1';
     delete_stats_by_text_sql = 'DELETE FROM dict_user_stats WHERE text = ?1';
     delete_latest_by_text_sql = 'DELETE FROM dict_user_query_latest WHERE text = ?1';
     delete_query_path_by_text_sql =
@@ -12021,6 +12625,20 @@ begin
 
     if purge_all_by_text then
     begin
+        stmt := nil;
+        try
+            if m_user_connection.prepare(delete_literal_by_text_sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, text_key) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+
         stmt := nil;
         try
             if m_user_connection.prepare(delete_user_by_text_sql, stmt) and
@@ -12185,6 +12803,7 @@ begin
         end;
     end;
     note_user_data_changed;
+    m_literal_user_words_available := -1;
 end;
 
 procedure TncSqliteDictionary.remove_user_entry(const pinyin: string; const text: string);
@@ -12219,6 +12838,7 @@ begin
         transaction_active := True;
 
         if (not m_user_connection.exec('DELETE FROM dict_user;')) or
+            (not m_user_connection.exec('DELETE FROM dict_user_literal;')) or
             (not m_user_connection.exec('DELETE FROM dict_user_stats;')) or
             (not m_user_connection.exec('DELETE FROM dict_user_query_latest;')) or
             (not m_user_connection.exec('DELETE FROM dict_user_penalty;')) or
@@ -12243,6 +12863,7 @@ begin
         m_query_path_prune_countdown := 64;
         m_query_path_penalty_prune_countdown := 64;
         note_user_data_changed;
+        m_literal_user_words_available := 0;
         Result := True;
     finally
         if transaction_active then
