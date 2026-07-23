@@ -3,7 +3,7 @@ unit nc_short_context_reranker_model;
 interface
 
 const
-    c_short_context_reranker_promotion_margin = 2.1000000000000001;
+    c_short_context_reranker_promotion_margin = 1.0;
 
 function short_context_reranker_score(const context_text: string;
     const candidate_text: string; const base_rank: Integer;
@@ -29,7 +29,7 @@ const
     c_hidden_units = 32;
     c_vocabulary_size = 3774;
     c_vocabulary_entries = 3772;
-    // SHA-256 of the independently trained model JSON: 53fc9ab9e38c459155ea5ca16aca7657350d308f859d39c3f141ce067413137e
+    // SHA-256 of the independently trained model JSON: 812453b57509adef43fe64d66d00157ceb85c9350bde4fa36de5164b41f84173
     c_feature_mean: array[0..c_feature_count - 1] of Double = (
         3.164294686678494, -9432.5423330441208, 5.1484737218452663, 5.347300367487148,
         0.2466427526191062, -3311.4826946901317, -4.2353662652853652, -3751.1760725709328,

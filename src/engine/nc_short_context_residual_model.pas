@@ -3,7 +3,7 @@ unit nc_short_context_residual_model;
 interface
 
 const
-    c_short_context_residual_promotion_margin = 2.2999999999999998;
+    c_short_context_residual_promotion_margin = 2.7000000000000002;
 
 function short_context_residual_score(const context_text: string;
     const candidate_text: string; const base_rank: Integer;
@@ -29,7 +29,7 @@ const
     c_hidden_units = 16;
     c_vocabulary_size = 4665;
     c_vocabulary_entries = 4663;
-    // SHA-256 of the independently trained model JSON: 8d10c40f3e38ef679aa060226bc6921bfbaa7b52fe69b3c43d918ca720680981
+    // SHA-256 of the independently trained model JSON: 8bcbc4d4355e21444fdef7bad09d1e5479f0377fcfaae56534a5a9816718c4c0
     c_feature_mean: array[0..c_feature_count - 1] of Double = (
         3.1107330160754989, -9642.6392597165195, 5.2088312277019257, 5.4151786642490016,
         0.25175315448108165, -3117.3111714543188, -3.675054495223435, -3406.9210999259581,
