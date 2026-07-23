@@ -108,6 +108,7 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 | Version | Top1 | Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|
+| `v1.5.0` | 7459/16300 (45.76%) | 7966/16300 (48.87%) | 63.42 | 46 | 203 | 2140 |
 | `v1.4.0` | 7168/16300 (43.98%) | 7617/16300 (46.73%) | 66.23 | 46 | 218 | 2578 |
 | `v1.3.0` | 7155/16300 (43.90%) | 7601/16300 (46.63%) | 64.54 | 46 | 203 | 2188 |
 | `v1.2.0` | 6895/16300 (42.30%) | 7303/16300 (44.80%) | 59.89 | 32 | 188 | 2078 |
@@ -123,23 +124,12 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 Latency values are engine-only full-query decode times. Each complete Pinyin query is assigned at once, so these values do not represent incremental keystroke-to-display latency. `—` means that the version was not measured under this latency protocol. See [BENCHMARK.md](BENCHMARK.md) for the complete methodology.
 
-## Short-word Benchmark-65000 (No Context)
-This track uses the same 65,000 two- to four-character word cases as the following section, but does not provide the engine with text already committed before the cursor. It measures base-dictionary and no-context short-word ranking with user-dictionary ranking disabled.
-
-See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case construction, scoring rules, and latency protocol. `Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus.
-
-| Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `v1.5.0` | 59088/65000 (90.90%) | 62915/65000 (96.79%) | 8335/11728 (71.07%) | 10414/11728 (88.80%) | 4.941 | 4.027 | 9.850 | 137.979 |
-
-Latency values are engine-only per-query times for the no-context track and do not include TSF or candidate-window rendering.
-
 ## Short-word Context Benchmark-65000
 This benchmark contains 65,000 occurrences of two- to four-character words, each paired with the sentence prefix already committed before that word. Its cases use the same novel text as Benchmark-16300 as their source and are excluded from short-context model training. User-dictionary ranking is disabled during evaluation.
 
 See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case construction, scoring rules, and latency protocol.
 
-`Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus, making left context materially useful. The table reports the context-enabled track. In v1.3.0 and earlier releases, supplying context did not change short-word ranking, so context and no-context results were identical.
+`Contested` is the subset where the same Pinyin query maps to at least two expected words in the corpus, making left context materially useful. The table reports the context-enabled benchmark.
 
 | Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|

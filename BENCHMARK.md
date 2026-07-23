@@ -56,7 +56,7 @@ The frozen set contains 55,712 cases with usable left context and 9,288 sentence
 - A case is a `Top1` pass when the first exact candidate matches the target unit.
 - A case is a `Top2` pass when either of the first two exact candidates matches the target unit.
 - `Contested` is the 11,728-case subset in which the same Pinyin query maps to at least two target words in the corpus. `Contested Top1` and `Contested Top2` isolate the cases where left context is most useful for disambiguation.
-- Published short-word results use the context-enabled track. Versions that do not consume left context produce the same ordering in context and no-context tracks.
+- Published short-word results use the context-enabled benchmark.
 
 ### Latency Protocol
 
@@ -65,7 +65,6 @@ Published short-word latency values measure engine-only candidate retrieval for 
 - Process all 65,000 cases serially in one runner process and in fixed corpus order.
 - Reset the engine before each query while retaining the same dictionary connection and runtime caches.
 - Install the already committed sentence prefix before timing, assign the complete target Pinyin query, and stop timing after candidate retrieval.
-- When context and no-context tracks are measured together, alternate which track runs first to avoid giving either series a systematic cache-warming advantage.
 - Exclude corpus segmentation, Pinyin generation, process startup, dictionary opening, report writing, TSF integration, candidate-window rendering, real keystrokes, and inter-key timing.
 
 ## Latency Statistics
