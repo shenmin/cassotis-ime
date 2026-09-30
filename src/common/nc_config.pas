@@ -896,7 +896,6 @@ begin
     Result.one_key_completion_key := ock_tab;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
-    Result.char_lm_enabled := True;
     Result.dictionary_variant := dv_simplified;
     Result.shortcuts := nc_default_shortcut_config;
 end;
@@ -1161,7 +1160,6 @@ begin
             'candidate_color_scheme', candidate_color_scheme_to_text(c_default_candidate_color_scheme)),
             c_default_candidate_color_scheme);
         Result.debug_mode := safe_ini_read_integer(ini, 'engine', 'debug', 0) <> 0;
-        Result.char_lm_enabled := safe_ini_read_bool(ini, 'engine', 'char_lm_enabled', True);
         variant_text := safe_ini_read_string(ini, 'dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
         shortcut_values_valid := True;
@@ -1312,7 +1310,6 @@ begin
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
-        ini.WriteBool('engine', 'char_lm_enabled', config.char_lm_enabled);
         candidate_font_name := Trim(config.candidate_font_name);
         if candidate_font_name = '' then
         begin

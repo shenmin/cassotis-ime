@@ -226,8 +226,6 @@ type
         one_key_completion_key: TncOneKeyCompletionKey;
         candidate_color_scheme: Integer;
         debug_mode: Boolean;
-        // Shared character LM for long/short reranking and Tab continuations.
-        char_lm_enabled: Boolean;
         dictionary_variant: TncDictionaryVariant;
         shortcuts: TncShortcutConfig;
     end;

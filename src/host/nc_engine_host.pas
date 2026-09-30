@@ -152,7 +152,6 @@ type
         m_char_lm: IncCharLm;
         m_last_lookup_perf_info: string;
         m_input_epochs: TncInputEpochs;
-        procedure apply_char_lm_config;
         function admit_input_epoch_locked(const session_id: string; const input_epoch: UInt64;
             const command: string): TncInputEpochDecision;
         function admit_reset_locked(const session_id: string; const input_epoch: UInt64): Boolean;
@@ -729,8 +728,7 @@ begin
     if owner <> nil then
     begin
         m_engine.set_long_neural_reranker(owner.m_long_neural_reranker);
-        m_engine.set_char_lm(owner.m_char_lm, config.char_lm_enabled,
-            config.char_lm_enabled);
+        m_engine.set_char_lm(owner.m_char_lm, True, True);
     end;
     m_candidate_window := nil;
     m_last_caret := Point(0, 0);
@@ -898,12 +896,6 @@ begin
         paging_changed := (m_engine.config.candidate_expand_on_paging <>
             config.candidate_expand_on_paging) or
             (m_engine.config.candidate_page_size <> config.candidate_page_size);
-        if (m_owner <> nil) and
-            (m_engine.config.char_lm_enabled <> config.char_lm_enabled) then
-        begin
-            m_engine.set_char_lm(m_owner.m_char_lm, config.char_lm_enabled,
-                config.char_lm_enabled);
-        end;
         m_engine.update_config(config);
         if paging_changed then
         begin
@@ -1483,13 +1475,16 @@ begin
         end);
     m_char_lm_host := TncCharLmHost.Create(ExtractFileDir(ParamStr(0)), True);
     m_char_lm := m_char_lm_host;
+    if m_local_completion_host <> nil then
+    begin
+        m_local_completion_host.set_char_lm(m_char_lm_host.background_view);
+    end;
     with TncConfigManager.create(m_config_path) do
     try
         m_config := load_engine_config;
     finally
         Free;
     end;
-    apply_char_lm_config;
     // Always start a fresh TSF runtime in Chinese mode.
     m_config.input_mode := im_chinese;
     m_last_config_write := get_config_write_time;
@@ -1663,7 +1658,6 @@ begin
         begin
             session.update_config(m_config);
         end;
-        apply_char_lm_config;
     finally
         m_lock.Release;
     end;
@@ -1671,22 +1665,6 @@ begin
     apply_host_log_config(next_log_config);
     m_last_config_write := current_write;
     Result := True;
-end;
-
-procedure TncEngineHost.apply_char_lm_config;
-begin
-    if m_local_completion_host = nil then
-    begin
-        Exit;
-    end;
-    if m_config.char_lm_enabled and (m_char_lm_host <> nil) then
-    begin
-        m_local_completion_host.set_char_lm(m_char_lm_host.background_view);
-    end
-    else
-    begin
-        m_local_completion_host.set_char_lm(nil);
-    end;
 end;
 
 procedure TncEngineHost.reload_config_if_needed;

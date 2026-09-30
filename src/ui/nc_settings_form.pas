@@ -201,7 +201,6 @@ type
         m_btn_open_log_folder: TncModernButton;
         m_btn_log_defaults: TncModernButton;
         m_chk_debug_mode: TncModernCheckBox;
-        m_chk_char_lm_enabled: TncModernCheckBox;
         m_btn_clear_user_dictionary: TncModernButton;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
@@ -429,9 +428,6 @@ resourcestring
     SButtonOpenLogFolder = '打开日志目录';
     SButtonUseDefaultLogging = '恢复默认日志';
     SCheckEnableDebugMode = '启用调试模式';
-    SGroupCharLm = '语言模型';
-    SCheckEnableCharLm = '启用语言模型增强';
-    SHintCharLm = '用字级语言模型改进长句和短词的首选，以及 Tab 续写。约增加 90 MB 内存，模型加载完成前不影响输入。';
     SHintDebugMode = '开启后，候选栏中的候选词和单字将显示权重信息，仅用于调试和问题排查。';
     SButtonClearUserDictionary = '清空用户词库';
     SConfirmClearUserDictionary = '确定要清空用户词库吗？此操作将删除此前记住的本地用户词和相关学习记录，且无法撤销。';
@@ -1395,7 +1391,6 @@ begin
     Result.one_key_completion_key := ock_tab;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.debug_mode := False;
-    Result.char_lm_enabled := True;
     Result.dictionary_variant := dv_simplified;
     Result.shortcuts := nc_default_shortcut_config;
 end;
@@ -1759,7 +1754,6 @@ begin
         update_check_box_metrics(m_chk_shortcut_enabled[action]);
     update_check_box_metrics(m_chk_log_enabled);
     update_check_box_metrics(m_chk_debug_mode);
-    update_check_box_metrics(m_chk_char_lm_enabled);
     if m_candidate_preview <> nil then
     begin
         m_candidate_preview.Height := scale_ui_for_dpi(
@@ -2768,19 +2762,8 @@ var
     debug_group: TPanel;
     tools_group: TPanel;
     debug_hint: TLabel;
-    char_lm_group: TPanel;
-    char_lm_hint: TLabel;
 begin
     section_top := scale_ui(18);
-    char_lm_group := create_section_group(Self, m_scroll_advanced, SGroupCharLm, section_top, 104);
-    top := scale_ui(c_section_inner_top);
-    m_chk_char_lm_enabled := create_check_box(Self, char_lm_group, top, SCheckEnableCharLm, mark_dirty);
-    char_lm_hint := create_hint_label(Self, char_lm_group, SHintCharLm, scale_ui(c_label_left),
-        top + scale_ui(c_row_height + 4), scale_ui(c_hint_width));
-    char_lm_group.Height := Max(char_lm_group.Height,
-        char_lm_hint.Top + char_lm_hint.Height + scale_ui(14));
-
-    section_top := char_lm_group.Top + char_lm_group.Height + scale_ui(c_section_gap);
     debug_group := create_section_group(Self, m_scroll_advanced, SGroupDebug, section_top, 154);
 
     top := scale_ui(c_section_inner_top);
@@ -3003,7 +2986,6 @@ begin
     else if m_page_control.ActivePage = m_tab_advanced then
     begin
         m_chk_debug_mode.Checked := default_engine_config.debug_mode;
-        m_chk_char_lm_enabled.Checked := default_engine_config.char_lm_enabled;
     end
     else
     begin
@@ -3605,10 +3587,6 @@ begin
     begin
         m_chk_debug_mode.Checked := m_engine_config.debug_mode;
     end;
-    if m_chk_char_lm_enabled <> nil then
-    begin
-        m_chk_char_lm_enabled.Checked := m_engine_config.char_lm_enabled;
-    end;
     m_dirty := False;
     update_logging_controls;
     update_fuzzy_pinyin_controls;
@@ -3795,7 +3773,6 @@ begin
         next_log_config.level := ll_info;
     end;
     next_config.debug_mode := m_chk_debug_mode.Checked;
-    next_config.char_lm_enabled := m_chk_char_lm_enabled.Checked;
 
     Result := True;
 end;
