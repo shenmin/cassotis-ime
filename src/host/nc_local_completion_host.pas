@@ -21,17 +21,37 @@ type
         request: TncLongNeuralCompletionRequest;
     end;
 
+    // The model stage of a task (ranked pool, direct result or fallback
+    // generator), before the LM policy chooses what to show. A prefetch keeps
+    // only this stage, so the LM policy never competes with the engine thread
+    // for the model while the visible candidates are still being settled.
+    TncLocalCompletionModelOutput = record
+        accepted: Boolean;
+        use_pool: Boolean;
+        generated: Boolean;
+        failed: Boolean;
+        elapsed_ms: UInt64;
+        result: TncLongNeuralCompletionResult;
+        // Direct (non-pool) model or fallback generator output.
+        suffix_text: string;
+        suffix_pinyin: string;
+        suffix_path: string;
+        base_rank: Integer;
+        replace_units: Integer;
+        confidence: Single;
+    end;
+
     TncLocalCompletionPrefetchCache = record
     private
-        m_valid, m_accepted: Boolean;
+        m_valid: Boolean;
         m_task: TncLocalCompletionTask;
-        m_result: TncLongNeuralCompletionResult;
+        m_output: TncLocalCompletionModelOutput;
     public
         procedure clear;
-        procedure remember(const task: TncLocalCompletionTask; const accepted: Boolean;
-            const value: TncLongNeuralCompletionResult);
-        function take(const task: TncLocalCompletionTask; out accepted: Boolean;
-            out value: TncLongNeuralCompletionResult): Boolean;
+        procedure remember(const task: TncLocalCompletionTask;
+            const output: TncLocalCompletionModelOutput);
+        function take(const task: TncLocalCompletionTask;
+            out output: TncLocalCompletionModelOutput): Boolean;
     end;
 
     TncLocalCompletionResultEvent = reference to procedure(
@@ -137,7 +157,10 @@ type
         procedure worker_execute;
         procedure load_runtime;
         function pop_task(out task: TncLocalCompletionTask): Boolean;
-        function run_task(const task: TncLocalCompletionTask;
+        function run_model(const task: TncLocalCompletionTask;
+            out output: TncLocalCompletionModelOutput): Boolean;
+        function finish_task(const task: TncLocalCompletionTask;
+            const output: TncLocalCompletionModelOutput;
             out completion_result: TncLongNeuralCompletionResult): Boolean;
         procedure queue_finished(const task: TncLocalCompletionTask;
             const accepted: Boolean;
@@ -171,11 +194,16 @@ uses
     System.JSON,
     System.Hash,
     System.Math,
-    nc_log;
+    nc_log,
+    nc_pinyin_parser;
 
 const
     c_model_threads = 4;
-    c_result_timeout_ms = 40;
+    // The model and the LM policy together; a later result is dropped. The
+    // session also drops results for an input that has moved on, so this only
+    // bounds how late a hint may appear: room for a loaded machine (about
+    // twice the unloaded P95) while still ahead of a typical next keystroke.
+    c_result_timeout_ms = 80;
     c_generator_minimum_confidence: Single = -2.8333864;
     c_completion_pool_capacity = 32;
     c_completion_text_stride = 128;
@@ -185,24 +213,22 @@ const
 procedure TncLocalCompletionPrefetchCache.clear;
 begin
     m_valid := False;
-    m_accepted := False;
     m_task := Default(TncLocalCompletionTask);
-    m_result := Default(TncLongNeuralCompletionResult);
+    m_output := Default(TncLocalCompletionModelOutput);
 end;
 
 procedure TncLocalCompletionPrefetchCache.remember(const task: TncLocalCompletionTask;
-    const accepted: Boolean; const value: TncLongNeuralCompletionResult);
+    const output: TncLocalCompletionModelOutput);
 begin
     clear;
-    if not task.prefetch_only then Exit;
+    if (not task.prefetch_only) or output.failed then Exit;
     m_task := task;
-    m_result := value;
-    m_accepted := accepted;
+    m_output := output;
     m_valid := True;
 end;
 
 function TncLocalCompletionPrefetchCache.take(const task: TncLocalCompletionTask;
-    out accepted: Boolean; out value: TncLongNeuralCompletionResult): Boolean;
+    out output: TncLocalCompletionModelOutput): Boolean;
 begin
     Result := m_valid and not task.prefetch_only and
         (task.session_id = m_task.session_id) and
@@ -217,13 +243,9 @@ begin
         (task.request.top2_text = m_task.request.top2_text) and
         (task.request.top2_path = m_task.request.top2_path) and
         (task.request.top2_anchor_path = m_task.request.top2_anchor_path);
-    accepted := False;
-    value := Default(TncLongNeuralCompletionResult);
+    output := Default(TncLocalCompletionModelOutput);
     if Result then
-    begin
-        accepted := m_accepted;
-        value := m_result;
-    end;
+        output := m_output;
     // A single-use worker-owned slot. Delivery uses the new task's generation,
     // never the speculative task's generation or callback.
     clear;
@@ -633,9 +655,8 @@ begin
     end;
 end;
 
-function TncLocalCompletionHost.run_task(
-    const task: TncLocalCompletionTask;
-    out completion_result: TncLongNeuralCompletionResult): Boolean;
+function TncLocalCompletionHost.run_model(const task: TncLocalCompletionTask;
+    out output: TncLocalCompletionModelOutput): Boolean;
 var
     suffix_text: array[0..127] of WideChar;
     suffix_pinyin: array[0..255] of WideChar;
@@ -658,93 +679,10 @@ var
     pool_idx: Integer;
     second_score: Single;
     started_at: UInt64;
-    elapsed_ms: UInt64;
-    use_pool: Boolean;
-    generated: Boolean;
     char_lm: IncCharLm;
-
-    // Replaces the ranker/generator decision with the character LM policy.
-    // Leaves the decision untouched when the LM cannot score (busy, not ready).
-    procedure apply_char_lm_policy;
-    var
-        candidates: TArray<TncCharLmContinuation>;
-        sources: TArray<Integer>;
-        item: TncCharLmContinuation;
-        base: string;
-        idx, best: Integer;
-        probability: Double;
-    begin
-        for idx := 0 to High(completion_result.candidates) do
-        begin
-            case completion_result.candidates[idx].base_rank of
-                1: base := task.request.top1_text;
-                2: base := task.request.top2_text;
-            else
-                Continue;
-            end;
-            if (base = '') or (completion_result.candidates[idx].suffix_text = '') or
-                (completion_result.candidates[idx].replace_units < 0) or
-                (completion_result.candidates[idx].replace_units >= Length(base)) then
-                Continue;
-            item := Default(TncCharLmContinuation);
-            item.base_text := Copy(base, 1, Length(base) -
-                completion_result.candidates[idx].replace_units);
-            item.suffix_text := completion_result.candidates[idx].suffix_text;
-            item.rank := idx + 1;
-            item.base_rank := completion_result.candidates[idx].base_rank;
-            item.score := completion_result.candidates[idx].score;
-            item.abstain_score := completion_result.abstain_score;
-            candidates := candidates + [item];
-            sources := sources + [idx];
-        end;
-        if generated and (task.request.top1_text <> '') and (suffix_text[0] <> #0) then
-        begin
-            item := Default(TncCharLmContinuation);
-            item.base_text := task.request.top1_text;
-            item.suffix_text := string(PWideChar(@suffix_text[0]));
-            item.base_rank := 1;
-            item.generator := True;
-            idx := 0;
-            while (idx < Length(candidates)) and (candidates[idx].base_text +
-                candidates[idx].suffix_text <> item.base_text + item.suffix_text) do
-                Inc(idx);
-            if idx = Length(candidates) then
-            begin
-                candidates := candidates + [item];
-                sources := sources + [-1];
-            end;
-        end;
-        if (Length(candidates) = 0) or not nc_char_lm_choose_continuation(char_lm,
-            task.request.context_text, candidates, best, probability) then
-            Exit;
-        completion_result.suffix_text := '';
-        completion_result.suffix_pinyin_path := '';
-        completion_result.suffix_path := '';
-        completion_result.base_rank := 0;
-        completion_result.replace_units := 0;
-        completion_result.confidence := probability;
-        Result := probability >= c_char_lm_tab_min_probability;
-        if not Result then
-            Exit;
-        if sources[best] >= 0 then
-        begin
-            completion_result.suffix_text := completion_result.candidates[sources[best]].suffix_text;
-            completion_result.suffix_pinyin_path :=
-                completion_result.candidates[sources[best]].suffix_pinyin_path;
-            completion_result.suffix_path := completion_result.candidates[sources[best]].suffix_path;
-            completion_result.base_rank := completion_result.candidates[sources[best]].base_rank;
-            completion_result.replace_units := completion_result.candidates[sources[best]].replace_units;
-        end
-        else
-        begin
-            completion_result.suffix_text := string(PWideChar(@suffix_text[0]));
-            completion_result.suffix_pinyin_path := string(PWideChar(@suffix_pinyin[0]));
-            completion_result.suffix_path := string(PWideChar(@suffix_path[0]));
-            completion_result.base_rank := 1;
-        end;
-    end;
-
+    completion_result: TncLongNeuralCompletionResult;
 begin
+    output := Default(TncLocalCompletionModelOutput);
     completion_result := Default(TncLongNeuralCompletionResult);
     FillChar(suffix_text, SizeOf(suffix_text), 0);
     FillChar(suffix_pinyin, SizeOf(suffix_pinyin), 0);
@@ -756,7 +694,6 @@ begin
     pool_abstain_score := 0.0;
     pool_candidate_count := 0;
     started_at := GetTickCount64;
-    generated := False;
     // set_char_lm may swap the model on a configuration reload.
     m_lock.Acquire;
     try
@@ -764,9 +701,9 @@ begin
     finally
         m_lock.Release;
     end;
-    use_pool := (m_capture_candidate_pool or (char_lm <> nil)) and
+    output.use_pool := (m_capture_candidate_pool or (char_lm <> nil)) and
         Assigned(m_run_pool_function);
-    if use_pool then
+    if output.use_pool then
     begin
         FillChar(pool_suffix_texts, SizeOf(pool_suffix_texts), 0);
         FillChar(pool_suffix_pinyins, SizeOf(pool_suffix_pinyins), 0);
@@ -888,36 +825,219 @@ begin
         begin
             base_rank := 1;
             replace_units := 0;
-            generated := True;
+            output.generated := True;
         end;
     end;
-    if use_pool and (char_lm <> nil) and (error_buffer[0] = #0) then
-    begin
-        apply_char_lm_policy;
-    end;
-    elapsed_ms := GetTickCount64 - started_at;
+    output.elapsed_ms := GetTickCount64 - started_at;
     if (not Result) and (error_buffer[0] <> #0) then
     begin
+        output.failed := True;
         disable(string(PWideChar(@error_buffer[0])));
         Exit;
     end;
+    output.accepted := Result;
+    output.result := completion_result;
+    output.suffix_text := string(PWideChar(@suffix_text[0]));
+    output.suffix_pinyin := string(PWideChar(@suffix_pinyin[0]));
+    output.suffix_path := string(PWideChar(@suffix_path[0]));
+    output.base_rank := base_rank;
+    output.replace_units := replace_units;
+    output.confidence := confidence;
+end;
+
+// A tail word's first replace_units syllables are exactly the last typed
+// syllables (the word does not lengthen a syllable that may still be typed).
+function tail_reread_is_exact(const query_syllables, word_pinyin, word_text: string;
+    const replace_units: Integer): Boolean;
+var
+    typed: TArray<string>;
+    parsed: TncPinyinParseResult;
+    parser: TncPinyinParser;
+    idx: Integer;
+begin
+    Result := False;
+    typed := query_syllables.Split([''''], TStringSplitOptions.ExcludeEmpty);
+    if (replace_units < 1) or (replace_units > Length(typed)) then
+        Exit;
+    parser := TncPinyinParser.create;
+    try
+        parsed := parser.parse(LowerCase(word_pinyin.Replace(#3, '').Replace('''', '')));
+    finally
+        parser.Free;
+    end;
+    if Length(parsed) <> nc_char_lm_code_point_count(word_text) then
+        Exit;
+    for idx := 0 to replace_units - 1 do
+        if not SameText(parsed[idx].text, typed[Length(typed) - replace_units + idx]) then
+            Exit;
+    Result := True;
+end;
+
+function TncLocalCompletionHost.finish_task(const task: TncLocalCompletionTask;
+    const output: TncLocalCompletionModelOutput;
+    out completion_result: TncLongNeuralCompletionResult): Boolean;
+var
+    started_at: UInt64;
+    char_lm: IncCharLm;
+
+    // Replaces the ranker/generator decision with the character LM policy.
+    // Leaves the decision untouched when the LM cannot score (busy, not ready).
+    procedure apply_char_lm_policy;
+    var
+        candidates: TArray<TncCharLmContinuation>;
+        sources: TArray<Integer>;
+        item, chosen: TncCharLmContinuation;
+        base, next_char: string;
+        idx, other, best: Integer;
+        probability: Double;
+    begin
+        // Tail words from the engine join the pool after the model's ranked
+        // candidates, so reports see them and results can refer to them.
+        for idx := 0 to High(task.request.tail_candidates) do
+        begin
+            other := 0;
+            while (other < Length(completion_result.candidates)) and
+                ((completion_result.candidates[other].replace_units <>
+                task.request.tail_candidates[idx].replace_units) or
+                (completion_result.candidates[other].base_rank <> 1) or
+                (completion_result.candidates[other].suffix_text <>
+                task.request.tail_candidates[idx].suffix_text)) do
+                Inc(other);
+            if other = Length(completion_result.candidates) then
+                completion_result.candidates := completion_result.candidates +
+                    [task.request.tail_candidates[idx]];
+        end;
+        for idx := 0 to High(completion_result.candidates) do
+        begin
+            case completion_result.candidates[idx].base_rank of
+                1: base := task.request.top1_text;
+                2: base := task.request.top2_text;
+            else
+                Continue;
+            end;
+            if (base = '') or (completion_result.candidates[idx].suffix_text = '') or
+                (completion_result.candidates[idx].replace_units < 0) or
+                (completion_result.candidates[idx].replace_units >= Length(base)) then
+                Continue;
+            item := Default(TncCharLmContinuation);
+            item.base_text := Copy(base, 1, Length(base) -
+                completion_result.candidates[idx].replace_units);
+            item.suffix_text := completion_result.candidates[idx].suffix_text;
+            item.full_base_text := base;
+            item.base_rank := completion_result.candidates[idx].base_rank;
+            item.replace_units := completion_result.candidates[idx].replace_units;
+            if completion_result.candidates[idx].tail_word then
+            begin
+                item.tail_word := True;
+                item.tail_rank := completion_result.candidates[idx].tail_rank;
+                item.exact_reread := tail_reread_is_exact(task.request.query_syllables,
+                    completion_result.candidates[idx].suffix_pinyin_path,
+                    item.suffix_text, item.replace_units);
+            end
+            else
+            begin
+                item.rank := idx + 1;
+                item.score := completion_result.candidates[idx].score;
+                item.abstain_score := completion_result.abstain_score;
+            end;
+            candidates := candidates + [item];
+            sources := sources + [idx];
+        end;
+        if output.generated and (task.request.top1_text <> '') and (output.suffix_text <> '') then
+        begin
+            item := Default(TncCharLmContinuation);
+            item.base_text := task.request.top1_text;
+            item.suffix_text := output.suffix_text;
+            item.full_base_text := task.request.top1_text;
+            item.base_rank := 1;
+            item.generator := True;
+            idx := 0;
+            while (idx < Length(candidates)) and (candidates[idx].base_text +
+                candidates[idx].suffix_text <> item.base_text + item.suffix_text) do
+                Inc(idx);
+            if idx = Length(candidates) then
+            begin
+                candidates := candidates + [item];
+                sources := sources + [-1];
+            end;
+        end;
+        if (Length(candidates) = 0) or not nc_char_lm_choose_continuation(char_lm,
+            task.request.context_text, candidates, task.request.phonetic_only, chosen, best,
+            probability) then
+            Exit;
+        completion_result.suffix_text := '';
+        completion_result.suffix_pinyin_path := '';
+        completion_result.suffix_path := '';
+        completion_result.base_rank := 0;
+        completion_result.replace_units := 0;
+        completion_result.lm_next := False;
+        completion_result.confidence := probability;
+        Result := probability >= c_char_lm_tab_min_probability;
+        if not Result then
+            Exit;
+        if best < 0 then
+        begin
+            // An LM next character: the engine reads it and checks the re-read
+            // typed tail before showing it.
+            next_char := Copy(chosen.suffix_text, chosen.replace_units + 1, MaxInt);
+            completion_result.suffix_text := chosen.suffix_text;
+            completion_result.suffix_path := next_char;
+            if chosen.replace_units > 0 then
+                completion_result.suffix_path := Copy(chosen.suffix_text, 1,
+                    chosen.replace_units) + #3 + next_char;
+            completion_result.base_rank := chosen.base_rank;
+            completion_result.replace_units := chosen.replace_units;
+            completion_result.lm_next := True;
+        end
+        else if sources[best] >= 0 then
+        begin
+            completion_result.suffix_text := completion_result.candidates[sources[best]].suffix_text;
+            completion_result.suffix_pinyin_path :=
+                completion_result.candidates[sources[best]].suffix_pinyin_path;
+            completion_result.suffix_path := completion_result.candidates[sources[best]].suffix_path;
+            completion_result.base_rank := completion_result.candidates[sources[best]].base_rank;
+            completion_result.replace_units := completion_result.candidates[sources[best]].replace_units;
+        end
+        else
+        begin
+            completion_result.suffix_text := output.suffix_text;
+            completion_result.suffix_pinyin_path := output.suffix_pinyin;
+            completion_result.suffix_path := output.suffix_path;
+            completion_result.base_rank := 1;
+        end;
+    end;
+
+begin
+    Result := output.accepted;
+    completion_result := output.result;
+    if output.failed then
+        Exit(False);
+    started_at := GetTickCount64;
+    m_lock.Acquire;
+    try
+        char_lm := m_char_lm;
+    finally
+        m_lock.Release;
+    end;
+    if output.use_pool and (char_lm <> nil) then
+    begin
+        apply_char_lm_policy;
+    end;
+    // The deadline covers the model and the policy, prefetched or not.
     if Result and (m_result_timeout_ms > 0) and
-        (elapsed_ms > m_result_timeout_ms) then
+        (output.elapsed_ms + (GetTickCount64 - started_at) > m_result_timeout_ms) then
     begin
         Result := False;
         Exit;
     end;
     if Result and (completion_result.suffix_text = '') then
     begin
-        completion_result.suffix_text :=
-            string(PWideChar(@suffix_text[0]));
-        completion_result.suffix_pinyin_path :=
-            string(PWideChar(@suffix_pinyin[0]));
-        completion_result.suffix_path :=
-            string(PWideChar(@suffix_path[0]));
-        completion_result.base_rank := base_rank;
-        completion_result.replace_units := replace_units;
-        completion_result.confidence := confidence;
+        completion_result.suffix_text := output.suffix_text;
+        completion_result.suffix_pinyin_path := output.suffix_pinyin;
+        completion_result.suffix_path := output.suffix_path;
+        completion_result.base_rank := output.base_rank;
+        completion_result.replace_units := output.replace_units;
+        completion_result.confidence := output.confidence;
     end;
 end;
 
@@ -962,6 +1082,7 @@ procedure TncLocalCompletionHost.worker_execute;
 var
     task: TncLocalCompletionTask;
     completion_result: TncLongNeuralCompletionResult;
+    model_output: TncLocalCompletionModelOutput;
     accepted: Boolean;
 begin
     try
@@ -991,14 +1112,17 @@ begin
         begin
             Break;
         end;
-        if not m_prefetch_cache.take(task, accepted, completion_result) then
-            accepted := run_task(task, completion_result);
         if task.prefetch_only then
         begin
-            m_prefetch_cache.remember(task, accepted, completion_result);
+            m_prefetch_cache.clear;
+            run_model(task, model_output);
+            m_prefetch_cache.remember(task, model_output);
             if not ready then Break;
             Continue;
         end;
+        if not m_prefetch_cache.take(task, model_output) then
+            run_model(task, model_output);
+        accepted := finish_task(task, model_output, completion_result);
         // Production only needs accepted results. The optional finished event
         // lets synchronous benchmark bridges observe abstentions without
         // adding no-op main-thread callbacks to the normal Host path.

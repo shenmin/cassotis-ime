@@ -1066,6 +1066,9 @@ function build_and_copy_pinyin_transformer_runtime
     $retired_short_target = Join-Path $script_dir 'short_context'
     $char_lm_source = Join-Path $root_dir 'data\models\char_lm'
     $char_lm_target = Join-Path $script_dir 'char_lm'
+    # The repository stores the model as parts below GitHub's file size limit.
+    . (Join-Path $root_dir 'tools\char_lm_model_parts.ps1')
+    Restore-CharLmModel -Directory $char_lm_source
     $char_lm_manifest = Get-Content -LiteralPath (Join-Path $char_lm_source 'runtime_manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($char_lm_manifest.format -ne 1) { throw 'Unsupported character LM model format' }
     $char_lm_files = @($char_lm_manifest.files.PSObject.Properties.Name)

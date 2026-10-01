@@ -142,12 +142,35 @@ std::vector<Ort::Value> CharLmRun(CharLmHandle& h, const std::vector<int64_t>& i
         output_names.data(), output_names.size());
 }
 
+// The top_k most probable Han characters after a node (log-probabilities in
+// row, one per token id), best first; ties keep the lower id.
+void CharLmTopNext(const CharLmHandle& h, const float* row, int top_k, uint32_t* code_points,
+    float* logps) {
+    std::vector<int64_t> best;
+    for (int64_t id = 2; id < h.vocab_size; ++id) {
+        if (!h.continuation_allowed[static_cast<size_t>(id)]) continue;
+        if (static_cast<int>(best.size()) == top_k && row[id] <= row[best.back()]) continue;
+        auto at = best.end();
+        while (at != best.begin() && row[*(at - 1)] < row[id]) --at;
+        best.insert(at, id);
+        if (static_cast<int>(best.size()) > top_k) best.pop_back();
+    }
+    for (int i = 0; i < top_k; ++i) {
+        const bool found = i < static_cast<int>(best.size());
+        code_points[i] = found ? h.code_points[static_cast<size_t>(best[static_cast<size_t>(i)] - 2)] : 0;
+        logps[i] = found ? row[best[static_cast<size_t>(i)]] : 0.0f;
+    }
+}
+
 // Sum of log P(text | BOS + context) for each leading text, from one packed trie.
 // Texts are taken in order while the trie (BOS and context included) stays within
-// max_nodes; the first min_count texts are always taken. Returns how many texts
-// were scored, or -1.
+// max_nodes; the first min_count texts are always taken. For each of next_count
+// text indices, also writes the top_k Han characters after that text (code point
+// 0 when the text was not scored). Returns how many texts were scored, or -1.
 int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* texts, int count,
-    int min_count, size_t max_nodes, float* out, Ort::RunOptions& options) {
+    int min_count, size_t max_nodes, float* out, Ort::RunOptions& options,
+    const int* next_indices = nullptr, int next_count = 0, int top_k = 0,
+    uint32_t* next_code_points = nullptr, float* next_logps = nullptr) {
     std::vector<std::vector<int64_t>> encoded;
     size_t longest = 0;
     for (int i = 0; i < count; ++i) {
@@ -218,6 +241,18 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
             total += logp[static_cast<size_t>(parents[static_cast<size_t>(node)]) * static_cast<size_t>(h.vocab_size) +
                 static_cast<size_t>(ids[static_cast<size_t>(node)])];
         out[i] = static_cast<float>(total);
+    }
+    for (int j = 0; j < next_count; ++j) {
+        const int i = next_indices[j];
+        uint32_t* cps = next_code_points + static_cast<size_t>(j) * static_cast<size_t>(top_k);
+        float* lps = next_logps + static_cast<size_t>(j) * static_cast<size_t>(top_k);
+        if (i < 0 || i >= static_cast<int>(paths.size()) || paths[static_cast<size_t>(i)].empty()) {
+            std::fill(cps, cps + top_k, 0u);
+            std::fill(lps, lps + top_k, 0.0f);
+            continue;
+        }
+        const size_t node = static_cast<size_t>(paths[static_cast<size_t>(i)].back());
+        CharLmTopNext(h, logp + node * static_cast<size_t>(h.vocab_size), top_k, cps, lps);
     }
     return static_cast<int>(paths.size());
 }
@@ -332,6 +367,35 @@ extern "C" __declspec(dllexport) int __cdecl nc_lm_score(void* handle, const wch
         CharLmDeadline deadline(options, timeout_ms);
         const size_t node_limit = max_nodes > 0 ? static_cast<size_t>(max_nodes) : kCharLmMaxNodes;
         return CharLmScore(h, context ? context : L"", texts, count, min_count, node_limit, out_logp, options);
+    } catch (const std::exception& e) { SetError(error, capacity, Utf8ToWide(e.what())); }
+    catch (...) { SetError(error, capacity, L"character LM scoring failed"); }
+    return -1;
+}
+
+// nc_lm_score, and for each of next_count text indices the top_k Han characters
+// (code points, best first) that follow it, with their log-probabilities, at
+// next_index * top_k. A text that was not scored gets code point 0.
+extern "C" __declspec(dllexport) int __cdecl nc_lm_score_next(void* handle, const wchar_t* context,
+    const wchar_t* const* texts, int count, int min_count, int max_nodes, float* out_logp,
+    const int* next_indices, int next_count, int top_k, uint32_t* out_next_code_points,
+    float* out_next_logp, int timeout_ms, wchar_t* error, int capacity) {
+    SetError(error, capacity, L"");
+    try {
+        if (!handle || !texts || !out_logp || count <= 0 || count > kCharLmMaxTexts ||
+            min_count < 1 || min_count > count || next_count < 0 || next_count > count ||
+            (next_count > 0 && (!next_indices || !out_next_code_points || !out_next_logp ||
+            top_k < 1 || top_k > 32))) return -1;
+        for (int i = 0; i < count; ++i)
+            if (!texts[i] || !*texts[i]) return -1;
+        auto& h = *static_cast<CharLmHandle*>(handle);
+        std::unique_lock<std::mutex> lock(h.mutex, std::try_to_lock);
+        if (!lock.owns_lock()) return -1;
+        FloatingPointMaskGuard fp;
+        Ort::RunOptions options;
+        CharLmDeadline deadline(options, timeout_ms);
+        const size_t node_limit = max_nodes > 0 ? static_cast<size_t>(max_nodes) : kCharLmMaxNodes;
+        return CharLmScore(h, context ? context : L"", texts, count, min_count, node_limit, out_logp, options,
+            next_indices, next_count, next_count > 0 ? top_k : 0, out_next_code_points, out_next_logp);
     } catch (const std::exception& e) { SetError(error, capacity, Utf8ToWide(e.what())); }
     catch (...) { SetError(error, capacity, L"character LM scoring failed"); }
     return -1;

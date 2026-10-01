@@ -26,7 +26,7 @@ For the Long-sentence One-key Completion Benchmark-16300, the rule starts with `
 Starting with `v1.30.0`, all four suites load the same model set that the Host deploys, so the results match the input method users actually run:
 
 - the long-sentence Transformer reranker and its local-repair models;
-- the shared character-level language model, which reranks long-sentence and short-word candidates and takes part in choosing long-sentence one-key continuations;
+- the shared character-level language model, which reranks long-sentence and short-word candidates and takes part in choosing long-sentence one-key continuations; releases after `v1.30.0` also use it to choose short-word one-key completions; in long-sentence one-key completion they use it to score candidates that complete the word cut by the end of the input, to propose next characters, and to choose the tail word of the exact-tail fallback;
 - the short-word context reranker has been replaced by the shared character-level language model and is no longer shipped from `v1.30.0`.
 
 In `v1.29.0` and earlier, the Short-word Context Benchmark loaded only the short-word context reranker, and the One-key Completion Context Benchmark loaded no neural model. Keep this change in mind when comparing across versions.
@@ -122,6 +122,8 @@ Because each corpus position has only one reference target, a different but ling
 ### Latency Protocol
 
 Latency covers dictionary lookup, context/language-model scoring, completion selection, and hysteresis only. It excludes process and dictionary cold start, TSF/host communication, candidate-window rendering, real inter-key timing, and learning writes after acceptance. The engine is reset before each source case; adjacent prefixes of the same target are processed consecutively, while the dictionary connection and runtime caches remain open for the complete run.
+
+In releases after `v1.30.0`, the language-model rerank of the completion runs asynchronously in the Host, off the keystroke path: the completion chosen by dictionary ranking is shown on the keystroke, and the rerank time counts toward an opportunity's latency only when the rerank changes the displayed completion.
 
 ## Long-sentence One-key Completion Benchmark-16300
 

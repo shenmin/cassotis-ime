@@ -23,6 +23,10 @@ type
 function nc_is_pinyin_spelling_helper_compatible(const initial_value: string;
     const final_value: string): Boolean;
 function nc_is_canonical_pinyin_syllable(const value: string): Boolean;
+{ True when compact pinyin parses into exactly `units` canonical syllables:
+  the rest of a word after typed syllables that end at a syllable boundary. }
+function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
+    const remainder: string; const units: Integer): Boolean;
 function nc_normalize_umlaut_spelling(const value: string): string;
 procedure nc_merge_abbreviated_retroflex_initials(var syllables: TncPinyinParseResult);
 
@@ -208,6 +212,24 @@ begin
                 c_finals[final_idx]);
         end;
     end;
+end;
+
+function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
+    const remainder: string; const units: Integer): Boolean;
+var
+    parsed: TncPinyinParseResult;
+    idx: Integer;
+begin
+    Result := False;
+    if (remainder = '') or (units <= 0) or (parser = nil) then
+        Exit;
+    parsed := parser.parse(LowerCase(remainder));
+    if Length(parsed) <> units then
+        Exit;
+    for idx := 0 to High(parsed) do
+        if not nc_is_canonical_pinyin_syllable(parsed[idx].text) then
+            Exit;
+    Result := True;
 end;
 
 function nc_is_canonical_pinyin_syllable(const value: string): Boolean;

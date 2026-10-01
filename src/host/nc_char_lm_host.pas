@@ -16,13 +16,17 @@ interface
 uses Winapi.Windows, System.SysUtils, System.Classes, System.SyncObjs, nc_char_lm;
 
 type
-    TncCharLmHost = class(TInterfacedObject, IncCharLm)
+    TncCharLmHost = class(TInterfacedObject, IncCharLm, IncCharLmNext)
     private type
         TCreateModel = function(directory: PWideChar; intra_threads: Integer;
             error_text: PWideChar; capacity: Integer): Pointer; cdecl;
         TScoreTexts = function(handle: Pointer; context: PWideChar; texts: PPWideChar;
             count, min_count, max_nodes: Integer; out_logp: PSingle; timeout_ms: Integer;
             error_text: PWideChar; capacity: Integer): Integer; cdecl;
+        TScoreTextsNext = function(handle: Pointer; context: PWideChar; texts: PPWideChar;
+            count, min_count, max_nodes: Integer; out_logp: PSingle; next_indices: PInteger;
+            next_count, top_k: Integer; out_next_code_points: PCardinal; out_next_logp: PSingle;
+            timeout_ms: Integer; error_text: PWideChar; capacity: Integer): Integer; cdecl;
         TDestroyModel = procedure(handle: Pointer); cdecl;
     private
         m_directory, m_error: string;
@@ -33,12 +37,15 @@ type
         m_module, m_ort, m_provider: HMODULE;
         m_handle: Pointer;
         m_score: TScoreTexts;
+        m_score_next: TScoreTextsNext;
         m_destroy: TDestroyModel;
         m_gate: TObject;
         m_foreground_waiting: Integer;
         procedure load;
         function run_score(const context: string; const texts: TArray<string>;
-            const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+            const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+            const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
+            out next_logp: TArray<Single>): Integer;
     public
         constructor Create(const directory: string; background: Boolean;
             intra_threads: Integer = 4; timeout_ms: Integer = 100);
@@ -48,6 +55,14 @@ type
             const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
         function score_texts_background(const context: string; const texts: TArray<string>;
             const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+        function score_texts_next(const context: string; const texts: TArray<string>;
+            const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+            const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
+            out next_logp: TArray<Single>): Integer;
+        function score_texts_next_background(const context: string; const texts: TArray<string>;
+            const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+            const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
+            out next_logp: TArray<Single>): Integer;
         { The same model for a background worker (see the unit comment). }
         function background_view: IncCharLm;
         property last_error: string read m_error;
@@ -55,13 +70,13 @@ type
 
 implementation
 
-uses System.IOUtils, System.JSON, System.Hash, nc_log;
+uses System.IOUtils, System.JSON, System.Hash, System.Character, nc_log;
 
 const
     c_foreground_wait_ms = 60;
 
 type
-    TncCharLmBackgroundView = class(TInterfacedObject, IncCharLm)
+    TncCharLmBackgroundView = class(TInterfacedObject, IncCharLm, IncCharLmNext)
     private
         m_host: TncCharLmHost;
         m_keep: IncCharLm;
@@ -70,6 +85,10 @@ type
         function char_lm_ready: Boolean;
         function score_texts(const context: string; const texts: TArray<string>;
             const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+        function score_texts_next(const context: string; const texts: TArray<string>;
+            const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+            const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
+            out next_logp: TArray<Single>): Integer;
     end;
 
 constructor TncCharLmBackgroundView.Create(const host: TncCharLmHost);
@@ -88,6 +107,15 @@ function TncCharLmBackgroundView.score_texts(const context: string; const texts:
     const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
 begin
     Result := m_host.score_texts_background(context, texts, min_count, max_nodes, logp);
+end;
+
+function TncCharLmBackgroundView.score_texts_next(const context: string;
+    const texts: TArray<string>; const min_count, max_nodes: Integer;
+    const next_texts: TArray<Integer>; const top_k: Integer; out logp: TArray<Single>;
+    out next_chars: TArray<string>; out next_logp: TArray<Single>): Integer;
+begin
+    Result := m_host.score_texts_next_background(context, texts, min_count, max_nodes,
+        next_texts, top_k, logp, next_chars, next_logp);
 end;
 
 procedure log_model_state(const message_text: string);
@@ -182,6 +210,8 @@ begin
             raise EInvalidOp.Create('Character LM runtime DLL unavailable');
         create_model := TCreateModel(GetProcAddress(m_module, 'nc_lm_create'));
         m_score := TScoreTexts(GetProcAddress(m_module, 'nc_lm_score'));
+        // Optional: an older runtime scores without next characters.
+        m_score_next := TScoreTextsNext(GetProcAddress(m_module, 'nc_lm_score_next'));
         m_destroy := TDestroyModel(GetProcAddress(m_module, 'nc_lm_destroy'));
         if not Assigned(create_model) or not Assigned(m_score) or not Assigned(m_destroy) then
             raise EInvalidOp.Create('Character LM runtime must be rebuilt');
@@ -208,9 +238,33 @@ end;
 
 function TncCharLmHost.score_texts(const context: string; const texts: TArray<string>;
     const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+var
+    next_chars: TArray<string>;
+    next_logp: TArray<Single>;
+begin
+    Result := score_texts_next(context, texts, min_count, max_nodes, nil, 0, logp,
+        next_chars, next_logp);
+end;
+
+function TncCharLmHost.score_texts_background(const context: string; const texts: TArray<string>;
+    const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+var
+    next_chars: TArray<string>;
+    next_logp: TArray<Single>;
+begin
+    Result := score_texts_next_background(context, texts, min_count, max_nodes, nil, 0, logp,
+        next_chars, next_logp);
+end;
+
+function TncCharLmHost.score_texts_next(const context: string; const texts: TArray<string>;
+    const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+    const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
+    out next_logp: TArray<Single>): Integer;
 begin
     Result := -1;
     SetLength(logp, 0);
+    SetLength(next_chars, 0);
+    SetLength(next_logp, 0);
     if not char_lm_ready then Exit;
     TInterlocked.Increment(m_foreground_waiting);
     try
@@ -219,23 +273,29 @@ begin
         TInterlocked.Decrement(m_foreground_waiting);
     end;
     try
-        Result := run_score(context, texts, min_count, max_nodes, logp);
+        Result := run_score(context, texts, min_count, max_nodes, next_texts, top_k, logp,
+            next_chars, next_logp);
     finally
         TMonitor.Exit(m_gate);
     end;
 end;
 
-function TncCharLmHost.score_texts_background(const context: string; const texts: TArray<string>;
-    const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+function TncCharLmHost.score_texts_next_background(const context: string;
+    const texts: TArray<string>; const min_count, max_nodes: Integer;
+    const next_texts: TArray<Integer>; const top_k: Integer; out logp: TArray<Single>;
+    out next_chars: TArray<string>; out next_logp: TArray<Single>): Integer;
 begin
     Result := -1;
     SetLength(logp, 0);
+    SetLength(next_chars, 0);
+    SetLength(next_logp, 0);
     if not char_lm_ready then Exit;
     while TInterlocked.CompareExchange(m_foreground_waiting, 0, 0) > 0 do
         Sleep(1);
     TMonitor.Enter(m_gate);
     try
-        Result := run_score(context, texts, min_count, max_nodes, logp);
+        Result := run_score(context, texts, min_count, max_nodes, next_texts, top_k, logp,
+            next_chars, next_logp);
     finally
         TMonitor.Exit(m_gate);
     end;
@@ -247,15 +307,22 @@ begin
 end;
 
 function TncCharLmHost.run_score(const context: string; const texts: TArray<string>;
-    const min_count, max_nodes: Integer; out logp: TArray<Single>): Integer;
+    const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+    const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
+    out next_logp: TArray<Single>): Integer;
 var
     pointers: TArray<PWideChar>;
+    code_points: TArray<Cardinal>;
     idx: Integer;
     error_text: array[0..1023] of WideChar;
 begin
     Result := -1;
     SetLength(logp, 0);
+    SetLength(next_chars, 0);
+    SetLength(next_logp, 0);
     if (Length(texts) = 0) or (min_count < 1) or (min_count > Length(texts)) then Exit;
+    if (Length(next_texts) > 0) and ((top_k < 1) or (top_k > 32) or
+        (Length(next_texts) > Length(texts))) then Exit;
     // The native ABI uses terminated UTF-16 strings; never silently truncate.
     if Pos(#0, context) > 0 then Exit;
     SetLength(pointers, Length(texts));
@@ -265,12 +332,27 @@ begin
         pointers[idx] := PWideChar(texts[idx]);
     end;
     SetLength(logp, Length(texts));
-    Result := m_score(m_handle, PWideChar(context), @pointers[0], Length(texts),
-        min_count, max_nodes, @logp[0], m_timeout_ms, @error_text[0], Length(error_text));
+    SetLength(next_chars, Length(next_texts) * top_k);
+    SetLength(next_logp, Length(next_texts) * top_k);
+    if (Length(next_texts) > 0) and Assigned(m_score_next) then
+    begin
+        SetLength(code_points, Length(next_texts) * top_k);
+        Result := m_score_next(m_handle, PWideChar(context), @pointers[0], Length(texts),
+            min_count, max_nodes, @logp[0], @next_texts[0], Length(next_texts), top_k,
+            @code_points[0], @next_logp[0], m_timeout_ms, @error_text[0], Length(error_text));
+        for idx := 0 to High(code_points) do
+            if code_points[idx] <> 0 then
+                next_chars[idx] := Char.ConvertFromUtf32(code_points[idx]);
+    end
+    else
+        Result := m_score(m_handle, PWideChar(context), @pointers[0], Length(texts),
+            min_count, max_nodes, @logp[0], m_timeout_ms, @error_text[0], Length(error_text));
     if Result < min_count then
     begin
         Result := -1;
         SetLength(logp, 0);
+        SetLength(next_chars, 0);
+        SetLength(next_logp, 0);
     end
     else
         SetLength(logp, Result);

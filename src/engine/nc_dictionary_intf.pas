@@ -22,6 +22,23 @@ type
             out results: TncCandidateList): Boolean; virtual;
         function lookup_candidate_prefix_completions(const pinyin_prefix: string;
             out results: TncOneKeyCompletionList): Boolean; virtual;
+        { Base words whose leading syllables are exactly the given complete
+          syllables and that continue with at least one more, up to
+          max_syllables in all; highest weight first, at most limit. Completes
+          the word cut by the end of a long input. }
+        function lookup_word_completions(const syllables: TArray<string>;
+            const max_syllables, limit: Integer;
+            out results: TncOneKeyCompletionList): Boolean; virtual;
+        { The characters that most often follow tail in the character n-gram
+          table, best first, at most limit. }
+        function lookup_next_characters(const tail: string; const limit: Integer;
+            out characters: TArray<string>): Boolean; virtual;
+        { The heaviest base words of min_length..max_length characters that
+          start with prefix (the prefix alone when min_length is 1), with
+          their pinyin, at most limit. }
+        function lookup_words_starting_with(const prefix: string;
+            const min_length, max_length, limit: Integer;
+            out results: TncOneKeyCompletionList): Boolean; virtual;
         function lookup_one_key_completions(const pinyin_prefix: string;
             out results: TncOneKeyCompletionList): Boolean; virtual;
         function lookup_long_one_key_completions(const anchor_path: string;
@@ -178,6 +195,28 @@ end;
 
 function TncDictionaryProvider.lookup_one_key_completions(
     const pinyin_prefix: string;
+    out results: TncOneKeyCompletionList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.lookup_word_completions(const syllables: TArray<string>;
+    const max_syllables, limit: Integer; out results: TncOneKeyCompletionList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.lookup_next_characters(const tail: string;
+    const limit: Integer; out characters: TArray<string>): Boolean;
+begin
+    SetLength(characters, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.lookup_words_starting_with(const prefix: string;
+    const min_length, max_length, limit: Integer;
     out results: TncOneKeyCompletionList): Boolean;
 begin
     SetLength(results, 0);

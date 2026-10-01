@@ -21,6 +21,7 @@ uses
     nc_caret_anchor_policy,
     nc_input_epoch,
     nc_local_completion_host,
+    nc_one_key_rerank_host,
     nc_char_lm,
     nc_char_lm_host;
 
@@ -93,6 +94,8 @@ type
         procedure clear_candidates;
         function prepare_candidate_selection(const page_index, candidate_index: Integer;
             const generation: UInt64): Boolean;
+        function apply_one_key_rerank(const task: TncOneKeyRerankTask;
+            const chosen: Integer; out new_generation: UInt64): Boolean;
         function apply_long_neural_completion(
             const task: TncLocalCompletionTask;
             const completion_result: TncLongNeuralCompletionResult;
@@ -146,6 +149,7 @@ type
         m_config: TncEngineConfig;
         m_long_neural_reranker: IncLongNeuralReranker;
         m_local_completion_host: TncLocalCompletionHost;
+        m_one_key_rerank_host: TncOneKeyRerankHost;
         // One shared character LM session (loaded on first use). The engine
         // sessions use it directly; the Tab worker through background_view.
         m_char_lm_host: TncCharLmHost;
@@ -187,6 +191,9 @@ type
         procedure handle_long_neural_completion(
             const task: TncLocalCompletionTask;
             const completion_result: TncLongNeuralCompletionResult);
+        procedure queue_one_key_rerank(const session: TncHostSession);
+        procedure handle_one_key_rerank(const task: TncOneKeyRerankTask;
+            const chosen: Integer);
     public
         constructor create;
         destructor Destroy; override;
@@ -1011,6 +1018,7 @@ begin
     if changed and (m_owner <> nil) then
     begin
         m_owner.queue_long_neural_completion(Self);
+        m_owner.queue_one_key_rerank(Self);
     end;
 end;
 
@@ -1026,6 +1034,24 @@ begin
     m_selected_index := 0;
     m_preedit_text := '';
     Inc(m_candidate_generation);
+    m_candidate_dirty := True;
+end;
+
+function TncHostSession.apply_one_key_rerank(const task: TncOneKeyRerankTask;
+    const chosen: Integer; out new_generation: UInt64): Boolean;
+begin
+    new_generation := m_candidate_generation;
+    Result := (task.session_instance_id = m_instance_id) and
+        (task.candidate_generation = m_candidate_generation) and
+        (not m_release_requested) and (m_engine <> nil) and
+        m_engine.apply_one_key_rerank(task.request, chosen);
+    if not Result then
+    begin
+        Exit;
+    end;
+    m_one_key_completion := m_engine.get_one_key_completion;
+    Inc(m_candidate_generation);
+    new_generation := m_candidate_generation;
     m_candidate_dirty := True;
 end;
 
@@ -1416,6 +1442,47 @@ begin
     m_local_completion_host.prefetch(task);
 end;
 
+procedure TncEngineHost.queue_one_key_rerank(const session: TncHostSession);
+var
+    task: TncOneKeyRerankTask;
+begin
+    if (session = nil) or (session.engine = nil) or
+        (m_one_key_rerank_host = nil) then
+    begin
+        Exit;
+    end;
+    task := Default(TncOneKeyRerankTask);
+    if not session.engine.get_one_key_rerank_request(task.request) then
+    begin
+        Exit;
+    end;
+    task.session_id := session.m_session_id;
+    task.session_instance_id := session.instance_id;
+    task.candidate_generation := session.candidate_generation;
+    m_one_key_rerank_host.enqueue(task);
+end;
+
+procedure TncEngineHost.handle_one_key_rerank(const task: TncOneKeyRerankTask;
+    const chosen: Integer);
+var
+    session: TncHostSession;
+    new_generation: UInt64;
+begin
+    m_lock.Acquire;
+    try
+        if (not m_sessions.TryGetValue(task.session_id, session)) or
+            (not m_active_sessions.ContainsKey(task.session_id)) or
+            (session.instance_id <> task.session_instance_id) or
+            (not session.apply_one_key_rerank(task, chosen, new_generation)) then
+        begin
+            Exit;
+        end;
+        session.apply_candidate_content_only(new_generation);
+    finally
+        m_lock.Release;
+    end;
+end;
+
 procedure TncEngineHost.handle_long_neural_completion(
     const task: TncLocalCompletionTask;
     const completion_result: TncLongNeuralCompletionResult);
@@ -1479,6 +1546,12 @@ begin
     begin
         m_local_completion_host.set_char_lm(m_char_lm_host.background_view);
     end;
+    m_one_key_rerank_host := TncOneKeyRerankHost.create(
+        procedure(const task: TncOneKeyRerankTask; const chosen: Integer)
+        begin
+            handle_one_key_rerank(task, chosen);
+        end);
+    m_one_key_rerank_host.set_char_lm(m_char_lm_host.background_view);
     with TncConfigManager.create(m_config_path) do
     try
         m_config := load_engine_config;
@@ -1518,6 +1591,11 @@ begin
     begin
         m_local_completion_host.Free;
         m_local_completion_host := nil;
+    end;
+    if m_one_key_rerank_host <> nil then
+    begin
+        m_one_key_rerank_host.Free;
+        m_one_key_rerank_host := nil;
     end;
     if m_standby_session <> nil then
     begin

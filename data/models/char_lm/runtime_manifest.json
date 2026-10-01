@@ -4,18 +4,18 @@
   "graph": "tools/char_lm_onnx.py tree-mask + KV cache",
   "quantization": "int8_keep_mlp_out",
   "float_mlp_out_layers": [
-    5
+    4
   ],
   "n_layer": 12,
-  "n_head": 8,
-  "n_embd": 512,
+  "n_head": 12,
+  "n_embd": 768,
   "block_size": 256,
   "vocab_size": 11599,
   "bos_id": 0,
   "unk_id": 1,
-  "source_checkpoint_sha256": "3db86a87ec8c3d042c43b7e35d513f8bbb0342aa9e2143a5289fb07392783381",
+  "source_checkpoint_sha256": "5b2fb81a353425fa84fd2acdcb858d333cf140775643614e56db8a329d4ad936",
   "files": {
-    "char_lm.onnx": "c7aa1adfaf8468e57e358aaf2d969d9c18f9dc6e689612dc41dddbf457835aca",
+    "char_lm.onnx": "8d19b8feecb98cd473fd509e28522cfea60edd1eb1d8404e3377faa0b2543b72",
     "char_lm_vocab.bin": "200f41183daa0a07c79ecef6f16f37c344105f4bf5ae374ae30d5e53efb6d5aa"
   }
 }
