@@ -110,12 +110,13 @@ The completion benchmark reuses the frozen Benchmark-65000 cases and their left 
 - Use the simplified base-dictionary snapshot for the tested release, disable the user dictionary, and enable left context.
 - Read only the single completion that the UI would display. It is a hit only when it strictly equals the corpus target; the `他`/`她` equivalence rule is not applied.
 
-The benchmark records four metrics that are straightforward to interpret across releases:
+The benchmark records five metrics that are straightforward to interpret across releases:
 
 - `Completion Hit`: correct completions divided by all 12,831 opportunities; this is the primary quality metric.
 - `Avg Keys Saved`: average net keystrokes saved by each correct completion, after charging one keystroke for accepting it.
 - `Stability`: when the previous completion remains compatible after another syllable is typed, the proportion for which the displayed completion remains unchanged.
-- `P95`: 95% of completion queries finish within this many milliseconds.
+- `Keystroke P95`: 95% of keystrokes return their completion within this many milliseconds; this is what typing waits for.
+- `Final P95`: 95% of opportunities show their final completion within this many milliseconds, including an asynchronous language-model rerank that changes the displayed completion.
 
 Because each corpus position has only one reference target, a different but linguistically valid completion is still scored as a miss.
 
@@ -123,7 +124,7 @@ Because each corpus position has only one reference target, a different but ling
 
 Latency covers dictionary lookup, context/language-model scoring, completion selection, and hysteresis only. It excludes process and dictionary cold start, TSF/host communication, candidate-window rendering, real inter-key timing, and learning writes after acceptance. The engine is reset before each source case; adjacent prefixes of the same target are processed consecutively, while the dictionary connection and runtime caches remain open for the complete run.
 
-In releases after `v1.30.0`, the language-model rerank of the completion runs asynchronously in the Host, off the keystroke path: the completion chosen by dictionary ranking is shown on the keystroke, and the rerank time counts toward an opportunity's latency only when the rerank changes the displayed completion.
+From `v1.31.0`, the language-model rerank of the completion runs asynchronously in the Host, off the keystroke path: the completion chosen by dictionary ranking is shown on the keystroke, and the rerank may replace it shortly afterwards. `Keystroke P95` excludes the rerank. `Final P95` adds the rerank time to an opportunity only when the rerank changes the displayed completion. Releases before `v1.31.0` have no asynchronous rerank, so both values are the same.
 
 ## Long-sentence One-key Completion Benchmark-16300
 
