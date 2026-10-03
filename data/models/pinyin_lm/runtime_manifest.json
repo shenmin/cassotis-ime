@@ -15,6 +15,7 @@
   "bos_id": 0,
   "unk_id": 1,
   "source_checkpoint_sha256": "fc5d74f0f9c6cd49ea4b4dfb39c2314c07c1cb610e8da0e3f3e8bf9ac878382d",
+  "correction_context_chars": 48,
   "files": {
     "char_lm.onnx": "030c6657ef3a65f82d023ae470557b53060c301756faf1880b82cad8bcf56eea",
     "char_lm_vocab.bin": "376c19b415024a2350083ca7c229bbe9f1d11191e562ef8ee174fd3afe7ec120",

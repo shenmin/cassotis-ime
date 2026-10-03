@@ -35,6 +35,8 @@ type
         m_homophones: TDictionary<string, TArray<Cardinal>>;
         m_syllable_index: TDictionary<string, Integer>;
         m_syllable_base, m_sep, m_draft: Cardinal;
+        // Characters of preceding text the model was trained to read (0: none).
+        m_context_chars: Integer;
         m_ready: Boolean;
         m_loaded: TEvent;
         m_loader: TThread;
@@ -54,7 +56,8 @@ type
         procedure set_document_context(const document_key, preceding_text: string);
         { The corrected draft when the model prefers another text by at least
           c_lm_repair_min_gain; aligned_pinyin is set whenever the draft aligns.
-          The model sees no document context yet. }
+          preceding_text is the text before the input; a model whose manifest
+          sets correction_context_chars reads the end of its last paragraph. }
         function try_repair(const query_text, draft_text: string;
             const document_key, preceding_text: string;
             out repaired_text, aligned_pinyin: string;
@@ -138,6 +141,7 @@ begin
         if not (manifest_root is TJSONObject) or
             (TJSONObject(manifest_root).GetValue<Integer>('format', 0) <> 1) then
             raise EInvalidOp.Create('Unsupported pinyin LM manifest');
+        m_context_chars := TJSONObject(manifest_root).GetValue<Integer>('correction_context_chars', 0);
         files := TJSONObject(manifest_root).GetValue('files') as TJSONObject;
         if (files = nil) or (files.Count <> Length(required_files)) then
             raise EInvalidOp.Create('Incomplete pinyin LM manifest');
@@ -311,7 +315,7 @@ var
     homophones: TArray<Cardinal>;
     allowed: TArray<Cardinal>;
     offsets: TArray<Integer>;
-    context, syllable: string;
+    context, syllable, prefix: string;
     buffer: array[0..255] of WideChar;
     error_text: array[0..1023] of WideChar;
     gain: Single;
@@ -328,7 +332,19 @@ begin
     for i := 1 to Length(draft_text) do
         if draft_text[i].IsSurrogate then Exit;
     if not align(query_text, draft_text, syllables) then Exit;
-    context := Char.ConvertFromUtf32(m_sep);
+    // Training contexts are the text before the span in its paragraph.
+    prefix := '';
+    if m_context_chars > 0 then
+    begin
+        prefix := preceding_text;
+        i := LastDelimiter(#10#13, prefix);
+        if i > 0 then prefix := Copy(prefix, i + 1, MaxInt);
+        prefix := Trim(prefix);
+        if Length(prefix) > m_context_chars then
+            prefix := Copy(prefix, Length(prefix) - m_context_chars + 1, MaxInt);
+        if (prefix <> '') and prefix[1].IsLowSurrogate then Delete(prefix, 1, 1);
+    end;
+    context := prefix + Char.ConvertFromUtf32(m_sep);
     SetLength(offsets, Length(syllables) + 1);
     SetLength(allowed, 0);
     for i := 0 to High(syllables) do

@@ -691,6 +691,118 @@ begin
     Log(Format('Registered Cassotis IME runtime detected: %s', [Result]));
 end;
 
+function GetLongPathNameW(ShortPath: string; LongPath: string; Capacity: DWORD): DWORD;
+external 'GetLongPathNameW@kernel32.dll stdcall';
+
+function LongPathOf(const Path: string): string;
+var
+    Buffer: string;
+    Length_: DWORD;
+begin
+    { The COM registration may hold an 8.3 alias of the runtime directory. }
+    Result := RemoveBackslashUnlessRoot(Path);
+    Buffer := StringOfChar(#0, 1024);
+    Length_ := GetLongPathNameW(Result, Buffer, 1024);
+    if (Length_ > 0) and (Length_ < 1024) then
+    begin
+        Result := Copy(Buffer, 1, Length_);
+    end;
+end;
+
+procedure DeleteRetiredRuntime(const Path: string);
+begin
+    if DelTree(Path, True, True, True) then
+    begin
+        Log('Removed retired runtime: ' + Path);
+    end
+    else
+    begin
+        Log('Retired runtime still in use; kept its locked files until a later install: ' + Path);
+    end;
+end;
+
+procedure PruneRetiredRuntimes;
+var
+    CurrentDir: string;
+    RuntimeRoot: string;
+    AppDir: string;
+    FindRec: TFindRec;
+    Name: string;
+    I: Integer;
+begin
+    { Only once the new runtime is the registered one: TSF clients then start the
+      host from it, so nothing in an earlier runtime (binaries, retired models)
+      is used. A DLL still mapped by a running application cannot be deleted
+      and is retried on the next install. }
+    CurrentDir := LongPathOf(ExpandConstant('{#InstallRuntimeDir}'));
+    if CompareText(LongPathOf(GetRegisteredRuntimeDir), CurrentDir) <> 0 then
+    begin
+        Log('The new runtime is not the registered one; earlier runtimes are kept.');
+        Exit;
+    end;
+    RuntimeRoot := ExpandConstant('{app}\runtime');
+    if FindFirst(AddBackslash(RuntimeRoot) + '*', FindRec) then
+    begin
+        try
+            repeat
+                if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
+                    (FindRec.Name <> '.') and (FindRec.Name <> '..') and
+                    (CompareText(LongPathOf(AddBackslash(RuntimeRoot) + FindRec.Name), CurrentDir) <> 0) then
+                begin
+                    DeleteRetiredRuntime(AddBackslash(RuntimeRoot) + FindRec.Name);
+                end;
+            until not FindNext(FindRec);
+        finally
+            FindClose(FindRec);
+        end;
+    end;
+    // Releases before versioned runtimes installed into the app's out folder or the app folder.
+    AppDir := ExpandConstant('{app}');
+    if DirExists(AddBackslash(AppDir) + 'out') then
+    begin
+        DeleteRetiredRuntime(AddBackslash(AppDir) + 'out');
+    end;
+    for I := 0 to 5 do
+    begin
+        case I of
+            0: Name := 'pinyin_transformer';
+            1: Name := 'local_repair';
+            2: Name := 'local_completion';
+            3: Name := 'short_context';
+            4: Name := 'char_lm';
+        else
+            Name := 'pinyin_lm';
+        end;
+        if DirExists(AddBackslash(AppDir) + Name) then
+        begin
+            DeleteRetiredRuntime(AddBackslash(AppDir) + Name);
+        end;
+    end;
+    for I := 0 to 11 do
+    begin
+        case I of
+            0: Name := 'cassotis_ime_host.exe';
+            1: Name := 'cassotis_ime_tray_host.exe';
+            2: Name := 'cassotis_ime_svr.dll';
+            3: Name := 'cassotis_ime_svr32.dll';
+            4: Name := 'cassotis_ime_profile_reg.exe';
+            5: Name := 'sqlite3_64.dll';
+            6: Name := 'cassotis_pinyin_transformer_ort.dll';
+            7: Name := 'nc_pinyin_transformer_ort.dll';
+            8: Name := 'onnxruntime.dll';
+            9: Name := 'onnxruntime_providers_shared.dll';
+            10: Name := 'cassotis_onnxruntime.dll';
+        else
+            Name := 'cassotis_onnxruntime_providers_shared.dll';
+        end;
+        if FileExists(AddBackslash(AppDir) + Name) and
+            not DeleteFile(AddBackslash(AppDir) + Name) then
+        begin
+            Log('Retired runtime file still in use: ' + AddBackslash(AppDir) + Name);
+        end;
+    end;
+end;
+
 function RuntimeDirHasManagedFiles(const RuntimeDir: string): Boolean;
 begin
     if RuntimeDir = '' then
@@ -1018,6 +1130,15 @@ begin
 end;
 
 #include "runtime_prepare.iss"
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+    { ssDone follows the [Run] registration and verification steps. }
+    if CurStep = ssDone then
+    begin
+        PruneRetiredRuntimes;
+    end;
+end;
 
 procedure DeinitializeSetup;
 begin

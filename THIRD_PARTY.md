@@ -42,7 +42,8 @@ This file lists third-party software/data used by Cassotis IME and the related l
 ## 4) Cassotis Pinyin-Conditioned Language Model
 
 - Component: quantized character-level causal language model with pinyin tokens
-- Used for: correcting long-sentence drafts against the typed syllables
+- Used for: correcting long-sentence drafts against the typed syllables and
+  the text before the input
 - Local artifact: `data/models/pinyin_lm/`
 - Notes:
   - The model was fine-tuned by this project from the character language model

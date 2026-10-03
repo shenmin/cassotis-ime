@@ -17,7 +17,6 @@ uses
     nc_dictionary_intf,
     nc_local_repair_guard,
     nc_short_particle_evidence,
-    nc_short_context_ranker,
     nc_char_lm,
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
     nc_tab_repair_handoff,
@@ -815,7 +814,6 @@ type
         m_runtime_long_complete_pool_candidates:
             TncLongCompletePoolRuntimeCandidateArray;
         m_runtime_long_retained_exact_edges: TncLongRetainedExactEdgeArray;
-        m_short_context_reranker: IncShortContextReranker;
         m_char_lm: IncCharLm;
         m_char_lm_long_enabled: Boolean;
         m_char_lm_short_enabled: Boolean;
@@ -1155,7 +1153,6 @@ type
         procedure set_dictionary_provider(const dictionary: TncDictionaryProvider);
         // The long-sentence repair model (the pinyin-conditioned LM in the host).
         procedure set_long_local_repair(const repair: IncLongLocalRepair);
-        procedure set_short_context_reranker(const reranker: IncShortContextReranker);
         procedure set_char_lm(const model: IncCharLm; const long_enabled: Boolean;
             const short_enabled: Boolean = False);
         function detach_dictionary_provider: TncDictionaryProvider;
@@ -5231,11 +5228,6 @@ begin
         m_effective_pinyin_parse_cache.Clear;
     end;
     clear_lookup_bonus_caches;
-end;
-
-procedure TncEngine.set_short_context_reranker(const reranker: IncShortContextReranker);
-begin
-    m_short_context_reranker := reranker;
 end;
 
 procedure TncEngine.set_char_lm(const model: IncCharLm; const long_enabled: Boolean;
@@ -141847,7 +141839,7 @@ begin
         (Length(candidates) < 2) or (Length(candidates) <> Length(source_indices)) or
         (candidates[0].source = cs_user) then
         Exit;
-    // Learned query choices keep their place, as in nc_rerank_short_context.
+    // Learned query choices keep their place.
     if (m_dictionary <> nil) and (Trim(candidates[0].comment) = '') and
         ((m_dictionary.get_query_choice_bonus(query, Trim(candidates[0].text)) > 0) or
         (m_dictionary.get_context_query_choice_bonus(context, query,
@@ -142191,7 +142183,7 @@ procedure TncEngine.apply_visible_local_repair(var candidates: TncCandidateList;
     var source_indices: TArray<Integer>; const expected_units: Integer);
 var
     text, path, key, segment, replacement, original_path: string;
-    aligned_pinyin, repair_query: string;
+    aligned_pinyin, repair_query, repair_context: string;
     minimum_word_ratio: Double;
     index, existing, saved_source, position, unit_index: Integer;
     original_segments: TArray<string>;
@@ -142269,7 +142261,14 @@ begin
     // LM's long rerank). A rewrite is kept when its characters spell the
     // syllables and it has a dictionary path; the model already compared the
     // whole sentences.
-    key := m_composition_text + #0 + m_last_lookup_key;
+    // The text before the input: the host's document snapshot, else the
+    // current sentence before the caret, else this session's committed text.
+    repair_context := '';
+    if m_document_context_model <> nil then
+        repair_context := m_document_context_model.semantic_tail;
+    if repair_context = '' then repair_context := m_external_left_context;
+    if repair_context = '' then repair_context := m_left_context;
+    key := m_composition_text + #0 + m_last_lookup_key + #0 + repair_context;
     text := '';
     if (key = m_local_repair_query_key) and (m_local_repair_text <> '') and
         ((candidates[0].text = m_local_repair_draft) or
@@ -142281,8 +142280,8 @@ begin
         // Model vocabularies use canonical syllables, with explicit boundaries intact.
         repair_query := nc_normalize_umlaut_spelling(m_composition_text);
         try
-            if not m_long_local_repair.try_repair(repair_query, candidates[0].text, '', '',
-                text, aligned_pinyin, minimum_word_ratio) then
+            if not m_long_local_repair.try_repair(repair_query, candidates[0].text, '',
+                repair_context, text, aligned_pinyin, minimum_word_ratio) then
                 text := candidates[0].text;
         except
             Exit;
@@ -192249,22 +192248,14 @@ var
                 (expected_units >= 2) and (expected_units <= 4) and
                 (not is_shuangpin_input) and (not is_fuzzy_pinyin_active) then
             begin
-                if m_segment_left_context <> '' then
-                    short_context_swapped := nc_rerank_short_context(m_short_context_reranker, m_dictionary,
-                        m_segment_left_context, normalized_pinyin, Result, visible_source_indices)
-                else if m_external_left_context <> '' then
-                    short_context_swapped := nc_rerank_short_context(m_short_context_reranker, m_dictionary,
-                        m_external_left_context, normalized_pinyin, Result, visible_source_indices)
-                else
-                    short_context_swapped := nc_rerank_short_context(m_short_context_reranker, m_dictionary,
-                        m_left_context, normalized_pinyin, Result, visible_source_indices);
+                short_context_swapped := False;
                 if m_segment_left_context <> '' then
                     char_lm_context := m_segment_left_context
                 else if m_external_left_context <> '' then
                     char_lm_context := m_external_left_context
                 else
                     char_lm_context := m_left_context;
-                // Like the short-context swap, a promotion freezes later pages.
+                // A promotion freezes later pages.
                 if apply_char_lm_short_top(Result, visible_source_indices,
                     char_lm_context, normalized_pinyin, visible_page_size) then
                     short_context_swapped := True;
