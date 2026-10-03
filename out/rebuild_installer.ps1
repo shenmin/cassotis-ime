@@ -79,54 +79,21 @@ $runtimePayloadFiles = @(
     'out\cassotis_pinyin_transformer_ort.dll',
     'out\onnxruntime.dll',
     'out\onnxruntime_providers_shared.dll',
-    'out\pinyin_transformer\pinyin_conditional_scorer_int8.onnx',
-    'out\pinyin_transformer\pinyin_parallel_generator_int8.onnx',
-    'out\pinyin_transformer\pinyin_parallel_allowed.bin',
-    'out\pinyin_transformer\vocab.json',
-    'out\local_completion\local_completion_path_ranker_int8.onnx',
-    'out\local_completion\local_completion_generator_int8.onnx',
-    'out\local_completion\local_completion_index.bin',
-    'out\local_completion\model_manifest.json',
-    'out\local_repair\context_int8.onnx',
-    'out\local_repair\query_int8.onnx',
-    'out\local_repair\vocab.json',
-    'out\local_repair\readings.json',
-    'out\local_repair\runtime_manifest.json',
     'out\char_lm\char_lm.onnx',
     'out\char_lm\char_lm_vocab.bin',
-    'out\char_lm\runtime_manifest.json'
+    'out\char_lm\runtime_manifest.json',
+    'out\pinyin_lm\char_lm.onnx',
+    'out\pinyin_lm\char_lm_vocab.bin',
+    'out\pinyin_lm\pinyin_readings.json',
+    'out\pinyin_lm\runtime_manifest.json'
 )
-
-$repairManifestPath = Join-Path $resolvedSourceRoot 'out\local_repair\runtime_manifest.json'
-require-path $repairManifestPath
-$repairManifest = Get-Content -LiteralPath $repairManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$hasJointRepair = ($repairManifest.enabled -eq $true) -and ($repairManifest.joint_bilateral -eq $true)
-if ($hasJointRepair) {
-    # Optional graphs must be present AND included in the immutable runtime ID.
-    $runtimePayloadFiles += @(
-        'out\local_repair\joint_query_int8.onnx',
-        'out\local_repair\joint_head_int8.onnx',
-        'out\local_repair\bilateral_head_int8.onnx'
-    )
-}
-
-$hasStyleRepair = ($repairManifest.enabled -eq $true) -and ($repairManifest.style_phrase_recovery -eq $true)
-if ($hasStyleRepair) {
-    $runtimePayloadFiles += @(
-        'out\local_repair\style_head.onnx',
-        'out\local_repair\style_phrases.bin',
-        'out\local_repair\style_manifest.json'
-    )
-}
 
 $requiredFiles = @(
     'cassotis_ime_yanquan.ico',
     'version.props'
 ) + $runtimePayloadFiles + @(
     'third_party\onnxruntime\LICENSE',
-    'third_party\onnxruntime\ThirdPartyNotices.txt',
-    'third_party\macbert\LICENSE',
-    'third_party\macbert\NOTICE'
+    'third_party\onnxruntime\ThirdPartyNotices.txt'
 )
 
 foreach ($relativePath in $requiredFiles) {
@@ -152,7 +119,7 @@ require-path (Join-Path $runtimeDataSourceDir 'dict_sc.db')
 require-path (Join-Path $runtimeDataSourceDir 'dict_tc.db')
 
 Write-Host "[installer] runtime_build_id=$runtimeBuildId"
-& $iscc ("/DAppVersion=$Version") ("/DRuntimeBuildId=$runtimeBuildId") ("/DSourceRoot=$resolvedSourceRoot") ("/DRuntimeDataSourceDir=$runtimeDataSourceDir") ("/DHasJointRepair=$([int]$hasJointRepair)") ("/DHasStyleRepair=$([int]$hasStyleRepair)") $resolvedScriptPath
+& $iscc ("/DAppVersion=$Version") ("/DRuntimeBuildId=$runtimeBuildId") ("/DSourceRoot=$resolvedSourceRoot") ("/DRuntimeDataSourceDir=$runtimeDataSourceDir") $resolvedScriptPath
 if ($LASTEXITCODE -ne 0) {
     throw "ISCC failed with exit code $LASTEXITCODE"
 }

@@ -147,7 +147,7 @@ type
         m_last_user_dict_checkpoint_activity_tick: UInt64;
         m_next_session_instance_id: UInt64;
         m_config: TncEngineConfig;
-        m_long_neural_reranker: IncLongNeuralReranker;
+        m_long_local_repair: IncLongLocalRepair;
         m_local_completion_host: TncLocalCompletionHost;
         m_one_key_rerank_host: TncOneKeyRerankHost;
         // One shared character LM session (loaded on first use). The engine
@@ -187,7 +187,6 @@ type
         procedure remove_user_candidate(const session_id: string; const candidate_index: Integer);
         procedure queue_long_neural_completion(
             const session: TncHostSession);
-        procedure prefetch_long_neural_completion(const session: TncHostSession);
         procedure handle_long_neural_completion(
             const task: TncLocalCompletionTask;
             const completion_result: TncLongNeuralCompletionResult);
@@ -258,7 +257,7 @@ uses
     nc_dictionary_intf,
     nc_sqlite,
     nc_log,
-    nc_pinyin_transformer_host;
+    nc_lm_repair_host;
 
 type
     TncHostSessionRef = record
@@ -734,7 +733,7 @@ begin
         m_engine := TncEngine.create(config, defer_optional_dictionary_models);
     if owner <> nil then
     begin
-        m_engine.set_long_neural_reranker(owner.m_long_neural_reranker);
+        m_engine.set_long_local_repair(owner.m_long_local_repair);
         m_engine.set_char_lm(owner.m_char_lm, True, True);
     end;
     m_candidate_window := nil;
@@ -1429,19 +1428,6 @@ begin
     m_local_completion_host.enqueue(task);
 end;
 
-procedure TncEngineHost.prefetch_long_neural_completion(const session: TncHostSession);
-var task: TncLocalCompletionTask;
-begin
-    if (session = nil) or (session.engine = nil) or
-        (m_local_completion_host = nil) then Exit;
-    if session.engine.get_composition_text = session.m_preedit_text then Exit;
-    task := Default(TncLocalCompletionTask);
-    if not session.engine.get_prefetch_long_neural_completion_request(task.request) then Exit;
-    task.session_id := session.m_session_id;
-    task.session_instance_id := session.instance_id;
-    m_local_completion_host.prefetch(task);
-end;
-
 procedure TncEngineHost.queue_one_key_rerank(const session: TncHostSession);
 var
     task: TncOneKeyRerankTask;
@@ -1531,10 +1517,8 @@ begin
     m_last_user_dict_checkpoint_attempt_tick := 0;
     m_last_user_dict_checkpoint_activity_tick := 0;
     m_next_session_instance_id := 0;
-    m_long_neural_reranker := TncPinyinTransformerHostReranker.create(
-        ExtractFileDir(ParamStr(0)), True);
+    m_long_local_repair := TncLmRepairHost.Create(ExtractFileDir(ParamStr(0)), True);
     m_local_completion_host := TncLocalCompletionHost.create(
-        ExtractFileDir(ParamStr(0)),
         procedure(const task: TncLocalCompletionTask;
             const completion_result: TncLongNeuralCompletionResult)
         begin
@@ -1633,7 +1617,7 @@ begin
         m_sessions.Free;
         m_sessions := nil;
     end;
-    m_long_neural_reranker := nil;
+    m_long_local_repair := nil;
     // Sessions and the Tab worker are gone; release the last LM reference.
     m_char_lm_host := nil;
     m_char_lm := nil;
@@ -2228,7 +2212,6 @@ begin
 
                         if candidates_rebuilt then
                         begin
-                            prefetch_long_neural_completion(session);
                             candidates := session.engine.get_candidates;
                             one_key_completion :=
                                 session.engine.get_one_key_completion;
@@ -2848,7 +2831,6 @@ begin
         if handled and session.engine.commit_text(commit_text) then
         begin
             readback_start_tick := GetTickCount64;
-            prefetch_long_neural_completion(session);
             candidates := session.engine.get_candidates;
             one_key_completion := session.engine.get_one_key_completion;
             display_text := session.engine.get_display_text;
@@ -2913,7 +2895,6 @@ begin
         if handled and (commit_text = '') then
         begin
             readback_start_tick := GetTickCount64;
-            prefetch_long_neural_completion(session);
             candidates := session.engine.get_candidates;
             one_key_completion := session.engine.get_one_key_completion;
             display_text := session.engine.get_display_text;
@@ -3814,7 +3795,6 @@ begin
 
         host_log(Format('[INFO] removed user candidate text=%s pinyin=%s', [candidate_text, pinyin_key]));
 
-        prefetch_long_neural_completion(session);
         candidates := session.engine.get_candidates;
         one_key_completion := session.engine.get_one_key_completion;
         page_index := session.engine.get_page_index;

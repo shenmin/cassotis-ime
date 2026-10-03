@@ -412,11 +412,10 @@ type
         suffix_pinyin_path: string;
         suffix_path: string;
         base_rank: Integer;
-        replace_units: Integer;
-        score: Single;
         // A dictionary word continuing the last replace_units typed syllables
-        // (the word cut by the input end); tail_rank is its weight rank.
-        tail_word: Boolean;
+        // (the word cut by the input end), or following top1 when 0 (a next
+        // word); tail_rank is its weight rank.
+        replace_units: Integer;
         tail_rank: Integer;
     end;
 
@@ -434,8 +433,8 @@ type
         top2_text: string;
         top2_path: string;
         top2_anchor_path: string;
-        // Tail words on top1, weighed by the continuation policy beside the
-        // model's pool.
+        // Tail and next words on top1, weighed by the continuation policy
+        // beside the LM's own next characters.
         tail_candidates: TncLongNeuralCompletionCandidateArray;
     end;
 
@@ -458,33 +457,17 @@ type
         suffix_path: string;
         base_rank: Integer;
         replace_units: Integer;
+        // The policy's estimate that the continuation is correct.
         confidence: Single;
-        // Pool mode only: the ranker's ABSTAIN score beside candidates.
-        abstain_score: Single;
+        // The request's tail and next words, for reports.
         candidates: TncLongNeuralCompletionCandidateArray;
         // The suffix is the LM's next character after the base, preceded by
         // the re-read typed tail when replace_units > 0; suffix_pinyin_path
         // is empty and the engine reads the character from the dictionary.
         lm_next: Boolean;
-    end;
-
-    TncLongGeneratedCandidate = record
-        text: string;
-        normalized_score: Single;
-        rank: Integer;
-    end;
-
-    TncLongGeneratedCandidateArray = TArray<TncLongGeneratedCandidate>;
-
-    IncLongNeuralReranker = interface
-        ['{E3B83F1A-8746-4E9D-8130-79E0EB9840D8}']
-        function should_generate(const query_text: string;
-            const candidates: TncLongFinalCandidateDebugArray): Boolean;
-        function try_generate(const query_text: string;
-            out candidates: TncLongGeneratedCandidateArray): Boolean;
-        function try_select(const query_text: string;
-            const candidates: TncLongFinalCandidateDebugArray;
-            out selected_index: Integer): Boolean;
+        // Characters the LM continues the suffix with; the engine reads them
+        // from the dictionary and drops them from the first one it cannot read.
+        extension: string;
     end;
 
     IncLongLocalRepair = interface
@@ -494,33 +477,6 @@ type
             const document_key, preceding_text: string;
             out repaired_text, aligned_pinyin: string;
             out minimum_word_ratio: Double): Boolean;
-    end;
-
-    IncLongLocalRepairPolicy = interface
-        ['{BB45A804-567C-4FE5-AC84-4439A7AFF353}']
-        function allows_no_context_refinement: Boolean;
-    end;
-
-    IncLongJointRepair = interface
-        ['{2064E122-3F7B-4475-B5C6-FCC98AD63949}']
-        function joint_ready: Boolean;
-        function try_finalize(const dictionary: TncDictionaryProvider;
-            const query_text, draft, path, current, second, aligned_pinyin: string;
-            const document_key, preceding_text: string;
-            out selected: TncValidatedRepairPath): Boolean;
-    end;
-
-    IncLongStyleRepair = interface
-        ['{59CAEB4A-C02F-4513-A733-35E3D64E9452}']
-        function try_style_repair(const dictionary: TncDictionaryProvider;
-            const query, first, second, first_path, second_path: string;
-            const document_key, preceding_text: string;
-            out selected: TncValidatedRepairPath): Boolean;
-    end;
-
-    TncLocalRepairGuardDebug = record
-        query_text, draft, proposal, segment_path, aligned_pinyin, guarded: string;
-        invoked, accepted: Boolean;
     end;
 
     TncLongRankingStageDebug = record
@@ -859,7 +815,6 @@ type
         m_runtime_long_complete_pool_candidates:
             TncLongCompletePoolRuntimeCandidateArray;
         m_runtime_long_retained_exact_edges: TncLongRetainedExactEdgeArray;
-        m_long_neural_reranker: IncLongNeuralReranker;
         m_short_context_reranker: IncShortContextReranker;
         m_char_lm: IncCharLm;
         m_char_lm_long_enabled: Boolean;
@@ -869,21 +824,12 @@ type
         m_char_lm_long_pool: TncCandidateList;
         m_char_lm_long_pool_ranks: TArray<Integer>;
         m_long_local_repair: IncLongLocalRepair;
-        m_long_local_repair_policy: IncLongLocalRepairPolicy;
-        m_long_joint_repair: IncLongJointRepair;
-        m_long_style_repair: IncLongStyleRepair;
-        m_style_repair_key, m_style_repair_text: string;
-        m_style_repair_validated: TncValidatedRepairPath;
-        m_style_completion_query_key: string;
         m_local_repair_query_key, m_local_repair_text, m_local_repair_draft: string;
         m_local_repair_original_path: string;
-        m_local_repair_baseline_text: string;
         m_local_repair_validated: TncValidatedRepairPath;
         m_repaired_completion_query_key: string;
         // The input whose long completion was rebuilt from the settled page.
         m_visible_completion_key: string;
-        m_debug_capture_local_repair: Boolean;
-        m_debug_local_repair_guard: TncLocalRepairGuardDebug;
         m_long_complete_pool_pairwise_text: string;
         m_long_complete_pool_pairwise_insert_rank: Integer;
         m_debug_long_chain_beam_width: Integer;
@@ -966,12 +912,8 @@ type
         function move_candidate_page(const direction: Integer): Boolean;
         procedure apply_visible_local_repair(var candidates: TncCandidateList;
             var source_indices: TArray<Integer>; const expected_units: Integer);
-        procedure apply_visible_style_repair(var candidates: TncCandidateList;
-            var source_indices: TArray<Integer>; const expected_units: Integer);
         function has_validated_completion_prefix: Boolean;
         function has_current_validated_completion_prefix: Boolean;
-        function has_current_style_completion_prefix: Boolean;
-        procedure refresh_style_prefix_completion;
         function project_validated_prefix_completion(
             const completion: TncOneKeyCompletion): TncOneKeyCompletion;
         function get_one_key_completion_for_commit: TncOneKeyCompletion;
@@ -1147,8 +1089,7 @@ type
             var source_indices: TArray<Integer>;
             const unified_pool_final: Boolean = False;
             const exact_edge_baseline_top1: string = '';
-            const exact_edge_baseline_top2: string = '';
-            const run_host_neural_reranker: Boolean = False);
+            const exact_edge_baseline_top2: string = '');
         function build_segment_candidates(out out_candidates: TncCandidateList;
             const include_full_path: Boolean; out out_path_search_elapsed_ms: Int64;
             const allow_relaxed_missing_apostrophe: Boolean = False): Boolean;
@@ -1212,8 +1153,8 @@ type
         procedure reset(const preserve_document_context: Boolean = False);
         procedure update_config(const config: TncEngineConfig);
         procedure set_dictionary_provider(const dictionary: TncDictionaryProvider);
-        procedure set_long_neural_reranker(
-            const reranker: IncLongNeuralReranker);
+        // The long-sentence repair model (the pinyin-conditioned LM in the host).
+        procedure set_long_local_repair(const repair: IncLongLocalRepair);
         procedure set_short_context_reranker(const reranker: IncShortContextReranker);
         procedure set_char_lm(const model: IncCharLm; const long_enabled: Boolean;
             const short_enabled: Boolean = False);
@@ -1288,8 +1229,6 @@ type
         function get_one_key_completion: TncOneKeyCompletion;
         function get_long_neural_completion_request(
             out request: TncLongNeuralCompletionRequest): Boolean;
-        function get_prefetch_long_neural_completion_request(
-            out request: TncLongNeuralCompletionRequest): Boolean;
         function apply_long_neural_completion(
             const request: TncLongNeuralCompletionRequest;
             const completion_result: TncLongNeuralCompletionResult): Boolean;
@@ -1314,8 +1253,6 @@ type
         function get_debug_phrase_context_pair_count(const left_text: string; const candidate_text: string): Integer;
         function get_debug_last_commit_segment_path: string;
         function get_debug_candidate_segment_path(const candidate_index: Integer): string;
-        procedure debug_enable_local_repair_capture(const enabled: Boolean);
-        function debug_get_local_repair_guard: TncLocalRepairGuardDebug;
         function get_debug_target_recall(const target_text: string): TncTargetRecallDebug;
         function get_debug_long_beam_states: TncLongBeamStateDebugArray;
         function get_debug_long_exact_edge_stages:
@@ -1713,7 +1650,6 @@ constructor TncEngine.create(const config: TncEngineConfig;
     const initial_dictionary: TncDictionaryProvider = nil);
 begin
     inherited create;
-    m_long_neural_reranker := nil;
     m_config := config;
     m_defer_optional_dictionary_models :=
         defer_optional_dictionary_models;
@@ -1951,7 +1887,7 @@ end;
 
 destructor TncEngine.Destroy;
 begin
-    m_long_neural_reranker := nil;
+    m_long_local_repair := nil;
     if m_document_context_model <> nil then
     begin
         m_document_context_model.Free;
@@ -4554,13 +4490,9 @@ begin
     end;
     m_segment_left_context := '';
     m_local_repair_query_key := '';
-    m_style_repair_key := '';
-    m_style_repair_text := '';
-    m_style_repair_validated := Default(TncValidatedRepairPath);
     m_local_repair_text := '';
     m_local_repair_draft := '';
     m_local_repair_original_path := '';
-    m_local_repair_baseline_text := '';
     m_local_repair_validated := Default(TncValidatedRepairPath);
     m_context_db_bonus_cache_key := '';
     SetLength(m_candidates, 0);
@@ -5281,9 +5213,6 @@ end;
 
 procedure TncEngine.invalidate_dictionary_lookup_caches;
 begin
-    m_style_repair_key := '';
-    m_style_repair_text := '';
-    m_style_repair_validated := Default(TncValidatedRepairPath);
     m_context_db_bonus_cache_key := '';
     if m_context_db_bonus_cache <> nil then
     begin
@@ -5319,29 +5248,14 @@ begin
     SetLength(m_char_lm_long_pool_ranks, 0);
 end;
 
-procedure TncEngine.set_long_neural_reranker(
-    const reranker: IncLongNeuralReranker);
+procedure TncEngine.set_long_local_repair(const repair: IncLongLocalRepair);
 begin
-    m_long_neural_reranker := reranker;
-    m_short_context_reranker := nil;
-    Supports(reranker, IncShortContextReranker, m_short_context_reranker);
-    m_long_local_repair := nil;
-    m_long_local_repair_policy := nil;
-    m_long_joint_repair := nil;
-    m_long_style_repair := nil;
-    m_style_repair_key := '';
-    m_style_repair_text := '';
-    m_style_repair_validated := Default(TncValidatedRepairPath);
+    m_long_local_repair := repair;
     m_local_repair_query_key := '';
     m_local_repair_text := '';
     m_local_repair_draft := '';
     m_local_repair_original_path := '';
-    m_local_repair_baseline_text := '';
     m_local_repair_validated := Default(TncValidatedRepairPath);
-    Supports(reranker, IncLongLocalRepair, m_long_local_repair);
-    Supports(reranker, IncLongLocalRepairPolicy, m_long_local_repair_policy);
-    Supports(reranker, IncLongJointRepair, m_long_joint_repair);
-    Supports(reranker, IncLongStyleRepair, m_long_style_repair);
     if (m_long_local_repair <> nil) and (m_document_context_model <> nil) then
     begin
         m_long_local_repair.set_document_context(
@@ -6035,7 +5949,6 @@ end;
 procedure TncEngine.clear_one_key_completion;
 begin
     m_repaired_completion_query_key := '';
-    m_style_completion_query_key := '';
     m_tab_projection_shown := Default(TncOneKeyCompletion);
     m_tab_projection_query := ''; m_tab_projection_document := '';
     m_tab_projection_raw_text := ''; m_tab_projection_raw_path := '';
@@ -6319,69 +6232,6 @@ begin
     end;
 end;
 
-function TncEngine.has_current_style_completion_prefix: Boolean;
-var key: string;
-begin
-    Result := False;
-    if (m_style_repair_text = '') or (not m_allow_one_key_completion_lookup) or
-        (m_dictionary = nil) or (m_long_style_repair = nil) or
-        (m_config.input_mode <> im_chinese) or m_has_pending_commit or
-        (m_config.pinyin_input_scheme <> pis_full_pinyin) or
-        (m_config.dictionary_variant <> dv_simplified) or
-        m_config.fuzzy_pinyin_enabled or (m_confirmed_text <> '') or
-        (m_page_index <> 0) or not m_visible_candidates_cache_valid or
-        (m_visible_candidates_cache_composition_text <> m_composition_text) or
-        (m_visible_candidates_cache_lookup_key <> m_last_lookup_key) or
-        (m_visible_candidates_cache_page_index <> 0) or
-        (Length(m_visible_candidates_cache) = 0) or
-        (Length(m_visible_candidates_cache) <> Length(m_visible_candidate_source_indices_cache)) or
-        (m_visible_candidates_cache[0].text <> m_style_repair_text) or
-        (m_visible_candidates_cache[0].comment <> '') or
-        (m_visible_candidates_cache[0].source = cs_user) or
-        not m_style_repair_validated.exact_path or
-        (m_style_repair_validated.text <> m_style_repair_text) or
-        (m_style_repair_validated.segment_path = '') then Exit;
-    key := m_composition_text + #0 + m_last_lookup_key + #0;
-    if m_document_context_model <> nil then
-        key := key + m_document_context_model.document_key + #0 +
-            m_document_context_model.semantic_tail
-    else key := key + #0;
-    Result := key = m_style_repair_key;
-end;
-
-procedure TncEngine.refresh_style_prefix_completion;
-var
-    previous, completion: TncOneKeyCompletion;
-    syllables: TncPinyinParseResult;
-    query_key: string;
-    score: Integer;
-begin
-    if not has_current_style_completion_prefix or
-        (m_style_completion_query_key = m_style_repair_key) then Exit;
-    // The final style selector has rejected the old draft. Re-query its exact
-    // anchors once; never graft the old draft's suffix onto different words.
-    if not (m_one_key_completion.source in
-        [okcs_user_exact, okcs_base_exact, okcs_transition]) then
-    begin
-        previous := m_one_key_completion;
-        query_key := normalize_pinyin_text(m_composition_text);
-        syllables := get_effective_compact_pinyin_syllables(m_composition_text, False);
-        clear_one_key_completion;
-        try
-            if try_refresh_long_one_key_completion(syllables, query_key, previous, completion, score) then
-            begin
-                m_one_key_completion := completion;
-                m_one_key_completion_query_prefix := query_key;
-                m_one_key_completion_score := score;
-            end;
-        except
-            // Optional completion failure must not discard a valid candidate.
-            clear_one_key_completion;
-        end;
-    end;
-    m_style_completion_query_key := m_style_repair_key;
-end;
-
 function TncEngine.has_validated_completion_prefix: Boolean;
 begin
     Result := ((GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') = '1')
@@ -6605,7 +6455,7 @@ type
 var
     completion_candidates: TncCandidateList;
     completion_sources: TArray<Integer>;
-    corrected_prefix, style_prefix: Boolean;
+    corrected_prefix: Boolean;
     corrected_path: string;
     top_index: Integer;
     second_index: Integer;
@@ -6662,16 +6512,10 @@ var
         // Tab consumes the settled visible result; it must never trigger an
         // earlier candidate-ranking pass while build_candidates is running.
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
-        if not has_current_style_completion_prefix and
-            (GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') = 'carry') then Exit;
+        if GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') = 'carry' then Exit;
 {$ENDIF}
-        style_prefix := has_current_style_completion_prefix;
-        if style_prefix then validated := m_style_repair_validated
-        else
-        begin
-            if not has_validated_completion_prefix then Exit;
-            validated := m_local_repair_validated;
-        end;
+        if not has_validated_completion_prefix then Exit;
+        validated := m_local_repair_validated;
         visible := m_visible_candidates_cache;
         if Length(visible[0].text) <> Length(syllables) then Exit;
         parts := validated.aligned_pinyin.Split([#3], TStringSplitOptions.ExcludeEmpty);
@@ -7052,7 +6896,6 @@ begin
     completion_candidates := m_candidates;
     completion_sources := nil;
     corrected_prefix := False;
-    style_prefix := False;
     corrected_path := '';
     if m_dictionary <> nil then adopt_corrected_prefix;
     // Tab continues the reading the user sees. The display stages may promote
@@ -7066,8 +6909,6 @@ begin
         completion_candidates := m_visible_candidates_cache;
         completion_sources := Copy(m_visible_candidate_source_indices_cache);
     end;
-    // A failed alignment check must not silently revive the obsolete draft.
-    if style_prefix and not corrected_prefix then Exit;
     if has_validated_completion_prefix and (not corrected_prefix)
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
         and (GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') <> 'carry')
@@ -7091,9 +6932,6 @@ begin
             Break;
         end;
     end;
-    // KEEP remains selectable in the ordinary list, but must not undo the
-    // final selector through an asynchronous Tab continuation.
-    if style_prefix then second_index := -1;
     if not analyze_candidate_path(top_index, top_analysis) then
     begin
         Exit;
@@ -7168,7 +7006,7 @@ begin
     // The generic continuation model has not been calibrated on these recovered
     // paths. Keep multi-source indexed continuations, but do not invent a suffix
     // from the rejected draft or from unvalidated neural style transfer.
-    if (top1_anchor_path <> '') and (query_syllable_text <> '') and not style_prefix then
+    if (top1_anchor_path <> '') and (query_syllable_text <> '') then
     begin
         context_value := m_left_context;
         if m_segment_left_context <> '' then
@@ -9327,7 +9165,6 @@ end;
 function TncEngine.get_one_key_completion_for_commit: TncOneKeyCompletion;
 var document_key: string;
 begin
-    refresh_style_prefix_completion;
     document_key := '';
     if m_document_context_model <> nil then document_key := m_document_context_model.document_key;
     // A refreshed context must not change the text of an already shown Tab hint.
@@ -31438,9 +31275,6 @@ var
     begin
         // A previously validated full query is not an unfinished-tail guess.
         // Rebuild and revalidate it when backspace/retyping returns to that query.
-        if (m_style_repair_text <> '') and
-            (Copy(m_style_repair_key, 1, Length(m_composition_text) + 1) =
-            m_composition_text + #0) then Exit(False);
         Result := has_multi_syllable_input and (input_syllable_count >= 7) and
             is_full_pinyin_key(lookup_text) and (not all_initial_compact_query) and
             (not has_internal_dangling_initial) and
@@ -136980,8 +136814,7 @@ begin
         copy_runtime_pool_to_internal(internal_candidates,
             internal_source_indices);
         apply_long_final_visible_candidate_ranking(internal_candidates,
-            internal_source_indices, True, baseline_top1, baseline_top2,
-            True);
+            internal_source_indices, True, baseline_top1, baseline_top2);
         note_pool_phase('rank');
 
         SetLength(merged_candidates, original_visible_count);
@@ -137073,8 +136906,7 @@ procedure TncEngine.apply_long_final_visible_candidate_ranking(
     var source_indices: TArray<Integer>;
     const unified_pool_final: Boolean;
     const exact_edge_baseline_top1: string;
-    const exact_edge_baseline_top2: string;
-    const run_host_neural_reranker: Boolean);
+    const exact_edge_baseline_top2: string);
 const
     c_ranking_stage_legacy_input = 0;
     c_ranking_stage_unified_ranker = 1;
@@ -137134,9 +136966,6 @@ var
     ordered_candidates: TncCandidateList;
     legacy_source_indices: TArray<Integer>;
     ordered_source_indices: TArray<Integer>;
-    neural_candidates: TncLongFinalCandidateDebugArray;
-    neural_candidate_indices: TArray<Integer>;
-    neural_selected_index: Integer;
     path_structure: TncLongPathStructureCacheValue;
     top_chain_score: Int64;
     abstain_features: TncLongFinalAbstainFeatures;
@@ -140342,589 +140171,6 @@ var
             features.complete_pool_edge_model_word_score_mean;
     end;
 
-    procedure apply_host_neural_reranker;
-    const
-        c_neural_candidate_limit = 16;
-        c_direct_generation_limit = 4;
-        c_direct_generation_word_max_syllables = 5;
-    var
-        ordered_position_local: Integer;
-        candidate_index_local: Integer;
-        neural_index_local: Integer;
-        duplicate_index_local: Integer;
-        generated_index_local: Integer;
-        generated_existing_neural_local: Integer;
-        generated_existing_candidate_local: Integer;
-        generated_count_local: Integer;
-        replacement_candidate_index_local: Integer;
-        path_score_local: Integer;
-        path_segment_count_local: Integer;
-        selected_candidate_index_local: Integer;
-        candidate_text_local: string;
-        generated_path_local: string;
-        generator_query_local: string;
-        generated_top_score_local: Single;
-        duplicate_local: Boolean;
-        generator_syllables_local: TncPinyinParseResult;
-        generated_candidates_local: TncLongGeneratedCandidateArray;
-        generated_candidate_local: TncLongFinalCandidateDebug;
-        replacement_candidate_local: TncCandidate;
-        function is_allowed_generated_single_char_local(
-            const candidate_text: string): Boolean;
-        begin
-            Result := False;
-            if Length(candidate_text) <> 1 then
-            begin
-                Exit;
-            end;
-
-            case Ord(candidate_text[1]) of
-                $6211, $4F60, $4ED6, $5979, $5B83, $4EEC, $548C, $53BB, $6765,
-                $5728, $662F, $6709, $8981, $60F3, $4F1A, $80FD, $53EA, $628A, $88AB,
-                $8BA9, $7ED9, $5411, $5BF9, $8DDF, $540C, $4ECE, $4E0E, $4E8E, $5C31,
-                $4E5F, $90FD, $8FD8, $53C8, $518D, $4E0D, $5F88, $592A, $6700, $5DF2,
-                $5C06, $5230, $7684, $4E86, $7740, $8FC7, $4F46, $867D, $800C, $5E76,
-                $5374, $4E14:
-                    Result := True;
-            end;
-        end;
-
-        function infer_generated_exact_path_local(const candidate_text: string;
-            out out_segment_count: Integer): string;
-        var
-            units_local: TArray<string>;
-            valid_local: TArray<Boolean>;
-            paths_local: TArray<string>;
-            segment_counts_local: TArray<Integer>;
-            position_local: Integer;
-            segment_length_local: Integer;
-            syllable_index_local: Integer;
-            signature_index_local: Integer;
-            segment_pinyin_local: string;
-            segment_text_local: string;
-
-            function try_signature_path_local(const signature_path: string;
-                out signature_segment_count: Integer): string;
-            var
-                signature_parts_local: TArray<string>;
-                signature_part_local: string;
-                signature_units_local: TArray<string>;
-                signature_cursor_local: Integer;
-                signature_length_local: Integer;
-                signature_syllable_local: Integer;
-                signature_pinyin_local: string;
-                signature_text_local: string;
-            begin
-                Result := '';
-                signature_segment_count := 0;
-                signature_parts_local :=
-                    signature_path.Split([c_segment_path_separator]);
-                signature_cursor_local := 0;
-                for signature_part_local in signature_parts_local do
-                begin
-                    signature_units_local :=
-                        split_text_units(Trim(signature_part_local));
-                    signature_length_local := Length(signature_units_local);
-                    if (signature_length_local <= 0) or
-                        (signature_cursor_local + signature_length_local >
-                        Length(units_local)) then
-                    begin
-                        Exit('');
-                    end;
-                    signature_pinyin_local := '';
-                    signature_text_local := '';
-                    for signature_syllable_local := signature_cursor_local to
-                        signature_cursor_local + signature_length_local - 1 do
-                    begin
-                        signature_pinyin_local := signature_pinyin_local +
-                            LowerCase(Trim(generator_syllables_local[
-                            signature_syllable_local].text));
-                        signature_text_local := signature_text_local +
-                            units_local[signature_syllable_local];
-                    end;
-                    if signature_length_local = 1 then
-                    begin
-                        if not is_allowed_generated_single_char_local(
-                            signature_text_local) then
-                        begin
-                            Exit('');
-                        end;
-                    end
-                    else if not m_dictionary.is_base_entry(
-                        signature_pinyin_local, signature_text_local) then
-                    begin
-                        Exit('');
-                    end;
-                    if Result <> '' then
-                    begin
-                        Result := Result + c_segment_path_separator;
-                    end;
-                    Result := Result + signature_text_local;
-                    Inc(signature_segment_count);
-                    Inc(signature_cursor_local, signature_length_local);
-                end;
-                if (signature_cursor_local <> Length(units_local)) or
-                    (signature_segment_count <= 1) then
-                begin
-                    Result := '';
-                    signature_segment_count := 0;
-                end;
-            end;
-        begin
-            Result := '';
-            out_segment_count := 0;
-            if (m_dictionary = nil) or
-                (Length(generator_syllables_local) < 2) then
-            begin
-                Exit;
-            end;
-            units_local := split_text_units(Trim(candidate_text));
-            if Length(units_local) <> Length(generator_syllables_local) then
-            begin
-                Exit;
-            end;
-
-            for signature_index_local := 0 to
-                Min(neural_index_local - 1, 3) do
-            begin
-                Result := try_signature_path_local(
-                    neural_candidates[signature_index_local].segment_path,
-                    out_segment_count);
-                if Result <> '' then
-                begin
-                    Exit;
-                end;
-            end;
-
-            SetLength(valid_local, Length(units_local) + 1);
-            SetLength(paths_local, Length(units_local) + 1);
-            SetLength(segment_counts_local, Length(units_local) + 1);
-            valid_local[Length(units_local)] := True;
-            for position_local := High(units_local) downto 0 do
-            begin
-                for segment_length_local :=
-                    Min(c_direct_generation_word_max_syllables,
-                    Length(units_local) - position_local) downto 2 do
-                begin
-                    if not valid_local[position_local + segment_length_local] then
-                    begin
-                        Continue;
-                    end;
-                    segment_pinyin_local := '';
-                    segment_text_local := '';
-                    for syllable_index_local := position_local to
-                        position_local + segment_length_local - 1 do
-                    begin
-                        segment_pinyin_local := segment_pinyin_local +
-                            LowerCase(Trim(generator_syllables_local[
-                            syllable_index_local].text));
-                        segment_text_local := segment_text_local +
-                            units_local[syllable_index_local];
-                    end;
-                    if not m_dictionary.is_base_entry(segment_pinyin_local,
-                        segment_text_local) then
-                    begin
-                        Continue;
-                    end;
-                    valid_local[position_local] := True;
-                    segment_counts_local[position_local] :=
-                        segment_counts_local[position_local +
-                        segment_length_local] + 1;
-                    paths_local[position_local] := segment_text_local;
-                    if paths_local[position_local + segment_length_local] <> '' then
-                    begin
-                        paths_local[position_local] :=
-                            paths_local[position_local] +
-                            c_segment_path_separator +
-                            paths_local[position_local + segment_length_local];
-                    end;
-                    Break;
-                end;
-                if valid_local[position_local] then
-                begin
-                    Continue;
-                end;
-                if valid_local[position_local + 1] and
-                    is_allowed_generated_single_char_local(
-                    units_local[position_local]) then
-                begin
-                    valid_local[position_local] := True;
-                    segment_counts_local[position_local] :=
-                        segment_counts_local[position_local + 1] + 1;
-                    paths_local[position_local] := units_local[position_local];
-                    if paths_local[position_local + 1] <> '' then
-                    begin
-                        paths_local[position_local] :=
-                            paths_local[position_local] +
-                            c_segment_path_separator +
-                            paths_local[position_local + 1];
-                    end;
-                end;
-            end;
-            if valid_local[0] and (segment_counts_local[0] > 1) then
-            begin
-                Result := paths_local[0];
-                out_segment_count := segment_counts_local[0];
-            end;
-        end;
-    begin
-        if (not run_host_neural_reranker) or
-            (m_long_neural_reranker = nil) or (not unified_pool_final) or
-            (candidate_count < 2) or (m_last_lookup_syllable_count < 6) or
-            (m_last_lookup_syllable_count > 40) or
-            (m_config.pinyin_input_scheme <> pis_full_pinyin) or
-            is_fuzzy_pinyin_active or (not is_full_pinyin_key(
-            normalized_query)) then
-        begin
-            Exit;
-        end;
-
-        SetLength(neural_candidates, Min(candidate_count,
-            c_neural_candidate_limit));
-        SetLength(neural_candidate_indices, Length(neural_candidates));
-        neural_index_local := 0;
-        for ordered_position_local := 0 to candidate_count - 1 do
-        begin
-            candidate_index_local := ordered_indices[ordered_position_local];
-            if (not rank_features[candidate_index_local].complete_match) or
-                (Trim(legacy_candidates[candidate_index_local].comment) <> '') or
-                (rank_features[candidate_index_local].text_units <>
-                m_last_lookup_syllable_count) then
-            begin
-                Continue;
-            end;
-            if rank_features[candidate_index_local].source_user or
-                rank_features[candidate_index_local].complete_user then
-            begin
-                { User choices remain authoritative and are never submitted to
-                  the corpus-trained model. }
-                SetLength(neural_candidates, 0);
-                SetLength(neural_candidate_indices, 0);
-                Exit;
-            end;
-            candidate_text_local := Trim(
-                legacy_candidates[candidate_index_local].text);
-            if candidate_text_local = '' then
-            begin
-                Continue;
-            end;
-            duplicate_local := False;
-            for duplicate_index_local := 0 to neural_index_local - 1 do
-            begin
-                if SameText(neural_candidates[duplicate_index_local].text,
-                    candidate_text_local) then
-                begin
-                    duplicate_local := True;
-                    Break;
-                end;
-            end;
-            if duplicate_local then
-            begin
-                Continue;
-            end;
-
-            neural_candidates[neural_index_local] :=
-                Default(TncLongFinalCandidateDebug);
-            neural_candidates[neural_index_local].legacy_rank :=
-                candidate_index_local + 1;
-            neural_candidates[neural_index_local].final_rank :=
-                neural_index_local + 1;
-            copy_features_to_debug(rank_features[candidate_index_local],
-                neural_candidates[neural_index_local]);
-            if SameText(candidate_text_local,
-                Trim(exact_edge_baseline_top1)) then
-            begin
-                neural_candidates[neural_index_local].exact_edge_shadow_rank := 1;
-            end
-            else if SameText(candidate_text_local,
-                Trim(exact_edge_baseline_top2)) then
-            begin
-                neural_candidates[neural_index_local].exact_edge_shadow_rank := 2;
-            end;
-            neural_candidates[neural_index_local].exact_edge_auditor_decision :=
-                exact_edge_auditor_decision;
-            neural_candidates[neural_index_local].exact_edge_pre_auditor_rank :=
-                exact_edge_pre_auditor_ranks[candidate_index_local];
-            if exact_edge_auditor_decision >= 0 then
-            begin
-                neural_candidates[neural_index_local].exact_edge_auditor_score :=
-                    Round(exact_edge_auditor_score * 1000000.0);
-                neural_candidates[neural_index_local].exact_edge_auditor_threshold :=
-                    Round(exact_edge_auditor_threshold * 1000000.0);
-            end;
-            neural_candidates[neural_index_local].ranker_score :=
-                rank_scores[candidate_index_local];
-            neural_candidates[neural_index_local].abstain_score := abstain_score;
-            neural_candidates[neural_index_local].ranker_applied := apply_ranker;
-            neural_candidates[neural_index_local].text :=
-                legacy_candidates[candidate_index_local].text;
-            neural_candidates[neural_index_local].comment :=
-                legacy_candidates[candidate_index_local].comment;
-            neural_candidates[neural_index_local].segment_path :=
-                legacy_paths[candidate_index_local];
-            neural_candidate_indices[neural_index_local] :=
-                candidate_index_local;
-            Inc(neural_index_local);
-            if neural_index_local >= c_neural_candidate_limit then
-            begin
-                Break;
-            end;
-        end;
-        SetLength(neural_candidates, neural_index_local);
-        SetLength(neural_candidate_indices, neural_index_local);
-        if neural_index_local < 2 then
-        begin
-            Exit;
-        end;
-
-        generator_syllables_local :=
-            get_effective_compact_pinyin_syllables(normalized_query);
-        generator_query_local := '';
-        if Length(generator_syllables_local) =
-            m_last_lookup_syllable_count then
-        begin
-            for generated_index_local := 0 to
-                High(generator_syllables_local) do
-            begin
-                if generator_query_local <> '' then
-                begin
-                    generator_query_local := generator_query_local + '''';
-                end;
-                generator_query_local := generator_query_local +
-                    LowerCase(Trim(
-                    generator_syllables_local[generated_index_local].text));
-            end;
-        end;
-        SetLength(generated_candidates_local, 0);
-        if generator_query_local <> '' then
-        begin
-            try
-                if m_long_neural_reranker.should_generate(
-                    generator_query_local, neural_candidates) then
-                begin
-                    m_long_neural_reranker.try_generate(generator_query_local,
-                        generated_candidates_local);
-                end;
-            except
-                SetLength(generated_candidates_local, 0);
-            end;
-        end;
-        if Length(generated_candidates_local) >
-            c_direct_generation_limit then
-        begin
-            SetLength(generated_candidates_local,
-                c_direct_generation_limit);
-        end;
-        generated_count_local := 0;
-        generated_top_score_local := 0.0;
-        if Length(generated_candidates_local) > 0 then
-        begin
-            generated_top_score_local :=
-                generated_candidates_local[0].normalized_score;
-        end;
-        for generated_index_local := 0 to
-            High(generated_candidates_local) do
-        begin
-            candidate_text_local := Trim(
-                generated_candidates_local[generated_index_local].text);
-            if (candidate_text_local = '') or
-                (get_candidate_text_unit_count(candidate_text_local) <>
-                m_last_lookup_syllable_count) then
-            begin
-                Continue;
-            end;
-            generated_existing_neural_local := -1;
-            for duplicate_index_local := 0 to neural_index_local - 1 do
-            begin
-                if SameText(Trim(
-                    neural_candidates[duplicate_index_local].text),
-                    candidate_text_local) then
-                begin
-                    generated_existing_neural_local :=
-                        duplicate_index_local;
-                    Break;
-                end;
-            end;
-            if generated_existing_neural_local = 0 then
-            begin
-                { The generator agreeing with the settled Top1 is not a
-                  challenge and does not need a duplicate model row. }
-                Continue;
-            end;
-            duplicate_local := False;
-            for duplicate_index_local := neural_index_local to
-                neural_index_local + generated_count_local - 1 do
-            begin
-                if SameText(Trim(
-                    neural_candidates[duplicate_index_local].text),
-                    candidate_text_local) then
-                begin
-                    duplicate_local := True;
-                    Break;
-                end;
-            end;
-            if duplicate_local then
-            begin
-                Continue;
-            end;
-
-            path_score_local := 0;
-            path_segment_count_local := 0;
-            if generated_existing_neural_local > 0 then
-            begin
-                generated_path_local := Trim(
-                    neural_candidates[generated_existing_neural_local].segment_path);
-                path_score_local := neural_candidates[
-                    generated_existing_neural_local].path_confidence_score;
-                path_segment_count_local := neural_candidates[
-                    generated_existing_neural_local].path_segments;
-            end
-            else
-            begin
-                generated_path_local := infer_generated_exact_path_local(
-                    candidate_text_local, path_segment_count_local);
-            end;
-            if generated_path_local = '' then
-            begin
-                Continue;
-            end;
-
-            generated_existing_candidate_local := -1;
-            for candidate_index_local := 0 to candidate_count - 1 do
-            begin
-                if SameText(Trim(
-                    legacy_candidates[candidate_index_local].text),
-                    candidate_text_local) and
-                    (Trim(legacy_candidates[candidate_index_local].comment) = '') then
-                begin
-                    generated_existing_candidate_local :=
-                        candidate_index_local;
-                    Break;
-                end;
-            end;
-            if generated_existing_neural_local > 0 then
-            begin
-                generated_candidate_local :=
-                    neural_candidates[generated_existing_neural_local];
-            end
-            else
-            begin
-                generated_candidate_local :=
-                    Default(TncLongFinalCandidateDebug);
-                generated_candidate_local.input_syllable_count :=
-                    m_last_lookup_syllable_count;
-                generated_candidate_local.text_units :=
-                    m_last_lookup_syllable_count;
-                generated_candidate_local.complete_match := True;
-                generated_candidate_local.path_available := True;
-                generated_candidate_local.path_segments :=
-                    path_segment_count_local;
-                generated_candidate_local.path_confidence_score :=
-                    path_score_local;
-                generated_candidate_local.segment_path :=
-                    generated_path_local;
-                generated_candidate_local.text := candidate_text_local;
-            end;
-            generated_candidate_local.source_direct_generation := True;
-            generated_candidate_local.direct_generation_rank :=
-                generated_index_local + 1;
-            generated_candidate_local.direct_generation_score :=
-                generated_candidates_local[
-                generated_index_local].normalized_score;
-            generated_candidate_local.direct_generation_score_delta :=
-                generated_candidate_local.direct_generation_score -
-                generated_top_score_local;
-            generated_candidate_local.direct_generation_existing_rank := 0;
-            if generated_existing_neural_local > 0 then
-            begin
-                generated_candidate_local.direct_generation_existing_rank :=
-                    generated_existing_neural_local + 1;
-            end;
-            generated_candidate_local.text := candidate_text_local;
-            generated_candidate_local.comment := '';
-            generated_candidate_local.segment_path := generated_path_local;
-            SetLength(neural_candidates, Length(neural_candidates) + 1);
-            SetLength(neural_candidate_indices,
-                Length(neural_candidate_indices) + 1);
-            neural_candidates[High(neural_candidates)] :=
-                generated_candidate_local;
-            neural_candidate_indices[High(neural_candidate_indices)] :=
-                generated_existing_candidate_local;
-            Inc(generated_count_local);
-        end;
-
-        neural_selected_index := 0;
-        try
-            if (not m_long_neural_reranker.try_select(normalized_query,
-                neural_candidates, neural_selected_index)) or
-                (neural_selected_index <= 0) or
-                (neural_selected_index >= Length(neural_candidates)) then
-            begin
-                Exit;
-            end;
-        except
-            { A missing or unhealthy optional model must never break input. }
-            Exit;
-        end;
-
-        selected_candidate_index_local :=
-            neural_candidate_indices[neural_selected_index];
-        if selected_candidate_index_local < 0 then
-        begin
-            replacement_candidate_index_local :=
-                ordered_indices[candidate_count - 1];
-            replacement_candidate_local := Default(TncCandidate);
-            replacement_candidate_local.text :=
-                neural_candidates[neural_selected_index].text;
-            replacement_candidate_local.comment := '';
-            replacement_candidate_local.score :=
-                legacy_candidates[ordered_indices[0]].score;
-            replacement_candidate_local.source := cs_rule;
-            replacement_candidate_local.has_dict_weight := False;
-            replacement_candidate_local.dict_weight := 0;
-            replacement_candidate_local.display_kind := cdk_default;
-            legacy_candidates[replacement_candidate_index_local] :=
-                replacement_candidate_local;
-            legacy_paths[replacement_candidate_index_local] :=
-                neural_candidates[neural_selected_index].segment_path;
-            legacy_source_indices[replacement_candidate_index_local] := -1;
-            FillChar(rank_features[replacement_candidate_index_local],
-                SizeOf(rank_features[replacement_candidate_index_local]), 0);
-            rank_features[replacement_candidate_index_local].complete_match :=
-                True;
-            rank_features[replacement_candidate_index_local].text_units :=
-                m_last_lookup_syllable_count;
-            rank_features[replacement_candidate_index_local].path_available :=
-                True;
-            rank_features[replacement_candidate_index_local].path_segments :=
-                neural_candidates[neural_selected_index].path_segments;
-            rank_features[replacement_candidate_index_local].
-                path_confidence_score :=
-                neural_candidates[neural_selected_index].
-                path_confidence_score;
-            remember_segment_path_for_candidate(
-                replacement_candidate_local.text, '',
-                legacy_paths[replacement_candidate_index_local]);
-            selected_candidate_index_local :=
-                replacement_candidate_index_local;
-        end;
-        for ordered_position_local := 0 to candidate_count - 1 do
-        begin
-            if ordered_indices[ordered_position_local] =
-                selected_candidate_index_local then
-            begin
-                for candidate_index_local := ordered_position_local downto 1 do
-                begin
-                    ordered_indices[candidate_index_local] :=
-                        ordered_indices[candidate_index_local - 1];
-                end;
-                ordered_indices[0] := selected_candidate_index_local;
-                apply_ranker := True;
-                Break;
-            end;
-        end;
-    end;
-
 begin
     ranking_phase_tick := 0;
     ranking_phase_frequency := 0;
@@ -142148,10 +141394,6 @@ begin
     end;
     exact_edge_current_top_index := ordered_indices[0];
     apply_exact_edge_final_auditor;
-    { The optional host-only Transformer sees the settled complete Top16 and
-      may make one confidence-gated promotion. A nil/not-ready model is an
-      exact no-op, so TSF and cold-start paths retain the native ordering. }
-    apply_host_neural_reranker;
 
     if apply_ranker then
     begin
@@ -142763,7 +142005,6 @@ begin
             item.suffix_path := words[idx].text;
             item.base_rank := 1;
             item.replace_units := replace;
-            item.tail_word := True;
             item.tail_rank := idx + 1;
             Result := Result + [item];
         end;
@@ -142795,7 +142036,6 @@ var
         item.suffix_path := word.text;
         item.base_rank := 1;
         item.replace_units := 0;
-        item.tail_word := True;
         item.tail_rank := rank;
         Inc(rank);
         candidates := candidates + [item];
@@ -142951,16 +142191,12 @@ procedure TncEngine.apply_visible_local_repair(var candidates: TncCandidateList;
     var source_indices: TArray<Integer>; const expected_units: Integer);
 var
     text, path, key, segment, replacement, original_path: string;
-    document_key, preceding_text, aligned_pinyin, repair_query: string;
-    refined_text, refined_pinyin, joint_second: string;
-    refinement_override: string;
-    minimum_word_ratio, refined_word_ratio: Double;
+    aligned_pinyin, repair_query: string;
+    minimum_word_ratio: Double;
     index, existing, saved_source, position, unit_index: Integer;
     original_segments: TArray<string>;
     candidate, saved: TncCandidate;
-    repair_accepted, joint_available: Boolean;
-    boundary_enabled, path_validation_enabled: Boolean;
-    validated, refined_path, joint_path: TncValidatedRepairPath;
+    validated: TncValidatedRepairPath;
     procedure remember_validated_path(const source_index: Integer);
     begin
         if not m_local_repair_validated.exact_path or
@@ -143029,16 +142265,11 @@ begin
     // Only a real full-query dictionary entry is an immutable exact candidate.
     if candidates[0].has_dict_weight and m_dictionary.is_base_entry(
         normalize_pinyin_text(m_composition_text), candidates[0].text) then Exit;
-    document_key := '';
-    preceding_text := '';
-    if m_document_context_model <> nil then
-    begin
-        document_key := m_document_context_model.document_key;
-        preceding_text := m_document_context_model.semantic_tail;
-    end;
+    // The pinyin-conditioned LM rewrites the settled top1 (after the shared
+    // LM's long rerank). A rewrite is kept when its characters spell the
+    // syllables and it has a dictionary path; the model already compared the
+    // whole sentences.
     key := m_composition_text + #0 + m_last_lookup_key;
-    key := key + #0 + document_key + #0 + preceding_text;
-    if (key = m_style_repair_key) and (candidates[0].text = m_style_repair_text) then Exit;
     text := '';
     if (key = m_local_repair_query_key) and (m_local_repair_text <> '') and
         ((candidates[0].text = m_local_repair_draft) or
@@ -143046,138 +142277,30 @@ begin
         text := m_local_repair_text
     else
     begin
-        m_local_repair_validated := Default(TncValidatedRepairPath);
-        if m_debug_capture_local_repair then
-        begin
-            m_debug_local_repair_guard := Default(TncLocalRepairGuardDebug);
-            m_debug_local_repair_guard.query_text := m_composition_text;
-            m_debug_local_repair_guard.draft := candidates[0].text;
-            m_debug_local_repair_guard.segment_path :=
-                get_segment_path_for_candidate(candidates[0], source_indices[0]);
-            m_debug_local_repair_guard.invoked := True;
-        end;
+        validated := Default(TncValidatedRepairPath);
         // Model vocabularies use canonical syllables, with explicit boundaries intact.
         repair_query := nc_normalize_umlaut_spelling(m_composition_text);
-        joint_available := (preceding_text = '') and
-            (m_long_joint_repair <> nil) and m_long_joint_repair.joint_ready;
         try
-            repair_accepted := m_long_local_repair.try_repair(repair_query,
-                candidates[0].text, document_key, preceding_text, text,
-                aligned_pinyin, minimum_word_ratio);
-            if m_debug_capture_local_repair then
-            begin
-                m_debug_local_repair_guard.proposal := text;
-                m_debug_local_repair_guard.aligned_pinyin := aligned_pinyin;
-                m_debug_local_repair_guard.accepted := repair_accepted;
-            end;
-            if not repair_accepted then
-            begin
-                if not joint_available or (aligned_pinyin = '') then Exit;
+            if not m_long_local_repair.try_repair(repair_query, candidates[0].text, '', '',
+                text, aligned_pinyin, minimum_word_ratio) then
                 text := candidates[0].text;
-            end;
         except
             Exit;
         end;
-        if (text = '') or (Length(text) <> expected_units) then Exit;
-        original_path := get_segment_path_for_candidate(candidates[0], source_indices[0]);
-        boundary_enabled := GetEnvironmentVariable('CASSOTIS_LOCAL_REPAIR_BOUNDARIES') <> '0';
-        path_validation_enabled := boundary_enabled or
-            (GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') = '1');
-        validated := Default(TncValidatedRepairPath);
-        if path_validation_enabled and repair_accepted then
+        if Length(text) <> expected_units then Exit;
+        if text <> candidates[0].text then
         begin
-            validated := validate_local_repair_path(m_dictionary, candidates[0].text,
-                text, original_path, aligned_pinyin, minimum_word_ratio, boundary_enabled);
-            text := validated.text;
-        end
-        else if repair_accepted then
-            text := guard_local_repair_words(m_dictionary, candidates[0].text,
-                text, original_path, aligned_pinyin, minimum_word_ratio);
-        if m_debug_capture_local_repair then
-            m_debug_local_repair_guard.guarded := text;
-        // Reuse the guarded first pass as context, without changing its accepted
-        // positions or increasing the total edit budget. Contextual refinement
-        // has not passed a separate gate and remains on the original single pass.
-        refinement_override := GetEnvironmentVariable('CASSOTIS_LOCAL_REPAIR_REFINE');
-        if ((refinement_override = '1') or
-            ((refinement_override <> '0') and (m_long_local_repair_policy <> nil) and
-            m_long_local_repair_policy.allows_no_context_refinement)) and
-            (preceding_text = '') and (text <> candidates[0].text) then
-        begin
-            try
-                if m_long_local_repair.try_repair(repair_query, text,
-                    document_key, preceding_text, refined_text, refined_pinyin,
-                    refined_word_ratio) and (refined_pinyin = aligned_pinyin) and
-                    (refined_word_ratio = minimum_word_ratio) and
-                    valid_local_repair_refinement(candidates[0].text, text, refined_text) then
-                begin
-                    if path_validation_enabled then
-                    begin
-                        refined_path := validate_local_repair_path(m_dictionary,
-                            candidates[0].text, refined_text, original_path,
-                            aligned_pinyin, minimum_word_ratio, boundary_enabled);
-                        refined_text := refined_path.text;
-                    end
-                    else refined_text := guard_local_repair_words(m_dictionary,
-                        candidates[0].text, refined_text, original_path,
-                        aligned_pinyin, minimum_word_ratio);
-                    if valid_local_repair_refinement(candidates[0].text, text, refined_text) then
-                    begin
-                        text := refined_text;
-                        if path_validation_enabled then validated := refined_path;
-                    end;
-                end;
-            except
-                // A failed optional pass must retain the valid first result.
-            end;
-        end;
-        m_local_repair_baseline_text := text;
-        if joint_available and path_validation_enabled then
-        begin
-            joint_second := '';
-            if Length(candidates) > 1 then
-            begin
-                joint_second := candidates[1].text;
-                if candidates[1].comment <> '' then
-                    joint_second := joint_second + '/' + candidates[1].comment
-                else if text = joint_second then joint_second := candidates[0].text;
-            end;
-            // The KEEP here is the settled, guarded/refined baseline result.
-            // Only this last stage may replace it; the complete path travels with it.
-            try
-                if m_long_joint_repair.try_finalize(m_dictionary, repair_query,
-                    candidates[0].text, original_path, text, joint_second,
-                    aligned_pinyin, document_key, preceding_text, joint_path) and
-                    joint_path.exact_path and (Length(joint_path.text) = expected_units) and
-                    (joint_path.aligned_pinyin = aligned_pinyin) and
-                    (StringReplace(joint_path.segment_path, #3, '', [rfReplaceAll]) =
-                    joint_path.text) then
-                begin
-                    text := joint_path.text;
-                    validated := joint_path;
-                end;
-            except
-                // Optional adjudication failure never discards the baseline.
-            end;
+            validated := build_repair_path(m_dictionary, text, aligned_pinyin);
+            if not validated.exact_path then text := candidates[0].text;
         end;
         m_local_repair_query_key := key;
         m_local_repair_text := text;
         m_local_repair_draft := candidates[0].text;
-        m_local_repair_original_path := original_path;
+        m_local_repair_original_path := get_segment_path_for_candidate(candidates[0],
+            source_indices[0]);
         m_local_repair_validated := validated;
     end;
     if text = candidates[0].text then Exit;
-    // Reproduce the baseline's swap before applying a different final winner.
-    // Otherwise replacing a repaired second item would silently change Top2.
-    if (Length(candidates) > 1) and
-        (m_local_repair_baseline_text = candidates[1].text) and
-        (candidates[1].comment = '') and
-        (text <> m_local_repair_baseline_text) then
-    begin
-        saved := candidates[0]; saved_source := source_indices[0];
-        candidates[0] := candidates[1]; source_indices[0] := source_indices[1];
-        candidates[1] := saved; source_indices[1] := saved_source;
-    end;
     // If repair selects an existing visible item, swap the records and their
     // source indices together. Otherwise replace only the first visible slot.
     for index := 1 to High(candidates) do
@@ -143246,146 +142369,6 @@ begin
     source_indices[0] := existing;
     remember_validated_path(existing);
     sync_paging_pool;
-end;
-
-procedure TncEngine.apply_visible_style_repair(var candidates: TncCandidateList;
-    var source_indices: TArray<Integer>; const expected_units: Integer);
-var
-    document_key, preceding_text, key, first_path, second, second_path: string;
-    selected: TncValidatedRepairPath;
-    pool, updated: TncCandidateList;
-    indices, updated_indices: TArray<Integer>;
-    item: TncCandidate;
-    source, i, count, complete_count, page_size: Integer;
-    seen: TDictionary<string, Byte>;
-    item_key: string;
-begin
-    if (m_long_style_repair = nil) or (m_dictionary = nil) or (m_page_index <> 0) or
-        (Length(candidates) = 0) or (Length(candidates) <> Length(source_indices)) or
-        (expected_units < 6) or (expected_units > 32) or
-        (m_config.pinyin_input_scheme <> pis_full_pinyin) or
-        (m_config.dictionary_variant <> dv_simplified) or m_config.fuzzy_pinyin_enabled or
-        (m_confirmed_text <> '') or (candidates[0].source = cs_user) or
-        (candidates[0].comment <> '') or (Length(candidates[0].text) <> expected_units) then Exit;
-    document_key := '';
-    preceding_text := '';
-    if m_document_context_model <> nil then
-    begin
-        document_key := m_document_context_model.document_key;
-        preceding_text := m_document_context_model.semantic_tail;
-    end;
-    if preceding_text <> '' then Exit;
-    key := m_composition_text + #0 + m_last_lookup_key + #0 + document_key + #0 + preceding_text;
-    if (key = m_style_repair_key) and (candidates[0].text = m_style_repair_text) then Exit;
-    if candidates[0].has_dict_weight and m_dictionary.is_base_entry(
-        normalize_pinyin_text(m_composition_text), candidates[0].text) then Exit;
-    first_path := get_segment_path_for_candidate(candidates[0], source_indices[0]);
-    second := '';
-    second_path := '';
-    if (Length(candidates) > 1) and (candidates[1].comment = '') and
-        (Length(candidates[1].text) = expected_units) then
-    begin
-        // Insertion must not displace an existing complete user candidate.
-        if candidates[1].source = cs_user then Exit;
-        second := candidates[1].text;
-        second_path := get_segment_path_for_candidate(candidates[1], source_indices[1]);
-    end;
-    selected := Default(TncValidatedRepairPath);
-    try
-        if not m_long_style_repair.try_style_repair(m_dictionary,
-            nc_normalize_umlaut_spelling(m_composition_text), candidates[0].text,
-            second, first_path, second_path, document_key, preceding_text, selected) or
-            not selected.exact_path or (Length(selected.text) <> expected_units) or
-            (selected.text = candidates[0].text) or
-            (StringReplace(selected.segment_path, #3, '', [rfReplaceAll]) <> selected.text) then Exit;
-    except
-        Exit;
-    end;
-    source := -1;
-    for i := 0 to High(m_candidates) do
-        if (m_candidates[i].text = selected.text) and (m_candidates[i].comment = '') then
-        begin
-            source := i;
-            Break;
-        end;
-    if source < 0 then
-    begin
-        item := Default(TncCandidate);
-        item.text := selected.text;
-        item.score := candidates[0].score;
-        item.source := cs_rule;
-        item.display_kind := cdk_default;
-        source := Length(m_candidates);
-        SetLength(m_candidates, source + 1);
-        m_candidates[source] := item;
-    end;
-    m_candidate_segment_paths := Copy(m_candidate_segment_paths);
-    if Length(m_candidate_segment_paths) <= source then
-        SetLength(m_candidate_segment_paths, source + 1);
-    m_candidate_segment_paths[source] := selected.segment_path;
-    remember_segment_path_for_candidate(selected.text, '', selected.segment_path);
-    page_size := get_candidate_page_size;
-    pool := Copy(candidates);
-    indices := Copy(source_indices);
-    if m_long_visible_candidate_pool_cache_valid and
-        (m_long_visible_candidate_pool_cache_key = get_long_visible_candidate_pool_cache_key(page_size)) and
-        (Length(m_long_visible_candidate_pool_cache) = Length(m_long_visible_candidate_pool_source_indices_cache)) then
-    begin
-        pool := Copy(m_long_visible_candidate_pool_cache);
-        indices := Copy(m_long_visible_candidate_pool_source_indices_cache);
-        for i := 0 to High(candidates) do
-            if i < Length(pool) then
-            begin
-                pool[i] := candidates[i];
-                indices[i] := source_indices[i];
-            end;
-    end;
-    SetLength(updated, Length(pool) + 1);
-    SetLength(updated_indices, Length(pool) + 1);
-    updated[0] := m_candidates[source];
-    updated_indices[0] := source;
-    count := 1;
-    complete_count := 1;
-    seen := TDictionary<string, Byte>.Create;
-    try
-        seen.Add(nc_visible_candidate_key(updated[0], ''), 0);
-        for i := 0 to High(pool) do
-        begin
-            item_key := nc_visible_candidate_key(pool[i], normalize_pinyin_text(Trim(pool[i].comment)));
-            if seen.ContainsKey(item_key) then Continue;
-            if (pool[i].comment = '') and (Length(pool[i].text) = expected_units) then
-            begin
-                if complete_count >= 2 then Continue;
-                Inc(complete_count);
-            end;
-            seen.Add(item_key, 0);
-            updated[count] := pool[i];
-            updated_indices[count] := indices[i];
-            Inc(count);
-        end;
-    finally seen.Free; end;
-    SetLength(updated, count);
-    SetLength(updated_indices, count);
-    m_long_visible_candidate_pool_cache := updated;
-    m_long_visible_candidate_pool_source_indices_cache := updated_indices;
-    m_long_visible_candidate_pool_cache_key := get_long_visible_candidate_pool_cache_key(page_size);
-    m_long_visible_candidate_pool_source_signature := get_candidate_state_signature;
-    m_long_visible_candidate_pool_cache_valid := True;
-    candidates := Copy(updated, 0, Min(page_size, count));
-    source_indices := Copy(updated_indices, 0, Length(candidates));
-    m_style_repair_key := key;
-    m_style_repair_text := selected.text;
-    m_style_repair_validated := selected;
-    m_style_completion_query_key := '';
-    if not (m_one_key_completion.source in
-        [okcs_user_exact, okcs_base_exact, okcs_transition]) then
-        clear_one_key_completion
-    else
-    begin
-        m_has_long_neural_completion_request := False;
-        m_long_neural_completion_request := Default(TncLongNeuralCompletionRequest);
-        m_long_neural_completion_prefix_locked := False;
-    end;
 end;
 
 procedure TncEngine.normalize_page_and_selection;
@@ -193261,8 +192244,6 @@ var
             begin
                 build_visible_long_sentence_candidate_pool_local;
             end;
-            apply_visible_local_repair(Result, visible_source_indices, expected_units);
-            apply_visible_style_repair(Result, visible_source_indices, expected_units);
             add_decreasing_sentence_prefixes_local;
             if (m_page_index = 0) and (not m_candidate_navigation_started) and
                 (expected_units >= 2) and (expected_units <= 4) and
@@ -193291,6 +192272,8 @@ var
             if apply_char_lm_long_top(Result, visible_source_indices, expected_units,
                 visible_page_size) then
                 short_context_swapped := True;
+            // The pinyin-conditioned LM repairs the settled top1.
+            apply_visible_local_repair(Result, visible_source_indices, expected_units);
             if apply_mixed_abbreviation_top(Result, visible_source_indices,
                 visible_page_size) then
                 short_context_swapped := True;
@@ -194125,7 +193108,6 @@ end;
 
 function TncEngine.get_one_key_completion: TncOneKeyCompletion;
 begin
-    refresh_style_prefix_completion;
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
     carry_validated_prefix_completion;
     if GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') = 'carry' then
@@ -194157,7 +193139,6 @@ end;
 function TncEngine.get_long_neural_completion_request(
     out request: TncLongNeuralCompletionRequest): Boolean;
 begin
-    refresh_style_prefix_completion;
     request := Default(TncLongNeuralCompletionRequest);
     Result := m_has_long_neural_completion_request and
         ((m_one_key_completion.text = '') or
@@ -194170,21 +193151,6 @@ begin
     begin
         request := m_long_neural_completion_request;
     end;
-end;
-
-function TncEngine.get_prefetch_long_neural_completion_request(
-    out request: TncLongNeuralCompletionRequest): Boolean;
-begin
-    request := Default(TncLongNeuralCompletionRequest);
-    // Only overlap an already prepared fallback request. Experimental repaired
-    // anchors must wait for visible repair; exact/static hints need no prefetch.
-    Result := (TThread.ProcessorCount >= 8) and
-        (m_page_index = 0) and
-        ((m_one_key_completion.text = '') or
-        (m_one_key_completion.source = okcs_exact_tail_fallback)) and
-        (GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') <> '1') and
-        (GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') <> 'carry') and
-        get_long_neural_completion_request(request);
 end;
 
 function TncEngine.apply_long_neural_completion(
@@ -194324,6 +193290,41 @@ var
         Result := True;
     end;
 
+    // The LM's continuation after the suffix takes dictionary readings,
+    // longest words first, and ends before a character without a reading.
+    procedure read_extension(var text, continuation, path: string);
+    var
+        value, segment: string;
+        readings: TncOneKeyCompletionList;
+        position, segment_length: Integer;
+        found: Boolean;
+    begin
+        value := Trim(completion_result.extension);
+        if Length(value) > c_char_lm_tab_extend_max_chars then
+            Exit;
+        position := 1;
+        while position <= Length(value) do
+        begin
+            segment_length := Length(value) - position + 1;
+            found := False;
+            while (segment_length >= 1) and not found do
+            begin
+                segment := Copy(value, position, segment_length);
+                found := m_dictionary.lookup_words_starting_with(segment, segment_length,
+                    segment_length, 1, readings) and (Length(readings) > 0) and
+                    (readings[0].text = segment) and (readings[0].full_pinyin <> '');
+                if not found then
+                    Dec(segment_length);
+            end;
+            if not found then
+                Break;
+            text := text + segment;
+            continuation := continuation + readings[0].full_pinyin;
+            path := path + #3 + segment;
+            Inc(position, segment_length);
+        end;
+    end;
+
     function trim_path_tail(const path_value: string;
         const units: Integer): string;
     var
@@ -194380,7 +193381,6 @@ var
     end;
 begin
     Result := False;
-    refresh_style_prefix_completion;
     if (m_dictionary = nil) or
         ((m_one_key_completion.text <> '') and
         (not (m_one_key_completion.source in [okcs_long_transition, okcs_exact_tail_fallback]))) or
@@ -194494,6 +193494,7 @@ begin
             Exit;
         end;
     end;
+    read_extension(suffix_text, continuation_pinyin, result_path);
     if (m_one_key_completion.source = okcs_long_transition) and
         (Length(suffix_text) = 1) and
         (completion_result.confidence <
@@ -194888,20 +193889,6 @@ end;
 function TncEngine.get_debug_last_commit_segment_path: string;
 begin
     Result := m_last_debug_commit_segment_path;
-end;
-
-procedure TncEngine.debug_enable_local_repair_capture(const enabled: Boolean);
-begin
-    m_debug_capture_local_repair := enabled;
-    m_debug_local_repair_guard := Default(TncLocalRepairGuardDebug);
-end;
-
-function TncEngine.debug_get_local_repair_guard: TncLocalRepairGuardDebug;
-begin
-    Result := Default(TncLocalRepairGuardDebug);
-    if m_debug_capture_local_repair and
-        (m_debug_local_repair_guard.query_text = m_composition_text) then
-        Result := m_debug_local_repair_guard;
 end;
 
 function TncEngine.get_debug_candidate_segment_path(const candidate_index: Integer): string;

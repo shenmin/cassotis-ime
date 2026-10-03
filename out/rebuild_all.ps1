@@ -1051,66 +1051,46 @@ function copy_sqlite_binaries
     }
 }
 
+function get_published_lm_files([string]$source, [string]$label)
+{
+    # The repository stores each model as parts below GitHub's file size limit.
+    Restore-CharLmModel -Directory $source
+    $manifest = Get-Content -LiteralPath (Join-Path $source 'runtime_manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($manifest.format -ne 1) { throw "Unsupported $label model format" }
+    $files = @($manifest.files.PSObject.Properties.Name)
+    foreach ($name in $files) {
+        if ([IO.Path]::GetFileName($name) -ne $name) { throw "Invalid $label asset: $name" }
+        if ((Get-FileHash -LiteralPath (Join-Path $source $name) -Algorithm SHA256).Hash -ine $manifest.files.$name) {
+            throw "$label asset hash mismatch: $name"
+        }
+    }
+    return @($files + 'runtime_manifest.json')
+}
+
 function build_and_copy_pinyin_transformer_runtime
 {
     $native_build = Join-Path $root_dir 'tools\build_pinyin_transformer_ort.ps1'
     $runtime_source = Join-Path $root_dir 'third_party\onnxruntime\win64'
-    $model_source = Join-Path $root_dir 'data\models\pinyin_transformer'
-    $model_target = Join-Path $script_dir 'pinyin_transformer'
-    $local_completion_source = Join-Path $root_dir 'data\models\local_completion'
-    $local_completion_target = Join-Path $script_dir 'local_completion'
-    $repair_source = Join-Path $root_dir 'data\models\local_repair'
-    $repair_target = Join-Path $script_dir 'local_repair'
-    # The shared character LM covers the short-context reranker (rbt3), so
-    # it is no longer published; a copy left from older builds is removed below.
-    $retired_short_target = Join-Path $script_dir 'short_context'
+    # Retired models, removed when an older build left them in the runtime:
+    # local completion (Tab now uses the shared character LM), the short-context
+    # reranker (covered by the shared LM), and the pinyin generator and local
+    # repair encoders (replaced by the pinyin-conditioned LM).
+    $retired_targets = @('local_completion', 'short_context', 'pinyin_transformer', 'local_repair') |
+        ForEach-Object { Join-Path $script_dir $_ }
     $char_lm_source = Join-Path $root_dir 'data\models\char_lm'
     $char_lm_target = Join-Path $script_dir 'char_lm'
-    # The repository stores the model as parts below GitHub's file size limit.
+    $pinyin_lm_source = Join-Path $root_dir 'data\models\pinyin_lm'
+    $pinyin_lm_target = Join-Path $script_dir 'pinyin_lm'
     . (Join-Path $root_dir 'tools\char_lm_model_parts.ps1')
-    Restore-CharLmModel -Directory $char_lm_source
-    $char_lm_manifest = Get-Content -LiteralPath (Join-Path $char_lm_source 'runtime_manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($char_lm_manifest.format -ne 1) { throw 'Unsupported character LM model format' }
-    $char_lm_files = @($char_lm_manifest.files.PSObject.Properties.Name)
-    foreach ($name in $char_lm_files) {
-        if ([IO.Path]::GetFileName($name) -ne $name) { throw "Invalid character LM asset: $name" }
-        if ((Get-FileHash -LiteralPath (Join-Path $char_lm_source $name) -Algorithm SHA256).Hash -ine $char_lm_manifest.files.$name) {
-            throw "Character LM asset hash mismatch: $name"
-        }
-    }
-    $char_lm_files += 'runtime_manifest.json'
-    $repair_files = @('context_int8.onnx', 'query_int8.onnx', 'vocab.json', 'readings.json')
-    $repair_manifest_path = Join-Path $repair_source 'runtime_manifest.json'
-    if (Test-Path -LiteralPath $repair_manifest_path)
-    {
-        $repair_manifest = Get-Content -LiteralPath $repair_manifest_path -Raw -Encoding UTF8 | ConvertFrom-Json
-        if (($repair_manifest.enabled -eq $true) -and ($repair_manifest.joint_bilateral -eq $true))
-        {
-            $repair_files += @('joint_query_int8.onnx', 'joint_head_int8.onnx', 'bilateral_head_int8.onnx')
-        }
-    }
-    # Publish the enabling manifest only after its graphs have been copied.
-    if (($null -ne $repair_manifest) -and ($repair_manifest.enabled -eq $true) -and
-        ($repair_manifest.style_phrase_recovery -eq $true))
-    {
-        $repair_files += @('style_head.onnx', 'style_phrases.bin', 'style_manifest.json')
-    }
-    $repair_files += 'runtime_manifest.json'
+    $char_lm_files = get_published_lm_files $char_lm_source 'Character LM'
+    $pinyin_lm_files = get_published_lm_files $pinyin_lm_source 'Pinyin LM'
     $required_sources = @(
         $native_build,
         (Join-Path $runtime_source 'onnxruntime.dll'),
-        (Join-Path $runtime_source 'onnxruntime_providers_shared.dll'),
-        (Join-Path $model_source 'pinyin_conditional_scorer_int8.onnx'),
-        (Join-Path $model_source 'pinyin_parallel_generator_int8.onnx'),
-        (Join-Path $model_source 'pinyin_parallel_allowed.bin'),
-        (Join-Path $model_source 'vocab.json'),
-        (Join-Path $local_completion_source 'local_completion_path_ranker_int8.onnx'),
-        (Join-Path $local_completion_source 'local_completion_generator_int8.onnx'),
-        (Join-Path $local_completion_source 'local_completion_index.bin'),
-        (Join-Path $local_completion_source 'model_manifest.json')
+        (Join-Path $runtime_source 'onnxruntime_providers_shared.dll')
     )
-    foreach ($name in $repair_files) { $required_sources += Join-Path $repair_source $name }
     foreach ($name in $char_lm_files) { $required_sources += Join-Path $char_lm_source $name }
+    foreach ($name in $pinyin_lm_files) { $required_sources += Join-Path $pinyin_lm_source $name }
     foreach ($required_source in $required_sources)
     {
         if (-not (Test-Path -LiteralPath $required_source))
@@ -1140,28 +1120,19 @@ function build_and_copy_pinyin_transformer_runtime
             Remove-Item -Force -LiteralPath $legacy_path
         }
     }
-    New-Item -ItemType Directory -Force -Path $model_target | Out-Null
-    Copy-Item -Force -LiteralPath (Join-Path $model_source 'pinyin_conditional_scorer_int8.onnx') -Destination $model_target
-    Copy-Item -Force -LiteralPath (Join-Path $model_source 'pinyin_parallel_generator_int8.onnx') -Destination $model_target
-    Copy-Item -Force -LiteralPath (Join-Path $model_source 'pinyin_parallel_allowed.bin') -Destination $model_target
-    Copy-Item -Force -LiteralPath (Join-Path $model_source 'vocab.json') -Destination $model_target
-    New-Item -ItemType Directory -Force -Path $local_completion_target | Out-Null
-    Copy-Item -Force -LiteralPath (Join-Path $local_completion_source 'local_completion_path_ranker_int8.onnx') -Destination $local_completion_target
-    Copy-Item -Force -LiteralPath (Join-Path $local_completion_source 'local_completion_generator_int8.onnx') -Destination $local_completion_target
-    Copy-Item -Force -LiteralPath (Join-Path $local_completion_source 'local_completion_index.bin') -Destination $local_completion_target
-    Copy-Item -Force -LiteralPath (Join-Path $local_completion_source 'model_manifest.json') -Destination $local_completion_target
-    New-Item -ItemType Directory -Force -Path $repair_target | Out-Null
-    foreach ($name in $repair_files)
-    {
-        publish_runtime_file (Join-Path $repair_source $name) (Join-Path $repair_target $name)
+    foreach ($retired_target in $retired_targets) {
+        if (Test-Path -LiteralPath $retired_target) {
+            Remove-Item -LiteralPath $retired_target -Recurse -Force
+        }
     }
-    if (Test-Path -LiteralPath $retired_short_target) {
-        Remove-Item -LiteralPath $retired_short_target -Recurse -Force
-    }
-    # The host verifies these hashes again before loading the model.
+    # The host verifies these hashes again before loading each model.
     New-Item -ItemType Directory -Force -Path $char_lm_target | Out-Null
     foreach ($name in $char_lm_files) {
         publish_runtime_file (Join-Path $char_lm_source $name) (Join-Path $char_lm_target $name)
+    }
+    New-Item -ItemType Directory -Force -Path $pinyin_lm_target | Out-Null
+    foreach ($name in $pinyin_lm_files) {
+        publish_runtime_file (Join-Path $pinyin_lm_source $name) (Join-Path $pinyin_lm_target $name)
     }
 }
 

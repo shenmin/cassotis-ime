@@ -25,9 +25,10 @@ For the Long-sentence One-key Completion Benchmark-16300, the rule starts with `
 
 Starting with `v1.30.0`, all four suites load the same model set that the Host deploys, so the results match the input method users actually run:
 
-- the long-sentence Transformer reranker and its local-repair models;
+- the long-sentence models: up to `v1.31.0`, the Pinyin-conditioned candidate generator, the local-repair models, and the Pinyin-conditioned scorer that reranked complete candidates; after `v1.31.0`, a Pinyin-conditioned language model fine-tuned from the shared character-level language model replaces them and rewrites the settled long-sentence result against the typed syllables;
 - the shared character-level language model, which reranks long-sentence and short-word candidates and takes part in choosing long-sentence one-key continuations; releases after `v1.30.0` also use it to choose short-word one-key completions; in long-sentence one-key completion they use it to score candidates that complete the word cut by the end of the input, to propose next characters, and to choose the tail word of the exact-tail fallback;
-- the short-word context reranker has been replaced by the shared character-level language model and is no longer shipped from `v1.30.0`.
+- the short-word context reranker has been replaced by the shared character-level language model and is no longer shipped from `v1.30.0`;
+- after `v1.31.0`, the shared character-level language model weighs long-sentence one-key continuations on its own and extends the chosen continuation by up to three characters while it is confident; the constrained local-completion ranker and generator are no longer shipped.
 
 In `v1.29.0` and earlier, the Short-word Context Benchmark loaded only the short-word context reranker, and the One-key Completion Context Benchmark loaded no neural model. Keep this change in mind when comparing across versions.
 
@@ -52,7 +53,7 @@ Benchmark-16300 contains 16,300 eligible sentences extracted from the novel in a
 
 - Accuracy runs use deterministic-work mode: normal search paths do not stop on wall-clock time and remain bounded by fixed beam, state, edge, candidate, and work limits. Changes in machine load therefore do not change normal candidate generation.
 - Latency runs use production mode: fixed work limits are the primary boundary, with wider emergency wall-clock ceilings retained to prevent unacceptable stalls on malformed long Pinyin or slower machines.
-- Both modes load the same deployed long-sentence Transformer reranker as the Host. A missing or incomplete runtime is an error rather than a silent fallback; disabling it is reserved for explicitly labelled diagnostic runs.
+- Both modes load the same deployed long-sentence Transformer models as the Host. A missing or incomplete runtime is an error rather than a silent fallback; disabling it is reserved for explicitly labelled diagnostic runs.
 - The two measurements are run separately. The eight-slice runner accelerates accuracy evaluation and is not used for latency measurement.
 
 ### Latency Protocol
@@ -134,8 +135,8 @@ This benchmark measures whether one-key completion can extend a partially decode
 
 - Reuse all 16,300 fixed long-sentence cases and their reviewed full Pinyin queries.
 - Leave the final four complete Pinyin syllables untyped while retaining at least the first four syllables as the visible composition prefix.
-- Decode that prefix in deterministic-work mode with the same long-sentence Transformer reranker used by the Host.
-- Run the same constrained local-completion model when the static layer requests asynchronous refinement, apply the same confidence, timeout, and exact-path validation, then read only the single settled completion that the UI would display.
+- Decode that prefix in deterministic-work mode with the same long-sentence Transformer models used by the Host.
+- Run the same asynchronous continuation as the Host when the static layer requests refinement (the constrained local-completion models up to `v1.31.0`, the shared character-level language model afterwards), apply the same confidence, timeout, and exact-path validation, then read only the single settled completion that the UI would display.
 - Count a local-continuation hit when the displayed result extends the intended typed prefix and the whole displayed text remains a prefix of the reference sentence, both under the shared `他`/`她` rule from `v1.30.0`. The completion may stop after the next one to three local words; it does not have to reproduce the rest of the sentence in one step.
 - Disable the user dictionary and external document context, and use a snapshot of the simplified base dictionary selected for the tested release.
 - Query the immediately preceding syllable boundary before the scored query to measure whether a compatible completion remains stable as typing continues.

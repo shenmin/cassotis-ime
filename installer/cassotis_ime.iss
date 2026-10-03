@@ -14,12 +14,6 @@
 #ifndef RuntimeBuildId
   #define RuntimeBuildId "manual"
 #endif
-#ifndef HasJointRepair
-  #define HasJointRepair 0
-#endif
-#ifndef HasStyleRepair
-  #define HasStyleRepair 0
-#endif
 #define RuntimeRoot "{localappdata}\CassotisIme"
 #define InstallRuntimeDir "{app}\runtime\" + AppVersion + "_" + RuntimeBuildId
 
@@ -59,6 +53,8 @@ Name: "{localappdata}\CassotisIme\logs"
 [InstallDelete]
 ; The short-word context model (rbt3) is no longer shipped; drop its notices on upgrade.
 Type: filesandordirs; Name: "{app}\licenses\rbt3"
+; The MacBERT-derived local repair model is replaced by the pinyin-conditioned LM.
+Type: filesandordirs; Name: "{app}\licenses\macbert"
 
 [Files]
 Source: "{#RuntimeDir}\cassotis_ime_host.exe"; DestDir: "{#InstallRuntimeDir}"; Flags: ignoreversion onlyifdoesntexist
@@ -73,34 +69,13 @@ Source: "{#RuntimeDir}\sqlite3_64.dll"; DestDir: "{#InstallRuntimeDir}"; Flags: 
 Source: "{#RuntimeDir}\cassotis_pinyin_transformer_ort.dll"; DestDir: "{#InstallRuntimeDir}"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\onnxruntime.dll"; DestDir: "{#InstallRuntimeDir}"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\onnxruntime_providers_shared.dll"; DestDir: "{#InstallRuntimeDir}"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_transformer\pinyin_conditional_scorer_int8.onnx"; DestDir: "{#InstallRuntimeDir}\pinyin_transformer"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_transformer\pinyin_parallel_generator_int8.onnx"; DestDir: "{#InstallRuntimeDir}\pinyin_transformer"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_transformer\pinyin_parallel_allowed.bin"; DestDir: "{#InstallRuntimeDir}\pinyin_transformer"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_transformer\vocab.json"; DestDir: "{#InstallRuntimeDir}\pinyin_transformer"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_completion\local_completion_path_ranker_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_completion"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_completion\local_completion_generator_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_completion"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_completion\local_completion_index.bin"; DestDir: "{#InstallRuntimeDir}\local_completion"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_completion\model_manifest.json"; DestDir: "{#InstallRuntimeDir}\local_completion"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\char_lm\char_lm.onnx"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\char_lm\char_lm_vocab.bin"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\char_lm\runtime_manifest.json"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\context_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\query_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\vocab.json"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\readings.json"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\runtime_manifest.json"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-#if HasStyleRepair
-Source: "{#RuntimeDir}\local_repair\style_head.onnx"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\style_phrases.bin"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\style_manifest.json"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-#endif
-#if HasJointRepair
-Source: "{#RuntimeDir}\local_repair\joint_query_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\joint_head_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\local_repair\bilateral_head_int8.onnx"; DestDir: "{#InstallRuntimeDir}\local_repair"; Flags: ignoreversion onlyifdoesntexist
-#endif
-Source: "{#SourceRoot}\third_party\macbert\LICENSE"; DestDir: "{app}\licenses\macbert"; Flags: ignoreversion
-Source: "{#SourceRoot}\third_party\macbert\NOTICE"; DestDir: "{app}\licenses\macbert"; Flags: ignoreversion
+Source: "{#RuntimeDir}\pinyin_lm\char_lm.onnx"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
+Source: "{#RuntimeDir}\pinyin_lm\char_lm_vocab.bin"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
+Source: "{#RuntimeDir}\pinyin_lm\pinyin_readings.json"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
+Source: "{#RuntimeDir}\pinyin_lm\runtime_manifest.json"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#SourceRoot}\third_party\onnxruntime\LICENSE"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 Source: "{#SourceRoot}\third_party\onnxruntime\ThirdPartyNotices.txt"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 

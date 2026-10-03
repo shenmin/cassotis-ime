@@ -31,24 +31,28 @@ type
             out next_logp: TArray<Single>): Integer;
     end;
 
+    { Optional: the greedy continuation of text after context, at most
+      max_chars Han characters (one per element of chars), each with its
+      log-probability under the full distribution. Returns how many characters
+      were produced, or -1. }
+    IncCharLmContinue = interface
+        ['{4E8B2D71-93C6-4A5F-B0E2-7D1C5A9F3E68}']
+        function continue_text(const context, text: string; const max_chars: Integer;
+            out chars: TArray<string>; out logp: TArray<Single>): Integer;
+    end;
+
     { A continuation proposed for Tab: the kept base prefix (top1 or top2 minus
-      replace_units characters) and the suffix, with the local-completion
-      ranker's score and ABSTAIN score. rank is the pool rank (1-based), 0 for
-      the fallback generator and tail words. A tail word is a dictionary word
-      that continues the last replace_units typed syllables (the word cut by
-      the input end); tail_rank is its weight rank among those words. }
+      replace_units characters) and a dictionary word as the suffix. With
+      replace_units > 0 the word continues the last typed syllables (a tail
+      word: the word cut by the input end); with 0 it follows the decoded text
+      (a next word). tail_rank is its weight rank among those words. }
     TncCharLmContinuation = record
         base_text: string;
         suffix_text: string;
         // The decoded text the base was kept from (top1 or top2); with
         // replace_units it gives the re-read of the typed tail.
         full_base_text: string;
-        rank: Integer;
         base_rank: Integer;
-        score: Single;
-        abstain_score: Single;
-        generator: Boolean;
-        tail_word: Boolean;
         replace_units: Integer;
         tail_rank: Integer;
         // A tail word whose replaced characters spell the typed syllables
@@ -96,6 +100,15 @@ const
       on the policy's own features) as the most hits whose prompt precision is
       not below the previous round's, and among equal hits the fewest prompts. }
     c_char_lm_tab_min_probability = 0.02;
+    { The shown continuation is followed by the LM's greedy continuation while
+      each character has at least this probability (after an LM next
+      character, after a dictionary word), up to this many characters, so that
+      a word is not cut after its first character. Chosen on the Tab dev set as
+      the most saved characters while the hits lost stay within half of what
+      the LM-only continuation gained there over v1.31.0. }
+    c_char_lm_tab_extend_lm_next_probability = 0.7;
+    c_char_lm_tab_extend_word_probability = 0.85;
+    c_char_lm_tab_extend_max_chars = 3;
     { One-key completion rerank: the first entries of the dictionary pool plus
       the incumbent choice, chosen on the 10,150-opportunity fiction one-key
       dev set (5-fold CV). }
@@ -121,21 +134,28 @@ function nc_char_lm_choose_short_top(const model: IncCharLm; const context: stri
     const texts: TArray<string>; out best_index: Integer): Boolean;
 
 { Estimates P(the displayed continuation is correct) for each candidate from
-  the ranker scores, log P(base + suffix | context) - log P(base | context) and
-  each candidate's standing in the pool, with a gradient-boosted classifier fit
-  on the Tab dev set (nc_tab_continuation_gbdt). Ranked and generator
-  candidates are always scored; tail words only while the scored texts fit
+  log P(base + suffix | context) - log P(base | context) and each candidate's
+  standing in the pool, with a gradient-boosted classifier fit on the Tab dev
+  set (nc_tab_continuation_gbdt). The decoded top1/top2 (decoded_texts) are
+  always scored; candidates only while the scored texts fit
   c_tab_tail_node_budget, best ranks first, and the rest are ignored. When the
   model implements IncCharLmNext, the LM's next characters after the decoded
-  top1/top2 (not for phonetic-only requests) and after the best re-read typed
-  tails join the pool. Returns False when nothing was scored; otherwise chosen
-  is the most probable continuation (ties keep the earlier one), best_index
-  its index in candidates (-1 for an LM next character) and probability its
-  estimate. }
+  texts (not for phonetic-only requests) and after the best re-read typed
+  tails join the pool, so it works without any candidate. Returns False when
+  nothing was scored; otherwise chosen is the most probable continuation (ties
+  keep the earlier one), best_index its index in candidates (-1 for an LM next
+  character) and probability its estimate. }
 function nc_char_lm_choose_continuation(const model: IncCharLm; const context: string;
     const candidates: TArray<TncCharLmContinuation>; const phonetic_only: Boolean;
-    out chosen: TncCharLmContinuation; out best_index: Integer;
-    out probability: Double): Boolean;
+    const decoded_texts: TArray<string>; out chosen: TncCharLmContinuation;
+    out best_index: Integer; out probability: Double): Boolean;
+
+{ The characters that follow a shown continuation: the LM's greedy
+  continuation of text (at most c_char_lm_tab_extend_max_chars), cut before
+  the first character below min_probability ('' when the model cannot
+  continue). }
+function nc_char_lm_extend_continuation(const model: IncCharLm; const context,
+    text: string; const min_probability: Double): string;
 
 { Chooses the one-key completion from the first c_char_lm_completion_limit
   pool entries and the incumbent (the established ranker's choice) with a
@@ -165,8 +185,7 @@ implementation
 
 const
     // Tail and next words are scored in rank order while the packed trie of
-    // the continuation texts stays within this many nodes beyond the context:
-    // the ranked pool keeps its v1.30 cost bound, dictionary words fill the rest.
+    // the continuation texts stays within this many nodes beyond the context.
     c_tab_tail_node_budget = 96;
     // LM next characters: this many after each expanded text, for the decoded
     // top1/top2 and the best re-read typed tails by log-probability.
@@ -294,8 +313,8 @@ end;
 
 function nc_char_lm_choose_continuation(const model: IncCharLm; const context: string;
     const candidates: TArray<TncCharLmContinuation>; const phonetic_only: Boolean;
-    out chosen: TncCharLmContinuation; out best_index: Integer;
-    out probability: Double): Boolean;
+    const decoded_texts: TArray<string>; out chosen: TncCharLmContinuation;
+    out best_index: Integer; out probability: Double): Boolean;
 type
     // A scored continuation: an input candidate (source >= 0) or an LM next
     // character (source -1).
@@ -334,21 +353,24 @@ var
     prefixes, rereads: TArray<TPrefix>;
     prefix: TPrefix;
     entry: TScored;
+    top_idx: array[0..1] of Integer;
     features: array[0..c_tab_gbdt_feature_count - 1] of Double;
     idx, other, units, required, scored, typed, rank, slot, lp_rank, best: Integer;
-    best_base, top_score, lm_best, lp_max, suffix_lp, p: Double;
-    has_ranked, usable, duplicate: Boolean;
+    best_base, lm_best, lp_max, suffix_lp, p: Double;
+    usable, duplicate: Boolean;
     text, suffix, ch: string;
 begin
     Result := False;
     best_index := -1;
     chosen := Default(TncCharLmContinuation);
     probability := 0.0;
-    if (model = nil) or (Length(candidates) = 0) or (not model.char_lm_ready) then
+    if (model = nil) or (not model.char_lm_ready) or ((Length(candidates) = 0) and
+        ((Length(decoded_texts) = 0) or (decoded_texts[0] = ''))) then
         Exit;
-    // The ranked pool and the generator are always scored: each base and full
-    // text, then each re-read and decoded base. Tail words follow by rank (more
-    // replaced syllables first) while the trie fits the node budget.
+    // The decoded top1 and top2 are always scored: the readings every
+    // continuation starts from. Candidates follow by rank (more replaced
+    // syllables first) with their base, full text, re-read and decoded base
+    // while the trie fits the node budget.
     SetLength(base_idx, Length(candidates));
     SetLength(full_idx, Length(candidates));
     SetLength(reread_idx, Length(candidates));
@@ -361,36 +383,30 @@ begin
         full_idx[idx] := -1;
         reread_idx[idx] := -1;
         decoded_idx[idx] := -1;
-        if candidates[idx].tail_word then
-            Continue;
-        base_idx[idx] := text_index(candidates[idx].base_text);
-        full_idx[idx] := text_index(candidates[idx].base_text + candidates[idx].suffix_text);
     end;
-    for idx := 0 to High(candidates) do
-        if (not candidates[idx].tail_word) and (candidates[idx].full_base_text <> '') then
-        begin
-            reread_idx[idx] := text_index(candidates[idx].base_text +
-                Copy(candidates[idx].suffix_text, 1, Max(0, candidates[idx].replace_units)));
-            decoded_idx[idx] := text_index(candidates[idx].full_base_text);
-        end;
+    for rank := 0 to 1 do
+    begin
+        top_idx[rank] := -1;
+        if (rank < Length(decoded_texts)) and (decoded_texts[rank] <> '') then
+            top_idx[rank] := text_index(decoded_texts[rank]);
+    end;
     required := Length(texts);
     SetLength(tail_order, 0);
     for idx := 0 to High(candidates) do
-        if candidates[idx].tail_word then
+    begin
+        // Stable insertion by (tail rank, replaced units descending).
+        other := Length(tail_order);
+        tail_order := tail_order + [idx];
+        while (other > 0) and ((candidates[tail_order[other - 1]].tail_rank >
+            candidates[idx].tail_rank) or ((candidates[tail_order[other - 1]].tail_rank =
+            candidates[idx].tail_rank) and (candidates[tail_order[other - 1]].replace_units <
+            candidates[idx].replace_units))) do
         begin
-            // Stable insertion by (tail rank, replaced units descending).
-            other := Length(tail_order);
-            tail_order := tail_order + [idx];
-            while (other > 0) and ((candidates[tail_order[other - 1]].tail_rank >
-                candidates[idx].tail_rank) or ((candidates[tail_order[other - 1]].tail_rank =
-                candidates[idx].tail_rank) and (candidates[tail_order[other - 1]].replace_units <
-                candidates[idx].replace_units))) do
-            begin
-                tail_order[other] := tail_order[other - 1];
-                Dec(other);
-            end;
-            tail_order[other] := idx;
+            tail_order[other] := tail_order[other - 1];
+            Dec(other);
         end;
+        tail_order[other] := idx;
+    end;
     for idx in tail_order do
     begin
         base_idx[idx] := text_index(candidates[idx].base_text);
@@ -407,27 +423,25 @@ begin
     for idx := 0 to High(next_slot) do
         next_slot[idx] := -1;
     SetLength(next_texts, 0);
+    for rank := 0 to 1 do
+        if (top_idx[rank] >= 0) and (next_slot[top_idx[rank]] < 0) then
+        begin
+            next_slot[top_idx[rank]] := Length(next_texts);
+            next_texts := next_texts + [top_idx[rank]];
+        end;
     for idx := 0 to High(candidates) do
     begin
-        if candidates[idx].tail_word then
-        begin
-            if (candidates[idx].replace_units > 0) and candidates[idx].exact_reread then
-                other := reread_idx[idx]
-            else
-                other := -1;
-        end
-        else if candidates[idx].generator then
-            other := -1
-        else
-            other := decoded_idx[idx];
+        other := -1;
+        if (candidates[idx].replace_units > 0) and candidates[idx].exact_reread then
+            other := reread_idx[idx];
         if (other >= 0) and (next_slot[other] < 0) then
         begin
             next_slot[other] := Length(next_texts);
             next_texts := next_texts + [other];
         end;
     end;
-    // The native budget counts BOS and the context characters as well. With
-    // an empty ranked pool at least the first tail word's base is required.
+    // The native budget counts BOS and the context characters as well.
+    // Without a decoded text at least the first candidate's base is required.
     required := Max(1, required);
     if (Length(next_texts) > 0) and Supports(model, IncCharLmNext, next_model) then
         scored := next_model.score_texts_next(context, texts, required,
@@ -464,38 +478,35 @@ begin
         if candidates[idx].full_base_text <> '' then
             typed := Max(typed, nc_char_lm_code_point_count(candidates[idx].full_base_text));
     end;
+    if top_idx[0] >= 0 then
+        typed := Max(typed, nc_char_lm_code_point_count(decoded_texts[0]));
 
     // Texts to expand: the decoded top1 and top2, then the re-read tails with
     // the best log-probability.
     SetLength(prefixes, 0);
     if (Length(next_texts) > 0) and (not phonetic_only) then
         for rank := 1 to 2 do
-            for entry in scored_items do
-                if (not entry.item.tail_word) and (not entry.item.generator) and
-                    (entry.item.base_rank = rank) and (entry.item.full_base_text <> '') then
-                begin
-                    if nc_char_lm_code_point_count(entry.item.full_base_text) = typed then
-                    begin
-                        prefix := Default(TPrefix);
-                        prefix.text := entry.item.full_base_text;
-                        prefix.base := prefix.text;
-                        prefix.full_base := prefix.text;
-                        prefix.base_rank := rank;
-                        prefix.slot := next_slot[decoded_idx[entry.source]];
-                        prefix.lp_prefix := logp[decoded_idx[entry.source]];
-                        prefix.lp_base := prefix.lp_prefix;
-                        prefix.lp_full_base := prefix.lp_prefix;
-                        prefix.has_full_base := True;
-                        prefixes := prefixes + [prefix];
-                    end;
-                    Break;
-                end;
+            if (top_idx[rank - 1] >= 0) and (top_idx[rank - 1] < scored) and
+                (nc_char_lm_code_point_count(decoded_texts[rank - 1]) = typed) then
+            begin
+                prefix := Default(TPrefix);
+                prefix.text := decoded_texts[rank - 1];
+                prefix.base := prefix.text;
+                prefix.full_base := prefix.text;
+                prefix.base_rank := rank;
+                prefix.slot := next_slot[top_idx[rank - 1]];
+                prefix.lp_prefix := logp[top_idx[rank - 1]];
+                prefix.lp_base := prefix.lp_prefix;
+                prefix.lp_full_base := prefix.lp_prefix;
+                prefix.has_full_base := True;
+                prefixes := prefixes + [prefix];
+            end;
     SetLength(rereads, 0);
     if Length(next_texts) > 0 then
         for entry in scored_items do
         begin
-            if (not entry.item.tail_word) or (entry.item.replace_units <= 0) or
-                (not entry.item.exact_reread) or (reread_idx[entry.source] < 0) then
+            if (entry.item.replace_units <= 0) or (not entry.item.exact_reread) or
+                (reread_idx[entry.source] < 0) then
                 Continue;
             text := entry.item.base_text + Copy(entry.item.suffix_text, 1,
                 entry.item.replace_units);
@@ -558,7 +569,6 @@ begin
             entry.item.full_base_text := prefix.full_base;
             entry.item.base_rank := prefix.base_rank;
             entry.item.replace_units := prefix.replace_units;
-            entry.item.tail_word := True;
             entry.item.tail_rank := rank;
             entry.item.lm_next := True;
             entry.source := -1;
@@ -576,19 +586,11 @@ begin
     best_base := -MaxDouble;
     lm_best := -MaxDouble;
     lp_max := -MaxDouble;
-    top_score := 0.0;
-    has_ranked := False;
     for entry in scored_items do
     begin
         best_base := Max(best_base, entry.lp_base);
         lm_best := Max(lm_best, entry.lp_full - entry.lp_base);
         lp_max := Max(lp_max, entry.lp_full);
-        if not (entry.item.generator or entry.item.tail_word) then
-        begin
-            if (not has_ranked) or (entry.item.score > top_score) then
-                top_score := entry.item.score;
-            has_ranked := True;
-        end;
     end;
 
     best := -1;
@@ -597,39 +599,24 @@ begin
         entry := scored_items[idx];
         suffix_lp := entry.lp_full - entry.lp_base;
         units := Max(1, nc_char_lm_code_point_count(entry.item.suffix_text));
-        if entry.item.generator or entry.item.tail_word then
-        begin
-            features[0] := 0.0;
-            features[1] := 0.0;
-            features[2] := 0.0;
-        end
-        else
-        begin
-            features[0] := entry.item.score;
-            features[1] := entry.item.score - entry.item.abstain_score;
-            features[2] := entry.item.score - top_score;
-        end;
-        if entry.item.rank > 0 then
-            features[3] := Ln(entry.item.rank)
-        else
-            features[3] := 0.0;
+        // Features 0-3, 10 and 11 described the retired local-completion
+        // ranker and generator pool; the trained model keeps their slots.
+        features[0] := 0.0;
+        features[1] := 0.0;
+        features[2] := 0.0;
+        features[3] := 0.0;
         features[4] := suffix_lp;
         features[5] := suffix_lp / units;
         features[6] := units;
         features[7] := entry.lp_base - best_base;
         features[8] := suffix_lp - lm_best;
         features[9] := Ord(entry.item.base_rank = 2);
-        features[10] := Ord(entry.item.generator);
-        features[11] := Ord(entry.item.tail_word);
-        features[12] := 0.0;
-        features[13] := 0.0;
-        if entry.item.tail_word then
-        begin
-            features[12] := entry.item.replace_units;
-            features[13] := Ln(Max(1, entry.item.tail_rank));
-        end;
+        features[10] := 0.0;
+        features[11] := 1.0;
+        features[12] := entry.item.replace_units;
+        features[13] := Ln(Max(1, entry.item.tail_rank));
         features[14] := entry.reread_gain;
-        features[15] := Ord(entry.item.tail_word and (entry.item.replace_units = 0));
+        features[15] := Ord(entry.item.replace_units = 0);
         features[16] := 0.0;
         features[17] := 0.0;
         if features[15] > 0 then
@@ -671,6 +658,28 @@ begin
     chosen := scored_items[best].item;
     best_index := scored_items[best].source;
     Result := True;
+end;
+
+function nc_char_lm_extend_continuation(const model: IncCharLm; const context,
+    text: string; const min_probability: Double): string;
+var
+    continuer: IncCharLmContinue;
+    chars: TArray<string>;
+    logp: TArray<Single>;
+    produced, idx: Integer;
+begin
+    Result := '';
+    if (model = nil) or (text = '') or (not model.char_lm_ready) or
+        (not Supports(model, IncCharLmContinue, continuer)) then
+        Exit;
+    produced := continuer.continue_text(context, text, c_char_lm_tab_extend_max_chars,
+        chars, logp);
+    for idx := 0 to Min(produced, Min(Length(chars), Length(logp))) - 1 do
+    begin
+        if (chars[idx] = '') or (Exp(logp[idx]) < min_probability) then
+            Break;
+        Result := Result + chars[idx];
+    end;
 end;
 
 function nc_char_lm_choose_completion(const model: IncCharLm; const context: string;

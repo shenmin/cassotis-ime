@@ -296,6 +296,171 @@ int CharLmContinue(CharLmHandle& h, const wchar_t* context, const wchar_t* prefi
     return static_cast<int>(logps.size());
 }
 
+// Correction of a draft with the pinyin-conditioned model (model consolidation,
+// step 3). The prompt is BOS + context (the host's pinyin, draft marker, draft
+// and separator); the corrected text follows it, one character per draft
+// character, each from that position's allowed ids. One run scores the draft
+// as the corrected text. When the best allowed character differs from the
+// draft somewhere, a beam of `width` paths starts at the first such position
+// and grows as a tree over the cached prompt and draft prefix, one run per
+// position. Returns 0 when the model keeps the draft, 1 with the best text
+// other than the draft and its log-probability gain over the draft, -1 on error.
+int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
+    const std::vector<std::vector<int64_t>>& allowed, int width, std::wstring& out_text,
+    float& out_gain, Ort::RunOptions& options) {
+    const auto context_ids = CharLmEncode(h, context);
+    const auto draft_ids = CharLmEncode(h, draft);
+    const size_t n = draft_ids.size();
+    if (n == 0 || allowed.size() != n || width < 1) return -1;
+    const int64_t prompt = 1 + static_cast<int64_t>(context_ids.size());
+    const int64_t total = prompt + static_cast<int64_t>(n);
+    if (total > h.block_size) return -1;
+    std::vector<int64_t> ids{kCharLmBos};
+    ids.insert(ids.end(), context_ids.begin(), context_ids.end());
+    ids.insert(ids.end(), draft_ids.begin(), draft_ids.end());
+    std::vector<int64_t> positions(static_cast<size_t>(total));
+    for (int64_t i = 0; i < total; ++i) positions[static_cast<size_t>(i)] = i;
+    std::vector<int32_t> mask(static_cast<size_t>(total * total), 1);
+    auto outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, true, options);
+    const int64_t vocab = h.vocab_size;
+    const float* logp = outputs[0].GetTensorData<float>();
+    auto row = [&](int64_t r) { return logp + static_cast<size_t>(r * vocab); };
+
+    float draft_total = 0.0f;
+    std::vector<float> draft_prefix(n + 1, 0.0f);
+    size_t first = n, last = n;
+    for (size_t t = 0; t < n; ++t) {
+        const float* dist = row(prompt - 1 + static_cast<int64_t>(t));
+        draft_prefix[t + 1] = draft_prefix[t] + dist[draft_ids[t]];
+        int64_t best = -1;
+        for (int64_t id : allowed[t])
+            if (best < 0 || dist[id] > dist[best]) best = id;
+        if (best >= 0 && best != draft_ids[t]) {
+            if (first == n) first = t;
+            last = t;
+        }
+    }
+    draft_total = draft_prefix[n];
+    if (first == n) return 0;
+
+    // Keep the cache of the prompt and the draft before the first disagreement.
+    const int64_t kept = prompt + static_cast<int64_t>(first);
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::AllocatorWithDefaultOptions allocator;
+    std::vector<Ort::Value> past;
+    for (size_t i = 1; i < outputs.size(); ++i) {
+        const auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();  // [2,1,H,T,D]
+        const std::array<int64_t, 5> cut{shape[0], shape[1], shape[2], kept, shape[4]};
+        Ort::Value value = Ort::Value::CreateTensor<float>(allocator, cut.data(), cut.size());
+        const float* src = outputs[i].GetTensorData<float>();
+        float* dst = value.GetTensorMutableData<float>();
+        const int64_t blocks = shape[0] * shape[1] * shape[2];
+        for (int64_t b = 0; b < blocks; ++b)
+            std::memcpy(dst + b * kept * shape[4], src + b * shape[3] * shape[4],
+                sizeof(float) * static_cast<size_t>(kept * shape[4]));
+        past.push_back(std::move(value));
+    }
+
+    struct Beam { std::vector<int64_t> tokens; std::vector<int64_t> nodes; float score; };
+    auto expand = [&](const std::vector<Beam>& beams, const std::vector<const float*>& dists, size_t t) {
+        std::vector<std::pair<float, std::pair<size_t, int64_t>>> options_list;
+        for (size_t j = 0; j < beams.size(); ++j)
+            for (int64_t id : allowed[t])
+                options_list.push_back({beams[j].score + dists[j][id], {j, id}});
+        const size_t keep = std::min(options_list.size(), static_cast<size_t>(width));
+        std::partial_sort(options_list.begin(), options_list.begin() + keep, options_list.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<Beam> next;
+        for (size_t k = 0; k < keep; ++k) {
+            Beam beam = beams[options_list[k].second.first];
+            beam.tokens.push_back(options_list[k].second.second);
+            beam.score = options_list[k].first;
+            next.push_back(std::move(beam));
+        }
+        return next;
+    };
+    std::vector<Beam> beams{{{}, {}, draft_prefix[first]}};
+    beams = expand(beams, {row(prompt - 1 + static_cast<int64_t>(first))}, first);
+    int64_t cached = kept;
+    // Once every path is back on the draft for two characters and the draft
+    // has no later disagreement, each path finishes with the draft: one run
+    // scores those suffixes instead of one run per remaining position.
+    auto rejoined = [&](size_t t) {
+        if (t <= last || t + 1 >= n || t < first + 2) return false;
+        for (const auto& beam : beams) {
+            const size_t k = beam.tokens.size();
+            if (k < 2 || beam.tokens[k - 1] != draft_ids[t] || beam.tokens[k - 2] != draft_ids[t - 1]) return false;
+        }
+        return true;
+    };
+    for (size_t t = first + 1; t < n && !beams.empty(); ++t) {
+        if (rejoined(t - 1)) {
+            // Nodes per path: its last character (position t - 1), then the draft
+            // up to position n - 2; node k predicts position t + k.
+            const int64_t chain = static_cast<int64_t>(n - t);
+            const int64_t s = static_cast<int64_t>(beams.size()) * chain;
+            std::vector<int64_t> step_ids, step_positions;
+            std::vector<int32_t> step_mask(static_cast<size_t>(s * (cached + s)), 0);
+            for (size_t j = 0; j < beams.size(); ++j) {
+                for (int64_t k = 0; k < chain; ++k) {
+                    const int64_t node = static_cast<int64_t>(j) * chain + k;
+                    step_ids.push_back(k == 0 ? beams[j].tokens.back() : draft_ids[t - 1 + static_cast<size_t>(k)]);
+                    step_positions.push_back(prompt + static_cast<int64_t>(t) - 1 + k);
+                    int32_t* m = step_mask.data() + node * (cached + s);
+                    for (int64_t c = 0; c < kept; ++c) m[c] = 1;
+                    for (int64_t prior : beams[j].nodes) m[prior] = 1;
+                    for (int64_t q = 0; q <= k; ++q) m[cached + static_cast<int64_t>(j) * chain + q] = 1;
+                }
+            }
+            auto step = CharLmRun(h, step_ids, step_positions, step_mask, cached, &past, false, options);
+            const float* step_logp = step[0].GetTensorData<float>();
+            for (size_t j = 0; j < beams.size(); ++j) {
+                for (int64_t k = 0; k < chain; ++k) {
+                    const size_t target = t + static_cast<size_t>(k);
+                    const float* dist = step_logp + static_cast<size_t>((static_cast<int64_t>(j) * chain + k) * vocab);
+                    beams[j].score += dist[draft_ids[target]];
+                    beams[j].tokens.push_back(draft_ids[target]);
+                }
+            }
+            break;
+        }
+        const int64_t s = static_cast<int64_t>(beams.size());
+        std::vector<int64_t> step_ids, step_positions;
+        std::vector<int32_t> step_mask(static_cast<size_t>(s * (cached + s)), 0);
+        for (int64_t j = 0; j < s; ++j) {
+            Beam& beam = beams[static_cast<size_t>(j)];
+            step_ids.push_back(beam.tokens.back());
+            step_positions.push_back(prompt + static_cast<int64_t>(t) - 1);
+            int32_t* m = step_mask.data() + j * (cached + s);
+            for (int64_t c = 0; c < kept; ++c) m[c] = 1;
+            for (int64_t node : beam.nodes) m[node] = 1;
+            m[cached + j] = 1;
+            beam.nodes.push_back(cached + j);
+        }
+        auto step = CharLmRun(h, step_ids, step_positions, step_mask, cached, &past, true, options);
+        past.clear();
+        for (size_t i = 1; i < step.size(); ++i) past.push_back(std::move(step[i]));
+        cached += s;
+        const float* step_logp = step[0].GetTensorData<float>();
+        std::vector<const float*> dists;
+        for (int64_t j = 0; j < s; ++j) dists.push_back(step_logp + static_cast<size_t>(j * vocab));
+        beams = expand(beams, dists, t);
+    }
+    const Beam* best = nullptr;
+    for (const auto& beam : beams) {
+        bool same = true;
+        for (size_t k = 0; k < beam.tokens.size(); ++k) same = same && beam.tokens[k] == draft_ids[first + k];
+        if (!same && (!best || beam.score > best->score)) best = &beam;
+    }
+    if (!best) return 0;
+    out_text.clear();
+    for (size_t t = 0; t < first; ++t)
+        CharLmAppendUtf16(out_text, h.code_points[static_cast<size_t>(draft_ids[t] - 2)]);
+    for (int64_t id : best->tokens) CharLmAppendUtf16(out_text, h.code_points[static_cast<size_t>(id - 2)]);
+    out_gain = best->score - draft_total;
+    return 1;
+}
+
 }  // namespace
 
 extern "C" __declspec(dllexport) void* __cdecl nc_lm_create(
@@ -428,5 +593,47 @@ extern "C" __declspec(dllexport) int __cdecl nc_lm_continue(void* handle, const 
         return produced;
     } catch (const std::exception& e) { SetError(error, capacity, Utf8ToWide(e.what())); }
     catch (...) { SetError(error, capacity, L"character LM continuation failed"); }
+    return -1;
+}
+
+// Draft correction for the pinyin-conditioned model (see CharLmCorrect). allowed
+// lists the code points each draft character may become, as one array with
+// draft_length + 1 offsets; characters outside the vocabulary are skipped.
+// Writes the corrected text (UTF-16, NUL-terminated) and its gain; returns 1,
+// 0 when the draft is kept, or -1.
+extern "C" __declspec(dllexport) int __cdecl nc_lm_correct(void* handle, const wchar_t* context,
+    const wchar_t* draft, const uint32_t* allowed_code_points, const int* allowed_offsets,
+    int width, wchar_t* out_text, int out_capacity, float* out_gain, int timeout_ms,
+    wchar_t* error, int capacity) {
+    SetError(error, capacity, L"");
+    try {
+        if (!handle || !draft || !allowed_code_points || !allowed_offsets || !out_text || !out_gain ||
+            width < 1 || width > 16 || out_capacity < 2) return -1;
+        out_text[0] = L'\0';
+        auto& h = *static_cast<CharLmHandle*>(handle);
+        const size_t n = CharLmEncode(h, draft).size();
+        std::vector<std::vector<int64_t>> allowed(n);
+        for (size_t t = 0; t < n; ++t) {
+            for (int k = allowed_offsets[t]; k < allowed_offsets[t + 1]; ++k) {
+                const auto found = h.vocabulary.find(allowed_code_points[k]);
+                if (found != h.vocabulary.end()) allowed[t].push_back(found->second);
+            }
+        }
+        std::unique_lock<std::mutex> lock(h.mutex, std::try_to_lock);
+        if (!lock.owns_lock()) return -1;
+        FloatingPointMaskGuard fp;
+        Ort::RunOptions options;
+        CharLmDeadline deadline(options, timeout_ms);
+        std::wstring text;
+        float gain = 0.0f;
+        const int result = CharLmCorrect(h, context ? context : L"", draft, allowed, width, text, gain, options);
+        if (result != 1) return result;
+        if (static_cast<int>(text.size()) + 1 > out_capacity) return -1;
+        std::wmemcpy(out_text, text.data(), text.size());
+        out_text[text.size()] = L'\0';
+        *out_gain = gain;
+        return 1;
+    } catch (const std::exception& e) { SetError(error, capacity, Utf8ToWide(e.what())); }
+    catch (...) { SetError(error, capacity, L"character LM correction failed"); }
     return -1;
 }

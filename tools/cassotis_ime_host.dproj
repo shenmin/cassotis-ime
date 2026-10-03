@@ -135,9 +135,8 @@
         </DelphiCompile>
         <DCCReference Include="..\src\host\cassotis_ime_host_app.pas"/>
         <DCCReference Include="..\src\host\cassotis_ime_host.pas"/>
-        <DCCReference Include="..\src\host\nc_pinyin_transformer_host.pas"/>
+        <DCCReference Include="..\src\host\nc_lm_repair_host.pas"/>
         <DCCReference Include="..\src\host\nc_local_completion_host.pas"/>
-        <DCCReference Include="..\src\host\nc_pinyin_transformer_ambiguity_gate_model.pas"/>
         <DCCReference Include="..\src\engine\nc_engine_intf.pas"/>
         <DCCReference Include="..\src\engine\nc_dictionary_intf.pas"/>
         <DCCReference Include="..\src\engine\nc_dictionary_sqlite.pas"/>

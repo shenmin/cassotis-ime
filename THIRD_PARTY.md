@@ -29,7 +29,7 @@ This file lists third-party software/data used by Cassotis IME and the related l
 ## 3) ONNX Runtime
 
 - Component: Microsoft ONNX Runtime 1.20.1 (`onnxruntime.dll`)
-- Used for: CPU inference for the optional host-side pinyin Transformer reranker
+- Used for: CPU inference for the host-side character language models
 - Source: https://github.com/microsoft/onnxruntime/tree/v1.20.1
 - Local artifacts: `third_party/onnxruntime/`
 - License: MIT
@@ -39,34 +39,25 @@ This file lists third-party software/data used by Cassotis IME and the related l
   - The model is loaded only by `cassotis_ime_host.exe`; it is not linked into
     the TSF DLL.
 
-## 4) Cassotis Pinyin Transformer Model
+## 4) Cassotis Pinyin-Conditioned Language Model
 
-- Component: quantized pinyin-aligned candidate reranker
-- Used for: confidence-gated reranking of existing long-sentence candidates
-- Local artifact: `data/models/pinyin_transformer/`
+- Component: quantized character-level causal language model with pinyin tokens
+- Used for: correcting long-sentence drafts against the typed syllables
+- Local artifact: `data/models/pinyin_lm/`
 - Notes:
-  - The model was trained and distilled by this project from separately
-    licensed corpora; it does not contain or redistribute training documents.
-  - Its runtime input and output remain local to the IME host process.
+  - The model was fine-tuned by this project from the character language model
+    (section 6) on separately licensed corpora; it does not contain or
+    redistribute training documents.
+  - It replaces the pinyin parallel generator and the MacBERT-derived local
+    correction model, which are no longer shipped.
+  - Inference and background loading run in the IME host process, not TSF.
 
 ## 5) Proprietary Build Toolchain (Not Redistributed)
 
 - Embarcadero Delphi 10.4 is required to build this project.
 - Delphi itself is not bundled in this repository and is licensed separately by Embarcadero.
 
-## 6) MacBERT-Derived Local Correction
-
-- Source: [hfl/chinese-macbert-base](https://huggingface.co/hfl/chinese-macbert-base),
-  revision `a986e004d2a7f2a1c2f5a3edef4e20604a974ed1`.
-- Local artifact: `data/models/local_repair/`.
-- License: Apache-2.0; redistributed notices are in `third_party/macbert/`.
-- Changes: independent IME-draft fine-tuning, six-layer student distillation,
-  dictionary-reading constraints, cacheable document attention, INT8 export.
-  These are modified model weights, not an unmodified upstream checkpoint.
-- The offline teacher and training documents are not bundled. CPU inference
-  takes place in the host only; neither model loading nor inference runs in TSF.
-
-## 7) Cassotis Character Language Model
+## 6) Cassotis Character Language Model
 
 - Component: quantized character-level causal language model
 - Used for: reranking long-sentence and short-word candidates and choosing

@@ -16,7 +16,7 @@ interface
 uses Winapi.Windows, System.SysUtils, System.Classes, System.SyncObjs, nc_char_lm;
 
 type
-    TncCharLmHost = class(TInterfacedObject, IncCharLm, IncCharLmNext)
+    TncCharLmHost = class(TInterfacedObject, IncCharLm, IncCharLmNext, IncCharLmContinue)
     private type
         TCreateModel = function(directory: PWideChar; intra_threads: Integer;
             error_text: PWideChar; capacity: Integer): Pointer; cdecl;
@@ -26,6 +26,9 @@ type
         TScoreTextsNext = function(handle: Pointer; context: PWideChar; texts: PPWideChar;
             count, min_count, max_nodes: Integer; out_logp: PSingle; next_indices: PInteger;
             next_count, top_k: Integer; out_next_code_points: PCardinal; out_next_logp: PSingle;
+            timeout_ms: Integer; error_text: PWideChar; capacity: Integer): Integer; cdecl;
+        TContinueText = function(handle: Pointer; context, prefix: PWideChar;
+            max_chars: Integer; out_text: PWideChar; out_capacity: Integer; out_logp: PSingle;
             timeout_ms: Integer; error_text: PWideChar; capacity: Integer): Integer; cdecl;
         TDestroyModel = procedure(handle: Pointer); cdecl;
     private
@@ -38,6 +41,7 @@ type
         m_handle: Pointer;
         m_score: TScoreTexts;
         m_score_next: TScoreTextsNext;
+        m_continue: TContinueText;
         m_destroy: TDestroyModel;
         m_gate: TObject;
         m_foreground_waiting: Integer;
@@ -46,6 +50,8 @@ type
             const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
             const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
             out next_logp: TArray<Single>): Integer;
+        function run_continue(const context, text: string; const max_chars: Integer;
+            out chars: TArray<string>; out logp: TArray<Single>): Integer;
     public
         constructor Create(const directory: string; background: Boolean;
             intra_threads: Integer = 4; timeout_ms: Integer = 100);
@@ -63,6 +69,11 @@ type
             const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
             const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
             out next_logp: TArray<Single>): Integer;
+        function continue_text(const context, text: string; const max_chars: Integer;
+            out chars: TArray<string>; out logp: TArray<Single>): Integer;
+        function continue_text_background(const context, text: string;
+            const max_chars: Integer; out chars: TArray<string>;
+            out logp: TArray<Single>): Integer;
         { The same model for a background worker (see the unit comment). }
         function background_view: IncCharLm;
         property last_error: string read m_error;
@@ -76,7 +87,8 @@ const
     c_foreground_wait_ms = 60;
 
 type
-    TncCharLmBackgroundView = class(TInterfacedObject, IncCharLm, IncCharLmNext)
+    TncCharLmBackgroundView = class(TInterfacedObject, IncCharLm, IncCharLmNext,
+        IncCharLmContinue)
     private
         m_host: TncCharLmHost;
         m_keep: IncCharLm;
@@ -89,6 +101,8 @@ type
             const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
             const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
             out next_logp: TArray<Single>): Integer;
+        function continue_text(const context, text: string; const max_chars: Integer;
+            out chars: TArray<string>; out logp: TArray<Single>): Integer;
     end;
 
 constructor TncCharLmBackgroundView.Create(const host: TncCharLmHost);
@@ -116,6 +130,12 @@ function TncCharLmBackgroundView.score_texts_next(const context: string;
 begin
     Result := m_host.score_texts_next_background(context, texts, min_count, max_nodes,
         next_texts, top_k, logp, next_chars, next_logp);
+end;
+
+function TncCharLmBackgroundView.continue_text(const context, text: string;
+    const max_chars: Integer; out chars: TArray<string>; out logp: TArray<Single>): Integer;
+begin
+    Result := m_host.continue_text_background(context, text, max_chars, chars, logp);
 end;
 
 procedure log_model_state(const message_text: string);
@@ -212,6 +232,7 @@ begin
         m_score := TScoreTexts(GetProcAddress(m_module, 'nc_lm_score'));
         // Optional: an older runtime scores without next characters.
         m_score_next := TScoreTextsNext(GetProcAddress(m_module, 'nc_lm_score_next'));
+        m_continue := TContinueText(GetProcAddress(m_module, 'nc_lm_continue'));
         m_destroy := TDestroyModel(GetProcAddress(m_module, 'nc_lm_destroy'));
         if not Assigned(create_model) or not Assigned(m_score) or not Assigned(m_destroy) then
             raise EInvalidOp.Create('Character LM runtime must be rebuilt');
@@ -356,6 +377,86 @@ begin
     end
     else
         SetLength(logp, Result);
+end;
+
+function TncCharLmHost.run_continue(const context, text: string; const max_chars: Integer;
+    out chars: TArray<string>; out logp: TArray<Single>): Integer;
+var
+    buffer: TArray<WideChar>;
+    error_text: array[0..1023] of WideChar;
+    value: string;
+    produced, idx, position: Integer;
+begin
+    Result := -1;
+    SetLength(chars, 0);
+    SetLength(logp, 0);
+    if (not Assigned(m_continue)) or (text = '') or (max_chars < 1) or (max_chars > 32) or
+        (Pos(#0, context) > 0) or (Pos(#0, text) > 0) then Exit;
+    SetLength(buffer, 2 * max_chars + 1);
+    SetLength(logp, max_chars);
+    produced := m_continue(m_handle, PWideChar(context), PWideChar(text), max_chars,
+        @buffer[0], Length(buffer), @logp[0], m_timeout_ms, @error_text[0], Length(error_text));
+    if produced < 0 then
+    begin
+        SetLength(logp, 0);
+        Exit;
+    end;
+    // One element per character; a supplementary character is a surrogate pair.
+    value := PWideChar(@buffer[0]);
+    position := 1;
+    for idx := 0 to produced - 1 do
+    begin
+        if position > Length(value) then Break;
+        if (position < Length(value)) and value[position].IsHighSurrogate then
+        begin
+            chars := chars + [Copy(value, position, 2)];
+            Inc(position, 2);
+        end
+        else
+        begin
+            chars := chars + [value[position]];
+            Inc(position);
+        end;
+    end;
+    SetLength(logp, Length(chars));
+    Result := Length(chars);
+end;
+
+function TncCharLmHost.continue_text(const context, text: string; const max_chars: Integer;
+    out chars: TArray<string>; out logp: TArray<Single>): Integer;
+begin
+    Result := -1;
+    SetLength(chars, 0);
+    SetLength(logp, 0);
+    if not char_lm_ready then Exit;
+    TInterlocked.Increment(m_foreground_waiting);
+    try
+        if not TMonitor.Enter(m_gate, c_foreground_wait_ms) then Exit;
+    finally
+        TInterlocked.Decrement(m_foreground_waiting);
+    end;
+    try
+        Result := run_continue(context, text, max_chars, chars, logp);
+    finally
+        TMonitor.Exit(m_gate);
+    end;
+end;
+
+function TncCharLmHost.continue_text_background(const context, text: string;
+    const max_chars: Integer; out chars: TArray<string>; out logp: TArray<Single>): Integer;
+begin
+    Result := -1;
+    SetLength(chars, 0);
+    SetLength(logp, 0);
+    if not char_lm_ready then Exit;
+    while TInterlocked.CompareExchange(m_foreground_waiting, 0, 0) > 0 do
+        Sleep(1);
+    TMonitor.Enter(m_gate);
+    try
+        Result := run_continue(context, text, max_chars, chars, logp);
+    finally
+        TMonitor.Exit(m_gate);
+    end;
 end;
 
 end.
