@@ -152,8 +152,12 @@ $versionProps = Join-Path $root 'version.props'
 $outRoot = [IO.Path]::GetFullPath((Join-Path $root 'out'))
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = $outRoot }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-if (($OutputDirectory -ine $outRoot) -and
-    (-not $OutputDirectory.StartsWith($outRoot + '\', [StringComparison]::OrdinalIgnoreCase))) {
+# Historical benchmarks compile a worktree's sources into a run directory of
+# the repository that hosts this script; both out directories are allowed.
+$allowedOutRoots = @($outRoot, [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $PSScriptRoot) 'out')))
+$insideOut = @($allowedOutRoots | Where-Object {
+    ($OutputDirectory -ieq $_) -or $OutputDirectory.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) })
+if ($insideOut.Count -eq 0) {
     throw 'Native runtime output must remain inside this repository out directory.'
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
