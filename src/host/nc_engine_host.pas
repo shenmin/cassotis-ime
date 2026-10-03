@@ -3889,6 +3889,9 @@ begin
         end;
         session_instance_id := session.instance_id;
         session.engine.reset(preserve_document_context);
+        // The text service resets without the document when it leaves it.
+        if not preserve_document_context then
+            session.engine.end_document;
         session.set_caret(Point(0, 0), False, 0, False, False);
         session.clear_candidates;
     finally

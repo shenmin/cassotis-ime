@@ -657,6 +657,11 @@ type
         m_last_dictionary_reload_check_tick: UInt64;
         m_left_context: string;
         m_external_left_context: string;
+        // The host has reported the text before the caret in this session, so
+        // an empty report means an empty context, not an unreadable one.
+        m_external_context_reported: Boolean;
+        // The document the session's committed text (m_left_context) belongs to.
+        m_left_context_document_key: string;
         m_document_context_model: TncDocumentContextModel;
         m_segment_left_context: string;
         m_context_pairs: TDictionary<string, Integer>;
@@ -1149,6 +1154,10 @@ type
             const initial_dictionary: TncDictionaryProvider = nil);
         destructor Destroy; override;
         procedure reset(const preserve_document_context: Boolean = False);
+        // The host's document ended (a switch or deactivation): the session's
+        // committed text and what the host reported belong to it. Internal
+        // resets after a commit keep them.
+        procedure end_document;
         procedure update_config(const config: TncEngineConfig);
         procedure set_dictionary_provider(const dictionary: TncDictionaryProvider);
         // The long-sentence repair model (the pinyin-conditioned LM in the host).
@@ -1765,6 +1774,8 @@ begin
     m_last_dictionary_reload_check_tick := 0;
     m_left_context := '';
     m_external_left_context := '';
+    m_external_context_reported := False;
+    m_left_context_document_key := '';
     m_segment_left_context := '';
     m_document_context_model := TncDocumentContextModel.create;
     m_confirmed_segments := TList<TncConfirmedSegment>.Create;
@@ -4419,6 +4430,13 @@ begin
     end;
 end;
 
+procedure TncEngine.end_document;
+begin
+    m_left_context := '';
+    m_left_context_document_key := '';
+    m_external_context_reported := False;
+end;
+
 procedure TncEngine.reset(const preserve_document_context: Boolean);
 begin
     clear_one_key_completion;
@@ -5718,6 +5736,13 @@ var
     next_context: string;
     next_document_snapshot: string;
 begin
+    m_external_context_reported := True;
+    // Text committed in another document is not the context of this one.
+    if document_key <> m_left_context_document_key then
+    begin
+        m_left_context := '';
+        m_left_context_document_key := document_key;
+    end;
     if m_document_context_model <> nil then
     begin
         next_document_snapshot := document_snapshot;
@@ -142261,13 +142286,19 @@ begin
     // LM's long rerank). A rewrite is kept when its characters spell the
     // syllables and it has a dictionary path; the model already compared the
     // whole sentences.
-    // The text before the input: the host's document snapshot, else the
-    // current sentence before the caret, else this session's committed text.
+    // The text before the input. When the host reads the document, use only
+    // what it reported (its snapshot, else the current sentence before the
+    // caret); empty means the input starts the text. Only for a document the
+    // host cannot read is this session's committed text the context.
     repair_context := '';
-    if m_document_context_model <> nil then
-        repair_context := m_document_context_model.semantic_tail;
-    if repair_context = '' then repair_context := m_external_left_context;
-    if repair_context = '' then repair_context := m_left_context;
+    if m_external_context_reported then
+    begin
+        if m_document_context_model <> nil then
+            repair_context := m_document_context_model.semantic_tail;
+        if repair_context = '' then repair_context := m_external_left_context;
+    end
+    else
+        repair_context := m_left_context;
     key := m_composition_text + #0 + m_last_lookup_key + #0 + repair_context;
     text := '';
     if (key = m_local_repair_query_key) and (m_local_repair_text <> '') and

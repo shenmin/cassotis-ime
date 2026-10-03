@@ -50,6 +50,10 @@ Name: "{localappdata}\CassotisIme"
 Name: "{localappdata}\CassotisIme\data"
 Name: "{localappdata}\CassotisIme\logs"
 
+[UninstallDelete]
+; Files of earlier runtimes moved aside while they were still in use.
+Type: filesandordirs; Name: "{app}\runtime-retired"
+
 [InstallDelete]
 ; The short-word context model (rbt3) is no longer shipped; drop its notices on upgrade.
 Type: filesandordirs; Name: "{app}\licenses\rbt3"
@@ -709,15 +713,166 @@ begin
     end;
 end;
 
+{ A NULL new name (0) registers the path for deletion at the next restart. }
+function MoveFileExDelete(ExistingName: string; NewName: Cardinal; Flags: DWORD): BOOL;
+external 'MoveFileExW@kernel32.dll stdcall';
+
+const
+    c_movefile_delay_until_reboot = $4;
+
+var
+    RetiredTrashDir: string;
+    RetiredTrashCount: Integer;
+
+function RetiredTrashRoot: string;
+begin
+    Result := ExpandConstant('{app}\runtime-retired');
+end;
+
+procedure DeleteAtRestart(const Path: string);
+begin
+    if MoveFileExDelete(Path, 0, c_movefile_delay_until_reboot) then
+    begin
+        Log('Scheduled for deletion at the next restart: ' + Path);
+    end
+    else
+    begin
+        Log(Format('Could not schedule deletion at restart (error %d): %s', [DLLGetLastError, Path]));
+    end;
+end;
+
+{ A file still loaded by a running application cannot be deleted, but it can be
+  renamed on the same volume. It moves to a per-install directory under
+  runtime-retired and only that path is scheduled for deletion at the next
+  restart: those paths are never reused, so reinstalling the version that owned
+  the file before the restart cannot lose its new copy. A file that cannot be
+  moved stays where it is until a later install. }
+procedure RetireLockedFile(const Path: string);
+var
+    Target: string;
+begin
+    if RetiredTrashDir = '' then
+    begin
+        RetiredTrashDir := AddBackslash(RetiredTrashRoot) +
+            GetDateTimeString('yyyymmddhhnnsszzz', #0, #0);
+    end;
+    if not ForceDirectories(RetiredTrashDir) then
+    begin
+        Log('Retired runtime file kept until a later install: ' + Path);
+        Exit;
+    end;
+    RetiredTrashCount := RetiredTrashCount + 1;
+    Target := AddBackslash(RetiredTrashDir) + IntToStr(RetiredTrashCount) + '_' + ExtractFileName(Path);
+    if RenameFile(Path, Target) then
+    begin
+        DeleteAtRestart(Target);
+    end
+    else
+    begin
+        Log('Retired runtime file kept until a later install: ' + Path);
+    end;
+end;
+
+procedure RetireLockedTree(const Path: string);
+var
+    FindRec: TFindRec;
+begin
+    if FindFirst(AddBackslash(Path) + '*', FindRec) then
+    begin
+        try
+            repeat
+                if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+                begin
+                    if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+                    begin
+                        RetireLockedTree(AddBackslash(Path) + FindRec.Name);
+                    end
+                    else
+                    begin
+                        RetireLockedFile(AddBackslash(Path) + FindRec.Name);
+                    end;
+                end;
+            until not FindNext(FindRec);
+        finally
+            FindClose(FindRec);
+        end;
+    end;
+end;
+
 procedure DeleteRetiredRuntime(const Path: string);
 begin
+    if DelTree(Path, True, True, True) then
+    begin
+        Log('Removed retired runtime: ' + Path);
+        Exit;
+    end;
+    { Move the files still in use out of the way; the emptied tree then goes now. }
+    Log('Retired runtime partly in use: ' + Path);
+    RetireLockedTree(Path);
     if DelTree(Path, True, True, True) then
     begin
         Log('Removed retired runtime: ' + Path);
     end
     else
     begin
-        Log('Retired runtime still in use; kept its locked files until a later install: ' + Path);
+        Log('Retired runtime kept until a later install: ' + Path);
+    end;
+end;
+
+{ Files moved away by an earlier install are gone once Windows restarted; their
+  emptied directories (and anything not yet restarted away) are retried here. }
+procedure CleanRetiredTrash;
+var
+    FindRec: TFindRec;
+begin
+    if not DirExists(RetiredTrashRoot) then
+    begin
+        Exit;
+    end;
+    if FindFirst(AddBackslash(RetiredTrashRoot) + '*', FindRec) then
+    begin
+        try
+            repeat
+                if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
+                    (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+                begin
+                    DelTree(AddBackslash(RetiredTrashRoot) + FindRec.Name, True, True, True);
+                end;
+            until not FindNext(FindRec);
+        finally
+            FindClose(FindRec);
+        end;
+    end;
+    RemoveDir(RetiredTrashRoot);
+end;
+
+function RegisteredRuntimeDirIn(const RootKey: Integer): string;
+var
+    DllPath: string;
+begin
+    Result := '';
+    if RegQueryStringValue(RootKey, c_tsf_inproc_registry_path, '', DllPath) then
+    begin
+        DllPath := NormalizeRegisteredDllPath(DllPath);
+        if DllPath <> '' then
+        begin
+            Result := LongPathOf(ExtractFileDir(DllPath));
+        end;
+    end;
+end;
+
+function IsReferencedRuntime(const Dir: string; const Referenced: TArrayOfString): Boolean;
+var
+    I: Integer;
+begin
+    Result := False;
+    for I := 0 to GetArrayLength(Referenced) - 1 do
+    begin
+        if (Referenced[I] <> '') and (CompareText(LongPathOf(Dir), Referenced[I]) = 0) then
+        begin
+            Result := True;
+            Exit;
+        end;
     end;
 end;
 
@@ -729,17 +884,48 @@ var
     FindRec: TFindRec;
     Name: string;
     I: Integer;
+    Referenced: TArrayOfString;
 begin
-    { Only once the new runtime is the registered one: TSF clients then start the
-      host from it, so nothing in an earlier runtime (binaries, retired models)
-      is used. A DLL still mapped by a running application cannot be deleted
-      and is retried on the next install. }
+    { Only once the new runtime is registered for both 64-bit and 32-bit
+      applications: TSF clients then start the host from it, so nothing in an
+      earlier runtime (binaries, retired models) is used. Every directory a COM
+      registration still names, including a per-user override, is kept. A DLL
+      still mapped by a running application goes at the next restart. }
     CurrentDir := LongPathOf(ExpandConstant('{#InstallRuntimeDir}'));
-    if CompareText(LongPathOf(GetRegisteredRuntimeDir), CurrentDir) <> 0 then
+    if IsWin64 then
     begin
-        Log('The new runtime is not the registered one; earlier runtimes are kept.');
-        Exit;
+        SetArrayLength(Referenced, 4);
+        Referenced[0] := RegisteredRuntimeDirIn(HKLM64);
+        Referenced[1] := RegisteredRuntimeDirIn(HKLM32);
+        Referenced[2] := RegisteredRuntimeDirIn(HKCU64);
+        Referenced[3] := RegisteredRuntimeDirIn(HKCU32);
+        if (CompareText(Referenced[0], CurrentDir) <> 0) or
+            (CompareText(Referenced[1], CurrentDir) <> 0) then
+        begin
+            Log('Registration incomplete (64-bit: ' + Referenced[0] + ', 32-bit: ' +
+                Referenced[1] + '); earlier runtimes are kept.');
+            Exit;
+        end;
+    end
+    else
+    begin
+        SetArrayLength(Referenced, 2);
+        Referenced[0] := RegisteredRuntimeDirIn(HKLM);
+        Referenced[1] := RegisteredRuntimeDirIn(HKCU);
+        if CompareText(Referenced[0], CurrentDir) <> 0 then
+        begin
+            Log('Registration incomplete (' + Referenced[0] + '); earlier runtimes are kept.');
+            Exit;
+        end;
     end;
+    for I := 0 to GetArrayLength(Referenced) - 1 do
+    begin
+        if (Referenced[I] <> '') and (CompareText(Referenced[I], CurrentDir) <> 0) then
+        begin
+            Log('Still registered, kept: ' + Referenced[I]);
+        end;
+    end;
+    CleanRetiredTrash;
     RuntimeRoot := ExpandConstant('{app}\runtime');
     if FindFirst(AddBackslash(RuntimeRoot) + '*', FindRec) then
     begin
@@ -747,7 +933,8 @@ begin
             repeat
                 if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
                     (FindRec.Name <> '.') and (FindRec.Name <> '..') and
-                    (CompareText(LongPathOf(AddBackslash(RuntimeRoot) + FindRec.Name), CurrentDir) <> 0) then
+                    (CompareText(LongPathOf(AddBackslash(RuntimeRoot) + FindRec.Name), CurrentDir) <> 0) and
+                    not IsReferencedRuntime(AddBackslash(RuntimeRoot) + FindRec.Name, Referenced) then
                 begin
                     DeleteRetiredRuntime(AddBackslash(RuntimeRoot) + FindRec.Name);
                 end;
@@ -758,7 +945,12 @@ begin
     end;
     // Releases before versioned runtimes installed into the app's out folder or the app folder.
     AppDir := ExpandConstant('{app}');
-    if DirExists(AddBackslash(AppDir) + 'out') then
+    if IsReferencedRuntime(AppDir, Referenced) then
+    begin
+        Exit;
+    end;
+    if DirExists(AddBackslash(AppDir) + 'out') and
+        not IsReferencedRuntime(AddBackslash(AppDir) + 'out', Referenced) then
     begin
         DeleteRetiredRuntime(AddBackslash(AppDir) + 'out');
     end;
@@ -798,7 +990,7 @@ begin
         if FileExists(AddBackslash(AppDir) + Name) and
             not DeleteFile(AddBackslash(AppDir) + Name) then
         begin
-            Log('Retired runtime file still in use: ' + AddBackslash(AppDir) + Name);
+            RetireLockedFile(AddBackslash(AppDir) + Name);
         end;
     end;
 end;
@@ -1137,6 +1329,11 @@ begin
     if CurStep = ssDone then
     begin
         PruneRetiredRuntimes;
+        { After the files moved into it, so Windows removes it once they are gone. }
+        if (RetiredTrashDir <> '') and DirExists(RetiredTrashDir) then
+        begin
+            DeleteAtRestart(RetiredTrashDir);
+        end;
     end;
 end;
 
