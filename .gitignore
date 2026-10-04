@@ -35,5 +35,3 @@ out/_tmp_build/
 installer/dist/
 /data/models/char_lm/char_lm.onnx
 /data/models/char_lm/char_lm.onnx.joining
-/data/models/pinyin_lm/char_lm.onnx
-/data/models/pinyin_lm/char_lm.onnx.joining

@@ -38,7 +38,9 @@ public:
 };
 
 struct CharLmHandle {
-    std::unique_ptr<Ort::Session> session;
+    // Handles opened on the same model share one session (and its weights);
+    // each keeps its own lock and buffers.
+    std::shared_ptr<Ort::Session> session;
     std::unordered_map<uint32_t, int64_t> vocabulary;
     std::vector<uint32_t> code_points;  // token id - 2 -> code point
     std::vector<uint8_t> continuation_allowed;  // per token id
@@ -51,6 +53,21 @@ struct CharLmHandle {
     std::vector<std::string> output_names;
     std::mutex mutex;
 };
+
+// Sessions by model path, so the shared LM and the repair host load one copy of
+// a model they both use. Guarded by InitializationMutex().
+std::map<std::wstring, std::weak_ptr<Ort::Session>>& CharLmSessions() {
+    static std::map<std::wstring, std::weak_ptr<Ort::Session>> value;
+    return value;
+}
+
+std::wstring CharLmSessionKey(const std::wstring& path) {
+    std::wstring full(32768, L'\0');
+    const DWORD length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
+    std::wstring key = (length > 0 && length < full.size()) ? full.substr(0, length) : path;
+    for (auto& c : key) c = static_cast<wchar_t>(std::towlower(c));
+    return key;
+}
 
 bool CharLmIsHan(uint32_t cp) {
     return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
@@ -482,7 +499,12 @@ extern "C" __declspec(dllexport) void* __cdecl nc_lm_create(
         UseReleasableInitializers(options);
         options.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
         const std::wstring path = std::wstring(directory) + L"\\char_lm.onnx";
-        h->session = std::make_unique<Ort::Session>(Environment(), path.c_str(), options);
+        const std::wstring key = CharLmSessionKey(path);
+        h->session = CharLmSessions()[key].lock();
+        if (!h->session) {
+            h->session = std::make_shared<Ort::Session>(Environment(), path.c_str(), options);
+            CharLmSessions()[key] = h->session;
+        }
         Ort::AllocatorWithDefaultOptions allocator;
         for (size_t i = 0; i < h->session->GetInputCount(); ++i)
             h->input_names.emplace_back(h->session->GetInputNameAllocated(i, allocator).get());

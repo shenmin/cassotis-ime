@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <float.h>
 #include <fstream>
 #include <limits>

@@ -81,11 +81,8 @@ $runtimePayloadFiles = @(
     'out\onnxruntime_providers_shared.dll',
     'out\char_lm\char_lm.onnx',
     'out\char_lm\char_lm_vocab.bin',
-    'out\char_lm\runtime_manifest.json',
-    'out\pinyin_lm\char_lm.onnx',
-    'out\pinyin_lm\char_lm_vocab.bin',
-    'out\pinyin_lm\pinyin_readings.json',
-    'out\pinyin_lm\runtime_manifest.json'
+    'out\char_lm\pinyin_readings.json',
+    'out\char_lm\runtime_manifest.json'
 )
 
 $requiredFiles = @(

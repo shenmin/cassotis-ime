@@ -44,10 +44,10 @@ This file lists third-party software/data used by Cassotis IME and the related l
 - Component: quantized character-level causal language model with pinyin tokens
 - Used for: correcting long-sentence drafts against the typed syllables and
   the text before the input
-- Local artifact: `data/models/pinyin_lm/`
+- Local artifact: `data/models/char_lm/` (one model with section 6)
 - Notes:
-  - The model was fine-tuned by this project from the character language model
-    (section 6) on separately licensed corpora; it does not contain or
+  - The model was trained by this project on separately licensed corpora for
+    both plain text and pinyin-conditioned correction; it does not contain or
     redistribute training documents.
   - It replaces the pinyin parallel generator and the MacBERT-derived local
     correction model, which are no longer shipped.
@@ -61,8 +61,8 @@ This file lists third-party software/data used by Cassotis IME and the related l
 ## 6) Cassotis Character Language Model
 
 - Component: quantized character-level causal language model
-- Used for: reranking long-sentence and short-word candidates and choosing
-  long-sentence one-key continuations
+- Used for: reranking long-sentence and short-word candidates, choosing
+  long-sentence one-key continuations, and the draft correction in section 4
 - Local artifact: `data/models/char_lm/`
 - Notes:
   - The model was trained by this project from separately licensed corpora;

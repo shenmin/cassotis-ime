@@ -2,20 +2,24 @@
   "format": 1,
   "architecture": "nc-gpt char GPT (pre-LN, no bias, tanh GELU, tied embeddings)",
   "graph": "tools/char_lm_onnx.py tree-mask + KV cache",
+  "task": "shared character LM and pinyin-conditioned draft correction (model consolidation step 4)",
   "quantization": "int8_keep_mlp_out",
   "float_mlp_out_layers": [
-    4
+    2,
+    3
   ],
-  "n_layer": 12,
-  "n_head": 12,
-  "n_embd": 768,
+  "n_layer": 11,
+  "n_head": 16,
+  "n_embd": 1024,
   "block_size": 256,
-  "vocab_size": 11599,
+  "vocab_size": 12017,
   "bos_id": 0,
   "unk_id": 1,
-  "source_checkpoint_sha256": "5b2fb81a353425fa84fd2acdcb858d333cf140775643614e56db8a329d4ad936",
+  "source_checkpoint_sha256": "4128e76bc46d3efea3c6af28ae9dc4fa07a3197be77d093f4eb7bfedf01b4715",
+  "correction_context_chars": 48,
   "files": {
-    "char_lm.onnx": "8d19b8feecb98cd473fd509e28522cfea60edd1eb1d8404e3377faa0b2543b72",
-    "char_lm_vocab.bin": "200f41183daa0a07c79ecef6f16f37c344105f4bf5ae374ae30d5e53efb6d5aa"
+    "char_lm.onnx": "1fcfb6be9d57f7baceaadf75ae078b707faaa1d3a46e31b021d2a212039077aa",
+    "char_lm_vocab.bin": "376c19b415024a2350083ca7c229bbe9f1d11191e562ef8ee174fd3afe7ec120",
+    "pinyin_readings.json": "77a7cb4bc2b4159d78af78d25032f30de0f22376f3dfb961c85fe16f05877433"
   }
 }

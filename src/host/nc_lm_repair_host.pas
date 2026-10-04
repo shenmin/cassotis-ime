@@ -1,9 +1,10 @@
 unit nc_lm_repair_host;
 
 { Long-sentence repair with the pinyin-conditioned character LM (model
-  consolidation, step 3). The model in <runtime>\pinyin_lm is the shared LM
-  fine-tuned to rewrite engine drafts: given the typed syllables and the draft
-  it returns a corrected text (nc_lm_correct in the ORT bridge DLL). It took
+  consolidation, steps 3 and 4). The shared LM in <runtime>\char_lm is also
+  trained to rewrite engine drafts: given the typed syllables and the draft it
+  returns a corrected text (nc_lm_correct in the ORT bridge DLL). Both hosts
+  open the same model file, so the bridge keeps one session for them. It took
   over from the local repair encoders and the pinyin parallel generator.
 
   Pinyin tokens are private-use characters listed in pinyin_readings.json with
@@ -66,7 +67,7 @@ type
 
 implementation
 
-uses System.IOUtils, System.JSON, System.Character, System.Hash, nc_log;
+uses System.IOUtils, System.JSON, System.Character, System.Hash, nc_log, nc_char_lm_host;
 
 const
     // Beam width and the whole-sentence log-probability margin over the draft,
@@ -75,7 +76,6 @@ const
     c_lm_repair_min_gain = 1.0;
     // The dictionary path check accepts any segmentation, as for local repair.
     c_lm_repair_word_ratio = 0.01;
-    c_lm_repair_threads = 4;
 
 constructor TncLmRepairHost.Create(const base_directory: string; const background_load: Boolean);
 begin
@@ -135,7 +135,7 @@ begin
     root := nil;
     manifest_root := nil;
     try
-        folder := TPath.Combine(m_directory, 'pinyin_lm');
+        folder := TPath.Combine(m_directory, 'char_lm');
         manifest_root := TJSONObject.ParseJSONValue(TFile.ReadAllText(
             TPath.Combine(folder, 'runtime_manifest.json'), TEncoding.UTF8));
         if not (manifest_root is TJSONObject) or
@@ -199,7 +199,7 @@ begin
         m_destroy := TDestroyModel(GetProcAddress(m_module, 'nc_lm_destroy'));
         if not Assigned(create_model) or not Assigned(m_correct) or not Assigned(m_destroy) then
             raise EInvalidOp.Create('Pinyin LM runtime must be rebuilt');
-        m_handle := create_model(PChar(folder), c_lm_repair_threads, @error_text[0],
+        m_handle := create_model(PChar(folder), nc_shared_lm_threads, @error_text[0],
             Length(error_text));
         if m_handle = nil then raise EInvalidOp.Create(string(PChar(@error_text[0])));
         m_ready := True;

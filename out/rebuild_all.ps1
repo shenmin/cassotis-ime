@@ -1073,24 +1073,21 @@ function build_and_copy_pinyin_transformer_runtime
     $runtime_source = Join-Path $root_dir 'third_party\onnxruntime\win64'
     # Retired models, removed when an older build left them in the runtime:
     # local completion (Tab now uses the shared character LM), the short-context
-    # reranker (covered by the shared LM), and the pinyin generator and local
-    # repair encoders (replaced by the pinyin-conditioned LM).
-    $retired_targets = @('local_completion', 'short_context', 'pinyin_transformer', 'local_repair') |
+    # reranker (covered by the shared LM), the pinyin generator and local repair
+    # encoders (replaced by the pinyin-conditioned LM), and the separate
+    # pinyin-conditioned LM (merged into the shared character LM).
+    $retired_targets = @('local_completion', 'short_context', 'pinyin_transformer', 'local_repair', 'pinyin_lm') |
         ForEach-Object { Join-Path $script_dir $_ }
     $char_lm_source = Join-Path $root_dir 'data\models\char_lm'
     $char_lm_target = Join-Path $script_dir 'char_lm'
-    $pinyin_lm_source = Join-Path $root_dir 'data\models\pinyin_lm'
-    $pinyin_lm_target = Join-Path $script_dir 'pinyin_lm'
     . (Join-Path $root_dir 'tools\char_lm_model_parts.ps1')
     $char_lm_files = get_published_lm_files $char_lm_source 'Character LM'
-    $pinyin_lm_files = get_published_lm_files $pinyin_lm_source 'Pinyin LM'
     $required_sources = @(
         $native_build,
         (Join-Path $runtime_source 'onnxruntime.dll'),
         (Join-Path $runtime_source 'onnxruntime_providers_shared.dll')
     )
     foreach ($name in $char_lm_files) { $required_sources += Join-Path $char_lm_source $name }
-    foreach ($name in $pinyin_lm_files) { $required_sources += Join-Path $pinyin_lm_source $name }
     foreach ($required_source in $required_sources)
     {
         if (-not (Test-Path -LiteralPath $required_source))
@@ -1129,10 +1126,6 @@ function build_and_copy_pinyin_transformer_runtime
     New-Item -ItemType Directory -Force -Path $char_lm_target | Out-Null
     foreach ($name in $char_lm_files) {
         publish_runtime_file (Join-Path $char_lm_source $name) (Join-Path $char_lm_target $name)
-    }
-    New-Item -ItemType Directory -Force -Path $pinyin_lm_target | Out-Null
-    foreach ($name in $pinyin_lm_files) {
-        publish_runtime_file (Join-Path $pinyin_lm_source $name) (Join-Path $pinyin_lm_target $name)
     }
 }
 

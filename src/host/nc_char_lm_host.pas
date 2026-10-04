@@ -53,8 +53,9 @@ type
         function run_continue(const context, text: string; const max_chars: Integer;
             out chars: TArray<string>; out logp: TArray<Single>): Integer;
     public
+        // intra_threads <= 0 uses nc_shared_lm_threads.
         constructor Create(const directory: string; background: Boolean;
-            intra_threads: Integer = 4; timeout_ms: Integer = 100);
+            intra_threads: Integer = 0; timeout_ms: Integer = 100);
         destructor Destroy; override;
         function char_lm_ready: Boolean;
         function score_texts(const context: string; const texts: TArray<string>;
@@ -79,9 +80,24 @@ type
         property last_error: string read m_error;
     end;
 
+{ ORT intra-op threads for the shared LM session. The repair and shared-LM
+  hosts open one model and share its session (created by whichever loads
+  first), so both ask for the same count: one thread per logical processor,
+  at least 4 and at most 8. }
+function nc_shared_lm_threads: Integer;
+
 implementation
 
 uses System.IOUtils, System.JSON, System.Hash, System.Character, nc_log;
+
+function nc_shared_lm_threads: Integer;
+begin
+    Result := TThread.ProcessorCount;
+    if Result < 4 then
+        Result := 4
+    else if Result > 8 then
+        Result := 8;
+end;
 
 const
     c_foreground_wait_ms = 60;
@@ -155,6 +171,8 @@ begin
     inherited Create;
     m_directory := ExpandFileName(directory);
     m_threads := intra_threads;
+    if m_threads <= 0 then
+        m_threads := nc_shared_lm_threads;
     m_timeout_ms := timeout_ms;
     m_gate := TObject.Create;
     m_signal := TEvent.Create(nil, True, False, '');
@@ -208,8 +226,9 @@ begin
         manifest := TJSONObject(root);
         if manifest.GetValue<Integer>('format', 0) <> 1 then
             raise EInvalidOp.Create('Unsupported character LM manifest');
+        // The repair host's pinyin readings may be listed next to the model.
         files := manifest.GetValue('files') as TJSONObject;
-        if (files = nil) or (files.Count <> Length(required_files)) then
+        if (files = nil) or (files.Count < Length(required_files)) then
             raise EInvalidOp.Create('Incomplete character LM manifest');
         for name in required_files do
         begin

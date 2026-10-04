@@ -75,11 +75,8 @@ Source: "{#RuntimeDir}\onnxruntime.dll"; DestDir: "{#InstallRuntimeDir}"; Flags:
 Source: "{#RuntimeDir}\onnxruntime_providers_shared.dll"; DestDir: "{#InstallRuntimeDir}"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\char_lm\char_lm.onnx"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\char_lm\char_lm_vocab.bin"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
+Source: "{#RuntimeDir}\char_lm\pinyin_readings.json"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#RuntimeDir}\char_lm\runtime_manifest.json"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_lm\char_lm.onnx"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_lm\char_lm_vocab.bin"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_lm\pinyin_readings.json"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
-Source: "{#RuntimeDir}\pinyin_lm\runtime_manifest.json"; DestDir: "{#InstallRuntimeDir}\pinyin_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#SourceRoot}\third_party\onnxruntime\LICENSE"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 Source: "{#SourceRoot}\third_party\onnxruntime\ThirdPartyNotices.txt"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 
