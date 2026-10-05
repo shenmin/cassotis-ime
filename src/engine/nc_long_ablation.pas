@@ -9,8 +9,8 @@ interface
 
 type
     TncLongAblation = (
-        la_pool_ranker, la_pool_final_pairwise, la_second_slot_bidirectional,
-        la_second_slot_recovery, la_second_slot_selector, la_settled_top2,
+        la_pool_ranker, la_pool_final_pairwise, la_second_slot_recovery,
+        la_second_slot_selector, la_settled_top2,
         la_unified_top2, la_second_stage, la_exact_edge_lattice,
         la_local_pairwise_pool, la_local_residual, la_exact_anchor_pairwise,
         la_short_nocontext, la_short_reranker, la_short_residual,
@@ -25,8 +25,8 @@ uses
 
 const
     c_names: array[TncLongAblation] of string = (
-        'pool_ranker', 'pool_final_pairwise', 'second_slot_bidirectional',
-        'second_slot_recovery', 'second_slot_selector', 'settled_top2',
+        'pool_ranker', 'pool_final_pairwise', 'second_slot_recovery',
+        'second_slot_selector', 'settled_top2',
         'unified_top2', 'second_stage', 'exact_edge_lattice',
         'local_pairwise_pool', 'local_residual', 'exact_anchor_pairwise',
         'short_nocontext', 'short_reranker', 'short_residual',

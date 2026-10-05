@@ -4,10 +4,23 @@
   "graph": "tools/char_lm_onnx.py tree-mask + KV cache",
   "task": "shared character LM and pinyin-conditioned draft correction (model consolidation step 4)",
   "quantization": "int8_keep_mlp_out",
-  "float_mlp_out_layers": [
-    2,
-    3
-  ],
+  "float_mlp_out_layers": [],
+  "mlp_out_smoothing": {
+    "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "alpha": 0.8
+  },
   "n_layer": 11,
   "n_head": 16,
   "n_embd": 1024,
@@ -18,7 +31,7 @@
   "source_checkpoint_sha256": "4128e76bc46d3efea3c6af28ae9dc4fa07a3197be77d093f4eb7bfedf01b4715",
   "correction_context_chars": 48,
   "files": {
-    "char_lm.onnx": "1fcfb6be9d57f7baceaadf75ae078b707faaa1d3a46e31b021d2a212039077aa",
+    "char_lm.onnx": "e8d583c5b941f1a9f7a9dcbcd3a83b196af7a6db6f3932c286382e95bd9b6cf6",
     "char_lm_vocab.bin": "376c19b415024a2350083ca7c229bbe9f1d11191e562ef8ee174fd3afe7ec120",
     "pinyin_readings.json": "77a7cb4bc2b4159d78af78d25032f30de0f22376f3dfb961c85fe16f05877433"
   }

@@ -1324,7 +1324,6 @@ uses
     nc_long_top2_pairwise_swap_model,
     nc_long_top2_pairwise_difference_model,
     nc_long_exact_anchor_pairwise_model,
-    nc_long_second_slot_bidirectional_model,
     nc_long_visible_pairwise_residual_model,
     nc_long_complete_pool_difference_model,
     nc_long_settled_top2_residual_model,
@@ -137716,152 +137715,6 @@ var
         end;
     end;
 
-    procedure apply_second_slot_bidirectional_ranking;
-    const
-        c_reverse_radii: array[0..4] of Integer = (0, 1, 2, 3, 5);
-    var
-        baseline_index_local: Integer;
-        candidate_index_local: Integer;
-        relation_local: TncLongExactAnchorRelationFeatures;
-        baseline_units_local: TArray<string>;
-        candidate_units_local: TArray<string>;
-        forward_baseline_scores_local: TArray<Integer>;
-        forward_candidate_scores_local: TArray<Integer>;
-        reverse_window_texts_local: TArray<string>;
-        reverse_window_scores_local: TArray<Integer>;
-        reverse_baseline_scores_local: TArray<Integer>;
-        reverse_candidate_scores_local: TArray<Integer>;
-        baseline_word_scores_local: TncLongExactAnchorLocalWordLmScores;
-        candidate_word_scores_local: TncLongExactAnchorLocalWordLmScores;
-        base_features_local: TncLongExactAnchorPairwiseFeatures;
-        features_local: TncLongSecondSlotBidirectionalFeatures;
-        window_start_local: Integer;
-        window_end_local: Integer;
-        radius_index_local: Integer;
-        baseline_window_local: string;
-        candidate_window_local: string;
-        score_local: Double;
-        swap_index_local: Integer;
-    begin
-        if nc_long_ablated(la_second_slot_bidirectional) then Exit;
-        { The independent model was trained against the established rank-2
-          candidate. Skip cases where the Top1 model changed that reference. }
-        if bidirectional_top1_swapped or (not unified_pool_final) or
-            (candidate_count < 3) or (m_dictionary = nil) then
-        begin
-            Exit;
-        end;
-        baseline_index_local := ordered_indices[1];
-        candidate_index_local := ordered_indices[2];
-        if (not rank_features[baseline_index_local].complete_match) or
-            (not rank_features[candidate_index_local].complete_match) or
-            rank_features[baseline_index_local].source_user or
-            rank_features[candidate_index_local].source_user or
-            rank_features[baseline_index_local].complete_user or
-            rank_features[candidate_index_local].complete_user or
-            rank_features[baseline_index_local].latest_query_choice or
-            rank_features[candidate_index_local].latest_query_choice or
-            (rank_features[baseline_index_local].query_choice_bonus > 0) or
-            (rank_features[candidate_index_local].query_choice_bonus > 0) or
-            SameText(Trim(legacy_candidates[baseline_index_local].text),
-            Trim(legacy_candidates[candidate_index_local].text)) then
-        begin
-            Exit;
-        end;
-
-        baseline_units_local := split_text_units(
-            Trim(legacy_candidates[baseline_index_local].text));
-        candidate_units_local := split_text_units(
-            Trim(legacy_candidates[candidate_index_local].text));
-        if (Length(baseline_units_local) = 0) or
-            (Length(baseline_units_local) <> Length(candidate_units_local)) then
-        begin
-            Exit;
-        end;
-        get_text_relation(candidate_index_local, baseline_index_local,
-            relation_local.different_units,
-            relation_local.different_runs,
-            relation_local.max_different_run,
-            relation_local.same_prefix_units,
-            relation_local.same_suffix_units,
-            relation_local.difference_span_units);
-        if relation_local.different_units <= 0 then
-        begin
-            Exit;
-        end;
-        if not get_top2_cached_span_lm_scores(
-            baseline_index_local, candidate_index_local,
-            forward_baseline_scores_local,
-            forward_candidate_scores_local) then
-        begin
-            Exit;
-        end;
-
-        SetLength(reverse_window_texts_local,
-            Length(c_reverse_radii) * 2);
-        for radius_index_local := 0 to High(c_reverse_radii) do
-        begin
-            window_start_local := Max(0,
-                relation_local.same_prefix_units -
-                c_reverse_radii[radius_index_local]);
-            window_end_local := Min(Length(baseline_units_local),
-                Length(baseline_units_local) - relation_local.same_suffix_units +
-                c_reverse_radii[radius_index_local]);
-            baseline_window_local := build_text_unit_window(
-                baseline_units_local, window_start_local,
-                window_end_local, True);
-            candidate_window_local := build_text_unit_window(
-                candidate_units_local, window_start_local,
-                window_end_local, True);
-            reverse_window_texts_local[radius_index_local * 2] :=
-                baseline_window_local;
-            reverse_window_texts_local[radius_index_local * 2 + 1] :=
-                candidate_window_local;
-        end;
-        if (not get_cached_char_lm_scores(reverse_window_texts_local,
-            reverse_window_scores_local, clsm_reverse, '')) or
-            (Length(reverse_window_scores_local) <
-            Length(reverse_window_texts_local)) then
-        begin
-            Exit;
-        end;
-
-        SetLength(reverse_baseline_scores_local, Length(c_reverse_radii));
-        SetLength(reverse_candidate_scores_local, Length(c_reverse_radii));
-        for radius_index_local := 0 to High(c_reverse_radii) do
-        begin
-            reverse_baseline_scores_local[radius_index_local] :=
-                reverse_window_scores_local[radius_index_local * 2];
-            reverse_candidate_scores_local[radius_index_local] :=
-                reverse_window_scores_local[radius_index_local * 2 + 1];
-        end;
-        FillChar(baseline_word_scores_local,
-            SizeOf(baseline_word_scores_local), 0);
-        FillChar(candidate_word_scores_local,
-            SizeOf(candidate_word_scores_local), 0);
-        build_long_exact_anchor_pairwise_features(
-            rank_features[candidate_index_local],
-            rank_features[baseline_index_local], 3, 2,
-            rank_scores[candidate_index_local],
-            rank_scores[baseline_index_local], relation_local,
-            forward_baseline_scores_local, forward_candidate_scores_local,
-            baseline_word_scores_local, candidate_word_scores_local,
-            base_features_local);
-        build_long_second_slot_bidirectional_features(base_features_local,
-            reverse_baseline_scores_local, reverse_candidate_scores_local,
-            features_local);
-        score_local := long_second_slot_bidirectional_score(features_local);
-        if score_local < c_long_second_slot_bidirectional_threshold then
-        begin
-            Exit;
-        end;
-
-        swap_index_local := ordered_indices[1];
-        ordered_indices[1] := ordered_indices[2];
-        ordered_indices[2] := swap_index_local;
-        apply_ranker := True;
-    end;
-
     procedure apply_complete_pool_final_pairwise_residual;
     var
         top_index_local: Integer;
@@ -140212,9 +140065,6 @@ begin
 
     capture_ranking_stage(c_ranking_stage_bidirectional_difference);
 
-    { Recover a high-confidence rank-3 complete path into the second slot.
-      The model cannot change Top1 and is isolated from short-word ranking. }
-    apply_second_slot_bidirectional_ranking;
     capture_ranking_stage(c_ranking_stage_second_slot_bidirectional);
 
     { This final residual is trained against the captured order after every
