@@ -5,7 +5,7 @@ interface
 uses
     System.SysUtils,
     System.Math,
-    nc_long_final_ranker_model;
+    nc_long_ranker_features;
 
 type
     TncLongTop2PairwiseSwapFeatures = record

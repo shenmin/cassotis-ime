@@ -3,7 +3,7 @@ unit nc_long_complete_pool_abstain_model;
 interface
 
 uses
-    nc_long_final_abstain_model;
+    nc_long_ranker_features;
 
 const
     c_long_complete_pool_abstain_feature_count: Integer = 49;

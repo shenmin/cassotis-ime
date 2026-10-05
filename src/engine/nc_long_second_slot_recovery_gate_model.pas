@@ -3,7 +3,7 @@ unit nc_long_second_slot_recovery_gate_model;
 interface
 
 uses
-    nc_long_final_ranker_model;
+    nc_long_ranker_features;
 
 type
     TncLongSecondSlotRecoveryGateFeatures = record

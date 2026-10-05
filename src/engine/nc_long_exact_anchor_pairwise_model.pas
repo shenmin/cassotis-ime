@@ -3,7 +3,7 @@ unit nc_long_exact_anchor_pairwise_model;
 interface
 
 uses
-    nc_long_final_ranker_model;
+    nc_long_ranker_features;
 
 type
     TncLongExactAnchorRelationFeatures = record

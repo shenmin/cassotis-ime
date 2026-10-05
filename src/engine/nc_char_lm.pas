@@ -6,7 +6,8 @@ unit nc_char_lm;
 
 interface
 
-uses System.SysUtils, System.Math, nc_one_key_completion_gbdt, nc_tab_continuation_gbdt;
+uses System.SysUtils, System.Math, nc_one_key_completion_gbdt, nc_tab_continuation_gbdt,
+    nc_short_context_gbdt, nc_long_choice_gbdt;
 
 type
     IncCharLm = interface
@@ -81,20 +82,47 @@ type
         feedback_reject_count: Integer;
     end;
 
+    { Engine evidence for a long-sentence pool candidate, filled by the final
+      ranking (TncEngine.fill_long_pool_evidence lists the order). }
+    TncCharLmLongEvidence = array[0..c_long_gbdt_evidence_count - 1] of Double;
+
+    { A candidate of the final long-sentence pool: its final rank and the
+      engine evidence for it. }
+    TncCharLmLongCandidate = record
+        text: string;
+        rank: Integer;
+        has_evidence: Boolean;
+        evidence: TncCharLmLongEvidence;
+    end;
+
+    { A visible exact entry for the short-word choice: its page position and
+      the dictionary evidence the candidate list carries. }
+    TncCharLmShortCandidate = record
+        text: string;
+        position: Integer;
+        dict_weight: Integer;
+        has_dict_weight: Boolean;
+        display_score: Integer;
+        user: Boolean;
+    end;
+
 const
-    { Long-sentence rerank, chosen on the 8,000-sentence fiction dev set
-      (97M-parameter model, int8 with float layer-4 MLP output). }
+    { Long-sentence choice over the final pool, chosen on the 8,000-sentence
+      fiction dev set; the rank weight and the visible bonus make the earlier
+      score, one feature of nc_long_choice_gbdt. }
     c_char_lm_long_min_units = 6;
     c_char_lm_long_pool_limit = 20;
     c_char_lm_long_min_count = 2;
     c_char_lm_long_max_nodes = 110;
     c_char_lm_long_rank_weight = 0.25;
     c_char_lm_long_visible_bonus = 2.5;
-    { Short-word context rerank over the visible exact entries for the input
-      (prefix completions excluded), chosen on the 30,000-case fiction
-      short-word dev set with left context required. }
+    { Whole-word matches of mixed full and abbreviated input: the first this
+      many, ordered by log P(text | context) - w * ln(position). }
     c_char_lm_short_limit = 5;
     c_char_lm_short_rank_weight = 1.0;
+    { Short-word choice with left context: the visible exact entries for the
+      input (prefix completions excluded), at most this many in page order. }
+    c_char_lm_short_choice_limit = 8;
     { Tab continuation: show the most probable candidate when P(correct) is at
       least this. Chosen on the 7,996-sentence fiction Tab dev set (5-fold CV
       on the policy's own features) as the most hits whose prompt precision is
@@ -115,23 +143,35 @@ const
     c_char_lm_completion_limit = 12;
 
 { Chooses the long-sentence top1 from the final complete pool and the visible
-  top1. pool_texts/pool_ranks are the final ranking's candidates in their
-  original order with their final ranks. Candidates must cover expected_units
+  top1. pool holds the final ranking's candidates in their original order with
+  their final ranks and engine evidence. Candidates must cover expected_units
   characters; duplicates keep their first occurrence. The visible top1 goes
   first (and is appended to the pool when missing), then the pool's first
   c_char_lm_long_pool_limit entries by final rank, cut by the node budget.
-  Each is scored LM - w * ln(pool position) + bonus * [is visible]; ties keep
+  A gradient-boosted ranker (nc_long_choice_gbdt) scores each from log P(text |
+  context), its pool position and final rank, the earlier score LM - w *
+  ln(pool position) + bonus * [is visible] and the engine evidence; ties keep
   the earlier text. Returns True with chosen <> visible when the model prefers
   another candidate. }
-function nc_char_lm_choose_long_top(const model: IncCharLm; const context: string;
-    const pool_texts: TArray<string>; const pool_ranks: TArray<Integer>;
-    const visible: string; const expected_units: Integer; out chosen: string): Boolean;
+function nc_char_lm_choose_long(const model: IncCharLm; const context: string;
+    const pool: TArray<TncCharLmLongCandidate>; const visible: string;
+    const expected_units: Integer; out chosen: string): Boolean;
 
 { Chooses among the first c_char_lm_short_limit distinct texts (the visible
   complete candidates in order) by log P(text | context) - w * ln(position).
   Ties keep the earlier text. Returns False when nothing was scored. }
 function nc_char_lm_choose_short_top(const model: IncCharLm; const context: string;
     const texts: TArray<string>; out best_index: Integer): Boolean;
+
+{ Chooses the short-word top with left context among the visible exact
+  entries for the input (the first c_char_lm_short_choice_limit, page order)
+  by a gradient-boosted ranker over log P(text | context), log P of its first
+  one and two characters, log P(text) without context, the dictionary weight,
+  the display score and the page position, fit on the short-word dev set
+  (nc_short_context_gbdt). Ties keep the earlier candidate. Returns False
+  when nothing was scored. }
+function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
+    const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean;
 
 { Estimates P(the displayed continuation is correct) for each candidate from
   log P(base + suffix | context) - log P(base | context) and each candidate's
@@ -180,8 +220,16 @@ var
     { Diagnostics only: when set, receives each scored Tab continuation (base,
       suffix, features and probability, tab-separated). }
     nc_char_lm_tab_trace: TProc<string>;
+    { Diagnostics only: when set, receives each scored short-word candidate
+      (text and features, tab-separated). }
+    nc_char_lm_short_trace: TProc<string>;
+    { Diagnostics only: when set, receives each scored long-sentence candidate
+      (text and features, tab-separated). }
+    nc_char_lm_long_trace: TProc<string>;
 
 implementation
+
+uses System.Generics.Collections;
 
 const
     // Tail and next words are scored in rank order while the packed trie of
@@ -208,107 +256,6 @@ begin
         Inc(idx);
         Inc(Result);
     end;
-end;
-
-function nc_char_lm_choose_long_top(const model: IncCharLm; const context: string;
-    const pool_texts: TArray<string>; const pool_ranks: TArray<Integer>;
-    const visible: string; const expected_units: Integer; out chosen: string): Boolean;
-var
-    complete: TArray<string>;
-    ranks, order: TArray<Integer>;
-    texts: TArray<string>;
-    logp: TArray<Single>;
-    text, visible_text: string;
-    idx, other, count, visible_index, scored, best: Integer;
-    score, best_score: Double;
-begin
-    Result := False;
-    chosen := '';
-    if (model = nil) or (expected_units < c_char_lm_long_min_units) or
-        (Length(pool_texts) <> Length(pool_ranks)) or (not model.char_lm_ready) then
-        Exit;
-
-    // Complete, distinct texts in original order, then stably by final rank.
-    count := 0;
-    SetLength(complete, Length(pool_texts) + 1);
-    SetLength(ranks, Length(pool_texts) + 1);
-    for idx := 0 to High(pool_texts) do
-    begin
-        text := Trim(pool_texts[idx]);
-        if (text = '') or (nc_char_lm_code_point_count(text) <> expected_units) then
-            Continue;
-        other := 0;
-        while (other < count) and (complete[other] <> text) do
-            Inc(other);
-        if other < count then
-            Continue;
-        complete[count] := text;
-        ranks[count] := pool_ranks[idx];
-        Inc(count);
-    end;
-    for idx := 1 to count - 1 do
-    begin
-        text := complete[idx];
-        other := ranks[idx];
-        best := idx - 1;
-        while (best >= 0) and (ranks[best] > other) do
-        begin
-            complete[best + 1] := complete[best];
-            ranks[best + 1] := ranks[best];
-            Dec(best);
-        end;
-        complete[best + 1] := text;
-        ranks[best + 1] := other;
-    end;
-
-    visible_text := Trim(visible);
-    visible_index := -1;
-    if (visible_text <> '') and
-        (nc_char_lm_code_point_count(visible_text) = expected_units) then
-    begin
-        visible_index := 0;
-        while (visible_index < count) and (complete[visible_index] <> visible_text) do
-            Inc(visible_index);
-        if visible_index = count then
-        begin
-            complete[count] := visible_text;
-            Inc(count);
-        end;
-    end;
-
-    SetLength(order, 0);
-    if visible_index >= 0 then
-        order := [visible_index];
-    for idx := 0 to Min(c_char_lm_long_pool_limit, count) - 1 do
-        if idx <> visible_index then
-            order := order + [idx];
-    if Length(order) < c_char_lm_long_min_count then
-        Exit;
-
-    SetLength(texts, Length(order));
-    for idx := 0 to High(order) do
-        texts[idx] := complete[order[idx]];
-    scored := model.score_texts(context, texts, c_char_lm_long_min_count,
-        c_char_lm_long_max_nodes, logp);
-    if (scored < c_char_lm_long_min_count) or (scored > Length(order)) or
-        (Length(logp) < scored) then
-        Exit;
-
-    best := -1;
-    best_score := 0.0;
-    for idx := 0 to scored - 1 do
-    begin
-        score := logp[idx] - c_char_lm_long_rank_weight * Ln(order[idx] + 1);
-        if order[idx] = visible_index then
-            score := score + c_char_lm_long_visible_bonus;
-        if (best < 0) or (score > best_score) then
-        begin
-            best := order[idx];
-            best_score := score;
-        end;
-    end;
-    chosen := complete[best];
-    Result := chosen <> visible_text;
 end;
 
 function nc_char_lm_choose_continuation(const model: IncCharLm; const context: string;
@@ -356,7 +303,7 @@ var
     top_idx: array[0..1] of Integer;
     features: array[0..c_tab_gbdt_feature_count - 1] of Double;
     idx, other, units, required, scored, typed, rank, slot, lp_rank, best: Integer;
-    best_base, lm_best, lp_max, suffix_lp, p: Double;
+    best_base, lm_best, lp_max, suffix_lp, p, logit: Double;
     usable, duplicate: Boolean;
     text, suffix, ch: string;
 begin
@@ -639,7 +586,12 @@ begin
         features[24] := 0.0;
         if entry.item.lm_next then
             features[24] := Ln(Max(1, entry.lm_rank));
-        p := 1.0 / (1.0 + Exp(-nc_tab_gbdt_logit(features)));
+        // Logistic of the logit, written so that Exp cannot overflow.
+        logit := nc_tab_gbdt_logit(features);
+        if logit >= 0.0 then
+            p := 1.0 / (1.0 + Exp(-logit))
+        else
+            p := Exp(logit) / (1.0 + Exp(logit));
         if Assigned(nc_char_lm_tab_trace) then
         begin
             text := entry.item.base_text + #9 + entry.item.suffix_text + #9 +
@@ -807,6 +759,314 @@ begin
         end;
     end;
     Result := True;
+end;
+
+function code_points(const text: string): TArray<string>;
+var
+    idx, width: Integer;
+begin
+    Result := nil;
+    idx := 1;
+    while idx <= Length(text) do
+    begin
+        width := 1;
+        if (Ord(text[idx]) >= $D800) and (Ord(text[idx]) <= $DBFF) and
+            (idx < Length(text)) and (Ord(text[idx + 1]) >= $DC00) and
+            (Ord(text[idx + 1]) <= $DFFF) then
+            width := 2;
+        Result := Result + [Copy(text, idx, width)];
+        Inc(idx, width);
+    end;
+end;
+
+function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
+    const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean;
+var
+    count, idx, other, units, shared, lp_rank, weight_rank, context_units: Integer;
+    chars, first_chars: TArray<string>;
+    texts, full_texts: TArray<string>;
+    slots: array of array[0..2] of Integer;
+    slot_of: TDictionary<string, Integer>;
+    logp, plain_logp: TArray<Single>;
+    lp, lp1, lp2, plain, log_weight, log_display: TArray<Double>;
+    features: array[0..c_short_gbdt_feature_count - 1] of Double;
+    lp_max, lp1_max, gain_max, score, best_score: Double;
+    text, prefix, line: string;
+    part: Integer;
+begin
+    Result := False;
+    best_index := 0;
+    count := Min(Length(candidates), c_char_lm_short_choice_limit);
+    if (model = nil) or (count < 2) or (not model.char_lm_ready) then
+        Exit;
+    // Each text and its first one and two characters, scored once each.
+    SetLength(slots, count);
+    slot_of := TDictionary<string, Integer>.Create;
+    try
+        for idx := 0 to count - 1 do
+        begin
+            chars := code_points(candidates[idx].text);
+            for part := 0 to 2 do
+            begin
+                if part = 0 then
+                    prefix := candidates[idx].text
+                else
+                    prefix := string.Join('', Copy(chars, 0, part));
+                if not slot_of.TryGetValue(prefix, other) then
+                begin
+                    other := Length(texts);
+                    texts := texts + [prefix];
+                    slot_of.Add(prefix, other);
+                end;
+                slots[idx][part] := other;
+            end;
+        end;
+    finally
+        slot_of.Free;
+    end;
+    if model.score_texts(context, texts, Length(texts), 0, logp) <> Length(texts) then
+        Exit;
+    // The same texts without context: how much the context itself supports each.
+    SetLength(plain, count);
+    if context <> '' then
+    begin
+        SetLength(full_texts, count);
+        for idx := 0 to count - 1 do
+            full_texts[idx] := candidates[idx].text;
+        if model.score_texts('', full_texts, count, 0, plain_logp) <> count then
+            Exit;
+    end;
+    SetLength(lp, count);
+    SetLength(lp1, count);
+    SetLength(lp2, count);
+    SetLength(log_weight, count);
+    SetLength(log_display, count);
+    lp_max := -MaxDouble;
+    lp1_max := -MaxDouble;
+    gain_max := -MaxDouble;
+    for idx := 0 to count - 1 do
+    begin
+        lp[idx] := logp[slots[idx][0]];
+        lp1[idx] := logp[slots[idx][1]];
+        lp2[idx] := logp[slots[idx][2]];
+        lp_max := Max(lp_max, lp[idx]);
+        lp1_max := Max(lp1_max, lp1[idx]);
+        plain[idx] := lp[idx];
+        if context <> '' then
+            plain[idx] := plain_logp[idx];
+        gain_max := Max(gain_max, lp[idx] - plain[idx]);
+        log_weight[idx] := 0.0;
+        if candidates[idx].has_dict_weight then
+            log_weight[idx] := Ln(1.0 + Max(0, candidates[idx].dict_weight));
+        log_display[idx] := Ln(1.0 + Max(0, candidates[idx].display_score));
+    end;
+    context_units := nc_char_lm_code_point_count(context);
+    first_chars := code_points(candidates[0].text);
+    best_score := 0.0;
+    for idx := 0 to count - 1 do
+    begin
+        text := candidates[idx].text;
+        chars := code_points(text);
+        units := Max(1, Length(chars));
+        shared := 0;
+        while (shared < Length(chars)) and (shared < Length(first_chars)) and
+            (chars[shared] = first_chars[shared]) do
+            Inc(shared);
+        // Standing in the group by log P and by dictionary weight, earlier first on ties.
+        lp_rank := 0;
+        weight_rank := 0;
+        for other := 0 to count - 1 do
+        begin
+            if (lp[other] > lp[idx]) or ((lp[other] = lp[idx]) and (other < idx)) then
+                Inc(lp_rank);
+            if (log_weight[other] > log_weight[idx]) or
+                ((log_weight[other] = log_weight[idx]) and (other < idx)) then
+                Inc(weight_rank);
+        end;
+        features[0] := lp[idx];
+        features[1] := lp[idx] / units;
+        features[2] := lp[idx] - lp_max;
+        features[3] := lp[idx] - lp[0];
+        features[4] := lp_rank;
+        features[5] := Ln(1.0 + Max(0, candidates[idx].position));
+        features[6] := idx;
+        features[7] := units;
+        features[8] := count;
+        features[9] := log_weight[idx];
+        features[10] := Ord(candidates[idx].has_dict_weight);
+        features[11] := log_weight[idx] - log_weight[0];
+        features[12] := log_display[idx];
+        features[13] := log_display[idx] - log_display[0];
+        features[14] := Ord(candidates[idx].user);
+        features[15] := lp1[idx];
+        features[16] := lp2[idx];
+        features[17] := lp[idx] - lp1[idx];
+        features[18] := lp1[idx] - lp1_max;
+        features[19] := Min(context_units, 32);
+        features[20] := shared;
+        features[21] := weight_rank;
+        features[22] := plain[idx];
+        features[23] := lp[idx] - plain[idx];
+        features[24] := lp[idx] - plain[idx] - gain_max;
+        score := nc_short_gbdt_score(features);
+        if Assigned(nc_char_lm_short_trace) then
+        begin
+            line := text;
+            for other := 0 to c_short_gbdt_feature_count - 1 do
+                line := line + #9 + FloatToStr(features[other], TFormatSettings.Invariant);
+            nc_char_lm_short_trace(line + #9 + FloatToStr(score, TFormatSettings.Invariant));
+        end;
+        if (idx = 0) or (score > best_score) then
+        begin
+            best_index := idx;
+            best_score := score;
+        end;
+    end;
+    Result := True;
+end;
+
+function nc_char_lm_choose_long(const model: IncCharLm; const context: string;
+    const pool: TArray<TncCharLmLongCandidate>; const visible: string;
+    const expected_units: Integer; out chosen: string): Boolean;
+var
+    complete: TArray<TncCharLmLongCandidate>;
+    item: TncCharLmLongCandidate;
+    order: TArray<Integer>;
+    texts: TArray<string>;
+    logp: TArray<Single>;
+    formulas: TArray<Double>;
+    features: array[0..c_long_gbdt_feature_count - 1] of Double;
+    text, visible_text, line: string;
+    idx, other, count, visible_index, scored, best, lp_rank: Integer;
+    lp_max, lp_visible, formula_max, score, best_score: Double;
+begin
+    Result := False;
+    chosen := '';
+    if (model = nil) or (expected_units < c_char_lm_long_min_units) or
+        (not model.char_lm_ready) then
+        Exit;
+
+    // Complete, distinct texts in original order, then stably by final rank.
+    count := 0;
+    SetLength(complete, Length(pool) + 1);
+    for idx := 0 to High(pool) do
+    begin
+        text := Trim(pool[idx].text);
+        if (text = '') or (nc_char_lm_code_point_count(text) <> expected_units) then
+            Continue;
+        other := 0;
+        while (other < count) and (complete[other].text <> text) do
+            Inc(other);
+        if other < count then
+            Continue;
+        complete[count] := pool[idx];
+        complete[count].text := text;
+        Inc(count);
+    end;
+    for idx := 1 to count - 1 do
+    begin
+        item := complete[idx];
+        best := idx - 1;
+        while (best >= 0) and (complete[best].rank > item.rank) do
+        begin
+            complete[best + 1] := complete[best];
+            Dec(best);
+        end;
+        complete[best + 1] := item;
+    end;
+
+    visible_text := Trim(visible);
+    visible_index := -1;
+    if (visible_text <> '') and
+        (nc_char_lm_code_point_count(visible_text) = expected_units) then
+    begin
+        visible_index := 0;
+        while (visible_index < count) and (complete[visible_index].text <> visible_text) do
+            Inc(visible_index);
+        if visible_index = count then
+        begin
+            complete[count] := Default(TncCharLmLongCandidate);
+            complete[count].text := visible_text;
+            Inc(count);
+        end;
+    end;
+
+    SetLength(order, 0);
+    if visible_index >= 0 then
+        order := [visible_index];
+    for idx := 0 to Min(c_char_lm_long_pool_limit, count) - 1 do
+        if idx <> visible_index then
+            order := order + [idx];
+    if Length(order) < c_char_lm_long_min_count then
+        Exit;
+
+    SetLength(texts, Length(order));
+    for idx := 0 to High(order) do
+        texts[idx] := complete[order[idx]].text;
+    scored := model.score_texts(context, texts, c_char_lm_long_min_count,
+        c_char_lm_long_max_nodes, logp);
+    if (scored < c_char_lm_long_min_count) or (scored > Length(order)) or
+        (Length(logp) < scored) then
+        Exit;
+
+    // The earlier score: LM - w * ln(pool position) + bonus * [is visible].
+    SetLength(formulas, scored);
+    lp_max := -MaxDouble;
+    formula_max := -MaxDouble;
+    for idx := 0 to scored - 1 do
+    begin
+        formulas[idx] := logp[idx] - c_char_lm_long_rank_weight * Ln(order[idx] + 1);
+        if order[idx] = visible_index then
+            formulas[idx] := formulas[idx] + c_char_lm_long_visible_bonus;
+        lp_max := Max(lp_max, logp[idx]);
+        formula_max := Max(formula_max, formulas[idx]);
+    end;
+    lp_visible := 0.0;
+    if visible_index >= 0 then
+        lp_visible := logp[0];
+
+    best := -1;
+    best_score := 0.0;
+    for idx := 0 to scored - 1 do
+    begin
+        item := complete[order[idx]];
+        lp_rank := 0;
+        for other := 0 to scored - 1 do
+            if (logp[other] > logp[idx]) or ((logp[other] = logp[idx]) and (other < idx)) then
+                Inc(lp_rank);
+        features[0] := logp[idx];
+        features[1] := logp[idx] / expected_units;
+        features[2] := logp[idx] - lp_max;
+        features[3] := 0.0;
+        if visible_index >= 0 then
+            features[3] := logp[idx] - lp_visible;
+        features[4] := lp_rank;
+        features[5] := idx;
+        features[6] := Ln(1.0 + Max(0, item.rank));
+        features[7] := Ord(order[idx] = visible_index);
+        features[8] := scored;
+        features[9] := Min(nc_char_lm_code_point_count(context), 32);
+        features[10] := Ord(item.has_evidence);
+        features[11] := formulas[idx];
+        features[12] := formulas[idx] - formula_max;
+        for other := 0 to c_long_gbdt_evidence_count - 1 do
+            features[13 + other] := item.evidence[other];
+        score := nc_long_gbdt_score(features);
+        if Assigned(nc_char_lm_long_trace) then
+        begin
+            line := item.text;
+            for other := 0 to c_long_gbdt_feature_count - 1 do
+                line := line + #9 + FloatToStr(features[other], TFormatSettings.Invariant);
+            nc_char_lm_long_trace(line + #9 + FloatToStr(score, TFormatSettings.Invariant));
+        end;
+        if (best < 0) or (score > best_score) then
+        begin
+            best := order[idx];
+            best_score := score;
+        end;
+    end;
+    chosen := complete[best].text;
+    Result := chosen <> visible_text;
 end;
 
 end.

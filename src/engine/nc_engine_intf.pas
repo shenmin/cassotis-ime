@@ -827,6 +827,7 @@ type
         // ranking's input order with each candidate's final rank.
         m_char_lm_long_pool: TncCandidateList;
         m_char_lm_long_pool_ranks: TArray<Integer>;
+        m_char_lm_long_pool_evidence: TArray<TncCharLmLongEvidence>;
         m_long_local_repair: IncLongLocalRepair;
         m_local_repair_query_key, m_local_repair_text, m_local_repair_draft: string;
         m_local_repair_original_path: string;
@@ -1317,30 +1318,16 @@ uses
     nc_long_edge_retention_model,
     nc_long_exact_edge_lattice_ranker_model,
     nc_long_second_stage_ranker_model,
-    nc_long_final_ranker_model,
-    nc_long_final_abstain_model,
+    nc_long_ranker_features,
     nc_long_complete_pool_ranker_model,
     nc_long_complete_pool_abstain_model,
     nc_long_top2_pairwise_swap_model,
-    nc_long_top2_pairwise_difference_model,
     nc_long_exact_anchor_pairwise_model,
-    nc_long_visible_pairwise_residual_model,
-    nc_long_complete_pool_difference_model,
-    nc_long_settled_top2_residual_model,
-    nc_long_unified_top2_arbiter_model,
-    nc_long_unified_top2_evidence_model,
-    nc_long_unified_top2_text_model,
     nc_long_second_slot_recovery_gate_model,
     nc_long_second_slot_selector_model,
     nc_long_local_pairwise_pool_model,
     nc_long_local_residual_model,
-    nc_short_context_reranker_model,
-    nc_short_context_residual_model,
-    nc_short_context_difference_model,
     nc_short_nocontext_residual_model,
-    nc_one_key_completion_difference_model,
-    nc_one_key_completion_ncgpt_model,
-    nc_one_key_completion_ncgpt_sparse_audit_model,
     nc_tab_repair_projection,
     nc_tab_exact_fallback;
 
@@ -1425,6 +1412,54 @@ begin
         (challenger_weight >= 0) and
         (challenger_weight < baseline_weight) and
         (Int64(challenger_weight) * 2 < Int64(baseline_weight));
+end;
+
+{ Engine evidence for the long-sentence choice (TncCharLmLongEvidence):
+  0 complete-pool ranker score (/1e8), 1 its gap to the pool's best,
+  2 legacy rank, 3 chain rank (0 without a chain path), 4 chain present,
+  5 ln(1 + engine score), 6 ln(1 + dictionary weight), 7 has dictionary
+  weight, 8 user, 9 common pattern, 10 local rerank, 11 rule fallback,
+  12 path confidence, 13 path segments, 14 single-character segments,
+  15 longest segment, 16 engine character LM, 17 its left-context gain,
+  18 word LM bonus, 19 supported and 20 strong word-LM boundary ratios,
+  21 unsupported boundaries, 22 complete-pool source kind, 23 its rank,
+  24 substitutions, 25 pair evidence, 26 consensus support, 27 proper-name
+  confidence, 28 edge-model score, 29 query choice bonus. }
+procedure fill_long_pool_evidence(const features: TncLongFinalRankerFeatures;
+    const rank_score, best_rank_score: Int64; out evidence: TncCharLmLongEvidence);
+begin
+    evidence[0] := rank_score / 1.0E8;
+    evidence[1] := (rank_score - best_rank_score) / 1.0E8;
+    evidence[2] := features.legacy_rank;
+    evidence[3] := features.chain_rank;
+    evidence[4] := Ord(features.chain_present);
+    evidence[5] := Ln(1.0 + Max(0, features.candidate_score));
+    evidence[6] := 0.0;
+    if features.has_dict_weight then
+        evidence[6] := Ln(1.0 + Max(0, features.dict_weight));
+    evidence[7] := Ord(features.has_dict_weight);
+    evidence[8] := Ord(features.source_user);
+    evidence[9] := Ord(features.source_pattern);
+    evidence[10] := Ord(features.source_local_rerank);
+    evidence[11] := Ord(features.source_rule_fallback);
+    evidence[12] := features.path_confidence_score;
+    evidence[13] := features.path_segments;
+    evidence[14] := features.path_single_segments;
+    evidence[15] := features.path_max_segment_units;
+    evidence[16] := features.char_lm_score;
+    evidence[17] := features.char_lm_context_gain;
+    evidence[18] := features.word_lm_bonus;
+    evidence[19] := features.word_lm_supported_ratio;
+    evidence[20] := features.word_lm_strong_ratio;
+    evidence[21] := features.word_lm_zero_count;
+    evidence[22] := features.complete_pool_source_kind;
+    evidence[23] := features.complete_pool_rank;
+    evidence[24] := features.complete_pool_substitutions;
+    evidence[25] := features.complete_pool_pair_evidence;
+    evidence[26] := features.complete_pool_consensus_support;
+    evidence[27] := features.complete_pool_proper_name_confidence;
+    evidence[28] := features.complete_pool_edge_model_score_total;
+    evidence[29] := features.query_choice_bonus;
 end;
 
 function apply_long_top2_pairwise_index_swap(
@@ -5241,6 +5276,7 @@ begin
     m_char_lm_short_enabled := short_enabled and (model <> nil);
     SetLength(m_char_lm_long_pool, 0);
     SetLength(m_char_lm_long_pool_ranks, 0);
+    SetLength(m_char_lm_long_pool_evidence, 0);
 end;
 
 procedure TncEngine.set_long_local_repair(const repair: IncLongLocalRepair);
@@ -7315,8 +7351,6 @@ const
     c_completion_cold_vertical_context_switch_margin = 24;
     c_completion_generic_no_context_switch_margin = 80;
     c_completion_generic_context_switch_margin = 56;
-    c_completion_context_model_margin = 1.0;
-    c_completion_context_residual_margin = 2.7;
     c_completion_competition_top_k = 5;
     c_completion_competition_score_scale = 1000;
 var
@@ -7353,20 +7387,6 @@ var
     anchor_bonus: Integer;
     required_margin: Integer;
     top_margin: Integer;
-    model_baseline_idx: Integer;
-    model_best_idx: Integer;
-    model_best_lm_idx: Integer;
-    model_candidate_count: Integer;
-    model_rank: Integer;
-    model_idx: Integer;
-    model_baseline_score: Double;
-    model_best_score: Double;
-    model_candidate_score: Double;
-    model_current_score: Double;
-    residual_best_idx: Integer;
-    residual_best_score: Double;
-    residual_candidate_score: Double;
-    residual_current_score: Double;
     previous_compatible: Boolean;
     previous_present: Boolean;
     transition_challenge_allowed: Boolean;
@@ -7394,33 +7414,6 @@ var
     pair_best_observations: Integer;
     pair_confidence: Integer;
     pair_observations: Integer;
-    ncgpt_candidate_features:
-        array of TncOneKeyCompletionNcgptCandidateFeatures;
-    ncgpt_pair_features: TncOneKeyCompletionNcgptPairFeatures;
-    ncgpt_needed_indices: TArray<Integer>;
-    ncgpt_stage1_features: TncShortContextDifferenceFeatures;
-    ncgpt_best_idx: Integer;
-    ncgpt_incumbent_idx: Integer;
-    ncgpt_primary_idx: Integer;
-    ncgpt_candidate_idx: Integer;
-    ncgpt_best_score: Double;
-    ncgpt_primary_score: Double;
-    ncgpt_candidate_score: Double;
-    ncgpt_threshold: Double;
-    ncgpt_primary_threshold: Double;
-    ncgpt_category: TncOneKeyCompletionDifferenceCategory;
-    ncgpt_primary_category: TncOneKeyCompletionDifferenceCategory;
-    ncgpt_common_prefix: Integer;
-    ncgpt_common_suffix: Integer;
-    ncgpt_prior_score: Double;
-    ncgpt_candidate_scores: TArray<Double>;
-    ncgpt_candidate_thresholds: TArray<Double>;
-    ncgpt_candidate_categories:
-        TArray<TncOneKeyCompletionDifferenceCategory>;
-    ncgpt_candidate_scored: TArray<Boolean>;
-    ncgpt_fallback_idx: Integer;
-    ncgpt_fallback_score: Double;
-    ncgpt_fallback_candidate_score: Double;
     has_completion_lookup: Boolean;
     long_completion: TncOneKeyCompletion;
     long_completion_score: Integer;
@@ -7550,134 +7543,6 @@ var
         end;
     end;
 
-    procedure get_common_completion_fragment_units(const left_text,
-        right_text: string; out common_prefix, common_suffix: Integer);
-    var
-        left_units: TArray<string>;
-        right_units: TArray<string>;
-        compare_limit: Integer;
-    begin
-        common_prefix := 0;
-        common_suffix := 0;
-        left_units := split_text_units(left_text);
-        right_units := split_text_units(right_text);
-        compare_limit := Min(Length(left_units), Length(right_units));
-        while (common_prefix < compare_limit) and
-            (left_units[common_prefix] = right_units[common_prefix]) do
-        begin
-            Inc(common_prefix);
-        end;
-        compare_limit := compare_limit - common_prefix;
-        while (common_suffix < compare_limit) and
-            (left_units[High(left_units) - common_suffix] =
-            right_units[High(right_units) - common_suffix]) do
-        begin
-            Inc(common_suffix);
-        end;
-    end;
-
-    procedure fill_ncgpt_completion_candidate_features(
-        const candidate_idx: Integer;
-        out features: TncOneKeyCompletionNcgptCandidateFeatures);
-    var
-        item: TncOneKeyCompletion;
-    begin
-        FillChar(features, SizeOf(features), 0);
-        item := completions[candidate_idx];
-        features[0] := item.weight;
-        features[1] := item.popularity_prior;
-        features[2] := item.corpus_score;
-        features[3] := item.document_score;
-        features[4] := item.source_count;
-        features[5] := item.path_score;
-        features[6] := item.vertical_penalty;
-        features[7] := item.vertical_layer_kind;
-        features[8] := Ord(item.prefix_anchored);
-        features[9] := item.feedback_count;
-        features[10] := item.feedback_reject_count;
-        features[11] := char_lm_scores[candidate_idx];
-
-        ncgpt_stage1_features := Default(TncShortContextDifferenceFeatures);
-        short_context_difference_fill_stage1_evidence(context_value,
-            completions[0].text, item.text, ncgpt_stage1_features);
-        features[12] := ncgpt_stage1_features.pair_log_odds;
-        features[13] := ncgpt_stage1_features.pair_log_total;
-        features[14] := ncgpt_stage1_features.pair_context_log_odds;
-        features[15] := ncgpt_stage1_features.pair_context_log_total;
-        features[16] := ncgpt_stage1_features.pair_context_width;
-        features[17] := ncgpt_stage1_features.mined_log_odds;
-        features[18] := ncgpt_stage1_features.mined_log_total;
-        features[19] := ncgpt_stage1_features.mined_context_width;
-        features[20] := ncgpt_stage1_features.novel_log_odds;
-        features[21] := ncgpt_stage1_features.chat_log_odds;
-        features[22] := ncgpt_stage1_features.formal_log_odds;
-        features[23] := ncgpt_stage1_features.total_log_odds;
-        features[24] := candidate_idx + 1;
-        features[25] := Ord(item.source = okcs_user_exact);
-        features[26] := Ord(item.source = okcs_base_exact);
-        features[27] := Ord(item.source = okcs_transition);
-        features[28] := get_candidate_text_unit_count(item.text);
-        features[29] := Length(item.full_pinyin);
-        features[30] := Max(0, Length(item.full_pinyin) -
-            Length(compact_query));
-        features[31] := Length(compact_query);
-        features[32] := get_candidate_text_unit_count(context_value);
-        features[33] := Length(syllables);
-    end;
-
-    function prepare_ncgpt_completion_features: Boolean;
-    var
-        feature_idx: Integer;
-        completion_idx: Integer;
-        category: TncOneKeyCompletionDifferenceCategory;
-        threshold: Double;
-    begin
-        Result := False;
-        if (context_value = '') or (not has_char_lm) or
-            (Length(completions) < 2) then
-        begin
-            Exit;
-        end;
-
-        // Only materialize the settled incumbent and categories whose
-        // independently calibrated threshold permits a challenge. Most
-        // completion groups therefore avoid all extra LM/evidence work.
-        SetLength(ncgpt_needed_indices, 1);
-        ncgpt_needed_indices[0] := best_idx;
-        for completion_idx := 0 to High(completions) do
-        begin
-            if (completion_idx = best_idx) or
-                (not eligible[completion_idx]) or
-                (completions[best_idx].feedback_count >
-                completions[completion_idx].feedback_count) then
-            begin
-                Continue;
-            end;
-            category := one_key_completion_difference_category(
-                completions[best_idx], completions[completion_idx]);
-            threshold := one_key_completion_ncgpt_threshold(category);
-            if threshold >= 1.0E29 then
-            begin
-                Continue;
-            end;
-            SetLength(ncgpt_needed_indices,
-                Length(ncgpt_needed_indices) + 1);
-            ncgpt_needed_indices[High(ncgpt_needed_indices)] := completion_idx;
-        end;
-        if Length(ncgpt_needed_indices) < 2 then
-        begin
-            Exit;
-        end;
-
-        SetLength(ncgpt_candidate_features, Length(completions));
-        for feature_idx := 0 to High(ncgpt_needed_indices) do
-        begin
-            completion_idx := ncgpt_needed_indices[feature_idx];
-            fill_ncgpt_completion_candidate_features(completion_idx,
-                ncgpt_candidate_features[completion_idx]);
-        end;
-        Result := True;
-    end;
 begin
     previous_completion := m_one_key_completion;
     previous_query_prefix := m_one_key_completion_query_prefix;
@@ -8262,143 +8127,6 @@ begin
         end;
     end;
 
-    // Completion candidates are longer than the ordinary short-word choices,
-    // but their leading characters and the left-context boundary use the same
-    // independently trained evidence. Apply that model only within the base
-    // lexicon class; user feedback and transition recall keep their own rules.
-    if (context_value <> '') and has_char_lm and has_base_completion and
-        (best_idx >= 0) and
-        (completions[best_idx].source = okcs_base_exact) and
-        not nc_long_ablated(la_onekey_short_models) then
-    begin
-        model_baseline_idx := -1;
-        model_best_lm_idx := -1;
-        model_candidate_count := 0;
-        for model_idx := 0 to High(completions) do
-        begin
-            if eligible[model_idx] and
-                (completions[model_idx].source = okcs_base_exact) then
-            begin
-                if model_baseline_idx < 0 then
-                begin
-                    model_baseline_idx := model_idx;
-                end;
-                if (model_best_lm_idx < 0) or
-                    (char_lm_scores[model_idx] >
-                    char_lm_scores[model_best_lm_idx]) then
-                begin
-                    model_best_lm_idx := model_idx;
-                end;
-                Inc(model_candidate_count);
-            end;
-        end;
-        if model_candidate_count > 1 then
-        begin
-            model_best_idx := model_baseline_idx;
-            model_rank := 1;
-            model_baseline_score := short_context_reranker_score(
-                context_value, completions[model_baseline_idx].text,
-                model_rank, char_lm_scores[model_baseline_idx],
-                completions[model_baseline_idx].weight,
-                scores[model_baseline_idx], True, 0, 0,
-                char_lm_scores[model_baseline_idx] -
-                char_lm_scores[model_best_lm_idx],
-                model_baseline_idx = model_best_lm_idx,
-                model_candidate_count, Length(context_value),
-                Length(completions[model_baseline_idx].text));
-            model_best_score := model_baseline_score;
-            model_current_score := model_baseline_score;
-            for model_idx := 0 to High(completions) do
-            begin
-                if (not eligible[model_idx]) or
-                    (completions[model_idx].source <> okcs_base_exact) then
-                begin
-                    Continue;
-                end;
-                if model_idx = model_baseline_idx then
-                begin
-                    Continue;
-                end;
-                Inc(model_rank);
-                model_candidate_score := short_context_reranker_score(
-                    context_value, completions[model_idx].text, model_rank,
-                    char_lm_scores[model_idx], completions[model_idx].weight,
-                    scores[model_idx], False,
-                    char_lm_scores[model_idx] -
-                    char_lm_scores[model_baseline_idx],
-                    completions[model_idx].weight -
-                    completions[model_baseline_idx].weight,
-                    char_lm_scores[model_idx] -
-                    char_lm_scores[model_best_lm_idx],
-                    model_idx = model_best_lm_idx, model_candidate_count,
-                    Length(context_value), Length(completions[model_idx].text));
-                if model_idx = best_idx then
-                begin
-                    model_current_score := model_candidate_score;
-                end;
-                if model_candidate_score > model_best_score then
-                begin
-                    model_best_idx := model_idx;
-                    model_best_score := model_candidate_score;
-                end;
-            end;
-            if (model_best_idx <> best_idx) and
-                (model_best_score - model_current_score >=
-                c_completion_context_model_margin) then
-            begin
-                best_idx := model_best_idx;
-            end;
-
-            residual_best_idx := best_idx;
-            residual_current_score := short_context_residual_score(
-                context_value, completions[best_idx].text, 1,
-                char_lm_scores[best_idx], completions[best_idx].weight,
-                scores[best_idx], True, 0, 0,
-                char_lm_scores[best_idx] -
-                char_lm_scores[model_best_lm_idx],
-                best_idx = model_best_lm_idx, model_candidate_count,
-                Length(context_value), Length(completions[best_idx].text));
-            residual_best_score := residual_current_score;
-            model_rank := 0;
-            for model_idx := 0 to High(completions) do
-            begin
-                if (not eligible[model_idx]) or
-                    (completions[model_idx].source <> okcs_base_exact) then
-                begin
-                    Continue;
-                end;
-                Inc(model_rank);
-                if model_idx = best_idx then
-                begin
-                    Continue;
-                end;
-                residual_candidate_score := short_context_residual_score(
-                    context_value, completions[model_idx].text, model_rank,
-                    char_lm_scores[model_idx], completions[model_idx].weight,
-                    scores[model_idx], False,
-                    char_lm_scores[model_idx] - char_lm_scores[best_idx],
-                    completions[model_idx].weight -
-                    completions[best_idx].weight,
-                    char_lm_scores[model_idx] -
-                    char_lm_scores[model_best_lm_idx],
-                    model_idx = model_best_lm_idx, model_candidate_count,
-                    Length(context_value), Length(completions[model_idx].text));
-                if residual_candidate_score > residual_best_score then
-                begin
-                    residual_best_idx := model_idx;
-                    residual_best_score := residual_candidate_score;
-                end;
-            end;
-            if (residual_best_idx <> best_idx) and
-                (residual_best_score - residual_current_score >=
-                c_completion_context_residual_margin) then
-            begin
-                best_idx := residual_best_idx;
-            end;
-
-        end;
-    end;
-
     // Keep a compatible suggestion stable while the user continues typing.
     // A challenger must win by a visible margin before replacing it.
     if (previous_idx >= 0) and (previous_query_prefix <> '') and
@@ -8411,8 +8139,8 @@ begin
         best_idx := previous_idx;
     end;
 
-    // Reused short-word models can prefer a short specialist phrase merely
-    // because its raw LM sum contains fewer characters. Do not let that
+    // An earlier stage can prefer a short specialist phrase merely because
+    // its raw LM sum contains fewer characters. Do not let that
     // replace a better-supported general completion unless the specialist
     // phrase also wins after normalizing the context LM score by text length.
     // A relation accepted repeatedly remains an explicit user preference.
@@ -8659,179 +8387,6 @@ begin
         if pair_best_idx >= 0 then
         begin
             best_idx := pair_best_idx;
-        end;
-    end;
-
-    // nc_gpt is used only offline. The generated trees and sparse priors
-    // below are static distillations of its hard-pair decisions. The primary
-    // prior audits the tree choice; a stricter fallback may rescue another
-    // existing Top-K item only when the primary path keeps the incumbent.
-    if (best_idx >= 0) and (eligible_count > 1) and
-        (not nc_long_ablated(la_onekey_ncgpt)) and
-        prepare_ncgpt_completion_features then
-    begin
-        ncgpt_incumbent_idx := best_idx;
-        ncgpt_best_idx := -1;
-        ncgpt_best_score := -1.0E30;
-        ncgpt_primary_idx := -1;
-        ncgpt_primary_score := -1.0E30;
-        SetLength(ncgpt_candidate_scores, Length(completions));
-        SetLength(ncgpt_candidate_thresholds, Length(completions));
-        SetLength(ncgpt_candidate_categories, Length(completions));
-        SetLength(ncgpt_candidate_scored, Length(completions));
-        for ncgpt_candidate_idx := 0 to High(completions) do
-        begin
-            if (ncgpt_candidate_idx = ncgpt_incumbent_idx) or
-                (not eligible[ncgpt_candidate_idx]) or
-                (completions[ncgpt_incumbent_idx].feedback_count >
-                completions[ncgpt_candidate_idx].feedback_count) then
-            begin
-                Continue;
-            end;
-            ncgpt_category := one_key_completion_difference_category(
-                completions[ncgpt_incumbent_idx],
-                completions[ncgpt_candidate_idx]);
-            ncgpt_threshold := one_key_completion_ncgpt_threshold(
-                ncgpt_category);
-            if ncgpt_threshold >= 1.0E29 then
-            begin
-                Continue;
-            end;
-            get_common_completion_fragment_units(
-                completions[ncgpt_incumbent_idx].text,
-                completions[ncgpt_candidate_idx].text,
-                ncgpt_common_prefix, ncgpt_common_suffix);
-            build_one_key_completion_ncgpt_pair_features(
-                ncgpt_candidate_features[ncgpt_candidate_idx],
-                ncgpt_candidate_features[ncgpt_incumbent_idx],
-                ncgpt_common_prefix, ncgpt_common_suffix,
-                get_candidate_text_unit_count(
-                completions[ncgpt_candidate_idx].text) -
-                get_candidate_text_unit_count(
-                completions[ncgpt_incumbent_idx].text),
-                Length(completions[ncgpt_candidate_idx].full_pinyin) -
-                Length(completions[ncgpt_incumbent_idx].full_pinyin),
-                completions[ncgpt_candidate_idx].source =
-                completions[ncgpt_incumbent_idx].source,
-                (completions[ncgpt_candidate_idx].source =
-                okcs_base_exact) and
-                (completions[ncgpt_incumbent_idx].source = okcs_transition),
-                (completions[ncgpt_candidate_idx].source =
-                okcs_transition) and
-                (completions[ncgpt_incumbent_idx].source = okcs_base_exact),
-                ncgpt_pair_features);
-            ncgpt_candidate_score := one_key_completion_ncgpt_score(
-                ncgpt_pair_features);
-            ncgpt_candidate_scores[ncgpt_candidate_idx] :=
-                ncgpt_candidate_score;
-            ncgpt_candidate_thresholds[ncgpt_candidate_idx] :=
-                ncgpt_threshold;
-            ncgpt_candidate_categories[ncgpt_candidate_idx] :=
-                ncgpt_category;
-            ncgpt_candidate_scored[ncgpt_candidate_idx] := True;
-            if (ncgpt_primary_idx < 0) or
-                (ncgpt_candidate_score > ncgpt_primary_score) or
-                ((ncgpt_candidate_score = ncgpt_primary_score) and
-                (ncgpt_candidate_idx < ncgpt_primary_idx)) then
-            begin
-                ncgpt_primary_idx := ncgpt_candidate_idx;
-                ncgpt_primary_score := ncgpt_candidate_score;
-                ncgpt_primary_threshold := ncgpt_threshold;
-                ncgpt_primary_category := ncgpt_category;
-            end;
-            if (ncgpt_candidate_score >= ncgpt_threshold) and
-                ((ncgpt_best_idx < 0) or
-                (ncgpt_candidate_score > ncgpt_best_score) or
-                ((ncgpt_candidate_score = ncgpt_best_score) and
-                (ncgpt_candidate_idx < ncgpt_best_idx))) then
-            begin
-                ncgpt_best_idx := ncgpt_candidate_idx;
-                ncgpt_best_score := ncgpt_candidate_score;
-            end;
-        end;
-        if ncgpt_best_idx >= 0 then
-        begin
-            best_idx := ncgpt_best_idx;
-        end
-        else
-        begin
-            best_idx := ncgpt_incumbent_idx;
-        end;
-
-        if (ncgpt_primary_idx >= 0) and
-            lookup_one_key_completion_ncgpt_primary_prior(
-            context_value, compact_query,
-            completions[ncgpt_incumbent_idx],
-            completions[ncgpt_primary_idx], ncgpt_primary_category,
-            ncgpt_primary_score, ncgpt_primary_threshold,
-            ncgpt_prior_score) then
-        begin
-            if (ncgpt_prior_score >=
-                one_key_completion_ncgpt_primary_approve_threshold(
-                ncgpt_primary_category)) and
-                (ncgpt_primary_score >= ncgpt_primary_threshold -
-                c_one_key_completion_ncgpt_primary_expansion_margin) then
-            begin
-                best_idx := ncgpt_primary_idx;
-            end
-            else if (best_idx = ncgpt_primary_idx) and
-                (ncgpt_prior_score <=
-                one_key_completion_ncgpt_primary_veto_threshold(
-                ncgpt_primary_category)) then
-            begin
-                best_idx := ncgpt_incumbent_idx;
-            end;
-        end;
-
-        if best_idx = ncgpt_incumbent_idx then
-        begin
-            ncgpt_fallback_idx := -1;
-            ncgpt_fallback_score := -1.0E30;
-            for ncgpt_candidate_idx := 0 to High(completions) do
-            begin
-                if (not ncgpt_candidate_scored[ncgpt_candidate_idx]) or
-                    (ncgpt_candidate_scores[ncgpt_candidate_idx] <
-                    ncgpt_candidate_thresholds[ncgpt_candidate_idx] -
-                    c_one_key_completion_ncgpt_fallback_expansion_margin) or
-                    (not lookup_one_key_completion_ncgpt_fallback_prior(
-                    context_value, compact_query,
-                    completions[ncgpt_incumbent_idx],
-                    completions[ncgpt_candidate_idx],
-                    ncgpt_candidate_categories[ncgpt_candidate_idx],
-                    ncgpt_candidate_scores[ncgpt_candidate_idx],
-                    ncgpt_candidate_thresholds[ncgpt_candidate_idx],
-                    ncgpt_prior_score)) or (ncgpt_prior_score <= 0.0) then
-                begin
-                    Continue;
-                end;
-                ncgpt_fallback_candidate_score := ncgpt_prior_score +
-                    c_one_key_completion_ncgpt_fallback_tree_weight *
-                    (ncgpt_candidate_scores[ncgpt_candidate_idx] -
-                    ncgpt_candidate_thresholds[ncgpt_candidate_idx]);
-                if (ncgpt_fallback_idx < 0) or
-                    (ncgpt_fallback_candidate_score >
-                    ncgpt_fallback_score) or
-                    ((ncgpt_fallback_candidate_score =
-                    ncgpt_fallback_score) and
-                    (ncgpt_candidate_scores[ncgpt_candidate_idx] >
-                    ncgpt_candidate_scores[ncgpt_fallback_idx])) or
-                    ((ncgpt_fallback_candidate_score =
-                    ncgpt_fallback_score) and
-                    (ncgpt_candidate_scores[ncgpt_candidate_idx] =
-                    ncgpt_candidate_scores[ncgpt_fallback_idx]) and
-                    (ncgpt_candidate_idx < ncgpt_fallback_idx)) then
-                begin
-                    ncgpt_fallback_idx := ncgpt_candidate_idx;
-                    ncgpt_fallback_score :=
-                        ncgpt_fallback_candidate_score;
-                end;
-            end;
-            if (ncgpt_fallback_idx >= 0) and
-                (ncgpt_fallback_score >=
-                c_one_key_completion_ncgpt_fallback_threshold) then
-            begin
-                best_idx := ncgpt_fallback_idx;
-            end;
         end;
     end;
 
@@ -136645,9 +136200,6 @@ const
     c_deep_local_repair_max_rank = 32;
     c_deep_local_repair_min_char_lm_gain = 500;
     c_deep_local_repair_min_suffix_lm_gain = 300;
-type
-    TncLongExactEdgeAuditorBaseFeatures = array[0..44] of Double;
-    TncLongExactEdgeFallbackAuditorBaseFeatures = array[0..65] of Double;
 var
     profile: Integer;
     candidate_count: Integer;
@@ -136677,6 +136229,7 @@ var
     missing_char_context_scores: TArray<Integer>;
     rank_features: TArray<TncLongFinalRankerFeatures>;
     rank_scores: TArray<Int64>;
+    best_rank_score: Int64;
     ordered_indices: TArray<Integer>;
     final_ranks: TArray<Integer>;
     legacy_candidates: TncCandidateList;
@@ -136745,9 +136298,6 @@ var
     top2_difference_span_units: Integer;
     top2_top_local_lm_scores: TArray<Integer>;
     top2_candidate_local_lm_scores: TArray<Integer>;
-    top2_query_parts: TncPinyinParseResult;
-    top2_query_syllables: TncLongTop2DifferencePinyinSyllables;
-    top2_query_idx: Integer;
     exact_anchor_pairwise_debug_scores: TArray<Int64>;
     exact_anchor_pairwise_current_rank_debug: TArray<Integer>;
     exact_anchor_top_local_word_lm_debug:
@@ -136767,13 +136317,6 @@ var
     ranking_first_top_stage: TArray<Integer>;
     ranking_last_top_stage: TArray<Integer>;
     ranking_top_entry_count: TArray<Integer>;
-    settled_top2_feature_cache_valid: Boolean;
-    settled_top2_feature_cache_top_index: Integer;
-    settled_top2_feature_cache_second_index: Integer;
-    settled_top2_feature_cache_forward:
-        TncLongSettledTop2ResidualFeatures;
-    settled_top2_feature_cache_reverse:
-        TncLongSettledTop2ResidualFeatures;
     unified_top2_arbiter_score_value: Double;
     unified_top2_arbiter_family_value: Integer;
     unified_top2_arbiter_swapped: Boolean;
@@ -136966,150 +136509,6 @@ var
             same_prefix_units - same_suffix_units);
     end;
 
-    procedure fill_exact_edge_auditor_base_features(
-        const features: TncLongFinalRankerFeatures;
-        out values: TncLongExactEdgeAuditorBaseFeatures);
-    begin
-        values[0] := features.candidate_score;
-        values[1] := features.path_segments;
-        values[2] := features.path_single_segments;
-        values[3] := features.path_max_segment_units;
-        values[4] := features.char_lm_score;
-        values[5] := features.char_lm_suffix_score;
-        values[6] := features.char_lm_context_score;
-        values[7] := features.word_lm_bonus;
-        values[8] := features.word_lm_boundary_count;
-        values[9] := features.word_lm_boundary_min;
-        values[10] := features.word_lm_boundary_max;
-        values[11] := features.word_lm_boundary_first;
-        values[12] := features.word_lm_boundary_last;
-        values[13] := features.word_lm_supported_ratio;
-        values[14] := features.word_lm_strong_ratio;
-        values[15] := features.word_lm_trigram_ratio;
-        values[16] := features.word_lm_zero_count;
-        values[17] := features.score_per_unit;
-        values[18] := features.complete_pool_rank;
-        values[19] := features.complete_pool_seed_rank;
-        values[20] := Ord(features.complete_pool_original);
-        values[21] := features.complete_pool_substitutions;
-        values[22] := Ord(features.complete_pool_anchor_present);
-        values[23] := features.complete_pool_anchor_units;
-        values[24] := features.complete_pool_anchor_exact_rank;
-        values[25] := features.complete_pool_anchor_weight_gain;
-        values[26] := features.complete_pool_pair_evidence;
-        values[27] := features.complete_pool_proper_name_confidence;
-        values[28] := features.complete_pool_signature_support;
-        values[29] := features.complete_pool_consensus_support;
-        values[30] := features.complete_pool_consensus_seed_count;
-        values[31] := features.complete_pool_consensus_support_mean;
-        values[32] := features.complete_pool_consensus_support_min;
-        values[33] := features.complete_pool_consensus_majority_units;
-        values[34] := features.complete_pool_consensus_unanimous_units;
-        values[35] := features.complete_pool_consensus_nearest_distance;
-        values[36] := features.complete_pool_consensus_mean_distance;
-        values[37] := features.complete_pool_edge_model_anchor_count;
-        values[38] := features.complete_pool_edge_model_score_total;
-        values[39] := features.complete_pool_edge_model_score_max;
-        values[40] := features.complete_pool_edge_model_word_count;
-        values[41] := features.complete_pool_edge_model_word_score_total;
-        values[42] := features.complete_pool_edge_model_word_score_min;
-        values[43] := features.complete_pool_edge_model_word_score_max;
-        values[44] := features.complete_pool_edge_model_word_score_mean;
-    end;
-
-    procedure fill_exact_edge_fallback_auditor_base_features(
-        const features: TncLongFinalRankerFeatures;
-        out values: TncLongExactEdgeFallbackAuditorBaseFeatures);
-    var
-        primary_values: TncLongExactEdgeAuditorBaseFeatures;
-        primary_idx: Integer;
-    begin
-        fill_exact_edge_auditor_base_features(features, primary_values);
-        for primary_idx := 0 to High(primary_values) do
-        begin
-            values[primary_idx] := primary_values[primary_idx];
-        end;
-        values[45] := features.dict_weight;
-        values[46] := Ord(features.has_dict_weight);
-        values[47] := Ord(features.source_chain);
-        values[48] := Ord(features.source_pattern);
-        values[49] := Ord(features.source_local_rerank);
-        values[50] := features.legacy_rank;
-        values[51] := features.chain_rank;
-        values[52] := features.chain_score_gap;
-        values[53] := features.path_confidence_score;
-        values[54] := features.path_confidence_tier;
-        values[55] := features.char_lm_context_gain;
-        values[56] := features.query_path_bonus;
-        values[57] := features.query_path_penalty;
-        values[58] := features.dict_weight_per_unit;
-        values[59] := Ord(features.complete_dictionary);
-        values[60] := Ord(features.complete_chain);
-        values[61] := features.complete_pool_source_kind;
-        values[62] := features.complete_pool_changed_position;
-        values[63] := features.complete_pool_consensus_changed_support;
-        values[64] := Ord(
-            features.complete_pool_consensus_changed_top_match);
-        values[65] := features.complete_pool_local_pairwise_score;
-    end;
-
-    function find_legacy_candidate_index(const candidate_text: string): Integer;
-    var
-        legacy_idx: Integer;
-    begin
-        Result := -1;
-        if Trim(candidate_text) = '' then
-        begin
-            Exit;
-        end;
-        for legacy_idx := 0 to High(legacy_candidates) do
-        begin
-            if SameText(Trim(legacy_candidates[legacy_idx].text),
-                Trim(candidate_text)) then
-            begin
-                Exit(legacy_idx);
-            end;
-        end;
-    end;
-
-    procedure move_ordered_candidate_to_position(
-        const candidate_index: Integer; const target_position: Integer);
-    var
-        current_position: Integer;
-        move_idx: Integer;
-    begin
-        current_position := -1;
-        for move_idx := 0 to High(ordered_indices) do
-        begin
-            if ordered_indices[move_idx] = candidate_index then
-            begin
-                current_position := move_idx;
-                Break;
-            end;
-        end;
-        if (current_position < 0) or (target_position < 0) or
-            (target_position >= Length(ordered_indices)) or
-            (current_position = target_position) then
-        begin
-            Exit;
-        end;
-        if current_position > target_position then
-        begin
-            for move_idx := current_position downto target_position + 1 do
-            begin
-                ordered_indices[move_idx] := ordered_indices[move_idx - 1];
-            end;
-        end
-        else
-        begin
-            for move_idx := current_position to target_position - 1 do
-            begin
-                ordered_indices[move_idx] := ordered_indices[move_idx + 1];
-            end;
-        end;
-        ordered_indices[target_position] := candidate_index;
-    end;
-
     function get_top2_cached_span_lm_scores(const top_index: Integer;
         const candidate_index: Integer; out top_scores: TArray<Integer>;
         out candidate_scores: TArray<Integer>): Boolean;
@@ -137210,7 +136609,6 @@ var
         candidate_scores_local: TArray<Integer>;
         top_word_scores_local: TncLongExactAnchorLocalWordLmScores;
         candidate_word_scores_local: TncLongExactAnchorLocalWordLmScores;
-        query_parts_local: TncPinyinParseResult;
         top_units_local: TArray<string>;
         candidate_units_local: TArray<string>;
         window_count_local: Integer;
@@ -137221,141 +136619,6 @@ var
         candidate_window_local: string;
         features_local: TncLongExactAnchorPairwiseFeatures;
 
-        procedure get_local_word_lm_scores(const encoded_path: string;
-            const relation: TncLongExactAnchorRelationFeatures;
-            out scores: TncLongExactAnchorLocalWordLmScores);
-        const
-            c_strong_word_lm_bonus = 360;
-        var
-            parts_local: TArray<string>;
-            part_starts_local: TArray<Integer>;
-            part_units_local: TArray<Integer>;
-            boundary_idx_local: Integer;
-            part_idx_local: Integer;
-            syllable_idx_local: Integer;
-            cursor_local: Integer;
-            left_start_local: Integer;
-            left_end_local: Integer;
-            right_start_local: Integer;
-            right_end_local: Integer;
-            difference_start_local: Integer;
-            difference_end_local: Integer;
-            query_local: string;
-            path_local: string;
-            bigram_local: Integer;
-            trigram_local: Integer;
-            value_local: Integer;
-        begin
-            FillChar(scores, SizeOf(scores), 0);
-            if (m_dictionary = nil) or (Trim(encoded_path) = '') or
-                (Length(query_parts_local) = 0) then
-            begin
-                Exit;
-            end;
-            parts_local := encoded_path.Split([c_segment_path_separator]);
-            if Length(parts_local) < 2 then
-            begin
-                Exit;
-            end;
-            SetLength(part_starts_local, Length(parts_local));
-            SetLength(part_units_local, Length(parts_local));
-            cursor_local := 0;
-            for part_idx_local := 0 to High(parts_local) do
-            begin
-                parts_local[part_idx_local] := Trim(parts_local[part_idx_local]);
-                part_starts_local[part_idx_local] := cursor_local;
-                part_units_local[part_idx_local] :=
-                    get_candidate_text_unit_count(parts_local[part_idx_local]);
-                if part_units_local[part_idx_local] <= 0 then
-                begin
-                    Exit;
-                end;
-                Inc(cursor_local, part_units_local[part_idx_local]);
-            end;
-            if cursor_local <> Length(query_parts_local) then
-            begin
-                Exit;
-            end;
-
-            difference_start_local := relation.same_prefix_units;
-            difference_end_local := Length(query_parts_local) -
-                relation.same_suffix_units;
-            scores[2] := MaxInt;
-            for boundary_idx_local := 1 to High(parts_local) do
-            begin
-                left_start_local := part_starts_local[boundary_idx_local - 1];
-                left_end_local := part_starts_local[boundary_idx_local];
-                right_start_local := left_end_local;
-                right_end_local := right_start_local +
-                    part_units_local[boundary_idx_local];
-                if not (((left_start_local < difference_end_local) and
-                    (left_end_local > difference_start_local)) or
-                    ((right_start_local < difference_end_local) and
-                    (right_end_local > difference_start_local))) then
-                begin
-                    Continue;
-                end;
-
-                query_local := '';
-                for syllable_idx_local := left_start_local to
-                    right_end_local - 1 do
-                begin
-                    query_local := query_local + normalize_pinyin_text(
-                        query_parts_local[syllable_idx_local].text);
-                end;
-                path_local := parts_local[boundary_idx_local - 1] +
-                    c_segment_path_separator + parts_local[boundary_idx_local];
-                bigram_local := m_dictionary.get_lm_transition_bonus(
-                    query_local, path_local);
-                trigram_local := 0;
-                if boundary_idx_local >= 2 then
-                begin
-                    left_start_local := part_starts_local[
-                        boundary_idx_local - 2];
-                    query_local := '';
-                    for syllable_idx_local := left_start_local to
-                        right_end_local - 1 do
-                    begin
-                        query_local := query_local + normalize_pinyin_text(
-                            query_parts_local[syllable_idx_local].text);
-                    end;
-                    path_local := parts_local[boundary_idx_local - 2] +
-                        c_segment_path_separator +
-                        parts_local[boundary_idx_local - 1] +
-                        c_segment_path_separator +
-                        parts_local[boundary_idx_local];
-                    trigram_local := m_dictionary.get_lm_transition_bonus(
-                        query_local, path_local);
-                end;
-                value_local := Max(bigram_local, trigram_local);
-                Inc(scores[0]);
-                Inc(scores[1], value_local);
-                scores[2] := Min(scores[2], value_local);
-                scores[3] := Max(scores[3], value_local);
-                if scores[0] = 1 then
-                begin
-                    scores[4] := value_local;
-                end;
-                scores[5] := value_local;
-                if value_local > 0 then
-                begin
-                    Inc(scores[6]);
-                end;
-                if value_local >= c_strong_word_lm_bonus then
-                begin
-                    Inc(scores[7]);
-                end;
-                if (trigram_local > 0) and
-                    (trigram_local >= bigram_local) then
-                begin
-                    Inc(scores[8]);
-                end;
-            end;
-            if scores[0] = 0 then
-            begin
-                scores[2] := 0;
-            end;
-        end;
     begin
         exact_anchor_pairwise_moved_index := -1;
         exact_anchor_pairwise_target_rank := 0;
@@ -137530,7 +136793,8 @@ var
         { Stage tracing on the current runtime distribution shows that this
           narrow exact-anchor model is useful as a recall/second-slot lane but
           loses Top1 accuracy when it makes the final decision itself. Keep the
-          exact path for the later bidirectional and unified arbiters instead. }
+          exact path in the pool for the second-slot stages and the LM
+          long-sentence choice instead. }
         strict_threshold_local := 1.0E308;
         move_result_local := apply_long_exact_anchor_pairwise_index_move(
             ordered_indices, best_position_local, best_score_local,
@@ -137542,144 +136806,6 @@ var
             exact_anchor_pairwise_target_rank := move_result_local + 1;
             apply_ranker := True;
         end;
-    end;
-
-    procedure apply_complete_pool_final_pairwise_residual;
-    var
-        top_index_local: Integer;
-        top_position_local: Integer;
-        candidate_index_local: Integer;
-        candidate_position_local: Integer;
-        challenger_limit_local: Integer;
-        challenger_rank_local: Integer;
-        best_position_local: Integer;
-        best_score_local: Int64;
-        score_local: Int64;
-        features_local: TncLongVisiblePairwiseResidualFeatures;
-        function can_be_primary_visible(
-            const candidate_index_value: Integer): Boolean;
-        var
-            pool_index_local: Integer;
-            pool_item_local: TncLongCompletePoolRuntimeCandidate;
-        begin
-            Result := False;
-            if (candidate_index_value < 0) or
-                (candidate_index_value >= candidate_count) or
-                (not rank_features[candidate_index_value].complete_match) then
-            begin
-                Exit;
-            end;
-            pool_index_local := candidate_pool_indices[candidate_index_value];
-            if (pool_index_local < 0) or
-                (pool_index_local >= Length(
-                m_runtime_long_complete_pool_candidates)) then
-            begin
-                Exit;
-            end;
-            pool_item_local :=
-                m_runtime_long_complete_pool_candidates[pool_index_local];
-            case pool_item_local.source_kind of
-                lcps_exact_lattice, lcps_existing:
-                    Result := pool_item_local.visible_evidence;
-                lcps_chain:
-                    Result := True;
-            else
-                Result := True;
-            end;
-        end;
-    begin
-        if nc_long_ablated(la_pool_final_pairwise) then Exit;
-        if (not unified_pool_final) or (candidate_count < 2) then
-        begin
-            Exit;
-        end;
-
-        top_position_local := -1;
-        for candidate_position_local := 0 to candidate_count - 1 do
-        begin
-            if can_be_primary_visible(
-                ordered_indices[candidate_position_local]) then
-            begin
-                top_position_local := candidate_position_local;
-                Break;
-            end;
-        end;
-        if top_position_local < 0 then
-        begin
-            Exit;
-        end;
-        top_index_local := ordered_indices[top_position_local];
-        complete_pool_final_pairwise_current_rank_debug[
-            top_index_local] := 1;
-        if (not rank_features[top_index_local].complete_match) or
-            rank_features[top_index_local].source_user or
-            rank_features[top_index_local].complete_user or
-            rank_features[top_index_local].latest_query_choice or
-            (rank_features[top_index_local].query_choice_bonus > 0) then
-        begin
-            Exit;
-        end;
-
-        challenger_limit_local :=
-            c_long_visible_pairwise_residual_max_challenger_rank;
-        best_position_local := -1;
-        best_score_local := Low(Int64);
-        challenger_rank_local := 1;
-        for candidate_position_local := top_position_local + 1 to
-            candidate_count - 1 do
-        begin
-            candidate_index_local := ordered_indices[candidate_position_local];
-            if not can_be_primary_visible(candidate_index_local) then
-            begin
-                Continue;
-            end;
-            Inc(challenger_rank_local);
-            if (challenger_limit_local > 0) and
-                (challenger_rank_local > challenger_limit_local) then
-            begin
-                Break;
-            end;
-            if (not rank_features[candidate_index_local].complete_match) or
-                rank_features[candidate_index_local].source_user or
-                rank_features[candidate_index_local].complete_user or
-                rank_features[candidate_index_local].latest_query_choice or
-                (rank_features[candidate_index_local].query_choice_bonus > 0) then
-            begin
-                Continue;
-            end;
-            build_long_visible_pairwise_residual_features(
-                rank_features[candidate_index_local],
-                rank_features[top_index_local], challenger_rank_local,
-                rank_scores[candidate_index_local], rank_scores[top_index_local],
-                apply_ranker, abstain_score, features_local);
-            score_local := long_visible_pairwise_residual_score(features_local);
-            complete_pool_final_pairwise_debug_scores[
-                candidate_index_local] := score_local;
-            complete_pool_final_pairwise_current_rank_debug[
-                candidate_index_local] := challenger_rank_local;
-            if score_local > best_score_local then
-            begin
-                best_score_local := score_local;
-                best_position_local := candidate_position_local;
-            end;
-        end;
-        if (best_position_local <= 0) or
-            (best_score_local <
-            c_long_visible_pairwise_residual_promotion_threshold) then
-        begin
-            Exit;
-        end;
-
-        candidate_index_local := ordered_indices[best_position_local];
-        for candidate_position_local := best_position_local downto
-            top_position_local + 1 do
-        begin
-            ordered_indices[candidate_position_local] :=
-                ordered_indices[candidate_position_local - 1];
-        end;
-        ordered_indices[top_position_local] := candidate_index_local;
-        complete_pool_final_pairwise_promoted_index := candidate_index_local;
-        apply_ranker := True;
     end;
 
     procedure apply_complete_pool_ranker_second_slot_recovery;
@@ -138156,415 +137282,6 @@ var
         apply_ranker := True;
     end;
 
-    procedure apply_complete_pool_settled_top2_residual;
-    const
-        c_reverse_radii: array[0..4] of Integer = (0, 1, 2, 3, 5);
-    var
-        top_index_local: Integer;
-        second_index_local: Integer;
-        different_units_local: Integer;
-        different_runs_local: Integer;
-        max_different_run_local: Integer;
-        same_prefix_units_local: Integer;
-        same_suffix_units_local: Integer;
-        difference_span_units_local: Integer;
-        top_units_local: TArray<string>;
-        second_units_local: TArray<string>;
-        forward_top_scores_local: TArray<Integer>;
-        forward_second_scores_local: TArray<Integer>;
-        reverse_window_texts_local: TArray<string>;
-        reverse_window_scores_local: TArray<Integer>;
-        reverse_top_scores_local: TArray<Integer>;
-        reverse_second_scores_local: TArray<Integer>;
-        window_start_local: Integer;
-        window_end_local: Integer;
-        radius_index_local: Integer;
-        top_window_local: string;
-        second_window_local: string;
-        base_features_local: TncLongCompletePoolDifferenceFeatures;
-        reverse_base_features_local: TncLongCompletePoolDifferenceFeatures;
-        features_local: TncLongSettledTop2ResidualFeatures;
-        reverse_features_local: TncLongSettledTop2ResidualFeatures;
-        score_local: Double;
-    begin
-        if nc_long_ablated(la_settled_top2) then Exit;
-        if (not unified_pool_final) or (candidate_count < 2) or
-            (m_dictionary = nil) then
-        begin
-            Exit;
-        end;
-        top_index_local := ordered_indices[0];
-        second_index_local := ordered_indices[1];
-        if (not rank_features[top_index_local].complete_match) or
-            (not rank_features[second_index_local].complete_match) or
-            (Trim(legacy_candidates[top_index_local].comment) <> '') or
-            (Trim(legacy_candidates[second_index_local].comment) <> '') or
-            rank_features[top_index_local].source_user or
-            rank_features[top_index_local].complete_user or
-            rank_features[top_index_local].latest_query_choice or
-            (rank_features[top_index_local].query_choice_bonus > 0) or
-            rank_features[second_index_local].source_user or
-            rank_features[second_index_local].complete_user or
-            rank_features[second_index_local].latest_query_choice or
-            (rank_features[second_index_local].query_choice_bonus > 0) or
-            (rank_features[top_index_local].text_units <>
-            rank_features[second_index_local].text_units) then
-        begin
-            Exit;
-        end;
-
-        get_text_relation(second_index_local, top_index_local,
-            different_units_local, different_runs_local,
-            max_different_run_local, same_prefix_units_local,
-            same_suffix_units_local, difference_span_units_local);
-        if (different_units_local <= 0) or
-            (not get_top2_cached_span_lm_scores(
-            top_index_local, second_index_local,
-            forward_top_scores_local, forward_second_scores_local)) then
-        begin
-            Exit;
-        end;
-
-        top_units_local := split_text_units(
-            Trim(legacy_candidates[top_index_local].text));
-        second_units_local := split_text_units(
-            Trim(legacy_candidates[second_index_local].text));
-        SetLength(reverse_window_texts_local, Length(c_reverse_radii) * 2);
-        for radius_index_local := 0 to High(c_reverse_radii) do
-        begin
-            window_start_local := Max(0, same_prefix_units_local -
-                c_reverse_radii[radius_index_local]);
-            window_end_local := Min(Length(top_units_local),
-                Length(top_units_local) - same_suffix_units_local +
-                c_reverse_radii[radius_index_local]);
-            top_window_local := build_text_unit_window(top_units_local,
-                window_start_local, window_end_local, True);
-            second_window_local := build_text_unit_window(
-                second_units_local, window_start_local,
-                window_end_local, True);
-            reverse_window_texts_local[radius_index_local * 2] :=
-                top_window_local;
-            reverse_window_texts_local[radius_index_local * 2 + 1] :=
-                second_window_local;
-        end;
-        if (not get_cached_char_lm_scores(reverse_window_texts_local,
-            reverse_window_scores_local, clsm_reverse, '')) or
-            (Length(reverse_window_scores_local) <
-            Length(reverse_window_texts_local)) then
-        begin
-            Exit;
-        end;
-        SetLength(reverse_top_scores_local, Length(c_reverse_radii));
-        SetLength(reverse_second_scores_local, Length(c_reverse_radii));
-        for radius_index_local := 0 to High(c_reverse_radii) do
-        begin
-            reverse_top_scores_local[radius_index_local] :=
-                reverse_window_scores_local[radius_index_local * 2];
-            reverse_second_scores_local[radius_index_local] :=
-                reverse_window_scores_local[radius_index_local * 2 + 1];
-        end;
-
-        build_long_complete_pool_difference_features(
-            rank_features[second_index_local], rank_features[top_index_local],
-            2, rank_scores[second_index_local], rank_scores[top_index_local],
-            apply_ranker, abstain_score, different_units_local,
-            different_runs_local, max_different_run_local,
-            same_prefix_units_local, same_suffix_units_local,
-            difference_span_units_local, forward_top_scores_local,
-            forward_second_scores_local, base_features_local);
-        build_long_settled_top2_residual_features(base_features_local,
-            reverse_top_scores_local, reverse_second_scores_local,
-            features_local);
-        build_long_complete_pool_difference_features(
-            rank_features[top_index_local], rank_features[second_index_local],
-            2, rank_scores[top_index_local], rank_scores[second_index_local],
-            apply_ranker, abstain_score, different_units_local,
-            different_runs_local, max_different_run_local,
-            same_prefix_units_local, same_suffix_units_local,
-            difference_span_units_local, forward_second_scores_local,
-            forward_top_scores_local, reverse_base_features_local);
-        build_long_settled_top2_residual_features(reverse_base_features_local,
-            reverse_second_scores_local, reverse_top_scores_local,
-            reverse_features_local);
-        settled_top2_feature_cache_valid := True;
-        settled_top2_feature_cache_top_index := top_index_local;
-        settled_top2_feature_cache_second_index := second_index_local;
-        settled_top2_feature_cache_forward := features_local;
-        settled_top2_feature_cache_reverse := reverse_features_local;
-        score_local := long_settled_top2_residual_score(features_local);
-        if score_local < c_long_settled_top2_residual_threshold then
-        begin
-            Exit;
-        end;
-        ordered_indices[0] := second_index_local;
-        ordered_indices[1] := top_index_local;
-        apply_ranker := True;
-    end;
-
-    procedure fill_unified_top2_meta(const candidate_index_local: Integer;
-        out meta_local: TncLongUnifiedTop2ArbiterMetaFeatures);
-    begin
-        FillChar(meta_local, SizeOf(meta_local), 0);
-        if (candidate_index_local < 0) or
-            (candidate_index_local >= candidate_count) then
-        begin
-            Exit;
-        end;
-
-        if candidate_index_local = top2_pairwise_candidate_index then
-        begin
-            meta_local[c_long_unified_top2_meta_top2_pairwise_score] :=
-                top2_pairwise_score;
-            meta_local[c_long_unified_top2_meta_top2_pairwise_eligible] :=
-                Ord(top2_pairwise_eligible);
-            meta_local[c_long_unified_top2_meta_top2_pairwise_swapped] :=
-                Ord(top2_pairwise_swapped);
-        end;
-        if exact_anchor_pairwise_debug_scores[candidate_index_local] <>
-            Low(Int64) then
-        begin
-            meta_local[
-                c_long_unified_top2_meta_exact_anchor_pairwise_score] :=
-                exact_anchor_pairwise_debug_scores[candidate_index_local];
-            meta_local[
-                c_long_unified_top2_meta_exact_anchor_pairwise_eligible] := 1;
-        end;
-        meta_local[c_long_unified_top2_meta_exact_anchor_pairwise_moved] :=
-            Ord(candidate_index_local = exact_anchor_pairwise_moved_index);
-        if candidate_index_local = exact_anchor_pairwise_moved_index then
-        begin
-            meta_local[
-                c_long_unified_top2_meta_exact_anchor_pairwise_target_rank] :=
-                exact_anchor_pairwise_target_rank;
-        end;
-        if complete_pool_final_pairwise_debug_scores[candidate_index_local] <>
-            Low(Int64) then
-        begin
-            meta_local[
-                c_long_unified_top2_meta_complete_pool_final_pairwise_score] :=
-                complete_pool_final_pairwise_debug_scores[candidate_index_local];
-            meta_local[
-                c_long_unified_top2_meta_complete_pool_final_pairwise_eligible] :=
-                1;
-        end;
-        meta_local[
-            c_long_unified_top2_meta_complete_pool_final_pairwise_promoted] :=
-            Ord(candidate_index_local =
-            complete_pool_final_pairwise_promoted_index);
-        meta_local[
-            c_long_unified_top2_meta_complete_pool_final_pairwise_current_rank] :=
-            complete_pool_final_pairwise_current_rank_debug[
-            candidate_index_local];
-        if complete_pool_post_static_difference_debug_scores[
-            candidate_index_local] <> Low(Int64) then
-        begin
-            meta_local[
-                c_long_unified_top2_meta_complete_pool_post_static_difference_score] :=
-                complete_pool_post_static_difference_debug_scores[
-                candidate_index_local];
-            meta_local[
-                c_long_unified_top2_meta_complete_pool_post_static_difference_eligible] :=
-                1;
-        end;
-        meta_local[
-            c_long_unified_top2_meta_complete_pool_post_static_difference_promoted] :=
-            Ord(candidate_index_local =
-            complete_pool_post_static_difference_promoted_index);
-        meta_local[
-            c_long_unified_top2_meta_complete_pool_post_static_difference_current_rank] :=
-            complete_pool_post_static_difference_current_rank_debug[
-            candidate_index_local];
-        if local_difference_debug_scores[candidate_index_local] <>
-            Low(Int64) then
-        begin
-            meta_local[c_long_unified_top2_meta_local_difference_score] :=
-                local_difference_debug_scores[candidate_index_local];
-        end;
-        meta_local[c_long_unified_top2_meta_local_difference_promoted] :=
-            Ord(candidate_index_local = local_difference_promoted_index);
-        meta_local[c_long_unified_top2_meta_local_difference_current_rank] :=
-            local_difference_current_rank_debug[candidate_index_local];
-        meta_local[c_long_unified_top2_meta_ranking_top1_votes] :=
-            ranking_top1_votes[candidate_index_local];
-        meta_local[c_long_unified_top2_meta_ranking_top2_votes] :=
-            ranking_top2_votes[candidate_index_local];
-        meta_local[c_long_unified_top2_meta_ranking_first_top_stage] :=
-            ranking_first_top_stage[candidate_index_local];
-        meta_local[c_long_unified_top2_meta_ranking_last_top_stage] :=
-            ranking_last_top_stage[candidate_index_local];
-        meta_local[c_long_unified_top2_meta_ranking_top_entry_count] :=
-            ranking_top_entry_count[candidate_index_local];
-        meta_local[c_long_unified_top2_meta_ranking_pre_settled_top] := Ord(
-            (ranking_stage_capture_count >
-            c_ranking_stage_post_static_bidirectional) and
-            (ranking_stage_top_indices[
-            c_ranking_stage_post_static_bidirectional] =
-            candidate_index_local));
-    end;
-
-    procedure apply_long_unified_top2_arbiter;
-    var
-        top_index_local: Integer;
-        second_index_local: Integer;
-        different_units_local: Integer;
-        different_runs_local: Integer;
-        max_different_run_local: Integer;
-        same_prefix_units_local: Integer;
-        same_suffix_units_local: Integer;
-        difference_span_units_local: Integer;
-        base_features_local: TncLongSettledTop2ResidualFeatures;
-        top_meta_local: TncLongUnifiedTop2ArbiterMetaFeatures;
-        second_meta_local: TncLongUnifiedTop2ArbiterMetaFeatures;
-        features_local: TncLongUnifiedTop2ArbiterFeatures;
-        query_parts_local: TncPinyinParseResult;
-        query_syllables_local: TncLongTop2DifferencePinyinSyllables;
-        expanded_query_syllables_local:
-            TncLongUnifiedTop2TextPinyinSyllables;
-        evidence_features_local: TncLongUnifiedTop2EvidenceFeatures;
-        query_index_local: Integer;
-        aligned_score_local: Int64;
-        expanded_difference_score_local: Int64;
-    begin
-        if nc_long_ablated(la_unified_top2) then Exit;
-        if (not unified_pool_final) or (candidate_count < 2) or
-            (not settled_top2_feature_cache_valid) then
-        begin
-            Exit;
-        end;
-        top_index_local := ordered_indices[0];
-        second_index_local := ordered_indices[1];
-        if (top_index_local = settled_top2_feature_cache_top_index) and
-            (second_index_local = settled_top2_feature_cache_second_index) then
-        begin
-            base_features_local := settled_top2_feature_cache_forward;
-        end
-        else if (top_index_local = settled_top2_feature_cache_second_index) and
-            (second_index_local = settled_top2_feature_cache_top_index) then
-        begin
-            base_features_local := settled_top2_feature_cache_reverse;
-        end
-        else
-        begin
-            Exit;
-        end;
-
-        get_text_relation(second_index_local, top_index_local,
-            different_units_local,
-            different_runs_local, max_different_run_local,
-            same_prefix_units_local, same_suffix_units_local,
-            difference_span_units_local);
-        if different_units_local <= 0 then
-        begin
-            Exit;
-        end;
-        if Max(rank_features[top_index_local].
-            complete_pool_proper_name_confidence,
-            rank_features[second_index_local].
-            complete_pool_proper_name_confidence) > 0 then
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_proper_name;
-        end
-        else if different_units_local = 1 then
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_single_char;
-        end
-        else if (different_runs_local = 1) and
-            (different_units_local = 2) then
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_contiguous_2;
-        end
-        else if (different_runs_local = 1) and
-            (different_units_local <= 4) then
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_contiguous_3_4;
-        end
-        else if different_runs_local = 1 then
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_contiguous_long;
-        end
-        else if different_runs_local > 1 then
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_sparse;
-        end
-        else
-        begin
-            unified_top2_arbiter_family_value :=
-                c_long_unified_top2_family_other;
-        end;
-
-        query_parts_local := get_effective_compact_pinyin_syllables(
-            normalized_query);
-        SetLength(query_syllables_local, Length(query_parts_local));
-        SetLength(expanded_query_syllables_local, Length(query_parts_local));
-        for query_index_local := 0 to High(query_parts_local) do
-        begin
-            query_syllables_local[query_index_local] :=
-                normalize_pinyin_text(query_parts_local[query_index_local].text);
-            expanded_query_syllables_local[query_index_local] :=
-                query_syllables_local[query_index_local];
-        end;
-        aligned_score_local := long_top2_pairwise_difference_score(
-            query_syllables_local,
-            legacy_candidates[second_index_local].text,
-            legacy_candidates[top_index_local].text,
-            legacy_paths[second_index_local], legacy_paths[top_index_local]);
-        expanded_difference_score_local := long_unified_top2_text_score(
-            expanded_query_syllables_local,
-            legacy_candidates[second_index_local].text,
-            legacy_candidates[top_index_local].text,
-            legacy_paths[second_index_local], legacy_paths[top_index_local]);
-        build_long_unified_top2_evidence_features(
-            expanded_query_syllables_local,
-            legacy_candidates[top_index_local].text,
-            legacy_candidates[second_index_local].text,
-            evidence_features_local);
-        fill_unified_top2_meta(top_index_local, top_meta_local);
-        fill_unified_top2_meta(second_index_local, second_meta_local);
-        build_long_unified_top2_arbiter_features(base_features_local,
-            top_meta_local, second_meta_local, aligned_score_local,
-            expanded_difference_score_local,
-            unified_top2_arbiter_family_value, evidence_features_local,
-            features_local);
-        // Training stores the dense matrix as float32. Quantize only this
-        // final arbiter input so native tree comparisons use the same values.
-        for query_index_local := 0 to
-            c_long_unified_top2_arbiter_feature_count - 1 do
-        begin
-            features_local[query_index_local] :=
-                Single(features_local[query_index_local]);
-        end;
-        unified_top2_arbiter_score_value :=
-            long_unified_top2_arbiter_score(features_local);
-        if m_debug_target_recall_text <> '' then
-        begin
-            SetLength(unified_top2_arbiter_feature_values,
-                c_long_unified_top2_arbiter_feature_count);
-            for query_index_local := 0 to
-                c_long_unified_top2_arbiter_feature_count - 1 do
-            begin
-                unified_top2_arbiter_feature_values[query_index_local] :=
-                    features_local[query_index_local];
-            end;
-        end;
-        if unified_top2_arbiter_score_value <
-            long_unified_top2_arbiter_threshold(
-            unified_top2_arbiter_family_value) then
-        begin
-            Exit;
-        end;
-
-        ordered_indices[0] := second_index_local;
-        ordered_indices[1] := top_index_local;
-        unified_top2_arbiter_swapped := True;
-        apply_ranker := True;
-    end;
-
     procedure apply_deep_local_repair_fallback;
     var
         top_index_local: Integer;
@@ -138808,36 +137525,6 @@ var
         end;
     end;
 
-    procedure restore_pre_settled_top2_order;
-    var
-        top_index_local: Integer;
-        second_index_local: Integer;
-    begin
-        if (ranking_stage_capture_count <=
-            c_ranking_stage_post_static_bidirectional) or
-            (candidate_count < 2) then
-        begin
-            Exit;
-        end;
-
-        top_index_local := ranking_stage_top_indices[
-            c_ranking_stage_post_static_bidirectional];
-        second_index_local := ranking_stage_second_indices[
-            c_ranking_stage_post_static_bidirectional];
-        if (top_index_local < 0) or (top_index_local >= candidate_count) or
-            (second_index_local < 0) or
-            (second_index_local >= candidate_count) or
-            (top_index_local = second_index_local) then
-        begin
-            Exit;
-        end;
-
-        { The settled residual remains a proposal feature. Restore the order
-          it received so one authoritative arbiter makes the final swap. }
-        ordered_indices[0] := top_index_local;
-        ordered_indices[1] := second_index_local;
-    end;
-
     procedure flush_ranking_stages;
     var
         stage_index_local: Integer;
@@ -139020,14 +137707,11 @@ begin
     SetLength(m_debug_long_ranking_stages, 0);
     SetLength(m_char_lm_long_pool, 0);
     SetLength(m_char_lm_long_pool_ranks, 0);
+    SetLength(m_char_lm_long_pool_evidence, 0);
     ranking_stage_capture_count := 0;
     bidirectional_top1_swapped := False;
-    settled_top2_feature_cache_valid := False;
-    settled_top2_feature_cache_top_index := -1;
-    settled_top2_feature_cache_second_index := -1;
     unified_top2_arbiter_score_value := -1.0E300;
-    unified_top2_arbiter_family_value :=
-        c_long_unified_top2_family_other;
+    unified_top2_arbiter_family_value := 6;
     unified_top2_arbiter_swapped := False;
     SetLength(unified_top2_arbiter_feature_values, 0);
     exact_edge_auditor_score := -MaxDouble;
@@ -139858,15 +138542,6 @@ begin
             end;
             if top2_pairwise_eligible then
             begin
-                top2_query_parts := get_effective_compact_pinyin_syllables(
-                    normalized_query);
-                SetLength(top2_query_syllables, Length(top2_query_parts));
-                for top2_query_idx := 0 to High(top2_query_parts) do
-                begin
-                    top2_query_syllables[top2_query_idx] :=
-                        normalize_pinyin_text(
-                        top2_query_parts[top2_query_idx].text);
-                end;
                 build_long_top2_pairwise_swap_features(
                     rank_features[current_idx], rank_features[top_idx],
                     rank_scores[current_idx], rank_scores[top_idx],
@@ -139896,10 +138571,6 @@ begin
 
     capture_ranking_stage(c_ranking_stage_second_slot_bidirectional);
 
-    { This final residual is trained against the captured order after every
-      established complete-pool policy. It can promote one already recalled,
-      visible complete path and performs no additional dictionary or LM work. }
-    apply_complete_pool_final_pairwise_residual;
     capture_ranking_stage(c_ranking_stage_final_pairwise_residual);
 
     capture_ranking_stage(c_ranking_stage_post_static_difference);
@@ -139924,13 +138595,8 @@ begin
 
     capture_ranking_stage(c_ranking_stage_post_static_bidirectional);
 
-    { The settled-order residual is trained after every preceding complete
-      pool stage. It only swaps the two existing complete long candidates. }
-    apply_complete_pool_settled_top2_residual;
     capture_ranking_stage(c_ranking_stage_settled_top2_residual);
     build_ranking_stage_vote_features;
-    restore_pre_settled_top2_order;
-    apply_long_unified_top2_arbiter;
     capture_ranking_stage(c_ranking_stage_unified_top2_arbiter);
     apply_deep_local_repair_fallback;
     capture_ranking_stage(c_ranking_stage_deep_local_repair);
@@ -139983,6 +138649,14 @@ begin
     begin
         m_char_lm_long_pool := Copy(legacy_candidates, 0, candidate_count);
         m_char_lm_long_pool_ranks := Copy(final_ranks, 0, candidate_count);
+        SetLength(m_char_lm_long_pool_evidence, candidate_count);
+        best_rank_score := Low(Int64);
+        for candidate_idx := 0 to candidate_count - 1 do
+            best_rank_score := Max(best_rank_score, rank_scores[candidate_idx]);
+        for candidate_idx := 0 to candidate_count - 1 do
+            fill_long_pool_evidence(rank_features[candidate_idx],
+                rank_scores[candidate_idx], best_rank_score,
+                m_char_lm_long_pool_evidence[candidate_idx]);
     end;
 
     { Final-state snapshots are an audit/training surface only. Building the
@@ -140343,7 +139017,7 @@ function TncEngine.apply_char_lm_long_top(var candidates: TncCandidateList;
     var source_indices: TArray<Integer>; const expected_units: Integer;
     const page_size: Integer): Boolean;
 var
-    texts: TArray<string>;
+    pool: TArray<TncCharLmLongCandidate>;
     chosen: string;
     idx: Integer;
 begin
@@ -140356,11 +139030,19 @@ begin
             (Length(candidates) <> Length(source_indices)) or
             (candidates[0].source = cs_user) or (Length(m_char_lm_long_pool) = 0) then
             Exit;
-        SetLength(texts, Length(m_char_lm_long_pool));
-        for idx := 0 to High(texts) do
-            texts[idx] := m_char_lm_long_pool[idx].text;
-        if not nc_char_lm_choose_long_top(m_char_lm, '', texts,
-            m_char_lm_long_pool_ranks, candidates[0].text, expected_units, chosen) then
+        SetLength(pool, Length(m_char_lm_long_pool));
+        for idx := 0 to High(pool) do
+        begin
+            pool[idx] := Default(TncCharLmLongCandidate);
+            pool[idx].text := m_char_lm_long_pool[idx].text;
+            if idx < Length(m_char_lm_long_pool_ranks) then
+                pool[idx].rank := m_char_lm_long_pool_ranks[idx];
+            pool[idx].has_evidence := idx < Length(m_char_lm_long_pool_evidence);
+            if pool[idx].has_evidence then
+                pool[idx].evidence := m_char_lm_long_pool_evidence[idx];
+        end;
+        if not nc_char_lm_choose_long(m_char_lm, '', pool, candidates[0].text,
+            expected_units, chosen) then
             Exit;
         // The final pool can hold complete paths the visible merge left out.
         idx := 0;
@@ -140376,6 +139058,7 @@ begin
     finally
         SetLength(m_char_lm_long_pool, 0);
         SetLength(m_char_lm_long_pool_ranks, 0);
+        SetLength(m_char_lm_long_pool_evidence, 0);
     end;
 end;
 
@@ -140383,15 +139066,15 @@ function TncEngine.apply_char_lm_short_top(var candidates: TncCandidateList;
     var source_indices: TArray<Integer>; const context, query: string;
     const page_size: Integer): Boolean;
 var
-    texts: TArray<string>;
-    positions: TArray<Integer>;
+    choices: TArray<TncCharLmShortCandidate>;
+    choice: TncCharLmShortCandidate;
     text: string;
     idx, other, best: Integer;
     value: TncCandidate;
 begin
     Result := False;
-    // Without left context the dev set gains nothing (+3 of 4,489 cases) and
-    // the no-context benchmark track loses; keep dictionary order there.
+    // Without left context the no-context residual has already ordered the
+    // exact entries; a model fit on that track did not generalize as well.
     if (not m_char_lm_short_enabled) or (m_char_lm = nil) or (Trim(context) = '') or
         (Length(candidates) < 2) or (Length(candidates) <> Length(source_indices)) or
         (candidates[0].source = cs_user) then
@@ -140409,28 +139092,34 @@ begin
         Exit;
     for idx := 0 to High(candidates) do
     begin
-        if Length(texts) >= c_char_lm_short_limit then
+        if Length(choices) >= c_char_lm_short_choice_limit then
             Break;
         text := Trim(candidates[idx].text);
         if (text = '') or (Trim(candidates[idx].comment) <> '') or
             not (m_dictionary.is_base_entry(query, text) or m_dictionary.is_user_entry(query, text)) then
             Continue;
         other := 0;
-        while (other < Length(texts)) and (texts[other] <> text) do
+        while (other < Length(choices)) and (choices[other].text <> text) do
             Inc(other);
-        if other < Length(texts) then
+        if other < Length(choices) then
             Continue;
-        texts := texts + [text];
-        positions := positions + [idx];
+        choice := Default(TncCharLmShortCandidate);
+        choice.text := text;
+        choice.position := idx;
+        choice.dict_weight := candidates[idx].dict_weight;
+        choice.has_dict_weight := candidates[idx].has_dict_weight;
+        choice.display_score := candidates[idx].score;
+        choice.user := candidates[idx].source = cs_user;
+        choices := choices + [choice];
     end;
     // Only reorder within the group when the visible top belongs to it.
-    if (Length(positions) < 2) or (positions[0] <> 0) or
-        not nc_char_lm_choose_short_top(m_char_lm, context, texts, best) or
-        (positions[best] = 0) then
+    if (Length(choices) < 2) or (choices[0].position <> 0) or
+        not nc_char_lm_choose_short(m_char_lm, context, choices, best) or
+        (best = 0) then
         Exit;
-    value := candidates[positions[best]];
+    value := candidates[choices[best].position];
     promote_char_lm_candidate(candidates, source_indices, value,
-        source_indices[positions[best]], page_size);
+        source_indices[choices[best].position], page_size);
     Result := True;
 end;
 
@@ -157531,8 +156220,6 @@ var
     short_exact_predictive_prefix_only_mode: Boolean;
     short_nocontext_promoted_exact_text: string;
     short_nocontext_promoted_exact_lead: Integer;
-    short_context_promoted_exact_text: string;
-    short_context_promoted_exact_lead: Integer;
     short_context_swapped: Boolean;
     char_lm_context: string;
     promoted_repeated_initial_count: Integer;
@@ -158535,34 +157222,6 @@ var
         end;
     end;
 
-    function display_exact_primary_has_text(const query_key: string;
-        const expected_text: string; const expected_units_local: Integer): Boolean;
-    var
-        exact_results_local: TncCandidateList;
-        exact_idx_local: Integer;
-        exact_text_local: string;
-    begin
-        Result := False;
-        if (query_key = '') or (expected_text = '') or
-            (expected_units_local <= 0) or
-            (not lookup_display_exact_cached(query_key, exact_results_local)) then
-        begin
-            Exit;
-        end;
-
-        for exact_idx_local := 0 to High(exact_results_local) do
-        begin
-            exact_text_local := Trim(exact_results_local[exact_idx_local].text);
-            if (Trim(exact_results_local[exact_idx_local].comment) = '') and
-                (exact_text_local <> '') and
-                (get_candidate_text_unit_count(exact_text_local) =
-                expected_units_local) then
-            begin
-                Exit(SameText(exact_text_local, expected_text));
-            end;
-        end;
-    end;
-
     function display_productive_short_function_head_text(
         const text_value: string): Boolean;
     begin
@@ -158908,34 +157567,6 @@ var
         if Length(m_candidate_segment_paths) > out_idx_local then
         begin
             SetLength(m_candidate_segment_paths, out_idx_local);
-        end;
-    end;
-
-    function display_base_exact_key_has_text(const query_key: string;
-        const target_text: string; const target_units: Integer): Boolean;
-    var
-        exact_results_local: TncCandidateList;
-        exact_idx_local: Integer;
-        exact_text_local: string;
-    begin
-        Result := False;
-        if (query_key = '') or (target_text = '') or
-            (not lookup_display_exact_cached(query_key, exact_results_local)) then
-        begin
-            Exit;
-        end;
-
-        for exact_idx_local := 0 to High(exact_results_local) do
-        begin
-            exact_text_local := Trim(exact_results_local[exact_idx_local].text);
-            if (exact_results_local[exact_idx_local].source = cs_rule) and
-                (Trim(exact_results_local[exact_idx_local].comment) = '') and
-                SameText(exact_text_local, target_text) and
-                (get_candidate_text_unit_count(exact_text_local) =
-                target_units) then
-            begin
-                Exit(True);
-            end;
         end;
     end;
 
@@ -160258,154 +158889,6 @@ var
             Result := Length(predictive_prefix_results) > 0;
         end;
 
-        function short_base_exact_choice_rank_bonus_local(
-            const text_value: string; const exact_weight_value: Integer;
-            const text_units_value: Integer): Integer;
-        const
-            c_multi_base_choice_bonus_cap = 240;
-            c_multi_base_choice_bonus_floor = 48;
-            c_rare_exact_phrase_weight = 300;
-            c_rare_unit_weight = 80;
-            c_multi_base_strong_choice_min = 520;
-        var
-            raw_bonus_local: Integer;
-            capped_bonus_local: Integer;
-            latest_text_local: string;
-
-            function has_rare_low_weight_unit_local: Boolean;
-            var
-                units_local: TArray<string>;
-                unit_idx_local: Integer;
-                unit_key_local: string;
-                unit_weight_local: Integer;
-                unit_results_local: TncCandidateList;
-                unit_result_idx_local: Integer;
-                unit_candidate_text_local: string;
-            begin
-                Result := False;
-                if (m_dictionary = nil) or
-                    (exact_weight_value >= c_rare_exact_phrase_weight) then
-                begin
-                    Exit;
-                end;
-
-                units_local := split_text_units(text_value);
-                if Length(units_local) <> text_units_value then
-                begin
-                    Exit;
-                end;
-
-                for unit_idx_local := 0 to High(units_local) do
-                begin
-                    unit_key_local := build_display_query_key(unit_idx_local, 1);
-                    if (unit_key_local = '') or
-                        (not lookup_display_exact_cached(unit_key_local,
-                        unit_results_local)) then
-                    begin
-                        Continue;
-                    end;
-
-                    unit_weight_local := 0;
-                    for unit_result_idx_local := 0 to High(unit_results_local) do
-                    begin
-                        unit_candidate_text_local := Trim(
-                            unit_results_local[unit_result_idx_local].text);
-                        if (Trim(unit_results_local[unit_result_idx_local].comment) <> '') or
-                            (not SameText(unit_candidate_text_local,
-                            units_local[unit_idx_local])) or
-                            (get_candidate_text_unit_count(unit_candidate_text_local) <> 1) then
-                        begin
-                            Continue;
-                        end;
-
-                        if unit_results_local[unit_result_idx_local].has_dict_weight then
-                        begin
-                            unit_weight_local :=
-                                unit_results_local[unit_result_idx_local].dict_weight;
-                        end
-                        else
-                        begin
-                            unit_weight_local :=
-                                unit_results_local[unit_result_idx_local].score;
-                        end;
-                        Break;
-                    end;
-
-                    if (unit_weight_local > 0) and
-                        (unit_weight_local < c_rare_unit_weight) then
-                    begin
-                        Exit(True);
-                    end;
-                end;
-            end;
-        begin
-            Result := 0;
-            if text_value = '' then
-            begin
-                Exit;
-            end;
-            if (exact_weight_value <= c_low_frequency_medical_exact_weight) and
-                text_has_low_frequency_medical_unit_local(text_value) then
-            begin
-                Exit;
-            end;
-
-            // Single-character query learning must stay strong and persistent.
-            // For multi-character base exact entries, choice history is only a
-            // tie-breaker; it must not let a low-frequency base word outrank
-            // much stronger exact dictionary matches after an accidental pick.
-            if text_units_value <= 1 then
-            begin
-                Exit(query_choice_rank_bonus_local(text_value));
-            end;
-
-            if not is_full_pinyin_key(normalized_pinyin) then
-            begin
-                Exit;
-            end;
-
-            if ((m_session_query_latest_text <> nil) and
-                m_session_query_latest_text.TryGetValue(normalized_pinyin,
-                latest_text_local) and SameText(Trim(latest_text_local),
-                text_value)) or is_latest_session_query_choice(text_value) then
-            begin
-                if not has_rare_low_weight_unit_local then
-                begin
-                    Exit(query_choice_rank_bonus_local(text_value));
-                end;
-            end;
-
-            if m_dictionary = nil then
-            begin
-                Exit;
-            end;
-
-            raw_bonus_local := m_dictionary.get_query_choice_bonus(
-                normalized_pinyin, text_value);
-            if raw_bonus_local <= 0 then
-            begin
-                Exit;
-            end;
-
-            capped_bonus_local := exact_weight_value div 2;
-            if capped_bonus_local < c_multi_base_choice_bonus_floor then
-            begin
-                capped_bonus_local := c_multi_base_choice_bonus_floor;
-            end;
-            if capped_bonus_local > c_multi_base_choice_bonus_cap then
-            begin
-                capped_bonus_local := c_multi_base_choice_bonus_cap;
-            end;
-
-            if (raw_bonus_local >= c_multi_base_strong_choice_min) and
-                (not has_rare_low_weight_unit_local) then
-            begin
-                Exit(50000000 + (raw_bonus_local * 1000));
-            end;
-
-            Result := Min(raw_bonus_local, capped_bonus_local);
-        end;
-
         function exact_candidate_is_user_local(
             const candidate_value: TncCandidate; const text_value: string): Boolean;
         begin
@@ -160793,676 +159276,6 @@ var
                 rank_item_local.nocontext_exact_priority := 1;
                 list[candidate_list_indices_local[best_idx_local]] :=
                     rank_item_local;
-            finally
-                seen_texts_local.Free;
-            end;
-        end;
-
-        procedure apply_short_context_reranker_local;
-        const
-            c_max_context_candidates = 9;
-        var
-            context_value_local: string;
-            candidate_texts_local: TArray<string>;
-            candidate_weights_local: TArray<Integer>;
-            candidate_display_scores_local: TArray<Integer>;
-            candidate_lm_scores_local: TArray<Integer>;
-            candidate_list_indices_local: TArray<Integer>;
-            seen_texts_local: TDictionary<string, Boolean>;
-            list_idx_local: Integer;
-            candidate_idx_local: Integer;
-            baseline_idx_local: Integer;
-            best_idx_local: Integer;
-            first_stage_idx_local: Integer;
-            residual_best_idx_local: Integer;
-            final_idx_local: Integer;
-            best_lm_idx_local: Integer;
-            candidate_text_local: string;
-            candidate_weight_local: Integer;
-            baseline_model_score_local: Double;
-            candidate_model_score_local: Double;
-            best_model_score_local: Double;
-            model_lead_local: Double;
-            residual_baseline_score_local: Double;
-            residual_candidate_score_local: Double;
-            residual_best_score_local: Double;
-            residual_lead_local: Double;
-            first_stage_promoted_local: Boolean;
-            residual_promoted_local: Boolean;
-            boundary_prefix_texts_local: TArray<string>;
-            boundary_prefix_scores_local: TArray<Integer>;
-            boundary_prefix1_scores_local: TArray<Integer>;
-            boundary_prefix2_scores_local: TArray<Integer>;
-            difference_features_local: TncShortContextDifferenceFeatures;
-            difference_stage1_features_local:
-                TncShortContextDifferenceFeatures;
-            difference_top_idx_local: Integer;
-            difference_second_idx_local: Integer;
-            difference_stage1_top_idx_local: Integer;
-            difference_stage1_second_idx_local: Integer;
-            difference_best_idx_local: Integer;
-            difference_idx_local: Integer;
-            difference_rank_local: Integer;
-            difference_score_local: Int64;
-            difference_best_score_local: Int64;
-            difference_runner_up_score_local: Int64;
-            difference_best_probability_local: Double;
-            difference_runner_up_probability_local: Double;
-            difference_stage1_promoted_local: Boolean;
-            difference_stage2_promoted_local: Boolean;
-            difference_stage1_features_valid_local: Boolean;
-            rank_item_local: TShortExactRankItem;
-
-            function effective_left_context_local: string;
-            begin
-                Result := Trim(m_left_context);
-                if Trim(m_segment_left_context) <> '' then
-                begin
-                    Result := Trim(m_segment_left_context);
-                end;
-                if (Trim(m_segment_left_context) = '') and
-                    (Trim(m_external_left_context) <> '') then
-                begin
-                    Result := Trim(m_external_left_context);
-                end;
-                Result := context_model_tail(Result);
-            end;
-
-            function difference_pair_eligible_local(
-                const top_index_local,
-                challenger_index_local: Integer): Boolean;
-            begin
-                Result :=
-                    (Length(candidate_texts_local[top_index_local]) =
-                    Length(candidate_texts_local[challenger_index_local])) and
-                    m_dictionary.is_base_entry(normalized_pinyin,
-                    candidate_texts_local[top_index_local]) and
-                    m_dictionary.is_base_entry(normalized_pinyin,
-                    candidate_texts_local[challenger_index_local]);
-            end;
-
-            procedure build_difference_features_local(
-                const top_index_local, challenger_index_local,
-                challenger_rank_local: Integer;
-                const use_stage2_evidence_local: Boolean;
-                out features_local: TncShortContextDifferenceFeatures);
-            var
-                top_text_inner: string;
-                challenger_text_inner: string;
-                compare_index_inner: Integer;
-                compare_limit_inner: Integer;
-                different_inner: Integer;
-                prefix_inner: Integer;
-                suffix_inner: Integer;
-            begin
-                FillChar(features_local, SizeOf(features_local), 0);
-                top_text_inner := candidate_texts_local[top_index_local];
-                challenger_text_inner := candidate_texts_local[
-                    challenger_index_local];
-                compare_limit_inner := Min(Length(top_text_inner),
-                    Length(challenger_text_inner));
-                different_inner := Abs(Length(top_text_inner) -
-                    Length(challenger_text_inner));
-                for compare_index_inner := 1 to compare_limit_inner do
-                begin
-                    if top_text_inner[compare_index_inner] <>
-                        challenger_text_inner[compare_index_inner] then
-                    begin
-                        Inc(different_inner);
-                    end;
-                end;
-                prefix_inner := 0;
-                while (prefix_inner < compare_limit_inner) and
-                    (top_text_inner[prefix_inner + 1] =
-                    challenger_text_inner[prefix_inner + 1]) do
-                begin
-                    Inc(prefix_inner);
-                end;
-                suffix_inner := 0;
-                while (suffix_inner < compare_limit_inner - prefix_inner) and
-                    (top_text_inner[Length(top_text_inner) - suffix_inner] =
-                    challenger_text_inner[Length(challenger_text_inner) -
-                    suffix_inner]) do
-                begin
-                    Inc(suffix_inner);
-                end;
-
-                features_local.challenger_rank := challenger_rank_local;
-                features_local.delta_full_lm :=
-                    candidate_lm_scores_local[challenger_index_local] -
-                    candidate_lm_scores_local[top_index_local];
-                features_local.delta_prefix1_lm :=
-                    boundary_prefix1_scores_local[challenger_index_local] -
-                    boundary_prefix1_scores_local[top_index_local];
-                features_local.delta_prefix2_lm :=
-                    boundary_prefix2_scores_local[challenger_index_local] -
-                    boundary_prefix2_scores_local[top_index_local];
-                features_local.delta_dict_weight :=
-                    candidate_weights_local[challenger_index_local] -
-                    candidate_weights_local[top_index_local];
-                features_local.delta_display_score :=
-                    candidate_display_scores_local[challenger_index_local] -
-                    candidate_display_scores_local[top_index_local];
-                features_local.top_full_lm :=
-                    candidate_lm_scores_local[top_index_local];
-                features_local.challenger_full_lm :=
-                    candidate_lm_scores_local[challenger_index_local];
-                features_local.top_prefix1_lm :=
-                    boundary_prefix1_scores_local[top_index_local];
-                features_local.challenger_prefix1_lm :=
-                    boundary_prefix1_scores_local[challenger_index_local];
-                features_local.top_prefix2_lm :=
-                    boundary_prefix2_scores_local[top_index_local];
-                features_local.challenger_prefix2_lm :=
-                    boundary_prefix2_scores_local[challenger_index_local];
-                features_local.top_log_dict_weight := Ln(1.0 + Max(0,
-                    candidate_weights_local[top_index_local]));
-                features_local.challenger_log_dict_weight := Ln(1.0 + Max(0,
-                    candidate_weights_local[challenger_index_local]));
-                features_local.context_units := Min(12,
-                    Length(context_value_local));
-                features_local.query_units := Length(normalized_pinyin);
-                features_local.top_text_units := Length(top_text_inner);
-                features_local.challenger_text_units :=
-                    Length(challenger_text_inner);
-                features_local.different_units := different_inner;
-                features_local.same_prefix_units := prefix_inner;
-                features_local.same_suffix_units := suffix_inner;
-                features_local.candidate_count :=
-                    Length(candidate_texts_local);
-                if use_stage2_evidence_local then
-                begin
-                    short_context_difference_fill_stage2_evidence(
-                        context_value_local, top_text_inner,
-                        challenger_text_inner, features_local);
-                end
-                else
-                begin
-                    short_context_difference_fill_stage1_evidence(
-                        context_value_local, top_text_inner,
-                        challenger_text_inner, features_local);
-                end;
-            end;
-
-            function difference_probability_local(
-                const score_local: Int64): Double;
-            var
-                scaled_score_local: Double;
-                exponential_local: Double;
-            begin
-                scaled_score_local := score_local /
-                    c_short_context_difference_score_scale;
-                if scaled_score_local >= 0.0 then
-                begin
-                    Result := 1.0 / (1.0 + Exp(-scaled_score_local));
-                end
-                else
-                begin
-                    exponential_local := Exp(scaled_score_local);
-                    Result := exponential_local / (1.0 + exponential_local);
-                end;
-            end;
-
-        begin
-            short_context_promoted_exact_text := '';
-            short_context_promoted_exact_lead := 0;
-            context_value_local := effective_left_context_local;
-            if (context_value_local = '') or (m_dictionary = nil) or
-                has_user_exact or (list.Count < 2) then
-            begin
-                Exit;
-            end;
-
-            seen_texts_local := TDictionary<string, Boolean>.Create;
-            try
-                SetLength(candidate_texts_local, 0);
-                SetLength(candidate_weights_local, 0);
-                SetLength(candidate_display_scores_local, 0);
-                SetLength(candidate_list_indices_local, 0);
-                for list_idx_local := 0 to list.Count - 1 do
-                begin
-                    rank_item_local := list[list_idx_local];
-                    if rank_item_local.category <> 1 then
-                    begin
-                        Continue;
-                    end;
-                    if Length(candidate_texts_local) >= c_max_context_candidates then
-                    begin
-                        Break;
-                    end;
-
-                    candidate_text_local := Trim(rank_item_local.candidate.text);
-                    if (candidate_text_local = '') or
-                        seen_texts_local.ContainsKey(candidate_text_local) or
-                        (not exact_weights.TryGetValue(candidate_text_local,
-                        candidate_weight_local)) then
-                    begin
-                        Continue;
-                    end;
-
-                    if not short_residual_exact_weight_is_eligible(
-                        candidate_weight_local,
-                        Length(candidate_texts_local) = 0) then
-                    begin
-                        Continue;
-                    end;
-
-                    if query_choice_rank_bonus_local(candidate_text_local) > 0 then
-                    begin
-                        Exit;
-                    end;
-
-                    seen_texts_local.Add(candidate_text_local, True);
-                    candidate_idx_local := Length(candidate_texts_local);
-                    SetLength(candidate_texts_local, candidate_idx_local + 1);
-                    SetLength(candidate_weights_local, candidate_idx_local + 1);
-                    SetLength(candidate_display_scores_local,
-                        candidate_idx_local + 1);
-                    SetLength(candidate_list_indices_local,
-                        candidate_idx_local + 1);
-                    candidate_texts_local[candidate_idx_local] :=
-                        candidate_text_local;
-                    candidate_weights_local[candidate_idx_local] :=
-                        candidate_weight_local;
-                    candidate_display_scores_local[candidate_idx_local] :=
-                        rank_item_local.candidate.score;
-                    candidate_list_indices_local[candidate_idx_local] :=
-                        list_idx_local;
-                end;
-
-                if Length(candidate_texts_local) < 2 then
-                begin
-                    Exit;
-                end;
-                if (not get_cached_char_lm_scores(candidate_texts_local,
-                    candidate_lm_scores_local, clsm_short_context,
-                    context_value_local)) or
-                    (Length(candidate_lm_scores_local) <>
-                    Length(candidate_texts_local)) then
-                begin
-                    Exit;
-                end;
-
-                baseline_idx_local := 0;
-                best_lm_idx_local := 0;
-                for candidate_idx_local := 1 to High(candidate_texts_local) do
-                begin
-                    if candidate_lm_scores_local[candidate_idx_local] >
-                        candidate_lm_scores_local[best_lm_idx_local] then
-                    begin
-                        best_lm_idx_local := candidate_idx_local;
-                    end;
-                end;
-
-                best_idx_local := baseline_idx_local;
-                baseline_model_score_local := short_context_reranker_score(
-                    context_value_local,
-                    candidate_texts_local[baseline_idx_local], 1,
-                    candidate_lm_scores_local[baseline_idx_local],
-                    candidate_weights_local[baseline_idx_local],
-                    candidate_display_scores_local[baseline_idx_local], True, 0,
-                    0, candidate_lm_scores_local[baseline_idx_local] -
-                    candidate_lm_scores_local[best_lm_idx_local],
-                    baseline_idx_local = best_lm_idx_local,
-                    Length(candidate_texts_local), Length(context_value_local),
-                    Length(candidate_texts_local[baseline_idx_local]));
-                best_model_score_local := baseline_model_score_local;
-                for candidate_idx_local := 1 to High(candidate_texts_local) do
-                begin
-                    candidate_model_score_local := short_context_reranker_score(
-                        context_value_local,
-                        candidate_texts_local[candidate_idx_local],
-                        candidate_idx_local + 1,
-                        candidate_lm_scores_local[candidate_idx_local],
-                        candidate_weights_local[candidate_idx_local],
-                        candidate_display_scores_local[candidate_idx_local], False,
-                        candidate_lm_scores_local[candidate_idx_local] -
-                        candidate_lm_scores_local[baseline_idx_local],
-                        candidate_weights_local[candidate_idx_local] -
-                        candidate_weights_local[baseline_idx_local],
-                        candidate_lm_scores_local[candidate_idx_local] -
-                        candidate_lm_scores_local[best_lm_idx_local],
-                        candidate_idx_local = best_lm_idx_local,
-                        Length(candidate_texts_local), Length(context_value_local),
-                        Length(candidate_texts_local[candidate_idx_local]));
-                    if candidate_model_score_local > best_model_score_local then
-                    begin
-                        best_idx_local := candidate_idx_local;
-                        best_model_score_local := candidate_model_score_local;
-                    end;
-                end;
-
-                model_lead_local := best_model_score_local -
-                    baseline_model_score_local;
-                first_stage_promoted_local :=
-                    (best_idx_local <> baseline_idx_local) and
-                    (model_lead_local >=
-                    c_short_context_reranker_promotion_margin) and
-                    not nc_long_ablated(la_short_reranker);
-                first_stage_idx_local := baseline_idx_local;
-                if first_stage_promoted_local then
-                begin
-                    first_stage_idx_local := best_idx_local;
-                end;
-
-                residual_baseline_score_local := short_context_residual_score(
-                    context_value_local,
-                    candidate_texts_local[first_stage_idx_local],
-                    first_stage_idx_local + 1,
-                    candidate_lm_scores_local[first_stage_idx_local],
-                    candidate_weights_local[first_stage_idx_local],
-                    candidate_display_scores_local[first_stage_idx_local], True,
-                    0, 0, candidate_lm_scores_local[first_stage_idx_local] -
-                    candidate_lm_scores_local[best_lm_idx_local],
-                    first_stage_idx_local = best_lm_idx_local,
-                    Length(candidate_texts_local), Length(context_value_local),
-                    Length(candidate_texts_local[first_stage_idx_local]));
-                residual_best_idx_local := first_stage_idx_local;
-                residual_best_score_local := residual_baseline_score_local;
-                for candidate_idx_local := 0 to High(candidate_texts_local) do
-                begin
-                    if candidate_idx_local = first_stage_idx_local then
-                    begin
-                        Continue;
-                    end;
-                    residual_candidate_score_local :=
-                        short_context_residual_score(context_value_local,
-                        candidate_texts_local[candidate_idx_local],
-                        candidate_idx_local + 1,
-                        candidate_lm_scores_local[candidate_idx_local],
-                        candidate_weights_local[candidate_idx_local],
-                        candidate_display_scores_local[candidate_idx_local], False,
-                        candidate_lm_scores_local[candidate_idx_local] -
-                        candidate_lm_scores_local[first_stage_idx_local],
-                        candidate_weights_local[candidate_idx_local] -
-                        candidate_weights_local[first_stage_idx_local],
-                        candidate_lm_scores_local[candidate_idx_local] -
-                        candidate_lm_scores_local[best_lm_idx_local],
-                        candidate_idx_local = best_lm_idx_local,
-                        Length(candidate_texts_local), Length(context_value_local),
-                        Length(candidate_texts_local[candidate_idx_local]));
-                    if residual_candidate_score_local >
-                        residual_best_score_local then
-                    begin
-                        residual_best_idx_local := candidate_idx_local;
-                        residual_best_score_local :=
-                            residual_candidate_score_local;
-                    end;
-                end;
-
-                residual_lead_local := residual_best_score_local -
-                    residual_baseline_score_local;
-                residual_promoted_local :=
-                    (residual_best_idx_local <> first_stage_idx_local) and
-                    (residual_lead_local >=
-                    c_short_context_residual_promotion_margin) and
-                    not nc_long_ablated(la_short_residual);
-                final_idx_local := first_stage_idx_local;
-                if residual_promoted_local then
-                begin
-                    final_idx_local := residual_best_idx_local;
-                end;
-
-                { The difference stages compare the first character and the
-                  first two characters of existing exact candidates; they
-                  never create candidates. }
-                difference_stage1_promoted_local := False;
-                difference_stage2_promoted_local := False;
-                difference_stage1_features_valid_local := False;
-                difference_top_idx_local := final_idx_local;
-                SetLength(boundary_prefix_texts_local,
-                    Length(candidate_texts_local) * 2);
-                for candidate_idx_local := 0 to High(candidate_texts_local) do
-                begin
-                    boundary_prefix_texts_local[candidate_idx_local * 2] :=
-                        Copy(candidate_texts_local[candidate_idx_local], 1, 1);
-                    boundary_prefix_texts_local[candidate_idx_local * 2 + 1] :=
-                        Copy(candidate_texts_local[candidate_idx_local], 1, 2);
-                end;
-                if get_cached_char_lm_scores(boundary_prefix_texts_local,
-                    boundary_prefix_scores_local, clsm_short_context,
-                    context_value_local) and
-                    (Length(boundary_prefix_scores_local) =
-                    Length(boundary_prefix_texts_local)) then
-                begin
-                    SetLength(boundary_prefix1_scores_local,
-                        Length(candidate_texts_local));
-                    SetLength(boundary_prefix2_scores_local,
-                        Length(candidate_texts_local));
-                    for candidate_idx_local := 0 to High(candidate_texts_local) do
-                    begin
-                        boundary_prefix1_scores_local[candidate_idx_local] :=
-                            boundary_prefix_scores_local[
-                            candidate_idx_local * 2];
-                        boundary_prefix2_scores_local[candidate_idx_local] :=
-                            boundary_prefix_scores_local[
-                            candidate_idx_local * 2 + 1];
-                    end;
-
-                    { Compare the final current winner against existing exact
-                      alternatives. The first pass only considers the logical
-                      second candidate. A stricter second pass considers the
-                      remaining candidates only when the first pass abstains. }
-                    difference_top_idx_local := final_idx_local;
-                    difference_second_idx_local := -1;
-                    for difference_idx_local := 0 to
-                        High(candidate_texts_local) do
-                    begin
-                        if difference_idx_local <>
-                            difference_top_idx_local then
-                        begin
-                            difference_second_idx_local :=
-                                difference_idx_local;
-                            Break;
-                        end;
-                    end;
-                    difference_score_local := Low(Int64);
-                    if (difference_second_idx_local >= 0) and
-                        difference_pair_eligible_local(
-                        difference_top_idx_local,
-                        difference_second_idx_local) and
-                        short_context_difference_has_positive_signal(
-                        context_value_local,
-                        candidate_texts_local[difference_top_idx_local],
-                        candidate_texts_local[
-                        difference_second_idx_local]) then
-                    begin
-                        build_difference_features_local(
-                            difference_top_idx_local,
-                            difference_second_idx_local, 2, False,
-                            difference_features_local);
-                        difference_stage1_features_local :=
-                            difference_features_local;
-                        difference_stage1_top_idx_local :=
-                            difference_top_idx_local;
-                        difference_stage1_second_idx_local :=
-                            difference_second_idx_local;
-                        difference_stage1_features_valid_local := True;
-                        difference_score_local :=
-                            short_context_difference_stage1_score(
-                            difference_features_local);
-                        if (difference_score_local >=
-                            c_short_context_difference_stage1_threshold) and
-                            not nc_long_ablated(la_short_difference) then
-                        begin
-                            final_idx_local := difference_second_idx_local;
-                            difference_stage1_promoted_local := True;
-                        end;
-                    end;
-
-                    if (not difference_stage1_promoted_local) and
-                        not nc_long_ablated(la_short_difference) then
-                    begin
-                        difference_best_idx_local := -1;
-                        difference_best_score_local := Low(Int64);
-                        difference_runner_up_score_local := Low(Int64);
-                        difference_rank_local := 1;
-                        for difference_idx_local := 0 to
-                            High(candidate_texts_local) do
-                        begin
-                            if difference_idx_local =
-                                difference_top_idx_local then
-                            begin
-                                Continue;
-                            end;
-                            Inc(difference_rank_local);
-                            if difference_idx_local =
-                                difference_second_idx_local then
-                            begin
-                                Continue;
-                            end;
-                            if not difference_pair_eligible_local(
-                                difference_top_idx_local,
-                                difference_idx_local) then
-                            begin
-                                Continue;
-                            end;
-                            if not
-                                short_context_difference_has_positive_mined_evidence(
-                                context_value_local,
-                                candidate_texts_local[
-                                difference_top_idx_local],
-                                candidate_texts_local[difference_idx_local]) then
-                            begin
-                                Continue;
-                            end;
-                            build_difference_features_local(
-                                difference_top_idx_local,
-                                difference_idx_local,
-                                difference_rank_local, True,
-                                difference_features_local);
-                            difference_score_local :=
-                                short_context_difference_stage2_score(
-                                difference_features_local);
-                            if difference_score_local >
-                                difference_best_score_local then
-                            begin
-                                difference_runner_up_score_local :=
-                                    difference_best_score_local;
-                                difference_best_score_local :=
-                                    difference_score_local;
-                                difference_best_idx_local :=
-                                    difference_idx_local;
-                            end
-                            else if difference_score_local >
-                                difference_runner_up_score_local then
-                            begin
-                                difference_runner_up_score_local :=
-                                    difference_score_local;
-                            end;
-                        end;
-                        if (difference_best_idx_local >= 0) and
-                            (difference_best_score_local >=
-                            c_short_context_difference_stage2_threshold) then
-                        begin
-                            difference_best_probability_local :=
-                                difference_probability_local(
-                                difference_best_score_local);
-                            if difference_runner_up_score_local =
-                                Low(Int64) then
-                            begin
-                                difference_runner_up_probability_local := 0.0;
-                            end
-                            else
-                            begin
-                                difference_runner_up_probability_local :=
-                                    difference_probability_local(
-                                    difference_runner_up_score_local);
-                            end;
-                            if difference_best_probability_local -
-                                difference_runner_up_probability_local >=
-                                c_short_context_difference_stage2_lead_threshold then
-                            begin
-                                final_idx_local := difference_best_idx_local;
-                                difference_stage2_promoted_local := True;
-                                difference_score_local :=
-                                    difference_best_score_local;
-                            end;
-                        end;
-                    end;
-
-                end;
-
-                if final_idx_local <> baseline_idx_local then
-                begin
-                    short_context_promoted_exact_text :=
-                        candidate_texts_local[final_idx_local];
-                    if difference_stage1_promoted_local then
-                    begin
-                        short_context_promoted_exact_lead := EnsureRange(
-                            (difference_score_local -
-                            c_short_context_difference_stage1_threshold) div
-                            100000, Low(Integer), High(Integer));
-                    end
-                    else if difference_stage2_promoted_local then
-                    begin
-                        short_context_promoted_exact_lead := EnsureRange(
-                            (difference_score_local -
-                            c_short_context_difference_stage2_threshold) div
-                            100000, Low(Integer), High(Integer));
-                    end
-                    else if residual_promoted_local then
-                    begin
-                        short_context_promoted_exact_lead := Round(
-                            residual_lead_local * 1000.0);
-                    end
-                    else
-                    begin
-                        short_context_promoted_exact_lead := Round(
-                            model_lead_local * 1000.0);
-                    end;
-                    rank_item_local := list[
-                        candidate_list_indices_local[final_idx_local]];
-                    rank_item_local.context_exact_priority := 1;
-                    list[candidate_list_indices_local[final_idx_local]] :=
-                        rank_item_local;
-                end;
-
-                if m_config.debug_mode then
-                begin
-                    if first_stage_promoted_local then
-                    begin
-                        if m_last_lookup_debug_extra <> '' then
-                        begin
-                            m_last_lookup_debug_extra :=
-                                m_last_lookup_debug_extra + ' ';
-                        end;
-                        m_last_lookup_debug_extra := m_last_lookup_debug_extra +
-                            Format('shortctxrr=%s:%.3f>%s:%.3f',
-                            [candidate_texts_local[baseline_idx_local],
-                            baseline_model_score_local,
-                            candidate_texts_local[first_stage_idx_local],
-                            best_model_score_local]);
-                    end;
-                    if residual_promoted_local then
-                    begin
-                        if m_last_lookup_debug_extra <> '' then
-                        begin
-                            m_last_lookup_debug_extra :=
-                                m_last_lookup_debug_extra + ' ';
-                        end;
-                        m_last_lookup_debug_extra := m_last_lookup_debug_extra +
-                            Format('shortctxres=%s:%.3f>%s:%.3f',
-                            [candidate_texts_local[first_stage_idx_local],
-                            residual_baseline_score_local,
-                            candidate_texts_local[residual_best_idx_local],
-                            residual_best_score_local]);
-                    end;
-                    if difference_stage1_promoted_local or
-                        difference_stage2_promoted_local then
-                    begin
-                        if m_last_lookup_debug_extra <> '' then
-                        begin
-                            m_last_lookup_debug_extra :=
-                                m_last_lookup_debug_extra + ' ';
-                        end;
-                        m_last_lookup_debug_extra := m_last_lookup_debug_extra +
-                            Format('shortctxdiff%d=%s:%d',
-                            [1 + Ord(difference_stage2_promoted_local),
-                            candidate_texts_local[final_idx_local],
-                            short_context_promoted_exact_lead]);
-                    end;
-                end;
             finally
                 seen_texts_local.Free;
             end;
@@ -163304,12 +161117,6 @@ var
                 sort_short_exact_rank_items_local;
             end;
             note_short_exact_phase_local('nocontext');
-            apply_short_context_reranker_local;
-            if short_context_promoted_exact_text <> '' then
-            begin
-                sort_short_exact_rank_items_local;
-            end;
-            note_short_exact_phase_local('context');
             if apply_document_context_exact_reranker_local then
             begin
                 sort_short_exact_rank_items_local;
@@ -163367,13 +161174,6 @@ var
                         Format(' shortnoctx=%s:%d',
                         [short_nocontext_promoted_exact_text,
                         short_nocontext_promoted_exact_lead]);
-                end;
-                if short_context_promoted_exact_text <> '' then
-                begin
-                    m_last_lookup_debug_extra := m_last_lookup_debug_extra +
-                        Format(' shortctx=%s:%d',
-                        [short_context_promoted_exact_text,
-                        short_context_promoted_exact_lead]);
                 end;
             end;
 
@@ -169113,140 +166913,6 @@ var
         end;
     end;
 
-    procedure ensure_short_exact_full_candidates_before_partials;
-    var
-        exact_results: TncCandidateList;
-        exact_candidates: TncCandidateList;
-        idx: Integer;
-        target_idx: Integer;
-        candidate_text: string;
-        candidate_units: Integer;
-        has_exact_results: Boolean;
-        existing_idx: Integer;
-        picked: TncCandidate;
-
-        function exact_effective_weight(const item: TncCandidate): Integer;
-        begin
-            Result := item.score;
-            if item.has_dict_weight and (item.dict_weight > Result) then
-            begin
-                Result := item.dict_weight;
-            end;
-            if (item.source = cs_user) and
-                display_candidate_has_supported_full_entry(normalized_pinyin,
-                item) then
-            begin
-                Inc(Result, c_user_score_bonus);
-            end;
-            if display_candidate_has_supported_full_entry(normalized_pinyin,
-                item) then
-            begin
-                Inc(Result, 1000000);
-            end;
-        end;
-
-        function exact_text_already_selected(const text_value: string): Boolean;
-        var
-            exact_idx: Integer;
-        begin
-            Result := False;
-            for exact_idx := 0 to High(exact_candidates) do
-            begin
-                if SameText(Trim(exact_candidates[exact_idx].text),
-                    text_value) then
-                begin
-                    Exit(True);
-                end;
-            end;
-        end;
-
-        procedure sort_exact_candidates_by_weight;
-        var
-            left_idx: Integer;
-            right_idx: Integer;
-            tmp: TncCandidate;
-        begin
-            for left_idx := 0 to High(exact_candidates) - 1 do
-            begin
-                for right_idx := left_idx + 1 to High(exact_candidates) do
-                begin
-                    if exact_effective_weight(exact_candidates[right_idx]) >
-                        exact_effective_weight(exact_candidates[left_idx]) then
-                    begin
-                        tmp := exact_candidates[left_idx];
-                        exact_candidates[left_idx] := exact_candidates[right_idx];
-                        exact_candidates[right_idx] := tmp;
-                    end;
-                end;
-            end;
-        end;
-    begin
-        if (m_dictionary = nil) or (normalized_pinyin = '') or
-            (expected_units < 2) or (expected_units > 4) then
-        begin
-            Exit;
-        end;
-
-        has_exact_results := lookup_display_exact_cached(normalized_pinyin,
-            exact_results);
-        if not has_exact_results then
-        begin
-            Exit;
-        end;
-
-        SetLength(exact_candidates, 0);
-        idx := 0;
-        while idx <= High(exact_results) do
-        begin
-            if idx >= 16 then
-            begin
-                Break;
-            end;
-            candidate_text := Trim(exact_results[idx].text);
-            candidate_units := get_candidate_text_unit_count(candidate_text);
-            if (candidate_text = '') or (candidate_units <= 0) or
-                (candidate_units <> expected_units) or
-                (Trim(exact_results[idx].comment) <> '') or
-                exact_text_already_selected(candidate_text) then
-            begin
-                Inc(idx);
-                Continue;
-            end;
-
-            SetLength(exact_candidates, Length(exact_candidates) + 1);
-            exact_candidates[High(exact_candidates)] := exact_results[idx];
-            exact_candidates[High(exact_candidates)].text := candidate_text;
-            exact_candidates[High(exact_candidates)].comment := '';
-            Inc(idx);
-        end;
-
-        if Length(exact_candidates) = 0 then
-        begin
-            Exit;
-        end;
-
-        sort_exact_candidates_by_weight;
-        if Length(exact_candidates) > 4 then
-        begin
-            SetLength(exact_candidates, 4);
-        end;
-
-        for idx := High(exact_candidates) downto 0 do
-        begin
-            picked := exact_candidates[idx];
-            target_idx := 0;
-            existing_idx := find_display_candidate(Trim(picked.text), '');
-            if existing_idx >= 0 then
-            begin
-                move_display_candidate_to_index(existing_idx, target_idx);
-            end
-            else
-            begin
-                insert_display_candidate(picked, '', target_idx);
-            end;
-        end;
-    end;
-
     procedure promote_recent_visible_choice_candidate;
     var
         idx: Integer;
@@ -171277,182 +168943,6 @@ var
         begin
             force_move_display_candidate_to_index(partial_idx, 0);
         end;
-    end;
-
-    procedure insert_function_phrase_split_repairs;
-    const
-        c_source_probe_limit = 3;
-        c_min_phrase_weight = 700;
-    var
-        source_idx: Integer;
-        start_idx: Integer;
-        follow_len: Integer;
-        units: TArray<string>;
-        repaired_units: TArray<string>;
-        phrase_units: TArray<string>;
-        unit_idx: Integer;
-        single_text: string;
-        single_weight: Integer;
-        phrase_text: string;
-        phrase_weight: Integer;
-        current_two_text: string;
-        repair_text: string;
-        repair_path: string;
-        duplicate_idx: Integer;
-        duplicate_found: Boolean;
-        repair_candidate: TncCandidate;
-        best_text: string;
-        best_path: string;
-        best_score: Integer;
-        best_target: Integer;
-        current_two_best_text: string;
-        current_two_weight: Integer;
-    begin
-        if (m_dictionary = nil) or (Length(m_candidates) <= 0) or
-            (expected_units < 3) then
-        begin
-            Exit;
-        end;
-
-        best_text := '';
-        best_path := '';
-        best_score := Low(Integer);
-        best_target := 0;
-        for source_idx := 0 to Min(c_source_probe_limit - 1,
-            High(m_candidates)) do
-        begin
-            if Trim(m_candidates[source_idx].comment) <> '' then
-            begin
-                Continue;
-            end;
-
-            units := split_text_units(Trim(m_candidates[source_idx].text));
-            if Length(units) <> expected_units then
-            begin
-                Continue;
-            end;
-
-            for start_idx := 0 to expected_units - 3 do
-            begin
-                if not try_get_display_function_single(
-                    normalize_pinyin_text(syllables[start_idx].text),
-                    single_text, single_weight) then
-                begin
-                    Continue;
-                end;
-
-                for follow_len := 2 to Min(4, expected_units - start_idx - 1) do
-                begin
-                    current_two_text := units[start_idx] + units[start_idx + 1];
-                    if (not try_get_display_exact_phrase(start_idx, 2,
-                        current_two_best_text, current_two_weight)) or
-                        (not SameText(current_two_best_text,
-                        current_two_text)) then
-                    begin
-                        Continue;
-                    end;
-                    if not try_get_display_exact_phrase(start_idx + 1,
-                        follow_len, phrase_text, phrase_weight) then
-                    begin
-                        Continue;
-                    end;
-                    if phrase_weight < c_min_phrase_weight then
-                    begin
-                        Continue;
-                    end;
-                    if current_two_weight >= phrase_weight + 400 then
-                    begin
-                        Continue;
-                    end;
-
-                    phrase_units := split_text_units(phrase_text);
-                    if Length(phrase_units) <> follow_len then
-                    begin
-                        Continue;
-                    end;
-
-                    repaired_units := Copy(units);
-                    repaired_units[start_idx] := single_text;
-                    for unit_idx := 0 to High(phrase_units) do
-                    begin
-                        repaired_units[start_idx + 1 + unit_idx] :=
-                            phrase_units[unit_idx];
-                    end;
-
-                    repair_text := '';
-                    for unit_idx := 0 to High(repaired_units) do
-                    begin
-                        repair_text := repair_text + repaired_units[unit_idx];
-                    end;
-
-                    if SameText(repair_text, Trim(m_candidates[source_idx].text)) then
-                    begin
-                        Continue;
-                    end;
-
-                    duplicate_found := False;
-                    for duplicate_idx := 0 to High(m_candidates) do
-                    begin
-                        if SameText(Trim(m_candidates[duplicate_idx].text),
-                            repair_text) and
-                            (Trim(m_candidates[duplicate_idx].comment) = '') then
-                        begin
-                            duplicate_found := True;
-                            Break;
-                        end;
-                    end;
-                    if duplicate_found then
-                    begin
-                        Continue;
-                    end;
-
-                    repair_path := '';
-                    for unit_idx := 0 to start_idx - 1 do
-                    begin
-                        if repair_path <> '' then
-                        begin
-                            repair_path := repair_path + c_segment_path_separator;
-                        end;
-                        repair_path := repair_path + repaired_units[unit_idx];
-                    end;
-                    if repair_path <> '' then
-                    begin
-                        repair_path := repair_path + c_segment_path_separator;
-                    end;
-                    repair_path := repair_path + single_text +
-                        c_segment_path_separator + phrase_text;
-                    for unit_idx := start_idx + 1 + Length(phrase_units) to
-                        High(repaired_units) do
-                    begin
-                        repair_path := repair_path + c_segment_path_separator +
-                            repaired_units[unit_idx];
-                    end;
-
-                    if m_candidates[source_idx].score + single_weight +
-                        phrase_weight > best_score then
-                    begin
-                        best_score := m_candidates[source_idx].score +
-                            single_weight + phrase_weight;
-                        best_text := repair_text;
-                        best_path := repair_path;
-                        best_target := Min(source_idx, 1);
-                    end;
-                end;
-            end;
-        end;
-
-        if best_text = '' then
-        begin
-            Exit;
-        end;
-
-        repair_candidate.text := best_text;
-        repair_candidate.comment := '';
-        repair_candidate.score := best_score + 4096;
-        repair_candidate.source := cs_rule;
-        repair_candidate.has_dict_weight := False;
-        repair_candidate.dict_weight := 0;
-        insert_display_candidate(repair_candidate, best_path, best_target);
     end;
 
     procedure promote_pathful_high_score_complete_candidate;
@@ -177586,151 +175076,6 @@ var
             end;
         end;
 
-        function is_common_single_path_segment_local(
-            const segment_text: string): Boolean;
-        begin
-            Result := unit_matches_local(segment_text, $7684) or
-                unit_matches_local(segment_text, $5F97) or
-                unit_matches_local(segment_text, $5730) or
-                unit_matches_local(segment_text, $4E86) or
-                unit_matches_local(segment_text, $7740) or
-                unit_matches_local(segment_text, $8FC7) or
-                unit_matches_local(segment_text, $662F) or
-                unit_matches_local(segment_text, $65F6) or
-                unit_matches_local(segment_text, $6709) or
-                unit_matches_local(segment_text, $5728) or
-                unit_matches_local(segment_text, $518D) or
-                unit_matches_local(segment_text, $548C) or
-                unit_matches_local(segment_text, $4E0E) or
-                unit_matches_local(segment_text, $4E5F) or
-                unit_matches_local(segment_text, $90FD) or
-                unit_matches_local(segment_text, $5C31) or
-                unit_matches_local(segment_text, $8FD8) or
-                unit_matches_local(segment_text, $53C8) or
-                unit_matches_local(segment_text, $624D) or
-                unit_matches_local(segment_text, $66F4) or
-                unit_matches_local(segment_text, $6700) or
-                unit_matches_local(segment_text, $4E0D) or
-                unit_matches_local(segment_text, $6CA1) or
-                unit_matches_local(segment_text, $628A) or
-                unit_matches_local(segment_text, $88AB) or
-                unit_matches_local(segment_text, $8BA9) or
-                unit_matches_local(segment_text, $5C06) or
-                unit_matches_local(segment_text, $6211) or
-                unit_matches_local(segment_text, $4F60) or
-                unit_matches_local(segment_text, $4ED6) or
-                unit_matches_local(segment_text, $5979) or
-                unit_matches_local(segment_text, $5B83);
-        end;
-
-        function score_segment_path_quality_local(
-            const candidate_value: TncCandidate;
-            const candidate_idx: Integer): Integer;
-        var
-            path_local: string;
-            path_parts_local: TArray<string>;
-            part_idx_local: Integer;
-            segment_text_local: string;
-            segment_units_local: Integer;
-            segment_start_local: Integer;
-            query_key_local: string;
-            exact_weight_local: Integer;
-            prev_segment_text_local: string;
-            prev_prev_segment_text_local: string;
-            context_bonus_local: Integer;
-        begin
-            Result := 0;
-            path_local := get_display_candidate_path_for_index(candidate_value,
-                candidate_idx);
-            if Trim(path_local) = '' then
-            begin
-                Exit;
-            end;
-
-            path_parts_local := path_local.Split([c_segment_path_separator]);
-            segment_start_local := 0;
-            prev_segment_text_local := '';
-            prev_prev_segment_text_local := '';
-            for part_idx_local := 0 to High(path_parts_local) do
-            begin
-                segment_text_local := Trim(path_parts_local[part_idx_local]);
-                if segment_text_local = '' then
-                begin
-                    Continue;
-                end;
-
-                segment_units_local := get_candidate_text_unit_count(
-                    segment_text_local);
-                if segment_units_local <= 0 then
-                begin
-                    Continue;
-                end;
-
-                if segment_units_local = 1 then
-                begin
-                    if is_common_single_path_segment_local(segment_text_local) then
-                    begin
-                        Inc(Result, 500);
-                    end
-                    else
-                    begin
-                        Dec(Result, 900);
-                    end;
-                end
-                else
-                begin
-                    Inc(Result, segment_units_local * segment_units_local * 1300);
-                    query_key_local := build_display_query_key(
-                        segment_start_local, segment_units_local);
-                    if (query_key_local <> '') and
-                        display_exact_key_has_text(query_key_local,
-                        segment_text_local) then
-                    begin
-                        exact_weight_local := 0;
-                        get_display_exact_text_weight(query_key_local,
-                            segment_text_local, segment_units_local,
-                            exact_weight_local);
-                        Inc(Result, segment_units_local * 900 +
-                            Min(7000, Max(0, exact_weight_local) * 5));
-                    end
-                    else
-                    begin
-                        Dec(Result, 9000);
-                    end;
-                end;
-
-                if (m_dictionary <> nil) and (prev_segment_text_local <> '') then
-                begin
-                    context_bonus_local := m_dictionary.get_context_bonus(
-                        prev_segment_text_local, segment_text_local);
-                    if context_bonus_local > 0 then
-                    begin
-                        Inc(Result, Min(9000, context_bonus_local * 8));
-                    end;
-                    if prev_prev_segment_text_local <> '' then
-                    begin
-                        context_bonus_local :=
-                            m_dictionary.get_context_trigram_bonus(
-                            prev_prev_segment_text_local,
-                            prev_segment_text_local, segment_text_local);
-                        if context_bonus_local > 0 then
-                        begin
-                            Inc(Result, Min(12000, context_bonus_local * 10));
-                        end;
-                    end;
-                end;
-
-                Inc(segment_start_local, segment_units_local);
-                prev_prev_segment_text_local := prev_segment_text_local;
-                prev_segment_text_local := segment_text_local;
-            end;
-
-            if segment_start_local <> expected_units then
-            begin
-                Dec(Result, 24000);
-            end;
-        end;
-
         function score_candidate_quality_local(const candidate_value: TncCandidate;
             const candidate_idx: Integer): Integer;
         var
@@ -178648,33 +175993,6 @@ var
         candidate_is_complete_local: Boolean;
         exact_weight_local: Integer;
 
-        function candidate_has_non_function_one_plus_two_path_local(
-            const candidate_idx: Integer): Boolean;
-        var
-            path_local: string;
-            path_parts_local: TArray<string>;
-            head_text_local: string;
-        begin
-            Result := False;
-            path_local := get_display_candidate_path_for_index(
-                m_candidates[candidate_idx], candidate_idx);
-            if path_local = '' then
-            begin
-                Exit;
-            end;
-
-            path_parts_local := path_local.Split([c_segment_path_separator]);
-            if Length(path_parts_local) <> 2 then
-            begin
-                Exit;
-            end;
-
-            head_text_local := Trim(path_parts_local[0]);
-            Result := (get_candidate_text_unit_count(head_text_local) = 1) and
-                (get_candidate_text_unit_count(Trim(path_parts_local[1])) = 2) and
-                (not is_display_function_or_modifier_single(head_text_local));
-        end;
-
         function candidate_has_non_function_one_plus_two_text_local(
             const candidate_text_value: string): Boolean;
         var
@@ -178906,50 +176224,6 @@ var
 
             Result := display_exact_key_has_text(tail_key_local,
                 tail_text_local);
-        end;
-
-        function candidate_has_function_head_one_plus_two_support_local(
-            const candidate_text_value: string): Boolean;
-        var
-            units_local: TArray<string>;
-            head_text_local: string;
-            tail_key_local: string;
-            tail_text_local: string;
-            tail_weight_local: Integer;
-        begin
-            Result := False;
-            units_local := split_text_units(Trim(candidate_text_value));
-            if Length(units_local) <> expected_units then
-            begin
-                Exit;
-            end;
-
-            head_text_local := Trim(units_local[0]);
-            if not is_display_one_plus_two_supported_head_single(
-                head_text_local) then
-            begin
-                Exit;
-            end;
-
-            tail_key_local := build_display_query_key(1, 2);
-            tail_text_local := Trim(units_local[1]) + Trim(units_local[2]);
-            if (tail_key_local = '') or (tail_text_local = '') then
-            begin
-                Exit;
-            end;
-
-            if is_display_one_plus_two_direct_complete_head_single(
-                head_text_local) then
-            begin
-                Result := get_display_exact_text_weight(tail_key_local,
-                    tail_text_local, 2, tail_weight_local) and
-                    (tail_weight_local >= 500);
-            end
-            else
-            begin
-                Result := display_exact_key_has_text(tail_key_local,
-                    tail_text_local);
-            end;
         end;
 
         function candidate_has_direct_complete_one_plus_two_support_local(
@@ -179299,263 +176573,6 @@ var
         begin
             m_last_full_path_debug_info := m_last_full_path_debug_info +
                 Format(' disp_selfdrop=[n=%d]', [removed_count]);
-        end;
-    end;
-
-    procedure filter_display_complete_single_char_chain_noise_candidates;
-    var
-        idx: Integer;
-        out_idx: Integer;
-        removed_count: Integer;
-        candidate_text_local: string;
-
-        function complete_candidate_is_unsupported_single_char_chain_local(
-            const candidate_value: TncCandidate; const candidate_index: Integer): Boolean;
-
-            function candidate_is_number_quantity_phrase_local: Boolean;
-            var
-                number_text_local: string;
-                quantity_text_local: string;
-                units_local: TArray<string>;
-            begin
-                Result := False;
-                if (expected_units <> 2) or (Length(syllables) <> expected_units) then
-                begin
-                    Exit;
-                end;
-
-                number_text_local := get_display_number_text_outer(
-                    syllables[0].text);
-                quantity_text_local := get_display_quantity_tail_text_outer(
-                    syllables[1].text);
-                if quantity_text_local = '' then
-                begin
-                    quantity_text_local :=
-                        get_display_structured_quantity_tail_text_outer(
-                        syllables[1].text);
-                end;
-                if (number_text_local = '') or (quantity_text_local = '') then
-                begin
-                    Exit;
-                end;
-
-                units_local := split_text_units(Trim(candidate_value.text));
-                Result := (Length(units_local) = 2) and
-                    SameText(Trim(units_local[0]), number_text_local) and
-                    SameText(Trim(units_local[1]), quantity_text_local);
-            end;
-
-            function has_supported_complete_competitor_local: Boolean;
-            const
-                c_probe_limit = 16;
-            var
-                exact_results_local: TncCandidateList;
-                exact_idx_local: Integer;
-                exact_text_local: string;
-            begin
-                Result := False;
-                if not lookup_display_exact_cached(normalized_pinyin,
-                    exact_results_local) then
-                begin
-                    Exit;
-                end;
-
-                for exact_idx_local := 0 to High(exact_results_local) do
-                begin
-                    if exact_idx_local >= c_probe_limit then
-                    begin
-                        Break;
-                    end;
-
-                    exact_text_local := Trim(
-                        exact_results_local[exact_idx_local].text);
-                    if (exact_text_local = '') or
-                        SameText(exact_text_local, Trim(candidate_value.text)) or
-                        (Trim(exact_results_local[exact_idx_local].comment) <> '') or
-                        (get_candidate_text_unit_count(exact_text_local) <>
-                        expected_units) then
-                    begin
-                        Continue;
-                    end;
-
-                    if m_dictionary.is_base_entry(normalized_pinyin,
-                        exact_text_local) or
-                        ((exact_results_local[exact_idx_local].source = cs_rule) and
-                        exact_results_local[exact_idx_local].has_dict_weight and
-                        (exact_results_local[exact_idx_local].dict_weight >= 160)) or
-                        ((exact_results_local[exact_idx_local].source = cs_user) and
-                        m_dictionary.is_user_entry(normalized_pinyin,
-                        exact_text_local)) then
-                    begin
-                        Exit(True);
-                    end;
-                end;
-            end;
-
-            function candidate_is_complete_single_char_chain_local: Boolean;
-            var
-                chain_units_local: TArray<string>;
-                chain_path_local: string;
-                chain_path_parts_local: TArray<string>;
-                chain_unit_idx_local: Integer;
-                chain_syllable_key_local: string;
-                chain_path_part_local: string;
-            begin
-                Result := False;
-                chain_path_local := get_display_candidate_path_for_index(candidate_value,
-                    candidate_index);
-                if chain_path_local <> '' then
-                begin
-                    if get_encoded_path_segment_count_local(chain_path_local) <>
-                        expected_units then
-                    begin
-                        Exit;
-                    end;
-
-                    chain_path_parts_local := chain_path_local.Split([c_segment_path_separator]);
-                    if Length(chain_path_parts_local) <> expected_units then
-                    begin
-                        Exit;
-                    end;
-
-                    for chain_unit_idx_local := 0 to High(chain_path_parts_local) do
-                    begin
-                        chain_path_part_local := Trim(chain_path_parts_local[chain_unit_idx_local]);
-                        chain_syllable_key_local := normalize_pinyin_text(
-                            syllables[chain_unit_idx_local].text);
-                        if (chain_path_part_local = '') or (chain_syllable_key_local = '') or
-                            (get_candidate_text_unit_count(chain_path_part_local) <> 1) or
-                            (not m_dictionary.single_char_matches_pinyin(
-                            chain_syllable_key_local, chain_path_part_local)) then
-                        begin
-                            Exit(False);
-                        end;
-                    end;
-                    Exit(True);
-                end;
-
-                chain_units_local := split_text_units(
-                    Trim(candidate_value.text));
-                if Length(chain_units_local) <> expected_units then
-                begin
-                    Exit;
-                end;
-
-                for chain_unit_idx_local := 0 to High(chain_units_local) do
-                begin
-                    chain_syllable_key_local := normalize_pinyin_text(
-                        syllables[chain_unit_idx_local].text);
-                    if (chain_syllable_key_local = '') or
-                        (get_candidate_text_unit_count(
-                        chain_units_local[chain_unit_idx_local]) <> 1) or
-                        (not m_dictionary.single_char_matches_pinyin(
-                        chain_syllable_key_local,
-                        chain_units_local[chain_unit_idx_local])) then
-                    begin
-                        Exit(False);
-                    end;
-                end;
-
-                Result := True;
-            end;
-
-            function is_low_weight_supported_competitor_chain_local: Boolean;
-            begin
-                Result := (expected_units >= 3) and
-                    (candidate_value.source = cs_rule) and
-                    candidate_value.has_dict_weight and
-                    (candidate_value.dict_weight < 160) and
-                    has_supported_complete_competitor_local and
-                    candidate_is_complete_single_char_chain_local;
-            end;
-        begin
-            Result := False;
-            if (normalized_pinyin = '') or (expected_units < 2) or
-                (expected_units > 5) or (m_dictionary = nil) or
-                (Trim(candidate_value.comment) <> '') or
-                (Trim(candidate_value.text) = '') or
-                (get_candidate_text_unit_count(Trim(candidate_value.text)) <>
-                expected_units) or
-                is_runtime_common_pattern_candidate(candidate_value) or
-                candidate_is_number_quantity_phrase_local or
-                (get_display_fixed_quantity_alignment_score_outer(
-                candidate_value) > 0) or
-                ((not is_low_weight_supported_competitor_chain_local) and
-                m_dictionary.is_base_entry(normalized_pinyin,
-                Trim(candidate_value.text))) or
-                ((candidate_value.source = cs_rule) and
-                candidate_value.has_dict_weight and
-                (candidate_value.dict_weight >= 160) and
-                display_candidate_has_supported_full_entry(normalized_pinyin,
-                candidate_value)) or
-                display_candidate_is_persistent_latest_choice(normalized_pinyin,
-                Trim(candidate_value.text)) or
-                is_latest_session_query_choice(Trim(candidate_value.text)) or
-                ((candidate_value.source = cs_user) and
-                m_dictionary.is_user_entry(normalized_pinyin,
-                Trim(candidate_value.text))) then
-            begin
-                Exit;
-            end;
-
-            if is_low_weight_supported_competitor_chain_local then
-            begin
-                Exit(True);
-            end;
-
-            Result := candidate_is_complete_single_char_chain_local;
-        end;
-    begin
-        if (Length(m_candidates) <= 1) or (Length(syllables) <> expected_units) then
-        begin
-            Exit;
-        end;
-
-        out_idx := 0;
-        removed_count := 0;
-        for idx := 0 to High(m_candidates) do
-        begin
-            candidate_text_local := Trim(m_candidates[idx].text);
-            if (candidate_text_local <> '') and
-                complete_candidate_is_unsupported_single_char_chain_local(
-                m_candidates[idx], idx) then
-            begin
-                Inc(removed_count);
-                Continue;
-            end;
-
-            if out_idx <> idx then
-            begin
-                m_candidates[out_idx] := m_candidates[idx];
-                if out_idx < Length(m_candidate_segment_paths) then
-                begin
-                    if idx < Length(m_candidate_segment_paths) then
-                    begin
-                        m_candidate_segment_paths[out_idx] :=
-                            m_candidate_segment_paths[idx];
-                    end
-                    else
-                    begin
-                        m_candidate_segment_paths[out_idx] := '';
-                    end;
-                end;
-            end;
-            Inc(out_idx);
-        end;
-
-        if out_idx <> Length(m_candidates) then
-        begin
-            SetLength(m_candidates, out_idx);
-            if Length(m_candidate_segment_paths) > out_idx then
-            begin
-                SetLength(m_candidate_segment_paths, out_idx);
-            end;
-        end;
-
-        if m_config.debug_mode and (removed_count > 0) then
-        begin
-            m_last_full_path_debug_info := m_last_full_path_debug_info +
-                Format(' disp_schaindrop=[n=%d]', [removed_count]);
         end;
     end;
 
@@ -186819,157 +183836,6 @@ var
             visible_source_indices[0] := picked_source_idx_local;
         end;
 
-        procedure restore_internal_supported_complete_top_over_visible_generated_top;
-        var
-            internal_top_local: TncCandidate;
-            visible_idx_local: Integer;
-            move_idx_local: Integer;
-            source_idx_local: Integer;
-            picked_candidate_local: TncCandidate;
-            picked_source_idx_local: Integer;
-
-            function is_complete_long_supported_candidate_local(
-                const candidate_value: TncCandidate): Boolean;
-            var
-                text_local: string;
-            begin
-                text_local := Trim(candidate_value.text);
-                Result := (expected_units >= 6) and
-                    (not short_exact_query_mode) and
-                    (text_local <> '') and
-                    (Trim(candidate_value.comment) = '') and
-                    (get_candidate_text_unit_count(text_local) = expected_units) and
-                    (candidate_value.has_dict_weight or
-                    (candidate_value.source = cs_user));
-            end;
-
-            function is_visible_unpathful_complete_local(
-                const candidate_value: TncCandidate;
-                const visible_index_value: Integer): Boolean;
-            var
-                text_local: string;
-                path_local: string;
-                source_idx_value: Integer;
-            begin
-                text_local := Trim(candidate_value.text);
-                Result := False;
-                if not ((expected_units >= 6) and
-                    (not short_exact_query_mode) and
-                    (text_local <> '') and
-                    (Trim(candidate_value.comment) = '') and
-                    (get_candidate_text_unit_count(text_local) = expected_units) and
-                    (candidate_value.source <> cs_user)) then
-                begin
-                    Exit;
-                end;
-
-                path_local := '';
-                if (visible_index_value >= 0) and
-                    (visible_index_value < Length(visible_source_indices)) then
-                begin
-                    source_idx_value := visible_source_indices[visible_index_value];
-                    if (source_idx_value >= 0) and
-                        (source_idx_value < Length(m_candidate_segment_paths)) then
-                    begin
-                        path_local := Trim(m_candidate_segment_paths[source_idx_value]);
-                    end;
-                    if (path_local = '') and (source_idx_value >= 0) and
-                        (source_idx_value <= High(m_candidates)) then
-                    begin
-                        path_local := Trim(get_segment_path_for_candidate(
-                            m_candidates[source_idx_value], source_idx_value));
-                    end;
-                end;
-                if path_local = '' then
-                begin
-                    path_local := Trim(get_segment_path_for_candidate(
-                        candidate_value, -1));
-                end;
-
-                Result := (get_encoded_path_segment_count_local(path_local) <= 1) and
-                    ((normalized_pinyin = '') or
-                    (not display_exact_key_has_text(normalized_pinyin, text_local)));
-            end;
-        begin
-            if (Length(Result) <= 0) or (Length(m_candidates) <= 0) then
-            begin
-                Exit;
-            end;
-
-            if has_entry_pathful_complete_top then
-            begin
-                internal_top_local := entry_top_candidate;
-            end
-            else
-            begin
-                internal_top_local := m_candidates[0];
-            end;
-            if (not is_complete_long_supported_candidate_local(
-                internal_top_local)) or
-                (not is_visible_unpathful_complete_local(Result[0], 0)) or
-                SameText(Trim(Result[0].text), Trim(internal_top_local.text)) then
-            begin
-                Exit;
-            end;
-
-            visible_idx_local := -1;
-            for source_idx_local := 0 to High(Result) do
-            begin
-                if same_visible_candidate_local(Result[source_idx_local],
-                    internal_top_local) then
-                begin
-                    visible_idx_local := source_idx_local;
-                    Break;
-                end;
-            end;
-
-            if visible_idx_local > 0 then
-            begin
-                picked_candidate_local := Result[visible_idx_local];
-                picked_source_idx_local := -1;
-                if visible_idx_local < Length(visible_source_indices) then
-                begin
-                    picked_source_idx_local :=
-                        visible_source_indices[visible_idx_local];
-                end;
-                for move_idx_local := visible_idx_local downto 1 do
-                begin
-                    Result[move_idx_local] := Result[move_idx_local - 1];
-                    if move_idx_local < Length(visible_source_indices) then
-                    begin
-                        visible_source_indices[move_idx_local] :=
-                            visible_source_indices[move_idx_local - 1];
-                    end;
-                end;
-                Result[0] := picked_candidate_local;
-                if Length(visible_source_indices) > 0 then
-                begin
-                    visible_source_indices[0] := picked_source_idx_local;
-                end;
-                Exit;
-            end;
-
-            if Length(Result) < page_size then
-            begin
-                SetLength(Result, Length(Result) + 1);
-                SetLength(visible_source_indices, Length(Result));
-            end;
-            for move_idx_local := High(Result) downto 1 do
-            begin
-                Result[move_idx_local] := Result[move_idx_local - 1];
-                if move_idx_local < Length(visible_source_indices) then
-                begin
-                    visible_source_indices[move_idx_local] :=
-                        visible_source_indices[move_idx_local - 1];
-                end;
-            end;
-            Result[0] := internal_top_local;
-            if Length(visible_source_indices) > 0 then
-            begin
-                visible_source_indices[0] := 0;
-            end;
-        end;
-
         procedure filter_visible_short_nonlexicon_complete_candidates;
         var
             read_idx_local: Integer;
@@ -190350,6 +187216,7 @@ var
             // replacement for an exact entry that happens to be a long word.
             SetLength(m_char_lm_long_pool, 0);
             SetLength(m_char_lm_long_pool_ranks, 0);
+            SetLength(m_char_lm_long_pool_evidence, 0);
             if (expected_units < c_long_sentence_full_path_min_syllables) or
                 (Length(protected_full_query_exacts) = 0) then
             begin
@@ -190703,8 +187570,6 @@ begin
     short_exact_predictive_prefix_only_mode := False;
     short_nocontext_promoted_exact_text := '';
     short_nocontext_promoted_exact_lead := 0;
-    short_context_promoted_exact_text := '';
-    short_context_promoted_exact_lead := 0;
     short_context_swapped := False;
     promoted_repeated_initial_count := 0;
     if not is_fuzzy_pinyin_active then
