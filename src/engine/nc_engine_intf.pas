@@ -1338,9 +1338,7 @@ uses
     nc_short_context_residual_model,
     nc_short_context_difference_model,
     nc_short_nocontext_residual_model,
-    nc_one_key_completion_ranker_model,
     nc_one_key_completion_difference_model,
-    nc_one_key_completion_topk_model,
     nc_one_key_completion_ncgpt_model,
     nc_one_key_completion_ncgpt_sparse_audit_model,
     nc_tab_repair_projection,
@@ -7319,9 +7317,6 @@ const
     c_completion_generic_context_switch_margin = 56;
     c_completion_context_model_margin = 1.0;
     c_completion_context_residual_margin = 2.7;
-    c_completion_calibrated_margin = 1.5;
-    c_completion_difference_hysteresis_margin = 3.0;
-    c_completion_topk_hysteresis_margin = 0.0;
     c_completion_competition_top_k = 5;
     c_completion_competition_score_scale = 1000;
 var
@@ -7372,29 +7367,12 @@ var
     residual_best_score: Double;
     residual_candidate_score: Double;
     residual_current_score: Double;
-    calibrated_best_idx: Integer;
-    calibrated_best_score: Double;
-    calibrated_candidate_score: Double;
-    calibrated_current_score: Double;
     previous_compatible: Boolean;
     previous_present: Boolean;
     transition_challenge_allowed: Boolean;
     stronger_general_idx: Integer;
     selected_lm_per_unit: Integer;
     general_lm_per_unit: Integer;
-    difference_best_idx: Integer;
-    difference_idx: Integer;
-    difference_score: Double;
-    difference_best_score: Double;
-    difference_threshold: Double;
-    difference_category: TncOneKeyCompletionDifferenceCategory;
-    topk_best_idx: Integer;
-    topk_idx: Integer;
-    topk_score: Double;
-    topk_best_score: Double;
-    topk_current_score: Double;
-    topk_threshold: Double;
-    topk_category: TncOneKeyCompletionDifferenceCategory;
     competition_evidence: TncOneKeyCompletionCompetitionEvidenceList;
     competition_width: Integer;
     competition_candidate_idx: Integer;
@@ -8290,7 +8268,8 @@ begin
     // lexicon class; user feedback and transition recall keep their own rules.
     if (context_value <> '') and has_char_lm and has_base_completion and
         (best_idx >= 0) and
-        (completions[best_idx].source = okcs_base_exact) then
+        (completions[best_idx].source = okcs_base_exact) and
+        not nc_long_ablated(la_onekey_short_models) then
     begin
         model_baseline_idx := -1;
         model_best_lm_idx := -1;
@@ -8420,53 +8399,6 @@ begin
         end;
     end;
 
-    // A completion-specific pairwise calibration resolves only strong base
-    // exact disagreements. It runs before hysteresis, so small score changes
-    // cannot make a compatible prompt jump while the user keeps typing.
-    if (context_value <> '') and has_char_lm and (best_idx >= 0) and
-        (completions[best_idx].source = okcs_base_exact) then
-    begin
-        calibrated_best_idx := best_idx;
-        calibrated_current_score := one_key_completion_calibrated_score(
-            completions[best_idx].corpus_score,
-            completions[best_idx].path_score,
-            completions[best_idx].vertical_penalty,
-            completions[best_idx].vertical_layer_kind,
-            char_lm_scores[best_idx],
-            get_candidate_text_unit_count(completions[best_idx].text),
-            Length(syllables));
-        calibrated_best_score := calibrated_current_score;
-        for model_idx := 0 to High(completions) do
-        begin
-            if (not eligible[model_idx]) or
-                (completions[model_idx].source <> okcs_base_exact) or
-                (model_idx = best_idx) then
-            begin
-                Continue;
-            end;
-            calibrated_candidate_score :=
-                one_key_completion_calibrated_score(
-                completions[model_idx].corpus_score,
-                completions[model_idx].path_score,
-                completions[model_idx].vertical_penalty,
-                completions[model_idx].vertical_layer_kind,
-                char_lm_scores[model_idx],
-                get_candidate_text_unit_count(completions[model_idx].text),
-                Length(syllables));
-            if calibrated_candidate_score > calibrated_best_score then
-            begin
-                calibrated_best_idx := model_idx;
-                calibrated_best_score := calibrated_candidate_score;
-            end;
-        end;
-        if (calibrated_best_idx <> best_idx) and
-            (calibrated_best_score - calibrated_current_score >=
-            c_completion_calibrated_margin) then
-        begin
-            best_idx := calibrated_best_idx;
-        end;
-    end;
-
     // Keep a compatible suggestion stable while the user continues typing.
     // A challenger must win by a visible margin before replacing it.
     if (previous_idx >= 0) and (previous_query_prefix <> '') and
@@ -8525,110 +8457,6 @@ begin
         if not transition_challenge_allowed then
         begin
             best_idx := baseline_idx;
-        end;
-    end;
-
-    // Resolve the settled Top-K in one completion-specific comparison stage.
-    // The model was trained on benchmark-excluded novel/chat candidate dumps
-    // and can abstain independently for hot exact words, cold vertical words,
-    // and transition candidates. It never changes the candidate pool.
-    if (context_value <> '') and has_char_lm and (best_idx >= 0) and
-        (eligible_count > 1) then
-    begin
-        difference_best_idx := -1;
-        difference_best_score := -MaxDouble;
-        for difference_idx := 0 to High(completions) do
-        begin
-            if (difference_idx = best_idx) or
-                (not eligible[difference_idx]) then
-            begin
-                Continue;
-            end;
-            // An explicitly accepted relation is only challenged by an equal
-            // or stronger relation-local preference.
-            if completions[best_idx].feedback_count >
-                completions[difference_idx].feedback_count then
-            begin
-                Continue;
-            end;
-            difference_score := one_key_completion_difference_score(
-                context_value, compact_query, completions[difference_idx],
-                completions[best_idx], char_lm_scores[difference_idx],
-                char_lm_scores[best_idx], Length(syllables));
-            if (difference_best_idx < 0) or
-                (difference_score > difference_best_score) then
-            begin
-                difference_best_idx := difference_idx;
-                difference_best_score := difference_score;
-            end;
-        end;
-        if difference_best_idx >= 0 then
-        begin
-            difference_category := one_key_completion_difference_category(
-                completions[best_idx], completions[difference_best_idx]);
-            difference_threshold := one_key_completion_difference_threshold(
-                difference_category);
-            if difference_best_score >= difference_threshold then
-            begin
-                // The previous prompt already survived the ordinary
-                // hysteresis stage. A learned challenger needs a little extra
-                // confidence to replace it on the next key.
-                if (best_idx <> previous_idx) or
-                    (difference_best_score >= difference_threshold +
-                    c_completion_difference_hysteresis_margin) then
-                begin
-                    best_idx := difference_best_idx;
-                end;
-            end;
-        end;
-    end;
-
-    // The final completion-only listwise model sees the settled internal
-    // Top-K as one ranking group. It was trained on independent novel, chat,
-    // and general Chinese corpora and uses conservative ambiguity-specific
-    // abstention thresholds. No candidates are generated at this stage.
-    if (context_value <> '') and has_char_lm and (best_idx >= 0) and
-        (eligible_count > 1) then
-    begin
-        topk_best_idx := best_idx;
-        topk_current_score := one_key_completion_topk_score(
-            context_value, compact_query, completions[best_idx],
-            char_lm_scores[best_idx], Length(syllables), best_idx + 1);
-        topk_best_score := topk_current_score;
-        for topk_idx := 0 to High(completions) do
-        begin
-            if (topk_idx = best_idx) or (not eligible[topk_idx]) then
-            begin
-                Continue;
-            end;
-            if completions[best_idx].feedback_count >
-                completions[topk_idx].feedback_count then
-            begin
-                Continue;
-            end;
-            topk_score := one_key_completion_topk_score(
-                context_value, compact_query, completions[topk_idx],
-                char_lm_scores[topk_idx], Length(syllables), topk_idx + 1);
-            if topk_score > topk_best_score then
-            begin
-                topk_best_idx := topk_idx;
-                topk_best_score := topk_score;
-            end;
-        end;
-        if topk_best_idx <> best_idx then
-        begin
-            topk_category := one_key_completion_difference_category(
-                completions[best_idx], completions[topk_best_idx]);
-            topk_threshold := one_key_completion_topk_threshold(topk_category);
-            if (best_idx = previous_idx) and (previous_idx >= 0) then
-            begin
-                topk_threshold := topk_threshold +
-                    c_completion_topk_hysteresis_margin;
-            end;
-            if topk_best_score - topk_current_score >= topk_threshold then
-            begin
-                best_idx := topk_best_idx;
-            end;
         end;
     end;
 
@@ -8839,6 +8667,7 @@ begin
     // prior audits the tree choice; a stricter fallback may rescue another
     // existing Top-K item only when the primary path keeps the incumbent.
     if (best_idx >= 0) and (eligible_count > 1) and
+        (not nc_long_ablated(la_onekey_ncgpt)) and
         prepare_ncgpt_completion_features then
     begin
         ncgpt_incumbent_idx := best_idx;

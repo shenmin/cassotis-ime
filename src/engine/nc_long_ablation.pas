@@ -14,7 +14,7 @@ type
         la_unified_top2, la_second_stage, la_exact_edge_lattice,
         la_local_pairwise_pool, la_local_residual, la_exact_anchor_pairwise,
         la_short_nocontext, la_short_reranker, la_short_residual,
-        la_short_difference);
+        la_short_difference, la_onekey_short_models, la_onekey_ncgpt);
 
 function nc_long_ablated(const stage: TncLongAblation): Boolean;
 
@@ -30,7 +30,7 @@ const
         'unified_top2', 'second_stage', 'exact_edge_lattice',
         'local_pairwise_pool', 'local_residual', 'exact_anchor_pairwise',
         'short_nocontext', 'short_reranker', 'short_residual',
-        'short_difference');
+        'short_difference', 'onekey_short_models', 'onekey_ncgpt');
 
 var
     g_ablated: array[TncLongAblation] of Boolean;
