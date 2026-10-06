@@ -137842,6 +137842,7 @@ var
     original_segments: TArray<string>;
     candidate, saved: TncCandidate;
     validated: TncValidatedRepairPath;
+    paging_pool_current: Boolean;
     procedure remember_validated_path(const source_index: Integer);
     begin
         if not m_local_repair_validated.exact_path or
@@ -137974,6 +137975,8 @@ begin
             sync_paging_pool;
             Exit;
         end;
+    paging_pool_current := long_visible_candidate_pool_cache_is_current(
+        get_candidate_page_size);
     existing := -1;
     for index := 0 to High(m_candidates) do
         if (m_candidates[index].text = text) and (m_candidates[index].comment = '') then
@@ -138029,10 +138032,17 @@ begin
         source_indices[0] := existing;
     end
     else
+    begin
+        // A rewrite added to m_candidates changed the state the frozen paging
+        // pool was taken from. The pool still has to take the insert: it keeps
+        // the candidate that leaves this page for the next one.
+        if paging_pool_current then
+            m_long_visible_candidate_pool_source_signature := get_candidate_state_signature;
         // The choice the repair replaces stays on the page, as the second
         // complete sentence.
         promote_char_lm_candidate(candidates, source_indices, m_candidates[existing],
             existing, get_candidate_page_size, expected_units);
+    end;
     remember_validated_path(existing);
     sync_paging_pool;
 end;
