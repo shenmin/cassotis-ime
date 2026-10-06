@@ -778,6 +778,9 @@ type
         m_last_ranked_top_path: string;
         m_last_candidates_incrementally_reusable: Boolean;
         m_composition_built_incrementally: Boolean;
+        // The current candidates come from a whole-input decode although the
+        // composition was typed by keys (build_candidates).
+        m_composition_decoded_as_whole: Boolean;
         m_runtime_chain_text: string;
         m_runtime_common_pattern_text: string;
         m_runtime_redup_text: string;
@@ -1064,6 +1067,8 @@ type
         function merge_candidate_lists(const primary_candidates: TncCandidateList;
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
+        procedure clear_keystroke_decode_state;
+        function composition_reuses_earlier_keys: Boolean;
         procedure build_candidates_core;
         procedure clear_one_key_completion;
         procedure clear_one_key_completion_feedback_target;
@@ -4457,24 +4462,12 @@ begin
     m_external_context_reported := False;
 end;
 
-procedure TncEngine.reset(const preserve_document_context: Boolean);
+procedure TncEngine.clear_keystroke_decode_state;
 begin
-    clear_one_key_completion;
-    clear_one_key_completion_feedback_target;
-    m_composition_text := '';
-    m_composition_display_text := '';
-    m_pending_commit_text := '';
-    m_pending_commit_remaining := '';
-    m_pending_commit_remaining_input_code := '';
-    m_has_pending_commit := False;
-    m_pending_commit_allow_learning := True;
-    m_pending_commit_learning_locked := False;
-    m_pending_commit_explicit_choice := False;
-    m_pending_commit_literal_choice := False;
-    m_pending_commit_fuzzy_choice := False;
-    m_pending_commit_fuzzy_text := '';
-    m_pending_commit_segment_path := '';
-    m_pending_commit_query_key := '';
+    // What decoding one composition leaves for its next key: the last lookup
+    // and its ranked path, the runtime chains and pools, the repair and the
+    // visible page, and the per-composition caches. The composition, the
+    // confirmed text and the contexts are not part of it.
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
     m_last_lookup_syllable_count := 0;
@@ -4497,10 +4490,7 @@ begin
     m_last_ranked_query_key := '';
     m_last_ranked_top_path := '';
     m_last_candidates_incrementally_reusable := True;
-    m_composition_built_incrementally := False;
     m_runtime_chain_text := '';
-    m_candidate_navigation_started := False;
-    m_candidate_paging_expanded := False;
     m_runtime_common_pattern_text := '';
     m_runtime_redup_text := '';
     SetLength(m_runtime_long_chain_candidates, 0);
@@ -4508,22 +4498,7 @@ begin
     SetLength(m_runtime_long_retained_exact_edges, 0);
     m_long_complete_pool_pairwise_text := '';
     m_long_complete_pool_pairwise_insert_rank := -1;
-    m_debug_target_recall_text := '';
-    reset_debug_target_recall_metrics;
-    m_page_index := 0;
-    m_selected_index := 0;
-    m_confirmed_text := '';
-    m_confirmed_explicit_choice := False;
     m_recent_partial_prefix_text := '';
-    m_external_left_context := '';
-    if (m_document_context_model <> nil) and
-        (not preserve_document_context) then
-    begin
-        m_document_context_model.clear;
-        if m_long_local_repair <> nil then
-            m_long_local_repair.set_document_context('', '');
-    end;
-    m_segment_left_context := '';
     m_local_repair_query_key := '';
     m_local_repair_text := '';
     m_local_repair_draft := '';
@@ -4556,10 +4531,6 @@ begin
     m_forced_visible_top_from_incremental_lm_prefix := False;
     m_forced_visible_top_composition_text := '';
     m_forced_visible_top_lookup_key := '';
-    if m_confirmed_segments <> nil then
-    begin
-        m_confirmed_segments.Clear;
-    end;
     if m_context_db_bonus_cache <> nil then
     begin
         m_context_db_bonus_cache.Clear;
@@ -4586,6 +4557,50 @@ begin
     begin
         m_session_ranked_query_path_order.Clear;
     end;
+end;
+
+procedure TncEngine.reset(const preserve_document_context: Boolean);
+begin
+    clear_one_key_completion;
+    clear_one_key_completion_feedback_target;
+    m_composition_text := '';
+    m_composition_display_text := '';
+    m_pending_commit_text := '';
+    m_pending_commit_remaining := '';
+    m_pending_commit_remaining_input_code := '';
+    m_has_pending_commit := False;
+    m_pending_commit_allow_learning := True;
+    m_pending_commit_learning_locked := False;
+    m_pending_commit_explicit_choice := False;
+    m_pending_commit_literal_choice := False;
+    m_pending_commit_fuzzy_choice := False;
+    m_pending_commit_fuzzy_text := '';
+    m_pending_commit_segment_path := '';
+    m_pending_commit_query_key := '';
+    m_composition_built_incrementally := False;
+    m_composition_decoded_as_whole := False;
+    m_candidate_navigation_started := False;
+    m_candidate_paging_expanded := False;
+    m_debug_target_recall_text := '';
+    reset_debug_target_recall_metrics;
+    m_page_index := 0;
+    m_selected_index := 0;
+    m_confirmed_text := '';
+    m_confirmed_explicit_choice := False;
+    m_external_left_context := '';
+    if (m_document_context_model <> nil) and
+        (not preserve_document_context) then
+    begin
+        m_document_context_model.clear;
+        if m_long_local_repair <> nil then
+            m_long_local_repair.set_document_context('', '');
+    end;
+    m_segment_left_context := '';
+    if m_confirmed_segments <> nil then
+    begin
+        m_confirmed_segments.Clear;
+    end;
+    clear_keystroke_decode_state;
 end;
 
 procedure TncEngine.reset_debug_target_recall_metrics;
@@ -8645,15 +8660,37 @@ begin
     clear_one_key_completion;
 end;
 
+function TncEngine.composition_reuses_earlier_keys: Boolean;
+begin
+    Result := m_composition_built_incrementally and
+        (not m_composition_decoded_as_whole);
+end;
+
 procedure TncEngine.build_candidates;
 const
     c_completion_emergency_skip_ms = 250;
+    // Where the long-sentence benchmarks start.
+    c_keystroke_whole_decode_min_syllables = 6;
 var
     build_started_at: UInt64;
 begin
     build_started_at := GetTickCount64;
     // A fresh page may promote a different reading; let Tab follow it again.
     m_visible_completion_key := '';
+    // A key that completes a long input's pinyin gets the candidates of the
+    // whole input. Extending what earlier keys left behind is faster, but it
+    // ranks worse and can leave the tail unconverted. Shorter input keeps the
+    // short-mode handoffs between keys, and after a partial commit the rest
+    // still extends the earlier keys.
+    m_composition_decoded_as_whole := m_composition_built_incrementally and
+        (not nc_long_ablated(la_keystroke_whole_decode)) and
+        (m_confirmed_text = '') and
+        ((m_confirmed_segments = nil) or (m_confirmed_segments.Count = 0)) and
+        is_full_pinyin_key(m_composition_text) and
+        (get_effective_compact_pinyin_unit_count(m_composition_text) >=
+        c_keystroke_whole_decode_min_syllables);
+    if m_composition_decoded_as_whole then
+        clear_keystroke_decode_state;
     build_candidates_core;
 
     // Candidate visibility is more important than the optional Tab hint during
@@ -69063,7 +69100,7 @@ var
         end;
         if fast_build_ok and (fast_text <> '') then
         begin
-            if m_composition_built_incrementally and
+            if composition_reuses_earlier_keys and
                 (not force_fast_validation) and
                 (Length(fast_states) > 0) and
                 ((Length(fast_states) = 1) or
@@ -93469,7 +93506,7 @@ var
         top_units_local: Integer;
     begin
         Result := False;
-        if not m_composition_built_incrementally then
+        if not composition_reuses_earlier_keys then
         begin
             Exit;
         end;
@@ -113847,7 +113884,7 @@ var
 
     function has_incremental_composition_local: Boolean;
     begin
-        Result := m_composition_built_incrementally;
+        Result := composition_reuses_earlier_keys;
     end;
 
     function get_cached_stable_prefix_candidate_local(
@@ -125339,7 +125376,7 @@ var
         if (m_dictionary <> nil) and has_multi_syllable_input and
             is_full_pinyin_key(lookup_text) and
             (input_syllable_count >= 5) and (input_syllable_count <= 40) and
-            ((not m_composition_built_incrementally) or
+            ((not composition_reuses_earlier_keys) or
             (input_syllable_count = 5) or
             (not should_defer_exact_chain_for_extendable_tail_local) or
             has_reliable_exact_tail_candidate_local(4)) and
@@ -125352,8 +125389,8 @@ var
             m_candidates[0] := fast_chain_seed_candidate;
             phase_start_tick := GetTickCount64;
             ensure_best_exact_chunk_chain_complete_candidate_visible(
-                m_candidates, False, not m_composition_built_incrementally,
-                m_composition_built_incrementally);
+                m_candidates, False, not composition_reuses_earlier_keys,
+                composition_reuses_earlier_keys);
             note_debug_helper_elapsed('tpldp', phase_start_tick);
             if (Length(m_candidates) > 0) and
                 (m_candidates[0].source = cs_rule) and
