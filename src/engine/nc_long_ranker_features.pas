@@ -1,9 +1,10 @@
 unit nc_long_ranker_features;
 
 { Candidate and pool features shared by the long-sentence ranking models.
-  The final ranker and abstain trees that once read them directly were
-  retired in model consolidation step 8; the records and the default
-  profile stay for the models built on the same features. }
+  The final ranker tree that once read them directly was retired in model
+  consolidation step 8 and the second-stage chain ranker in step 9; the
+  records and the default profile stay for the models built on the same
+  features. }
 
 interface
 
@@ -100,74 +101,57 @@ type
         complete_pool_edge_model_word_score_mean: Integer;
     end;
 
-    TncLongFinalAbstainFeatures = record
-        candidate_count: Integer;
-        complete_count: Integer;
-        chain_count: Integer;
+    { A chain state's features: once the second-stage chain ranker's input,
+      now the source of the chain features of the complete-pool ranker. }
+    TncLongSecondStageFeatures = record
+        first_stage_score: Integer;
+        base_score: Integer;
+        char_lm_score: Integer;
+        char_lm_suffix_score: Integer;
+        char_lm_context_score: Integer;
+        char_lm_context_gain: Integer;
+        char_lm_per_unit: Integer;
+        word_lm_bonus: Integer;
+        word_lm_per_boundary: Integer;
+        word_lm_boundary_count: Integer;
+        word_lm_boundary_min: Integer;
+        word_lm_boundary_max: Integer;
+        word_lm_boundary_first: Integer;
+        word_lm_boundary_last: Integer;
+        word_lm_supported_ratio: Integer;
+        word_lm_strong_ratio: Integer;
+        word_lm_trigram_ratio: Integer;
+        word_lm_zero_count: Integer;
+        lexical_weight_sum: Integer;
+        lexical_weight_min: Integer;
+        lexical_weight_max: Integer;
+        lexical_weight_mean: Integer;
+        lexical_weight_per_unit: Integer;
+        lexical_known_ratio: Integer;
+        lexical_top_ratio: Integer;
+        lexical_rank_sum: Integer;
+        lexical_rank_max: Integer;
+        lexical_margin_sum: Integer;
+        lexical_margin_min: Integer;
+        first_segment_weight: Integer;
+        last_segment_weight: Integer;
+        segments: Integer;
+        single_segments: Integer;
+        multi_segments: Integer;
+        max_segment_units: Integer;
+        min_segment_units: Integer;
+        segment_units_square_sum: Integer;
+        first_segment_units: Integer;
+        last_segment_units: Integer;
+        anchor_units: Integer;
+        has_anchor: Boolean;
+        baseline_lineage: Boolean;
+        original_rank: Integer;
         input_syllable_count: Integer;
         has_left_context: Boolean;
-        ranker_top_score: Int64;
-        ranker_second_score: Int64;
-        ranker_third_score: Int64;
-        ranker_top_margin: Int64;
-        ranker_second_margin: Int64;
-        ranker_score_range: Int64;
-        ranker_top_legacy_rank: Integer;
-        ranker_top_chain_rank: Integer;
-        ranker_top_complete: Boolean;
-        ranker_top_user: Boolean;
-        ranker_top_dictionary: Boolean;
-        ranker_top_chain: Boolean;
-        legacy_top_ranker_score: Int64;
-        ranker_top_over_legacy_margin: Int64;
-        ranker_disagrees: Boolean;
-        legacy_top_complete: Boolean;
-        legacy_top_user: Boolean;
-        legacy_top_dictionary: Boolean;
-        legacy_top_chain: Boolean;
-        legacy_top_chain_rank: Integer;
-        ranker_top_char_lm_score: Integer;
-        legacy_top_char_lm_score: Integer;
-        ranker_top_char_lm_gain: Integer;
-        ranker_top_path_confidence: Integer;
-        legacy_top_path_confidence: Integer;
-        ranker_top_path_confidence_gain: Integer;
-        ranker_top_query_choice_bonus: Integer;
-        legacy_top_query_choice_bonus: Integer;
-        ranker_top_pool_source_kind: Integer;
-        legacy_top_pool_source_kind: Integer;
-        ranker_top_pool_rank: Integer;
-        legacy_top_pool_rank: Integer;
-        ranker_top_pair_evidence: Integer;
-        legacy_top_pair_evidence: Integer;
-        ranker_top_word_lm_bonus: Integer;
-        legacy_top_word_lm_bonus: Integer;
-        ranker_top_word_lm_gain: Integer;
-        ranker_top_consensus_support: Integer;
-        legacy_top_consensus_support: Integer;
-        ranker_top_consensus_gain: Integer;
-        ranker_top_proper_name_confidence: Integer;
-        legacy_top_proper_name_confidence: Integer;
-        ranker_top_local_pairwise_score: Integer;
-        legacy_top_local_pairwise_score: Integer;
-        ranker_top_edge_model_anchor_count: Integer;
-        legacy_top_edge_model_anchor_count: Integer;
-        ranker_top_edge_model_anchor_gain: Integer;
-        ranker_top_edge_model_score_total: Integer;
-        legacy_top_edge_model_score_total: Integer;
-        ranker_top_edge_model_score_total_gain: Integer;
-        ranker_top_edge_model_score_max: Integer;
-        legacy_top_edge_model_score_max: Integer;
-        ranker_top_edge_model_score_max_gain: Integer;
-        ranker_top_edge_model_word_count: Integer;
-        legacy_top_edge_model_word_count: Integer;
-        ranker_top_edge_model_word_count_gain: Integer;
-        ranker_top_edge_model_word_score_mean: Integer;
-        legacy_top_edge_model_word_score_mean: Integer;
-        ranker_top_edge_model_word_score_mean_gain: Integer;
-        ranker_top_edge_model_word_score_min: Integer;
-        legacy_top_edge_model_word_score_min: Integer;
-        ranker_top_edge_model_word_score_min_gain: Integer;
+        query_path_bonus: Integer;
+        query_path_penalty: Integer;
+        score_per_segment: Integer;
     end;
 
 const

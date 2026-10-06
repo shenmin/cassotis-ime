@@ -107,13 +107,15 @@ type
     end;
 
 const
-    { Long-sentence choice over the final pool, chosen on the 8,000-sentence
-      fiction dev set; the rank weight and the visible bonus make the earlier
-      score, one feature of nc_long_choice_gbdt. }
+    { Long-sentence choice over the final pool. The pool limit and the node
+      budget were widened from 20 and 110 when the second-slot stages that
+      lifted deep candidates into the scored pool were deleted; the rank
+      weight and the visible bonus make the earlier score, one feature of
+      nc_long_choice_gbdt. }
     c_char_lm_long_min_units = 6;
-    c_char_lm_long_pool_limit = 20;
+    c_char_lm_long_pool_limit = 32;
     c_char_lm_long_min_count = 2;
-    c_char_lm_long_max_nodes = 110;
+    c_char_lm_long_max_nodes = 176;
     c_char_lm_long_rank_weight = 0.25;
     c_char_lm_long_visible_bonus = 2.5;
     { Whole-word matches of mixed full and abbreviated input: the first this
@@ -151,11 +153,11 @@ const
   A gradient-boosted ranker (nc_long_choice_gbdt) scores each from log P(text |
   context), its pool position and final rank, the earlier score LM - w *
   ln(pool position) + bonus * [is visible] and the engine evidence; ties keep
-  the earlier text. Returns True with chosen <> visible when the model prefers
-  another candidate. }
+  the earlier text. Returns True when the candidates were scored: chosen is
+  the model's first (it can be the visible top1) and second its runner-up. }
 function nc_char_lm_choose_long(const model: IncCharLm; const context: string;
     const pool: TArray<TncCharLmLongCandidate>; const visible: string;
-    const expected_units: Integer; out chosen: string): Boolean;
+    const expected_units: Integer; out chosen, second: string): Boolean;
 
 { Chooses among the first c_char_lm_short_limit distinct texts (the visible
   complete candidates in order) by log P(text | context) - w * ln(position).
@@ -927,7 +929,7 @@ end;
 
 function nc_char_lm_choose_long(const model: IncCharLm; const context: string;
     const pool: TArray<TncCharLmLongCandidate>; const visible: string;
-    const expected_units: Integer; out chosen: string): Boolean;
+    const expected_units: Integer; out chosen, second: string): Boolean;
 var
     complete: TArray<TncCharLmLongCandidate>;
     item: TncCharLmLongCandidate;
@@ -937,11 +939,12 @@ var
     formulas: TArray<Double>;
     features: array[0..c_long_gbdt_feature_count - 1] of Double;
     text, visible_text, line: string;
-    idx, other, count, visible_index, scored, best, lp_rank: Integer;
-    lp_max, lp_visible, formula_max, score, best_score: Double;
+    idx, other, count, visible_index, scored, best, runner_up, lp_rank: Integer;
+    lp_max, lp_visible, formula_max, score, best_score, runner_up_score: Double;
 begin
     Result := False;
     chosen := '';
+    second := '';
     if (model = nil) or (expected_units < c_char_lm_long_min_units) or
         (not model.char_lm_ready) then
         Exit;
@@ -1027,6 +1030,8 @@ begin
 
     best := -1;
     best_score := 0.0;
+    runner_up := -1;
+    runner_up_score := 0.0;
     for idx := 0 to scored - 1 do
     begin
         item := complete[order[idx]];
@@ -1061,12 +1066,21 @@ begin
         end;
         if (best < 0) or (score > best_score) then
         begin
+            runner_up := best;
+            runner_up_score := best_score;
             best := order[idx];
             best_score := score;
+        end
+        else if (runner_up < 0) or (score > runner_up_score) then
+        begin
+            runner_up := order[idx];
+            runner_up_score := score;
         end;
     end;
     chosen := complete[best].text;
-    Result := chosen <> visible_text;
+    if runner_up >= 0 then
+        second := complete[runner_up].text;
+    Result := True;
 end;
 
 end.

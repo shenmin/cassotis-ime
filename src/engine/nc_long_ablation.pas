@@ -9,13 +9,15 @@ interface
 
 type
     TncLongAblation = (
-        la_pool_ranker, la_second_slot_recovery, la_second_slot_selector,
-        la_second_stage, la_exact_edge_lattice,
-        la_local_pairwise_pool, la_local_residual, la_exact_anchor_pairwise,
+        la_pool_ranker, la_exact_edge_lattice, la_local_residual,
         la_short_nocontext,
         // Not a ranking stage: a key that completes a long input's pinyin is
         // decoded as a whole input. Ablated, it extends what earlier keys left.
-        la_keystroke_whole_decode);
+        la_keystroke_whole_decode,
+        // Not a ranking stage either: the long choice's runner-up, and the
+        // choice a repair replaces, take the second complete slot. Ablated,
+        // the second slot is what the final ranking left there.
+        la_second_slot_choice);
 
 function nc_long_ablated(const stage: TncLongAblation): Boolean;
 
@@ -26,10 +28,9 @@ uses
 
 const
     c_names: array[TncLongAblation] of string = (
-        'pool_ranker', 'second_slot_recovery', 'second_slot_selector',
-        'second_stage', 'exact_edge_lattice',
-        'local_pairwise_pool', 'local_residual', 'exact_anchor_pairwise',
-        'short_nocontext', 'keystroke_whole_decode');
+        'pool_ranker', 'exact_edge_lattice', 'local_residual',
+        'short_nocontext',
+        'keystroke_whole_decode', 'second_slot_choice');
 
 var
     g_ablated: array[TncLongAblation] of Boolean;
