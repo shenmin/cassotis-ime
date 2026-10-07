@@ -9,7 +9,7 @@ interface
 
 type
     TncLongAblation = (
-        la_pool_ranker, la_exact_edge_lattice, la_local_residual,
+        la_pool_ranker, la_exact_edge_lattice,
         la_short_nocontext,
         // Not a ranking stage: a key that completes a long input's pinyin is
         // decoded as a whole input. Ablated, it extends what earlier keys left.
@@ -28,7 +28,7 @@ uses
 
 const
     c_names: array[TncLongAblation] of string = (
-        'pool_ranker', 'exact_edge_lattice', 'local_residual',
+        'pool_ranker', 'exact_edge_lattice',
         'short_nocontext',
         'keystroke_whole_decode', 'second_slot_choice');
 

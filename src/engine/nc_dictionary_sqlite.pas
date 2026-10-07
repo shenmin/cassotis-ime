@@ -154,6 +154,8 @@ type
             TDictionary<string, TncOneKeyCompletionCompetitionEvidenceList>;
         m_one_key_completion_pair_audit_cache:
             TDictionary<string, TncOneKeyCompletionPairAudit>;
+        // pinyin, baseline text -> promoted text, lead ('' when there is none).
+        m_short_promotion_cache: TDictionary<string, string>;
         m_exact_text_prefix_cache: TDictionary<string, TncExactTextPath>;
         m_literal_lookup_result_cache: TDictionary<string, TncCandidateList>;
         m_literal_user_words_available: Integer;
@@ -331,6 +333,8 @@ type
             const baseline_full_pinyin, baseline_text: string;
             const challenger_full_pinyin, challenger_text: string;
             out audit: TncOneKeyCompletionPairAudit): Boolean; override;
+        function lookup_short_promotion(const pinyin, baseline_text: string;
+            out promoted_text: string; out lead: Integer): Boolean; override;
         function resolve_exact_text_prefix(const text: string;
             const max_segments, max_units: Integer;
             out resolved: TncExactTextPath): Boolean; override;
@@ -542,6 +546,14 @@ const
         'ON dict_base_completion_pair_audit(typed_prefix, ' +
         'baseline_full_pinyin, baseline_text, challenger_full_pinyin, ' +
         'challenger_text, context_width DESC, context_suffix);' + sLineBreak +
+        sLineBreak +
+        'CREATE TABLE IF NOT EXISTS dict_base_short_promotion (' + sLineBreak +
+        '    pinyin TEXT NOT NULL,' + sLineBreak +
+        '    baseline_text TEXT NOT NULL,' + sLineBreak +
+        '    promoted_text TEXT NOT NULL,' + sLineBreak +
+        '    lead INTEGER NOT NULL DEFAULT 0,' + sLineBreak +
+        '    PRIMARY KEY(pinyin, baseline_text)' + sLineBreak +
+        ') WITHOUT ROWID;' + sLineBreak +
         sLineBreak +
         'CREATE TABLE IF NOT EXISTS dict_base_pinyin_alias (' + sLineBreak +
         '    id INTEGER PRIMARY KEY AUTOINCREMENT,' + sLineBreak +
@@ -2680,6 +2692,7 @@ begin
         TDictionary<string, TncOneKeyCompletionCompetitionEvidenceList>.Create;
     m_one_key_completion_pair_audit_cache :=
         TDictionary<string, TncOneKeyCompletionPairAudit>.Create;
+    m_short_promotion_cache := TDictionary<string, string>.Create;
     m_exact_text_prefix_cache :=
         TDictionary<string, TncExactTextPath>.Create;
     m_literal_lookup_result_cache := TDictionary<string, TncCandidateList>.Create;
@@ -2951,6 +2964,7 @@ begin
         m_one_key_completion_pair_audit_cache.Free;
         m_one_key_completion_pair_audit_cache := nil;
     end;
+    FreeAndNil(m_short_promotion_cache);
     if m_exact_text_prefix_cache <> nil then
     begin
         m_exact_text_prefix_cache.Free;
@@ -5518,6 +5532,76 @@ begin
     Result := audit.available;
 end;
 
+function TncSqliteDictionary.lookup_short_promotion(const pinyin,
+    baseline_text: string; out promoted_text: string; out lead: Integer): Boolean;
+const
+    c_result_cache_limit = 4096;
+    promotion_sql =
+        'SELECT promoted_text, lead FROM dict_base_short_promotion ' +
+        'WHERE pinyin = ?1 AND baseline_text = ?2';
+var
+    stmt: Psqlite3_stmt;
+    cache_key, cached: string;
+    separator: Integer;
+begin
+    promoted_text := '';
+    lead := 0;
+    Result := False;
+    if (pinyin = '') or (baseline_text = '') or (not ensure_open) or
+        (not m_base_ready) or (m_base_connection = nil) then
+    begin
+        Exit;
+    end;
+    cache_key := pinyin + #1 + baseline_text;
+    if (m_short_promotion_cache <> nil) and
+        m_short_promotion_cache.TryGetValue(cache_key, cached) then
+    begin
+        separator := Pos(#1, cached);
+        if separator > 1 then
+        begin
+            promoted_text := Copy(cached, 1, separator - 1);
+            lead := StrToIntDef(Copy(cached, separator + 1, MaxInt), 0);
+            Result := True;
+        end;
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        // A dictionary built before this table has no rows to offer.
+        if (not m_base_connection.prepare(promotion_sql, stmt)) or
+            (not m_base_connection.bind_text(stmt, 1, pinyin)) or
+            (not m_base_connection.bind_text(stmt, 2, baseline_text)) then
+        begin
+            Exit;
+        end;
+        if m_base_connection.step(stmt) = SQLITE_ROW then
+        begin
+            promoted_text := m_base_connection.column_text(stmt, 0);
+            lead := m_base_connection.column_int(stmt, 1);
+            Result := promoted_text <> '';
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+
+    if m_short_promotion_cache <> nil then
+    begin
+        if m_short_promotion_cache.Count >= c_result_cache_limit then
+        begin
+            m_short_promotion_cache.Clear;
+        end;
+        if Result then
+            m_short_promotion_cache.AddOrSetValue(cache_key,
+                promoted_text + #1 + IntToStr(lead))
+        else
+            m_short_promotion_cache.AddOrSetValue(cache_key, '');
+    end;
+end;
+
 function TncSqliteDictionary.resolve_exact_text_prefix(
     const text: string; const max_segments, max_units: Integer;
     out resolved: TncExactTextPath): Boolean;
@@ -6546,6 +6630,19 @@ begin
         'ON dict_base_completion_pair_audit(typed_prefix, ' +
         'baseline_full_pinyin, baseline_text, challenger_full_pinyin, ' +
         'challenger_text, context_width DESC, context_suffix);') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    if not connection.exec(
+        'CREATE TABLE IF NOT EXISTS dict_base_short_promotion (' +
+        'pinyin TEXT NOT NULL,' +
+        'baseline_text TEXT NOT NULL,' +
+        'promoted_text TEXT NOT NULL,' +
+        'lead INTEGER NOT NULL DEFAULT 0,' +
+        'PRIMARY KEY(pinyin, baseline_text)' +
+        ') WITHOUT ROWID;') then
     begin
         Result := False;
         Exit;
@@ -11310,6 +11407,10 @@ begin
     if m_one_key_completion_pair_audit_cache <> nil then
     begin
         m_one_key_completion_pair_audit_cache.Clear;
+    end;
+    if m_short_promotion_cache <> nil then
+    begin
+        m_short_promotion_cache.Clear;
     end;
     if m_exact_text_prefix_cache <> nil then
     begin

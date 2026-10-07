@@ -1,6 +1,10 @@
 param(
     [switch]$NoRestartHost,
-    [switch]$NoExternalLexicon
+    [switch]$NoExternalLexicon,
+    # The short promotion tables are rebuilt when the files a dictionary is
+    # built from changed; these force that or leave the tables as they are.
+    [switch]$RefreshShortPromotion,
+    [switch]$SkipShortPromotionRefresh
 )
 
 $ErrorActionPreference = 'Stop'
@@ -234,6 +238,8 @@ $lexicon_completion_competition_sc = Join-Path $lexicon_root 'data\generated\dic
 $lexicon_completion_competition_tc = Join-Path $lexicon_root 'data\generated\dict_completion_competition_tc.txt'
 $lexicon_completion_pair_audit_sc = Join-Path $lexicon_root 'data\generated\dict_completion_pair_audit_sc.txt'
 $lexicon_completion_pair_audit_tc = Join-Path $lexicon_root 'data\generated\dict_completion_pair_audit_tc.txt'
+$lexicon_short_promotion_sc = Join-Path $lexicon_root 'data\generated\dict_short_promotion_sc.txt'
+$lexicon_short_promotion_tc = Join-Path $lexicon_root 'data\generated\dict_short_promotion_tc.txt'
 $lexicon_char_lm_sc = Join-Path $lexicon_root 'data\generated\dict_char_lm_sc.txt'
 $lexicon_char_lm_tc = Join-Path $lexicon_root 'data\generated\dict_char_lm_tc.txt'
 $lexicon_char_reverse_lm_sc = Join-Path $lexicon_root 'data\generated\dict_char_reverse_lm_sc.txt'
@@ -448,6 +454,36 @@ try {
         $base_db_sc_path, $schema_path, '--build-contains-index')
     invoke_tool 'cassotis_ime_dict_init (contains index tc)' $dict_init @(
         $base_db_tc_path, $schema_path, '--build-contains-index')
+
+    # The short promotions: among a short query's exact words, the one to put
+    # above the first when nothing but the dictionary decides. They are choices
+    # made from the finished dictionary, so they come last. Where the builder's
+    # project is at hand, the tables are rebuilt first if their inputs changed.
+    if (-not $NoExternalLexicon) {
+        $short_promotion_script = Join-Path $script_dir 'rebuild_short_promotion.ps1'
+        $short_promotion_project = Join-Path $repo_root 'tools\cassotis_ime_short_promotion_builder.dproj'
+        if ((-not $SkipShortPromotionRefresh) -and
+            (Test-Path -LiteralPath $short_promotion_script) -and
+            (Test-Path -LiteralPath $short_promotion_project)) {
+            & $short_promotion_script -DictScPath $base_db_sc_path -DictTcPath $base_db_tc_path `
+                -OutputDir (Split-Path -Parent $lexicon_short_promotion_sc) `
+                -OnlyIfChanged:(-not $RefreshShortPromotion)
+        }
+
+        if ((Test-Path -LiteralPath $lexicon_short_promotion_sc) -and
+            (Test-Path -LiteralPath $lexicon_short_promotion_tc)) {
+            Write-Host ("Importing short promotions from: " + $lexicon_short_promotion_sc)
+            invoke_tool 'cassotis_ime_dict_init (short promotion sc)' $dict_init @(
+                $base_db_sc_path, $schema_path, $lexicon_short_promotion_sc, 'short_promotion')
+
+            Write-Host ("Importing short promotions from: " + $lexicon_short_promotion_tc)
+            invoke_tool 'cassotis_ime_dict_init (short promotion tc)' $dict_init @(
+                $base_db_tc_path, $schema_path, $lexicon_short_promotion_tc, 'short_promotion')
+        }
+        else {
+            Write-Warning "Short promotion files not found under lexicon data/generated; skipping import."
+        }
+    }
 
     Write-Host 'Rebuild completed.'
 }
