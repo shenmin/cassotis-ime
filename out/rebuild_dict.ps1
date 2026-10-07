@@ -1,8 +1,9 @@
 param(
     [switch]$NoRestartHost,
     [switch]$NoExternalLexicon,
-    # The short promotion tables are rebuilt when the files a dictionary is
-    # built from changed; these force that or leave the tables as they are.
+    # The short promotion tables are rebuilt when the dictionary just built, or
+    # the engine and model that decide them, differ from what the tables were
+    # made from; these force that or leave the tables as they are.
     [switch]$RefreshShortPromotion,
     [switch]$SkipShortPromotionRefresh
 )
@@ -481,8 +482,17 @@ try {
                 $base_db_tc_path, $schema_path, $lexicon_short_promotion_tc, 'short_promotion')
         }
         else {
-            Write-Warning "Short promotion files not found under lexicon data/generated; skipping import."
+            # The runtime has no model to fall back on: without the tables a
+            # dictionary is quietly worse (short-word top1 without context).
+            throw ("Short promotion tables not found under lexicon data/generated " +
+                "(dict_short_promotion_sc.txt, dict_short_promotion_tc.txt). Update the lexicon, " +
+                "or run rebuild_short_promotion.ps1 where the builder is available.")
         }
+
+        invoke_tool 'cassotis_ime_dict_init (require short promotion sc)' $dict_init @(
+            $base_db_sc_path, $schema_path, '--require-short-promotion')
+        invoke_tool 'cassotis_ime_dict_init (require short promotion tc)' $dict_init @(
+            $base_db_tc_path, $schema_path, '--require-short-promotion')
     }
 
     Write-Host 'Rebuild completed.'

@@ -764,11 +764,13 @@ type
         m_last_full_path_debug_info: string;
         m_last_lookup_debug_extra: string;
         // The last short no-context promotion: query key, the exact word that
-        // was first, the word put above it, and its margin.
+        // was first, the word put above it, its margin, and the words and
+        // weights it was decided among.
         m_debug_short_promotion_pinyin: string;
         m_debug_short_promotion_baseline: string;
         m_debug_short_promotion_text: string;
         m_debug_short_promotion_lead: Integer;
+        m_debug_short_promotion_candidates: string;
         m_last_lookup_timing_info: string;
         m_last_lookup_all_initial_fast: Boolean;
         m_last_lookup_literal_user_fast: Boolean;
@@ -1260,7 +1262,7 @@ type
         function get_lookup_perf_info: string;
         function get_lookup_debug_info: string;
         function get_debug_short_promotion(out pinyin, baseline_text,
-            promoted_text: string; out lead: Integer): Boolean;
+            promoted_text, candidates: string; out lead: Integer): Boolean;
         function get_debug_last_output_commit_text: string;
         function get_debug_phrase_context_pair_count(const left_text: string; const candidate_text: string): Integer;
         function get_debug_last_commit_segment_path: string;
@@ -157324,7 +157326,8 @@ var
           word or earlier choice to decide, the dictionary can name one to put
           above the first (dict_base_short_promotion). That table is the
           residual model's choices, written by a build of this unit with
-          NC_SHORT_PROMOTION_BUILDER, in which the model itself decides. }
+          NC_SHORT_PROMOTION_BUILDER, in which the model itself decides. A row
+          holds for the words and weights it was decided among and no others. }
         procedure apply_short_nocontext_reranker_local;
         const
             // The choice is made among this many top exact words.
@@ -157346,6 +157349,7 @@ var
             candidate_text_local: string;
             candidate_weight_local: Integer;
             lead_local: Integer;
+            candidates_local: string;
             rank_item_local: TShortExactRankItem;
 {$IFDEF NC_SHORT_PROMOTION_BUILDER}
             candidate_full_lm_scores_local: TArray<Integer>;
@@ -157357,6 +157361,7 @@ var
             features_local: TncShortNoContextFeatures;
 {$ELSE}
             promoted_text_local: string;
+            row_candidates_local: string;
 {$ENDIF}
 
             function effective_left_context_local: string;
@@ -157511,6 +157516,7 @@ var
             m_debug_short_promotion_baseline := '';
             m_debug_short_promotion_text := '';
             m_debug_short_promotion_lead := 0;
+            m_debug_short_promotion_candidates := '';
             if nc_long_ablated(la_short_nocontext) then Exit;
             if (m_dictionary = nil) or has_user_exact or
                 (expected_units < 2) or (expected_units > 4) or
@@ -157585,6 +157591,18 @@ var
                 if Length(candidate_texts_local) < 2 then
                 begin
                     Exit;
+                end;
+                // What the choice is made among: the words and their weights.
+                candidates_local := '';
+                for candidate_idx_local := 0 to High(candidate_texts_local) do
+                begin
+                    if candidate_idx_local > 0 then
+                    begin
+                        candidates_local := candidates_local + '|';
+                    end;
+                    candidates_local := candidates_local +
+                        candidate_texts_local[candidate_idx_local] + ':' +
+                        IntToStr(candidate_weights_local[candidate_idx_local]);
                 end;
 {$IFDEF NC_SHORT_PROMOTION_BUILDER}
                 Assert(c_short_nocontext_max_candidate_rank = c_candidate_limit);
@@ -157662,8 +157680,10 @@ var
                     (best_score_local - c_short_nocontext_promotion_threshold)
                     div 100000, Low(Integer), High(Integer));
 {$ELSE}
-                if not m_dictionary.lookup_short_promotion(normalized_pinyin,
-                    candidate_texts_local[0], promoted_text_local, lead_local) then
+                if (not m_dictionary.lookup_short_promotion(normalized_pinyin,
+                    candidate_texts_local[0], promoted_text_local,
+                    row_candidates_local, lead_local)) or
+                    (row_candidates_local <> candidates_local) then
                 begin
                     Exit;
                 end;
@@ -157690,6 +157710,7 @@ var
                 m_debug_short_promotion_baseline := candidate_texts_local[0];
                 m_debug_short_promotion_text := short_nocontext_promoted_exact_text;
                 m_debug_short_promotion_lead := lead_local;
+                m_debug_short_promotion_candidates := candidates_local;
                 rank_item_local := list[
                     candidate_list_indices_local[best_idx_local]];
                 rank_item_local.nocontext_exact_priority := 1;
@@ -185942,11 +185963,12 @@ begin
 end;
 
 function TncEngine.get_debug_short_promotion(out pinyin, baseline_text,
-    promoted_text: string; out lead: Integer): Boolean;
+    promoted_text, candidates: string; out lead: Integer): Boolean;
 begin
     pinyin := m_debug_short_promotion_pinyin;
     baseline_text := m_debug_short_promotion_baseline;
     promoted_text := m_debug_short_promotion_text;
+    candidates := m_debug_short_promotion_candidates;
     lead := m_debug_short_promotion_lead;
     Result := promoted_text <> '';
 end;

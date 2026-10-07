@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS dict_base_short_promotion (
     baseline_text TEXT NOT NULL,
     promoted_text TEXT NOT NULL,
     lead INTEGER NOT NULL DEFAULT 0,
+    candidates TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(pinyin, baseline_text)
 ) WITHOUT ROWID;
 

@@ -57,9 +57,11 @@ type
         { The base dictionary's own choice among the exact words of a short
           query when no context, user word or earlier choice decides: with
           baseline_text first, promoted_text goes above it. lead is the
-          margin of that choice. }
+          margin of that choice; candidates names the words and weights it
+          was made among (word:weight|word:weight...), and the choice holds
+          only for those. }
         function lookup_short_promotion(const pinyin, baseline_text: string;
-            out promoted_text: string; out lead: Integer): Boolean; virtual;
+            out promoted_text, candidates: string; out lead: Integer): Boolean; virtual;
         function resolve_exact_text_prefix(const text: string;
             const max_segments, max_units: Integer;
             out resolved: TncExactTextPath): Boolean; virtual;
@@ -296,9 +298,11 @@ begin
 end;
 
 function TncDictionaryProvider.lookup_short_promotion(const pinyin,
-    baseline_text: string; out promoted_text: string; out lead: Integer): Boolean;
+    baseline_text: string; out promoted_text, candidates: string;
+    out lead: Integer): Boolean;
 begin
     promoted_text := '';
+    candidates := '';
     lead := 0;
     Result := False;
 end;

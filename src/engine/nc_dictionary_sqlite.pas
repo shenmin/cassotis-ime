@@ -154,7 +154,8 @@ type
             TDictionary<string, TncOneKeyCompletionCompetitionEvidenceList>;
         m_one_key_completion_pair_audit_cache:
             TDictionary<string, TncOneKeyCompletionPairAudit>;
-        // pinyin, baseline text -> promoted text, lead ('' when there is none).
+        // pinyin, baseline text -> promoted text, lead, candidates ('' when
+        // there is none).
         m_short_promotion_cache: TDictionary<string, string>;
         m_exact_text_prefix_cache: TDictionary<string, TncExactTextPath>;
         m_literal_lookup_result_cache: TDictionary<string, TncCandidateList>;
@@ -334,7 +335,7 @@ type
             const challenger_full_pinyin, challenger_text: string;
             out audit: TncOneKeyCompletionPairAudit): Boolean; override;
         function lookup_short_promotion(const pinyin, baseline_text: string;
-            out promoted_text: string; out lead: Integer): Boolean; override;
+            out promoted_text, candidates: string; out lead: Integer): Boolean; override;
         function resolve_exact_text_prefix(const text: string;
             const max_segments, max_units: Integer;
             out resolved: TncExactTextPath): Boolean; override;
@@ -552,6 +553,7 @@ const
         '    baseline_text TEXT NOT NULL,' + sLineBreak +
         '    promoted_text TEXT NOT NULL,' + sLineBreak +
         '    lead INTEGER NOT NULL DEFAULT 0,' + sLineBreak +
+        '    candidates TEXT NOT NULL DEFAULT '''',' + sLineBreak +
         '    PRIMARY KEY(pinyin, baseline_text)' + sLineBreak +
         ') WITHOUT ROWID;' + sLineBreak +
         sLineBreak +
@@ -5533,18 +5535,20 @@ begin
 end;
 
 function TncSqliteDictionary.lookup_short_promotion(const pinyin,
-    baseline_text: string; out promoted_text: string; out lead: Integer): Boolean;
+    baseline_text: string; out promoted_text, candidates: string;
+    out lead: Integer): Boolean;
 const
     c_result_cache_limit = 4096;
     promotion_sql =
-        'SELECT promoted_text, lead FROM dict_base_short_promotion ' +
+        'SELECT promoted_text, lead, candidates FROM dict_base_short_promotion ' +
         'WHERE pinyin = ?1 AND baseline_text = ?2';
 var
     stmt: Psqlite3_stmt;
     cache_key, cached: string;
-    separator: Integer;
+    parts: TArray<string>;
 begin
     promoted_text := '';
+    candidates := '';
     lead := 0;
     Result := False;
     if (pinyin = '') or (baseline_text = '') or (not ensure_open) or
@@ -5556,11 +5560,12 @@ begin
     if (m_short_promotion_cache <> nil) and
         m_short_promotion_cache.TryGetValue(cache_key, cached) then
     begin
-        separator := Pos(#1, cached);
-        if separator > 1 then
+        parts := cached.Split([#1]);
+        if Length(parts) = 3 then
         begin
-            promoted_text := Copy(cached, 1, separator - 1);
-            lead := StrToIntDef(Copy(cached, separator + 1, MaxInt), 0);
+            promoted_text := parts[0];
+            lead := StrToIntDef(parts[1], 0);
+            candidates := parts[2];
             Result := True;
         end;
         Exit;
@@ -5579,6 +5584,7 @@ begin
         begin
             promoted_text := m_base_connection.column_text(stmt, 0);
             lead := m_base_connection.column_int(stmt, 1);
+            candidates := m_base_connection.column_text(stmt, 2);
             Result := promoted_text <> '';
         end;
     finally
@@ -5596,7 +5602,7 @@ begin
         end;
         if Result then
             m_short_promotion_cache.AddOrSetValue(cache_key,
-                promoted_text + #1 + IntToStr(lead))
+                promoted_text + #1 + IntToStr(lead) + #1 + candidates)
         else
             m_short_promotion_cache.AddOrSetValue(cache_key, '');
     end;
@@ -6641,6 +6647,7 @@ begin
         'baseline_text TEXT NOT NULL,' +
         'promoted_text TEXT NOT NULL,' +
         'lead INTEGER NOT NULL DEFAULT 0,' +
+        'candidates TEXT NOT NULL DEFAULT '''',' +
         'PRIMARY KEY(pinyin, baseline_text)' +
         ') WITHOUT ROWID;') then
     begin
