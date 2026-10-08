@@ -11,6 +11,9 @@ type
     TncLongAblation = (
         la_pool_ranker, la_exact_edge_lattice,
         la_short_nocontext,
+        // The short-word LM choice also runs without left context. Ablated,
+        // it leaves such input to the dictionary order.
+        la_short_empty_context,
         // Not a ranking stage: a key that completes a long input's pinyin is
         // decoded as a whole input. Ablated, it extends what earlier keys left.
         la_keystroke_whole_decode,
@@ -29,7 +32,7 @@ uses
 const
     c_names: array[TncLongAblation] of string = (
         'pool_ranker', 'exact_edge_lattice',
-        'short_nocontext',
+        'short_nocontext', 'short_empty_context',
         'keystroke_whole_decode', 'second_slot_choice');
 
 var

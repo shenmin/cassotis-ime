@@ -148,6 +148,9 @@ type
             TDictionary<string, TncOneKeyCompletionList>;
         m_one_key_completion_cache:
             TDictionary<string, TncOneKeyCompletionList>;
+        // Rerank-only extras of the same lookups, stored and cleared together.
+        m_one_key_completion_extra_cache:
+            TDictionary<string, TncOneKeyCompletionList>;
         m_long_one_key_completion_cache:
             TDictionary<string, TncLongOneKeyCompletionList>;
         m_one_key_completion_competition_cache:
@@ -320,6 +323,8 @@ type
         function lookup_candidate_prefix_completions(const pinyin_prefix: string;
             out results: TncOneKeyCompletionList): Boolean; override;
         function lookup_one_key_completions(const pinyin_prefix: string;
+            out results: TncOneKeyCompletionList): Boolean; override;
+        function lookup_one_key_completion_extras(const pinyin_prefix: string;
             out results: TncOneKeyCompletionList): Boolean; override;
         function lookup_long_one_key_completions(const anchor_path: string;
             out results: TncLongOneKeyCompletionList): Boolean; override;
@@ -2688,6 +2693,8 @@ begin
         TDictionary<string, TncOneKeyCompletionList>.Create;
     m_one_key_completion_cache :=
         TDictionary<string, TncOneKeyCompletionList>.Create;
+    m_one_key_completion_extra_cache :=
+        TDictionary<string, TncOneKeyCompletionList>.Create;
     m_long_one_key_completion_cache :=
         TDictionary<string, TncLongOneKeyCompletionList>.Create;
     m_one_key_completion_competition_cache :=
@@ -2949,6 +2956,11 @@ begin
     begin
         m_one_key_completion_cache.Free;
         m_one_key_completion_cache := nil;
+    end;
+    if m_one_key_completion_extra_cache <> nil then
+    begin
+        m_one_key_completion_extra_cache.Free;
+        m_one_key_completion_extra_cache := nil;
     end;
     FreeAndNil(m_candidate_prefix_completion_cache);
     if m_long_one_key_completion_cache <> nil then
@@ -4133,6 +4145,9 @@ const
     c_result_limit = 32;
     c_query_limit = 256;
     c_source_result_limit = 8;
+    // Rerank-only extras: per range scan, and in all.
+    c_extra_source_limit = 40;
+    c_extra_limit = 64;
     c_base_exact_prefix_anchor_bonus = 80;
     base_completion_popularity_sql =
         'SELECT b.pinyin, b.text, b.weight, ' +
@@ -4207,6 +4222,11 @@ var
     base_items: TncRankedCompletionList;
     base_weight_items: TncRankedCompletionList;
     transition_items: TncRankedCompletionList;
+    extra_weight_items: TncRankedCompletionList;
+    extra_popularity_items: TncRankedCompletionList;
+    extras: TncOneKeyCompletionList;
+    source_limit: Integer;
+    exact_prefix_texts_loaded: Boolean;
 
     function resolve_lookup_prefix: Boolean;
     var
@@ -4564,7 +4584,7 @@ var
             end;
         end;
 
-        if Length(target) < c_source_result_limit then
+        if Length(target) < source_limit then
         begin
             SetLength(target, Length(target) + 1);
             target[High(target)] := ranked_item;
@@ -4673,7 +4693,7 @@ var
                     candidate_path_score, candidate_vertical_penalty,
                     candidate_layer_kind,
                     candidate_has_prior);
-                if (Length(target_items) >= c_source_result_limit) and
+                if (Length(target_items) >= source_limit) and
                     (candidate_rank + c_base_exact_prefix_anchor_bonus <
                     minimum_primary(target_items)) then
                 begin
@@ -4685,6 +4705,87 @@ var
             if stmt <> nil then
             begin
                 m_base_connection.finalize(stmt);
+            end;
+        end;
+    end;
+
+    // The rerank-only extras: the range scans by weight and by popularity,
+    // wider than the pool's own sources, without what the pool already holds.
+    procedure collect_extras;
+    var
+        lists: array[0..1] of TncRankedCompletionList;
+        list_idx: Integer;
+        item_idx: Integer;
+        other_idx: Integer;
+        duplicate: Boolean;
+    begin
+        SetLength(extras, 0);
+        SetLength(extra_weight_items, 0);
+        SetLength(extra_popularity_items, 0);
+        if not exact_prefix_texts_loaded then
+        begin
+            load_exact_prefix_texts;
+            exact_prefix_texts_loaded := True;
+        end;
+        source_limit := c_extra_source_limit;
+        try
+            query_base_stored_prefix(compact_prefix, extra_weight_items, False);
+            query_base_stored_prefix(compact_prefix, extra_popularity_items,
+                True);
+            if not SameText(explicit_prefix, compact_prefix) then
+            begin
+                query_base_stored_prefix(explicit_prefix, extra_weight_items,
+                    False);
+                query_base_stored_prefix(explicit_prefix,
+                    extra_popularity_items, True);
+            end;
+        finally
+            source_limit := c_source_result_limit;
+        end;
+        sort_ranked(extra_weight_items);
+        sort_ranked(extra_popularity_items);
+        lists[0] := extra_weight_items;
+        lists[1] := extra_popularity_items;
+        for list_idx := 0 to 1 do
+        begin
+            for item_idx := 0 to High(lists[list_idx]) do
+            begin
+                if Length(extras) >= c_extra_limit then
+                begin
+                    Exit;
+                end;
+                duplicate := False;
+                for other_idx := 0 to High(results) do
+                begin
+                    if SameText(results[other_idx].full_pinyin,
+                        lists[list_idx][item_idx].item.full_pinyin) and
+                        SameText(results[other_idx].text,
+                        lists[list_idx][item_idx].item.text) then
+                    begin
+                        duplicate := True;
+                        Break;
+                    end;
+                end;
+                if not duplicate then
+                begin
+                    for other_idx := 0 to High(extras) do
+                    begin
+                        if SameText(extras[other_idx].full_pinyin,
+                            lists[list_idx][item_idx].item.full_pinyin) and
+                            SameText(extras[other_idx].text,
+                            lists[list_idx][item_idx].item.text) then
+                        begin
+                            duplicate := True;
+                            Break;
+                        end;
+                    end;
+                end;
+                if duplicate then
+                begin
+                    Continue;
+                end;
+                SetLength(extras, Length(extras) + 1);
+                extras[High(extras)] := lists[list_idx][item_idx].item;
             end;
         end;
     end;
@@ -4872,9 +4973,18 @@ var
         if m_one_key_completion_cache.Count >= c_result_cache_limit then
         begin
             m_one_key_completion_cache.Clear;
+            if m_one_key_completion_extra_cache <> nil then
+            begin
+                m_one_key_completion_extra_cache.Clear;
+            end;
         end;
         m_one_key_completion_cache.AddOrSetValue(cache_key,
             Copy(results, 0, Length(results)));
+        if m_one_key_completion_extra_cache <> nil then
+        begin
+            m_one_key_completion_extra_cache.AddOrSetValue(cache_key,
+                Copy(extras, 0, Length(extras)));
+        end;
     end;
 
     procedure append_ranked_items(const items: TncRankedCompletionList);
@@ -4965,6 +5075,9 @@ var
     end;
 begin
     SetLength(results, 0);
+    SetLength(extras, 0);
+    source_limit := c_source_result_limit;
+    exact_prefix_texts_loaded := False;
     Result := False;
     canonical_prefix := normalize_canonical_pinyin_key(pinyin_prefix);
     compact_prefix := normalize_compact_pinyin_key(canonical_prefix);
@@ -5028,6 +5141,7 @@ begin
         if not query_precomputed_base then
         begin
             load_exact_prefix_texts;
+            exact_prefix_texts_loaded := True;
             query_base_stored_prefix(compact_prefix, base_items, True);
             query_base_stored_prefix(compact_prefix, base_weight_items,
                 False);
@@ -5046,11 +5160,41 @@ begin
         sort_ranked(transition_items);
         append_ranked_items(transition_items);
         load_feedback_counts;
+        collect_extras;
         cache_results;
         Result := Length(results) > 0;
     finally
         exact_prefix_texts.Free;
     end;
+end;
+
+function TncSqliteDictionary.lookup_one_key_completion_extras(
+    const pinyin_prefix: string;
+    out results: TncOneKeyCompletionList): Boolean;
+var
+    cache_key: string;
+    pool: TncOneKeyCompletionList;
+begin
+    SetLength(results, 0);
+    Result := False;
+    cache_key := normalize_canonical_pinyin_key(pinyin_prefix);
+    if (cache_key = '') or (m_one_key_completion_extra_cache = nil) then
+    begin
+        Exit;
+    end;
+    if not m_one_key_completion_extra_cache.TryGetValue(cache_key, results) then
+    begin
+        // The extras are collected with the pool and cached beside it.
+        lookup_one_key_completions(pinyin_prefix, pool);
+        if not m_one_key_completion_extra_cache.TryGetValue(cache_key,
+            results) then
+        begin
+            SetLength(results, 0);
+            Exit;
+        end;
+    end;
+    results := Copy(results, 0, Length(results));
+    Result := Length(results) > 0;
 end;
 
 function TncSqliteDictionary.lookup_long_one_key_completions(
@@ -11402,6 +11546,10 @@ begin
     if m_one_key_completion_cache <> nil then
     begin
         m_one_key_completion_cache.Clear;
+    end;
+    if m_one_key_completion_extra_cache <> nil then
+    begin
+        m_one_key_completion_extra_cache.Clear;
     end;
     if m_long_one_key_completion_cache <> nil then
     begin

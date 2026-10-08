@@ -41,6 +41,11 @@ type
             out results: TncOneKeyCompletionList): Boolean; virtual;
         function lookup_one_key_completions(const pinyin_prefix: string;
             out results: TncOneKeyCompletionList): Boolean; virtual;
+        { More words the typed prefix can complete to, beside the bounded pool
+          of lookup_one_key_completions and never repeating it. They take part
+          in the language-model rerank only, not in the immediate choice. }
+        function lookup_one_key_completion_extras(const pinyin_prefix: string;
+            out results: TncOneKeyCompletionList): Boolean; virtual;
         function lookup_long_one_key_completions(const anchor_path: string;
             out results: TncLongOneKeyCompletionList): Boolean; virtual;
         function lookup_long_one_key_completions_by_text(
@@ -202,6 +207,14 @@ begin
 end;
 
 function TncDictionaryProvider.lookup_one_key_completions(
+    const pinyin_prefix: string;
+    out results: TncOneKeyCompletionList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
+end;
+
+function TncDictionaryProvider.lookup_one_key_completion_extras(
     const pinyin_prefix: string;
     out results: TncOneKeyCompletionList): Boolean;
 begin

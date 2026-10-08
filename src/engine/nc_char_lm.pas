@@ -125,6 +125,12 @@ const
     { Short-word choice with left context: the visible exact entries for the
       input (prefix completions excluded), at most this many in page order. }
     c_char_lm_short_choice_limit = 8;
+    { The choice looks at the context-free scores first, which the host keeps.
+      When the ranker's best candidate leads the next by at least this on
+      those alone, the call with the context is left out: the context
+      overturned such a lead in 2 of 30,000 held-out fiction cases and in none
+      of 56,886 chat cases, and it holds for a quarter of the calls. }
+    c_char_lm_short_plain_lead = 5.0;
     { Tab continuation: show the most probable candidate when P(correct) is at
       least this. Chosen on the 7,996-sentence fiction Tab dev set (5-fold CV
       on the policy's own features) as the most hits whose prompt precision is
@@ -139,10 +145,18 @@ const
     c_char_lm_tab_extend_lm_next_probability = 0.7;
     c_char_lm_tab_extend_word_probability = 0.85;
     c_char_lm_tab_extend_max_chars = 3;
-    { One-key completion rerank: the first entries of the dictionary pool plus
-      the incumbent choice, chosen on the 10,150-opportunity fiction one-key
-      dev set (5-fold CV). }
-    c_char_lm_completion_limit = 12;
+    { One-key completion rerank: the dictionary pool, then the rerank-only
+      extras (lookup_one_key_completion_extras) up to this many, plus the
+      incumbent choice. Twelve pool entries were the limit until the extras:
+      in 7.5% of the opportunities of the fiction one-key dev set the target
+      was a dictionary word outside the pool. }
+    c_char_lm_completion_limit = 48;
+    { The rerank scores the first entries, as it did before the extras, and
+      the rest only when the ranker's best score leads the next by less than
+      this: one rerank in twelve on held-out fiction. A wider gap finds more
+      (2.5: one in five, 0.9 points more hits) for a second LM call each. }
+    c_char_lm_completion_first = 12;
+    c_char_lm_completion_wide_gap = 1.0;
 
 { Chooses the long-sentence top1 from the final complete pool and the visible
   top1. pool holds the final ranking's candidates in their original order with
@@ -169,9 +183,10 @@ function nc_char_lm_choose_short_top(const model: IncCharLm; const context: stri
   entries for the input (the first c_char_lm_short_choice_limit, page order)
   by a gradient-boosted ranker over log P(text | context), log P of its first
   one and two characters, log P(text) without context, the dictionary weight,
-  the display score and the page position, fit on the short-word dev set
-  (nc_short_context_gbdt). Ties keep the earlier candidate. Returns False
-  when nothing was scored. }
+  the display score and the page position (nc_short_context_gbdt). Without
+  a left context, and when the context-free scores alone give a lead of
+  c_char_lm_short_plain_lead, the choice is made from those. Ties keep the
+  earlier candidate. Returns False when nothing was scored. }
 function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
     const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean;
 
@@ -199,10 +214,12 @@ function nc_char_lm_choose_continuation(const model: IncCharLm; const context: s
 function nc_char_lm_extend_continuation(const model: IncCharLm; const context,
     text: string; const min_probability: Double): string;
 
-{ Chooses the one-key completion from the first c_char_lm_completion_limit
-  pool entries and the incumbent (the established ranker's choice) with a
-  gradient-boosted ranker over log P(text | context), dictionary evidence,
-  length and each candidate's standing in the group (nc_one_key_completion_gbdt).
+{ Chooses the one-key completion with a gradient-boosted ranker over
+  log P(text | context), dictionary evidence, length and each candidate's
+  standing in the group (nc_one_key_completion_gbdt): first among the leading
+  c_char_lm_completion_first pool entries and the incumbent (the established
+  ranker's choice), and when that leaves no clear lead, again among all
+  c_char_lm_completion_limit entries, which costs a second LM call.
   typed_units is the number of typed syllables. As in the established ranker,
   a candidate accepted fewer times or rejected more often than the incumbent
   never replaces it (nc_char_lm_completion_may_replace). Returns False when the
@@ -231,7 +248,7 @@ var
 
 implementation
 
-uses System.Generics.Collections;
+uses System.Generics.Collections, System.Generics.Defaults;
 
 const
     // Tail and next words are scored in rank order while the packed trie of
@@ -641,92 +658,145 @@ function nc_char_lm_choose_completion(const model: IncCharLm; const context: str
     typed_units: Integer; out best_index: Integer): Boolean;
 var
     order: TArray<Integer>;
-    texts: TArray<string>;
-    logp: TArray<Single>;
-    per_char: TArray<Double>;
-    features: array[0..c_one_key_gbdt_feature_count - 1] of Double;
-    idx, other, units, candidate, lm_rank: Integer;
-    has_context, is_incumbent, lm_max, per_char_max: Double;
-    score, best_score: Double;
-    found: Boolean;
+    scored: TArray<Double>;
+    has_context, gap: Double;
+    idx: Integer;
+    more: TArray<Integer>;
+
+    // One LM call for the listed candidates, appended to those scored so far.
+    function score_more(const indices: TArray<Integer>): Boolean;
+    var
+        texts: TArray<string>;
+        logp: TArray<Single>;
+        at: Integer;
+    begin
+        Result := False;
+        SetLength(texts, Length(indices));
+        for at := 0 to High(indices) do
+        begin
+            texts[at] := candidates[indices[at]].text;
+            if texts[at] = '' then
+                Exit;
+        end;
+        if model.score_texts(context, texts, Length(texts), 0, logp) <> Length(texts) then
+            Exit;
+        for at := 0 to High(indices) do
+        begin
+            order := order + [indices[at]];
+            scored := scored + [logp[at]];
+        end;
+        Result := True;
+    end;
+
+    // The ranker over everything scored so far. gap is the lead of the best
+    // score over the next one, the user's records aside.
+    procedure choose(out gap: Double);
+    var
+        features: array[0..c_one_key_gbdt_feature_count - 1] of Double;
+        per_char: TArray<Double>;
+        at, other, units, candidate, lm_rank: Integer;
+        is_incumbent, lm_max, per_char_max, score, best_score, top, next: Double;
+        found: Boolean;
+    begin
+        SetLength(per_char, Length(order));
+        lm_max := -MaxDouble;
+        per_char_max := -MaxDouble;
+        for at := 0 to High(order) do
+        begin
+            per_char[at] := scored[at] /
+                Max(1, nc_char_lm_code_point_count(candidates[order[at]].text));
+            lm_max := Max(lm_max, scored[at]);
+            per_char_max := Max(per_char_max, per_char[at]);
+        end;
+        best_index := incumbent_index;
+        best_score := 0.0;
+        found := False;
+        top := -MaxDouble;
+        next := -MaxDouble;
+        for at := 0 to High(order) do
+        begin
+            candidate := order[at];
+            units := Max(1, nc_char_lm_code_point_count(candidates[candidate].text));
+            is_incumbent := Ord(candidate = incumbent_index);
+            // Rank by LM within the group, earlier entries first on ties.
+            lm_rank := 0;
+            for other := 0 to High(order) do
+                if (scored[other] > scored[at]) or ((scored[other] = scored[at]) and (other < at)) then
+                    Inc(lm_rank);
+            features[0] := scored[at];
+            features[1] := per_char[at];
+            features[2] := Ln(candidates[candidate].pool_rank);
+            features[3] := is_incumbent;
+            features[4] := Ln(1 + Max(0, candidates[candidate].weight));
+            features[5] := Ln(1 + Max(0, candidates[candidate].popularity_prior));
+            features[6] := candidates[candidate].corpus_score / 1000.0;
+            features[7] := units;
+            features[8] := units - typed_units;
+            features[9] := candidates[candidate].engine_lm_score / 1000.0;
+            features[10] := Ord(candidates[candidate].prefix_anchored);
+            features[11] := Ln(1 + Max(0, candidates[candidate].source_count));
+            features[12] := scored[at] * has_context;
+            features[13] := is_incumbent * (1.0 - has_context);
+            features[14] := scored[at] - lm_max;
+            features[15] := per_char[at] - per_char_max;
+            features[16] := lm_rank;
+            features[17] := has_context;
+            features[18] := Length(order);
+            features[19] := typed_units;
+            score := nc_one_key_gbdt_score(features);
+            if score > top then
+            begin
+                next := top;
+                top := score;
+            end
+            else if score > next then
+                next := score;
+            if (candidate <> incumbent_index) and (incumbent_index >= 0) and
+                (incumbent_index < Length(candidates)) and
+                not nc_char_lm_completion_may_replace(candidates[candidate],
+                candidates[incumbent_index]) then
+                Continue;
+            if (not found) or (score > best_score) then
+            begin
+                found := True;
+                best_index := candidate;
+                best_score := score;
+            end;
+        end;
+        gap := MaxDouble;
+        if Length(order) > 1 then
+            gap := top - next;
+    end;
+
 begin
     Result := False;
     best_index := incumbent_index;
-    found := False;
     if (model = nil) or (Length(candidates) < 2) or (not model.char_lm_ready) then
         Exit;
-    // The first pool entries in order, then the incumbent when it lies beyond.
-    SetLength(order, 0);
-    for idx := 0 to Min(c_char_lm_completion_limit, Length(candidates)) - 1 do
-        order := order + [idx];
-    if (incumbent_index >= c_char_lm_completion_limit) and
-        (incumbent_index < Length(candidates)) then
-        order := order + [incumbent_index];
-    SetLength(texts, Length(order));
-    for idx := 0 to High(order) do
-    begin
-        texts[idx] := candidates[order[idx]].text;
-        if texts[idx] = '' then
-            Exit;
-    end;
-    if model.score_texts(context, texts, Length(texts), 0, logp) <> Length(texts) then
-        Exit;
-
     has_context := Ord(Trim(context) <> '');
-    SetLength(per_char, Length(order));
-    lm_max := -MaxDouble;
-    per_char_max := -MaxDouble;
-    for idx := 0 to High(order) do
-    begin
-        per_char[idx] := logp[idx] / Max(1, nc_char_lm_code_point_count(texts[idx]));
-        lm_max := Max(lm_max, logp[idx]);
-        per_char_max := Max(per_char_max, per_char[idx]);
-    end;
-    best_score := 0.0;
-    for idx := 0 to High(order) do
-    begin
-        candidate := order[idx];
-        units := Max(1, nc_char_lm_code_point_count(texts[idx]));
-        is_incumbent := Ord(candidate = incumbent_index);
-        // Rank by LM within the group, earlier entries first on ties.
-        lm_rank := 0;
-        for other := 0 to High(order) do
-            if (logp[other] > logp[idx]) or ((logp[other] = logp[idx]) and (other < idx)) then
-                Inc(lm_rank);
-        features[0] := logp[idx];
-        features[1] := per_char[idx];
-        features[2] := Ln(candidates[candidate].pool_rank);
-        features[3] := is_incumbent;
-        features[4] := Ln(1 + Max(0, candidates[candidate].weight));
-        features[5] := Ln(1 + Max(0, candidates[candidate].popularity_prior));
-        features[6] := candidates[candidate].corpus_score / 1000.0;
-        features[7] := units;
-        features[8] := units - typed_units;
-        features[9] := candidates[candidate].engine_lm_score / 1000.0;
-        features[10] := Ord(candidates[candidate].prefix_anchored);
-        features[11] := Ln(1 + Max(0, candidates[candidate].source_count));
-        features[12] := logp[idx] * has_context;
-        features[13] := is_incumbent * (1.0 - has_context);
-        features[14] := logp[idx] - lm_max;
-        features[15] := per_char[idx] - per_char_max;
-        features[16] := lm_rank;
-        features[17] := has_context;
-        features[18] := Length(order);
-        features[19] := typed_units;
-        score := nc_one_key_gbdt_score(features);
-        if (candidate <> incumbent_index) and (incumbent_index >= 0) and
-            (incumbent_index < Length(candidates)) and
-            not nc_char_lm_completion_may_replace(candidates[candidate],
-            candidates[incumbent_index]) then
-            Continue;
-        if (not found) or (score > best_score) then
-        begin
-            found := True;
-            best_index := candidate;
-            best_score := score;
-        end;
-    end;
+    // First the leading pool entries, and the incumbent when it lies beyond.
+    SetLength(more, 0);
+    for idx := 0 to Min(c_char_lm_completion_first, Length(candidates)) - 1 do
+        more := more + [idx];
+    if (incumbent_index >= c_char_lm_completion_first) and
+        (incumbent_index < Length(candidates)) then
+        more := more + [incumbent_index];
+    if not score_more(more) then
+        Exit;
+    choose(gap);
     Result := True;
+    // A clear lead ends it there. Otherwise the rest of the pool and the
+    // rerank-only extras are scored, and the choice is made again over all.
+    if gap >= c_char_lm_completion_wide_gap then
+        Exit;
+    SetLength(more, 0);
+    for idx := c_char_lm_completion_first to
+        Min(c_char_lm_completion_limit, Length(candidates)) - 1 do
+        if idx <> incumbent_index then
+            more := more + [idx];
+    if (Length(more) = 0) or not score_more(more) then
+        Exit;
+    choose(gap);
 end;
 
 function nc_char_lm_completion_may_replace(const challenger,
@@ -784,17 +854,127 @@ end;
 function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
     const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean;
 var
-    count, idx, other, units, shared, lp_rank, weight_rank, context_units: Integer;
-    chars, first_chars: TArray<string>;
-    texts, full_texts: TArray<string>;
+    count, idx, other, part: Integer;
+    chars: TArray<string>;
+    texts: TArray<string>;
     slots: array of array[0..2] of Integer;
     slot_of: TDictionary<string, Integer>;
-    logp, plain_logp: TArray<Single>;
-    lp, lp1, lp2, plain, log_weight, log_display: TArray<Double>;
-    features: array[0..c_short_gbdt_feature_count - 1] of Double;
-    lp_max, lp1_max, gain_max, score, best_score: Double;
-    text, prefix, line: string;
-    part: Integer;
+    logp: TArray<Single>;
+    sorted_texts: TArray<string>;
+    plain, plain1, plain2, log_weight, log_display: TArray<Double>;
+    prefix: string;
+    plain_lead: Double;
+
+    // The ranker over the group: from the scores after the context in logp
+    // (with_context), or from the context-free scores alone, as for input
+    // without a left context. lead is the best score's margin over the next.
+    function choose(const with_context: Boolean; out lead: Double): Integer;
+    var
+        lp, lp1, lp2: TArray<Double>;
+        features: array[0..c_short_gbdt_feature_count - 1] of Double;
+        own_chars, first_chars: TArray<string>;
+        at, against, units, shared, lp_rank, weight_rank, context_units: Integer;
+        lp_max, lp1_max, gain_max, score, best_score, next_score: Double;
+        line: string;
+    begin
+        SetLength(lp, count);
+        SetLength(lp1, count);
+        SetLength(lp2, count);
+        lp_max := -MaxDouble;
+        lp1_max := -MaxDouble;
+        gain_max := -MaxDouble;
+        for at := 0 to count - 1 do
+        begin
+            if with_context then
+            begin
+                lp[at] := logp[slots[at][0]];
+                lp1[at] := logp[slots[at][1]];
+                lp2[at] := logp[slots[at][2]];
+            end
+            else
+            begin
+                lp[at] := plain[at];
+                lp1[at] := plain1[at];
+                lp2[at] := plain2[at];
+            end;
+            lp_max := Max(lp_max, lp[at]);
+            lp1_max := Max(lp1_max, lp1[at]);
+            gain_max := Max(gain_max, lp[at] - plain[at]);
+        end;
+        context_units := 0;
+        if with_context then
+            context_units := nc_char_lm_code_point_count(context);
+        first_chars := code_points(candidates[0].text);
+        Result := 0;
+        best_score := 0.0;
+        next_score := -MaxDouble;
+        for at := 0 to count - 1 do
+        begin
+            own_chars := code_points(candidates[at].text);
+            units := Max(1, Length(own_chars));
+            shared := 0;
+            while (shared < Length(own_chars)) and (shared < Length(first_chars)) and
+                (own_chars[shared] = first_chars[shared]) do
+                Inc(shared);
+            // Standing in the group by log P and by dictionary weight, earlier first on ties.
+            lp_rank := 0;
+            weight_rank := 0;
+            for against := 0 to count - 1 do
+            begin
+                if (lp[against] > lp[at]) or ((lp[against] = lp[at]) and (against < at)) then
+                    Inc(lp_rank);
+                if (log_weight[against] > log_weight[at]) or
+                    ((log_weight[against] = log_weight[at]) and (against < at)) then
+                    Inc(weight_rank);
+            end;
+            features[0] := lp[at];
+            features[1] := lp[at] / units;
+            features[2] := lp[at] - lp_max;
+            features[3] := lp[at] - lp[0];
+            features[4] := lp_rank;
+            features[5] := Ln(1.0 + Max(0, candidates[at].position));
+            features[6] := at;
+            features[7] := units;
+            features[8] := count;
+            features[9] := log_weight[at];
+            features[10] := Ord(candidates[at].has_dict_weight);
+            features[11] := log_weight[at] - log_weight[0];
+            features[12] := log_display[at];
+            features[13] := log_display[at] - log_display[0];
+            features[14] := Ord(candidates[at].user);
+            features[15] := lp1[at];
+            features[16] := lp2[at];
+            features[17] := lp[at] - lp1[at];
+            features[18] := lp1[at] - lp1_max;
+            features[19] := Min(context_units, 32);
+            features[20] := shared;
+            features[21] := weight_rank;
+            features[22] := plain[at];
+            features[23] := lp[at] - plain[at];
+            features[24] := lp[at] - plain[at] - gain_max;
+            score := nc_short_gbdt_score(features);
+            // The trace holds the view the call is decided on with its context.
+            if Assigned(nc_char_lm_short_trace) and (with_context = (context <> '')) then
+            begin
+                line := candidates[at].text;
+                for against := 0 to c_short_gbdt_feature_count - 1 do
+                    line := line + #9 + FloatToStr(features[against], TFormatSettings.Invariant);
+                nc_char_lm_short_trace(line + #9 + FloatToStr(score, TFormatSettings.Invariant));
+            end;
+            if at = 0 then
+                best_score := score
+            else if score > best_score then
+            begin
+                next_score := best_score;
+                best_score := score;
+                Result := at;
+            end
+            else if score > next_score then
+                next_score := score;
+        end;
+        lead := best_score - next_score;
+    end;
+
 begin
     Result := False;
     best_index := 0;
@@ -826,104 +1006,51 @@ begin
     finally
         slot_of.Free;
     end;
-    if model.score_texts(context, texts, Length(texts), 0, logp) <> Length(texts) then
+    // Without context, in the order of the texts themselves: the model's
+    // scores depend on what else is in a call, so the call must not depend on
+    // the order the candidates arrive in. The same group of words then always
+    // gets the same scores, and the host keeps them.
+    sorted_texts := Copy(texts);
+    TArray.Sort<string>(sorted_texts, TStringComparer.Ordinal);
+    if model.score_texts('', sorted_texts, Length(sorted_texts), 0, logp) <>
+        Length(sorted_texts) then
         Exit;
-    // The same texts without context: how much the context itself supports each.
     SetLength(plain, count);
-    if context <> '' then
-    begin
-        SetLength(full_texts, count);
-        for idx := 0 to count - 1 do
-            full_texts[idx] := candidates[idx].text;
-        if model.score_texts('', full_texts, count, 0, plain_logp) <> count then
-            Exit;
-    end;
-    SetLength(lp, count);
-    SetLength(lp1, count);
-    SetLength(lp2, count);
-    SetLength(log_weight, count);
-    SetLength(log_display, count);
-    lp_max := -MaxDouble;
-    lp1_max := -MaxDouble;
-    gain_max := -MaxDouble;
+    SetLength(plain1, count);
+    SetLength(plain2, count);
     for idx := 0 to count - 1 do
     begin
-        lp[idx] := logp[slots[idx][0]];
-        lp1[idx] := logp[slots[idx][1]];
-        lp2[idx] := logp[slots[idx][2]];
-        lp_max := Max(lp_max, lp[idx]);
-        lp1_max := Max(lp1_max, lp1[idx]);
-        plain[idx] := lp[idx];
-        if context <> '' then
-            plain[idx] := plain_logp[idx];
-        gain_max := Max(gain_max, lp[idx] - plain[idx]);
+        for part := 0 to 2 do
+        begin
+            TArray.BinarySearch<string>(sorted_texts, texts[slots[idx][part]], other,
+                TStringComparer.Ordinal);
+            case part of
+                0: plain[idx] := logp[other];
+                1: plain1[idx] := logp[other];
+            else
+                plain2[idx] := logp[other];
+            end;
+        end;
+    end;
+    SetLength(log_weight, count);
+    SetLength(log_display, count);
+    for idx := 0 to count - 1 do
+    begin
         log_weight[idx] := 0.0;
         if candidates[idx].has_dict_weight then
             log_weight[idx] := Ln(1.0 + Max(0, candidates[idx].dict_weight));
         log_display[idx] := Ln(1.0 + Max(0, candidates[idx].display_score));
     end;
-    context_units := nc_char_lm_code_point_count(context);
-    first_chars := code_points(candidates[0].text);
-    best_score := 0.0;
-    for idx := 0 to count - 1 do
-    begin
-        text := candidates[idx].text;
-        chars := code_points(text);
-        units := Max(1, Length(chars));
-        shared := 0;
-        while (shared < Length(chars)) and (shared < Length(first_chars)) and
-            (chars[shared] = first_chars[shared]) do
-            Inc(shared);
-        // Standing in the group by log P and by dictionary weight, earlier first on ties.
-        lp_rank := 0;
-        weight_rank := 0;
-        for other := 0 to count - 1 do
-        begin
-            if (lp[other] > lp[idx]) or ((lp[other] = lp[idx]) and (other < idx)) then
-                Inc(lp_rank);
-            if (log_weight[other] > log_weight[idx]) or
-                ((log_weight[other] = log_weight[idx]) and (other < idx)) then
-                Inc(weight_rank);
-        end;
-        features[0] := lp[idx];
-        features[1] := lp[idx] / units;
-        features[2] := lp[idx] - lp_max;
-        features[3] := lp[idx] - lp[0];
-        features[4] := lp_rank;
-        features[5] := Ln(1.0 + Max(0, candidates[idx].position));
-        features[6] := idx;
-        features[7] := units;
-        features[8] := count;
-        features[9] := log_weight[idx];
-        features[10] := Ord(candidates[idx].has_dict_weight);
-        features[11] := log_weight[idx] - log_weight[0];
-        features[12] := log_display[idx];
-        features[13] := log_display[idx] - log_display[0];
-        features[14] := Ord(candidates[idx].user);
-        features[15] := lp1[idx];
-        features[16] := lp2[idx];
-        features[17] := lp[idx] - lp1[idx];
-        features[18] := lp1[idx] - lp1_max;
-        features[19] := Min(context_units, 32);
-        features[20] := shared;
-        features[21] := weight_rank;
-        features[22] := plain[idx];
-        features[23] := lp[idx] - plain[idx];
-        features[24] := lp[idx] - plain[idx] - gain_max;
-        score := nc_short_gbdt_score(features);
-        if Assigned(nc_char_lm_short_trace) then
-        begin
-            line := text;
-            for other := 0 to c_short_gbdt_feature_count - 1 do
-                line := line + #9 + FloatToStr(features[other], TFormatSettings.Invariant);
-            nc_char_lm_short_trace(line + #9 + FloatToStr(score, TFormatSettings.Invariant));
-        end;
-        if (idx = 0) or (score > best_score) then
-        begin
-            best_index := idx;
-            best_score := score;
-        end;
-    end;
+    best_index := choose(False, plain_lead);
+    // A trace always takes the call with the context: it is what the ranker
+    // is fit on.
+    if (context = '') or ((plain_lead >= c_char_lm_short_plain_lead) and
+        not Assigned(nc_char_lm_short_trace)) then
+        Exit(True);
+    best_index := 0;
+    if model.score_texts(context, texts, Length(texts), 0, logp) <> Length(texts) then
+        Exit;
+    best_index := choose(True, plain_lead);
     Result := True;
 end;
 

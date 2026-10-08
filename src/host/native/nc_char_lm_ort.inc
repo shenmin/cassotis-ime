@@ -11,6 +11,9 @@ namespace {
 constexpr int64_t kCharLmBos = 0;
 constexpr int64_t kCharLmUnknown = 1;
 constexpr size_t kCharLmMaxNodes = 1024;
+// A scoring call keeps a context of at least this many tokens between calls
+// (see CharLmScore).
+constexpr size_t kCharLmContextSplit = 16;
 constexpr int kCharLmMaxTexts = 256;
 
 // A real ORT cancellation deadline, not merely discarding an already-late result.
@@ -52,6 +55,13 @@ struct CharLmHandle {
     std::vector<std::string> input_names;
     std::vector<std::string> output_names;
     std::mutex mutex;
+    // BOS + context of the last scoring call (CharLmScore): the token ids
+    // after BOS, the per-layer cache of that run and the distribution after
+    // its last token.
+    bool context_valid{};
+    std::vector<int64_t> context_ids;
+    std::vector<std::vector<float>> context_cache;
+    std::vector<float> context_next;
 };
 
 // Sessions by model path, so the shared LM and the repair host load one copy of
@@ -179,11 +189,49 @@ void CharLmTopNext(const CharLmHandle& h, const float* row, int top_k, uint32_t*
     }
 }
 
+// Runs BOS + context alone and keeps its per-layer cache and the distribution
+// after its last token in the handle, unless the handle holds them already.
+void CharLmPrepareContext(CharLmHandle& h, const std::vector<int64_t>& context_ids,
+    Ort::RunOptions& options) {
+    if (h.context_valid && h.context_ids == context_ids) return;
+    h.context_valid = false;
+    std::vector<int64_t> ids{kCharLmBos};
+    ids.insert(ids.end(), context_ids.begin(), context_ids.end());
+    const size_t m = ids.size();
+    std::vector<int64_t> positions(m);
+    std::vector<int32_t> mask(m * m, 0);
+    for (size_t i = 0; i < m; ++i) {
+        positions[i] = static_cast<int64_t>(i);
+        for (size_t j = 0; j <= i; ++j) mask[i * m + j] = 1;
+    }
+    auto outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, true, options);
+    const float* logp = outputs[0].GetTensorData<float>();
+    const size_t vocab = static_cast<size_t>(h.vocab_size);
+    h.context_next.assign(logp + (m - 1) * vocab, logp + m * vocab);
+    h.context_cache.clear();
+    for (size_t i = 1; i < outputs.size(); ++i) {
+        const auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();  // [2,1,H,T,D]
+        if (shape.size() != 5 || shape[3] != static_cast<int64_t>(m))
+            throw std::runtime_error("unexpected character LM cache shape");
+        const float* data = outputs[i].GetTensorData<float>();
+        h.context_cache.emplace_back(data, data + static_cast<size_t>(shape[0] * shape[1] * shape[2] * shape[3] * shape[4]));
+    }
+    h.context_ids = context_ids;
+    h.context_valid = true;
+}
+
 // Sum of log P(text | BOS + context) for each leading text, from one packed trie.
 // Texts are taken in order while the trie (BOS and context included) stays within
 // max_nodes; the first min_count texts are always taken. For each of next_count
 // text indices, also writes the top_k Han characters after that text (code point
 // 0 when the text was not scored). Returns how many texts were scored, or -1.
+//
+// A context of at least kCharLmContextSplit tokens runs on its own with BOS
+// (CharLmPrepareContext) and the trie runs against that cache, in every such
+// call: a request's scores then do not depend on whether an earlier call left
+// the same context behind. A shorter context runs with the trie, as one graph
+// run: a run costs about as much as twenty nodes however small it is, so the
+// split only pays when the calls that reuse the context save more than that.
 int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* texts, int count,
     int min_count, size_t max_nodes, float* out, Ort::RunOptions& options,
     const int* next_indices = nullptr, int next_count = 0, int top_k = 0,
@@ -200,25 +248,23 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
     if (context_ids.size() > context_room)
         context_ids.erase(context_ids.begin(), context_ids.end() - static_cast<std::ptrdiff_t>(context_room));
 
-    // Root chain: BOS, then the context.
-    std::vector<int64_t> ids{kCharLmBos}, positions{0};
-    std::vector<int32_t> parents{-1};
-    for (int64_t token : context_ids) {
-        parents.push_back(static_cast<int32_t>(ids.size()) - 1);
-        positions.push_back(static_cast<int64_t>(ids.size()));
-        ids.push_back(token);
-    }
-    const int32_t root = static_cast<int32_t>(ids.size()) - 1;
+    // The root chain is BOS, then the context; the trie hangs below its last
+    // token. Trie nodes are numbered from 0, parent -1 is that last token.
+    const size_t root_chain = 1 + context_ids.size();
+    std::vector<int64_t> ids, positions;
+    std::vector<int32_t> parents;
     std::unordered_map<uint64_t, int32_t> children;
     std::vector<std::vector<int32_t>> paths;
+    auto child_key = [](int32_t node, int64_t token) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(node + 1)) << 32) | static_cast<uint32_t>(token);
+    };
     for (int i = 0; i < count; ++i) {
         // Nodes this text would add; a text that does not fit ends the batch.
         size_t added = 0;
-        int32_t node = root;
+        int32_t node = -1;
         const auto& text = encoded[static_cast<size_t>(i)];
         for (size_t t = 0; t < text.size(); ++t) {
-            const uint64_t key = (static_cast<uint64_t>(node) << 32) | static_cast<uint32_t>(text[t]);
-            const auto found = children.find(key);
+            const auto found = children.find(child_key(node, text[t]));
             if (found == children.end()) {
                 added = text.size() - t;
                 break;
@@ -226,19 +272,19 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
             node = found->second;
         }
         const size_t limit = i < min_count ? kCharLmMaxNodes : std::min(max_nodes, kCharLmMaxNodes);
-        if (ids.size() + added > limit) {
+        if (root_chain + ids.size() + added > limit) {
             if (i < min_count) return -1;
             break;
         }
-        node = root;
+        node = -1;
         paths.emplace_back();
         for (int64_t token : text) {
-            const uint64_t key = (static_cast<uint64_t>(node) << 32) | static_cast<uint32_t>(token);
-            auto found = children.find(key);
+            auto found = children.find(child_key(node, token));
             if (found == children.end()) {
-                found = children.emplace(key, static_cast<int32_t>(ids.size())).first;
+                found = children.emplace(child_key(node, token), static_cast<int32_t>(ids.size())).first;
                 parents.push_back(node);
-                positions.push_back(positions[static_cast<size_t>(node)] + 1);
+                positions.push_back(node < 0 ? static_cast<int64_t>(root_chain)
+                    : positions[static_cast<size_t>(node)] + 1);
                 ids.push_back(token);
             }
             node = found->second;
@@ -246,17 +292,60 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
         }
     }
     const size_t n = ids.size();
-    std::vector<int32_t> mask(n * n, 0);
-    for (size_t i = 0; i < n; ++i)
-        for (int32_t j = static_cast<int32_t>(i); j >= 0; j = parents[static_cast<size_t>(j)])
-            mask[i * n + static_cast<size_t>(j)] = 1;
-    auto outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, false, options);
-    const float* logp = outputs[0].GetTensorData<float>();
+    const size_t vocab = static_cast<size_t>(h.vocab_size);
+    std::vector<Ort::Value> outputs;
+    const float* logp = nullptr;
+    const bool split = context_ids.size() >= kCharLmContextSplit;
+    std::vector<float> root_next;
+    if (!split) {
+        // One run: the root chain, then the trie nodes behind it.
+        const size_t total = root_chain + n;
+        std::vector<int64_t> all_ids{kCharLmBos}, all_positions;
+        all_ids.insert(all_ids.end(), context_ids.begin(), context_ids.end());
+        for (size_t i = 0; i < root_chain; ++i) all_positions.push_back(static_cast<int64_t>(i));
+        all_ids.insert(all_ids.end(), ids.begin(), ids.end());
+        all_positions.insert(all_positions.end(), positions.begin(), positions.end());
+        std::vector<int32_t> mask(total * total, 0);
+        for (size_t i = 0; i < root_chain; ++i)
+            for (size_t j = 0; j <= i; ++j) mask[i * total + j] = 1;
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < root_chain; ++j) mask[(root_chain + i) * total + j] = 1;
+            for (int32_t j = static_cast<int32_t>(i); j >= 0; j = parents[static_cast<size_t>(j)])
+                mask[(root_chain + i) * total + root_chain + static_cast<size_t>(j)] = 1;
+        }
+        outputs = CharLmRun(h, all_ids, all_positions, mask, 0, nullptr, false, options);
+        const float* all_logp = outputs[0].GetTensorData<float>();
+        root_next.assign(all_logp + (root_chain - 1) * vocab, all_logp + root_chain * vocab);
+        logp = all_logp + root_chain * vocab;
+    } else {
+        CharLmPrepareContext(h, context_ids, options);
+    }
+    const float* root_row = split ? h.context_next.data() : root_next.data();
+    if (split && n > 0) {
+        // Every node sees the whole root chain and its own ancestors.
+        const size_t width = root_chain + n;
+        std::vector<int32_t> mask(n * width, 0);
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < root_chain; ++j) mask[i * width + j] = 1;
+            for (int32_t j = static_cast<int32_t>(i); j >= 0; j = parents[static_cast<size_t>(j)])
+                mask[i * width + root_chain + static_cast<size_t>(j)] = 1;
+        }
+        auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        const std::array<int64_t, 5> past_shape{2, 1, h.heads, static_cast<int64_t>(root_chain), h.head_dim};
+        std::vector<Ort::Value> past;
+        for (auto& layer : h.context_cache)
+            past.push_back(Ort::Value::CreateTensor<float>(memory, layer.data(), layer.size(),
+                past_shape.data(), past_shape.size()));
+        outputs = CharLmRun(h, ids, positions, mask, static_cast<int64_t>(root_chain), &past, false, options);
+        logp = outputs[0].GetTensorData<float>();
+    }
     for (size_t i = 0; i < paths.size(); ++i) {
         double total = 0.0;
-        for (int32_t node : paths[i])
-            total += logp[static_cast<size_t>(parents[static_cast<size_t>(node)]) * static_cast<size_t>(h.vocab_size) +
-                static_cast<size_t>(ids[static_cast<size_t>(node)])];
+        for (int32_t node : paths[i]) {
+            const int32_t parent = parents[static_cast<size_t>(node)];
+            const float* row = parent < 0 ? root_row : logp + static_cast<size_t>(parent) * vocab;
+            total += row[static_cast<size_t>(ids[static_cast<size_t>(node)])];
+        }
         out[i] = static_cast<float>(total);
     }
     for (int j = 0; j < next_count; ++j) {
@@ -269,7 +358,7 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
             continue;
         }
         const size_t node = static_cast<size_t>(paths[static_cast<size_t>(i)].back());
-        CharLmTopNext(h, logp + node * static_cast<size_t>(h.vocab_size), top_k, cps, lps);
+        CharLmTopNext(h, logp + node * vocab, top_k, cps, lps);
     }
     return static_cast<int>(paths.size());
 }

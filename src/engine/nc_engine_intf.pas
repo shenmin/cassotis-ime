@@ -911,9 +911,11 @@ type
             const completion: TncOneKeyCompletion);
         procedure prepare_decoded_continuation_request(const model: IncCharLm;
             const context: string);
+        procedure append_one_key_rerank_extras(const query_text: string;
+            var pool: TncOneKeyCompletionList);
         procedure prepare_one_key_rerank(const completions: TncOneKeyCompletionList;
             const engine_lm_scores: TArray<Integer>; const engine_lm_context: string;
-            const incumbent, typed_units: Integer);
+            const incumbent, typed_units: Integer; const query_text: string);
         function get_current_page_candidate_count(
             const page_size: Integer): Integer;
         function get_page_count_internal(const page_size: Integer): Integer;
@@ -4951,6 +4953,8 @@ begin
     begin
         Exit;
     end;
+    // The pool the rerank sees: the lookup's, then the rerank-only extras.
+    append_one_key_rerank_extras(query_text, completions);
 
     SetLength(completion_texts, Length(completions));
     for idx := 0 to High(completions) do
@@ -8287,9 +8291,10 @@ begin
     m_one_key_completion_score := scores[best_idx];
     if has_char_lm then
         prepare_one_key_rerank(completions, char_lm_scores, context_value, best_idx,
-            Length(syllables))
+            Length(syllables), query_text)
     else
-        prepare_one_key_rerank(completions, nil, context_value, best_idx, Length(syllables));
+        prepare_one_key_rerank(completions, nil, context_value, best_idx, Length(syllables),
+            query_text);
     apply_long_completion;
 end;
 
@@ -137445,9 +137450,11 @@ var
     value: TncCandidate;
 begin
     Result := False;
-    // Without left context the no-context residual has already ordered the
-    // exact entries; a model fit on that track did not generalize as well.
-    if (not m_char_lm_short_enabled) or (m_char_lm = nil) or (Trim(context) = '') or
+    // Without left context the short promotion table has already ordered
+    // the exact entries, and the choice then works from each word's score at
+    // the start of a text.
+    if (not m_char_lm_short_enabled) or (m_char_lm = nil) or
+        ((Trim(context) = '') and nc_long_ablated(la_short_empty_context)) or
         (Length(candidates) < 2) or (Length(candidates) <> Length(source_indices)) or
         (candidates[0].source = cs_user) then
         Exit;
@@ -137671,58 +137678,106 @@ begin
     Result := candidates;
 end;
 
+procedure TncEngine.append_one_key_rerank_extras(const query_text: string;
+    var pool: TncOneKeyCompletionList);
+var
+    extras: TncOneKeyCompletionList;
+    idx, other: Integer;
+    duplicate: Boolean;
+begin
+    if (m_dictionary = nil) or (Length(pool) >= c_char_lm_completion_limit) or
+        not m_dictionary.lookup_one_key_completion_extras(query_text, extras) then
+        Exit;
+    for idx := 0 to High(extras) do
+    begin
+        if Length(pool) >= c_char_lm_completion_limit then
+            Break;
+        duplicate := False;
+        for other := 0 to High(pool) do
+            if SameText(pool[other].text, extras[idx].text) and
+                SameText(pool[other].full_pinyin, extras[idx].full_pinyin) then
+            begin
+                duplicate := True;
+                Break;
+            end;
+        if not duplicate then
+            pool := pool + [extras[idx]];
+    end;
+end;
+
 procedure TncEngine.prepare_one_key_rerank(const completions: TncOneKeyCompletionList;
     const engine_lm_scores: TArray<Integer>; const engine_lm_context: string;
-    const incumbent, typed_units: Integer);
+    const incumbent, typed_units: Integer; const query_text: string);
 var
     request: TncOneKeyRerankRequest;
-    lm_scores: TArray<Integer>;
+    pool: TncOneKeyCompletionList;
+    lm_scores, extra_scores: TArray<Integer>;
     texts: TArray<string>;
     idx: Integer;
 begin
     m_has_one_key_rerank_request := False;
     if (m_char_lm = nil) or (not m_char_lm_short_enabled) or
-        (Length(completions) < 2) or (incumbent < 0) or
+        (Length(completions) < 1) or (incumbent < 0) or
         (incumbent > High(completions)) then
         Exit;
-    // The engine n-gram context score is a feature; compute it when the
-    // established ranker did not.
+    // The rerank also sees dictionary words outside the bounded pool; the
+    // immediate choice above was made without them.
+    pool := Copy(completions);
+    append_one_key_rerank_extras(query_text, pool);
+    if Length(pool) < 2 then
+        Exit;
+    // The engine n-gram context score is a feature; compute it for what the
+    // established ranker did not score.
     lm_scores := engine_lm_scores;
-    if Length(lm_scores) <> Length(completions) then
+    if Length(lm_scores) = Length(completions) then
     begin
-        SetLength(texts, Length(completions));
-        for idx := 0 to High(completions) do
-            texts[idx] := completions[idx].text;
+        if Length(pool) > Length(completions) then
+        begin
+            SetLength(texts, Length(pool) - Length(completions));
+            for idx := 0 to High(texts) do
+                texts[idx] := pool[Length(completions) + idx].text;
+            if get_cached_char_lm_scores(texts, extra_scores, clsm_context,
+                engine_lm_context) and (Length(extra_scores) = Length(texts)) then
+                lm_scores := lm_scores + extra_scores
+            else
+                SetLength(lm_scores, Length(pool));
+        end;
+    end
+    else
+    begin
+        SetLength(texts, Length(pool));
+        for idx := 0 to High(pool) do
+            texts[idx] := pool[idx].text;
         if (not get_cached_char_lm_scores(texts, lm_scores, clsm_context,
-            engine_lm_context)) or (Length(lm_scores) <> Length(completions)) then
+            engine_lm_context)) or (Length(lm_scores) <> Length(pool)) then
         begin
             lm_scores := nil;
-            SetLength(lm_scores, Length(completions));
+            SetLength(lm_scores, Length(pool));
         end;
     end;
     request := Default(TncOneKeyRerankRequest);
-    SetLength(request.candidates, Length(completions));
-    for idx := 0 to High(completions) do
+    SetLength(request.candidates, Length(pool));
+    for idx := 0 to High(pool) do
     begin
-        request.candidates[idx].text := Trim(completions[idx].text);
+        request.candidates[idx].text := Trim(pool[idx].text);
         request.candidates[idx].pool_rank := idx + 1;
-        request.candidates[idx].weight := completions[idx].weight;
-        request.candidates[idx].popularity_prior := completions[idx].popularity_prior;
-        request.candidates[idx].corpus_score := completions[idx].corpus_score;
+        request.candidates[idx].weight := pool[idx].weight;
+        request.candidates[idx].popularity_prior := pool[idx].popularity_prior;
+        request.candidates[idx].corpus_score := pool[idx].corpus_score;
         request.candidates[idx].engine_lm_score := lm_scores[idx];
-        request.candidates[idx].source_count := completions[idx].source_count;
-        request.candidates[idx].prefix_anchored := completions[idx].prefix_anchored;
-        request.candidates[idx].feedback_count := completions[idx].feedback_count;
-        request.candidates[idx].feedback_reject_count := completions[idx].feedback_reject_count;
+        request.candidates[idx].source_count := pool[idx].source_count;
+        request.candidates[idx].prefix_anchored := pool[idx].prefix_anchored;
+        request.candidates[idx].feedback_count := pool[idx].feedback_count;
+        request.candidates[idx].feedback_reject_count := pool[idx].feedback_reject_count;
     end;
     // The user's accept and reject records protect the incumbent as in the
     // established ranker; without an eligible challenger nothing can change.
     idx := 0;
-    while (idx < Length(completions)) and ((idx = incumbent) or
+    while (idx < Length(pool)) and ((idx = incumbent) or
         not nc_char_lm_completion_may_replace(request.candidates[idx],
         request.candidates[incumbent])) do
         Inc(idx);
-    if idx = Length(completions) then
+    if idx = Length(pool) then
         Exit;
     if m_segment_left_context <> '' then
         request.context := m_segment_left_context
@@ -137736,7 +137791,7 @@ begin
     request.incumbent_text := completions[incumbent].text;
     request.incumbent_pinyin := completions[incumbent].full_pinyin;
     m_one_key_rerank_request := request;
-    m_one_key_rerank_pool := Copy(completions);
+    m_one_key_rerank_pool := pool;
     m_has_one_key_rerank_request := True;
 end;
 

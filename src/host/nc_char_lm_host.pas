@@ -13,7 +13,8 @@ unit nc_char_lm_host;
 
 interface
 
-uses Winapi.Windows, System.SysUtils, System.Classes, System.SyncObjs, nc_char_lm;
+uses Winapi.Windows, System.SysUtils, System.Classes, System.SyncObjs,
+    System.Generics.Collections, nc_char_lm;
 
 type
     TncCharLmHost = class(TInterfacedObject, IncCharLm, IncCharLmNext, IncCharLmContinue)
@@ -45,6 +46,13 @@ type
         m_destroy: TDestroyModel;
         m_gate: TObject;
         m_foreground_waiting: Integer;
+        // Scores of small requests without context, by their texts: the same
+        // call always gives the same scores, and short words recur.
+        m_plain_cache: TDictionary<string, TArray<Single>>;
+        function plain_cache_key(const context: string; const texts: TArray<string>;
+            const min_count: Integer; const next_texts: TArray<Integer>): string;
+        function plain_cache_get(const key: string; out logp: TArray<Single>): Boolean;
+        procedure plain_cache_put(const key: string; const logp: TArray<Single>);
         procedure load;
         function run_score(const context: string; const texts: TArray<string>;
             const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
@@ -83,7 +91,10 @@ type
 { ORT intra-op threads for the shared LM session. The repair and shared-LM
   hosts open one model and share its session (created by whichever loads
   first), so both ask for the same count: one thread per logical processor,
-  at least 4 and at most 8. }
+  at least 4 and at most 8. Every thread of the pool stays busy for the length
+  of a run, so the count trades processor time for latency about one to one:
+  on six cores with twelve logical processors, six threads took 10 to 18%
+  less processor time than eight for runs 4 to 12% longer. }
 function nc_shared_lm_threads: Integer;
 
 implementation
@@ -175,6 +186,7 @@ begin
         m_threads := nc_shared_lm_threads;
     m_timeout_ms := timeout_ms;
     m_gate := TObject.Create;
+    m_plain_cache := TDictionary<string, TArray<Single>>.Create;
     m_signal := TEvent.Create(nil, True, False, '');
     if background then
     begin
@@ -203,7 +215,51 @@ begin
     if m_provider <> 0 then FreeLibrary(m_provider);
     m_signal.Free;
     m_gate.Free;
+    m_plain_cache.Free;
     inherited;
+end;
+
+function TncCharLmHost.plain_cache_key(const context: string; const texts: TArray<string>;
+    const min_count: Integer; const next_texts: TArray<Integer>): string;
+const
+    // A short-word candidate group: at most eight words, each with its first
+    // one and two characters.
+    c_texts = 24;
+    c_length = 160;
+begin
+    Result := '';
+    if (context <> '') or (Length(next_texts) > 0) or (Length(texts) = 0) or
+        (Length(texts) > c_texts) or (min_count < Length(texts)) then
+        Exit;
+    Result := string.Join(#1, texts);
+    if Length(Result) > c_length then
+        Result := '';
+end;
+
+function TncCharLmHost.plain_cache_get(const key: string; out logp: TArray<Single>): Boolean;
+begin
+    TMonitor.Enter(m_plain_cache);
+    try
+        Result := m_plain_cache.TryGetValue(key, logp);
+        if Result then
+            logp := Copy(logp);
+    finally
+        TMonitor.Exit(m_plain_cache);
+    end;
+end;
+
+procedure TncCharLmHost.plain_cache_put(const key: string; const logp: TArray<Single>);
+const
+    c_entries = 16384;
+begin
+    TMonitor.Enter(m_plain_cache);
+    try
+        if m_plain_cache.Count >= c_entries then
+            m_plain_cache.Clear;
+        m_plain_cache.AddOrSetValue(key, Copy(logp));
+    finally
+        TMonitor.Exit(m_plain_cache);
+    end;
 end;
 
 procedure TncCharLmHost.load;
@@ -300,12 +356,17 @@ function TncCharLmHost.score_texts_next(const context: string; const texts: TArr
     const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
     const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
     out next_logp: TArray<Single>): Integer;
+var
+    key: string;
 begin
     Result := -1;
     SetLength(logp, 0);
     SetLength(next_chars, 0);
     SetLength(next_logp, 0);
     if not char_lm_ready then Exit;
+    key := plain_cache_key(context, texts, min_count, next_texts);
+    if (key <> '') and plain_cache_get(key, logp) then
+        Exit(Length(logp));
     TInterlocked.Increment(m_foreground_waiting);
     try
         if not TMonitor.Enter(m_gate, c_foreground_wait_ms) then Exit;
@@ -318,24 +379,33 @@ begin
     finally
         TMonitor.Exit(m_gate);
     end;
+    if (key <> '') and (Result = Length(texts)) then
+        plain_cache_put(key, logp);
 end;
 
 function TncCharLmHost.score_texts_next_background(const context: string;
     const texts: TArray<string>; const min_count, max_nodes: Integer;
     const next_texts: TArray<Integer>; const top_k: Integer; out logp: TArray<Single>;
     out next_chars: TArray<string>; out next_logp: TArray<Single>): Integer;
+var
+    key: string;
 begin
     Result := -1;
     SetLength(logp, 0);
     SetLength(next_chars, 0);
     SetLength(next_logp, 0);
     if not char_lm_ready then Exit;
+    key := plain_cache_key(context, texts, min_count, next_texts);
+    if (key <> '') and plain_cache_get(key, logp) then
+        Exit(Length(logp));
     while TInterlocked.CompareExchange(m_foreground_waiting, 0, 0) > 0 do
         Sleep(1);
     TMonitor.Enter(m_gate);
     try
         Result := run_score(context, texts, min_count, max_nodes, next_texts, top_k, logp,
             next_chars, next_logp);
+        if (key <> '') and (Result = Length(texts)) then
+            plain_cache_put(key, logp);
     finally
         TMonitor.Exit(m_gate);
     end;
