@@ -11,11 +11,14 @@
 #include <cwctype>
 #include <float.h>
 #include <fstream>
+#include <immintrin.h>
+#include <intrin.h>
 #include <limits>
 #include <memory>
 #include <map>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <xmmintrin.h>
 #include <string>
 #include <string_view>
@@ -96,4 +99,5 @@ std::wstring Utf8ToWide(const char* message) {
 
 }  // namespace
 
+#include "nc_trie_attention.inc"
 #include "nc_char_lm_ort.inc"

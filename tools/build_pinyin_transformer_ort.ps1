@@ -146,6 +146,10 @@ if (-not [string]::IsNullOrWhiteSpace($SourceRoot)) {
     $root = (Resolve-Path -LiteralPath $SourceRoot).Path
 }
 $source = Join-Path $root 'src\host\native\nc_pinyin_transformer_ort.cpp'
+# The attention operator's AVX2 code is compiled on its own, so that only this
+# file uses AVX2 instructions (the caller checks the processor). Sources from
+# before the operator do not have it.
+$vectorSource = Join-Path $root 'src\host\native\nc_trie_attention_avx2.cpp'
 $include = Join-Path $root 'third_party\onnxruntime\include'
 $onnxLibrary = Join-Path $root 'third_party\onnxruntime\win64\onnxruntime.lib'
 $versionProps = Join-Path $root 'version.props'
@@ -166,6 +170,7 @@ $build_id = '{0}_{1}' -f $PID, [Guid]::NewGuid().ToString('N')
 $intermediateDir = Join-Path $root ('out\_tmp_build\pinyin_transformer_ort\' + $build_id)
 $stagedOutput = Join-Path $intermediateDir 'cassotis_pinyin_transformer_ort.dll'
 $object = Join-Path $intermediateDir 'cassotis_pinyin_transformer_ort.obj'
+$vectorObject = Join-Path $intermediateDir 'nc_trie_attention_avx2.obj'
 $importLibrary = Join-Path $intermediateDir 'cassotis_pinyin_transformer_ort.lib'
 $pdb = Join-Path $intermediateDir 'cassotis_pinyin_transformer_ort.pdb'
 $resourceScript = Join-Path $intermediateDir 'cassotis_pinyin_transformer_ort.rc'
@@ -250,13 +255,23 @@ if ($EnableExperimentalTop32CrossRanker) {
     $experimentalDefines += '/DCASSOTIS_EXPERIMENTAL_TOP32_CROSS_RANKER'
 }
 $experimentalDefine = $experimentalDefines -join ' '
-$command = 'call "{0}" >nul && rc.exe /nologo /fo"{9}" "{10}" && ' +
+$vectorCompile = ''
+$vectorLink = ''
+if (Test-Path -LiteralPath $vectorSource) {
+    # No /GL here: link-time code generation must not move this code into
+    # functions compiled for the baseline instruction set.
+    $vectorOptimization = if ($Configuration -ieq 'Debug') { '/Od /Zi' } else { '/O2' }
+    $vectorCompile = 'cl.exe /nologo /std:c++17 /EHsc /MD /c {0} /arch:AVX2 "{1}" /Fo"{2}" && ' -f
+        $vectorOptimization, $vectorSource, $vectorObject
+    $vectorLink = '"{0}" ' -f $vectorObject
+}
+$command = 'call "{0}" >nul && rc.exe /nologo /fo"{9}" "{10}" && {12}' +
     'cl.exe /nologo /std:c++17 /EHsc /MD /LD {1} {11} ' +
-    '/I"{2}" "{3}" /Fo"{4}" /link /LTCG /OUT:"{5}" ' +
+    '/I"{2}" "{3}" {13}/Fo"{4}" /link /LTCG /OUT:"{5}" ' +
     '/IMPLIB:"{6}" /PDB:"{7}" "{8}" "{9}"'
 $command = $command -f $vcvars, $optimization, $include, $source, $object,
     $stagedOutput, $importLibrary, $pdb, $onnxLibrary, $resource, $resourceScript,
-    $experimentalDefine
+    $experimentalDefine, $vectorCompile, $vectorLink
 
 try {
     & cmd.exe /d /s /c $command

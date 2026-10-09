@@ -2,25 +2,54 @@
   "format": 1,
   "architecture": "nc-gpt char GPT (pre-LN, no bias, tanh GELU, tied embeddings)",
   "graph": "tools/char_lm_onnx.py tree-mask + KV cache",
-  "task": "shared character LM and pinyin-conditioned draft correction (model consolidation step 4)",
-  "quantization": "int8_keep_mlp_out",
-  "float_mlp_out_layers": [],
-  "mlp_out_smoothing": {
-    "layers": [
-      0,
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8,
-      9,
-      10
-    ],
-    "alpha": 0.8
+  "task": "shared character LM and pinyin-conditioned draft correction",
+  "quantization": "int8_static",
+  "static_quantization": {
+    "file_sha256": "7dc2cc1eb9c3939aee238dfc6c039516b6fb75d752c977183688b8389dd13e0d",
+    "alpha": 0.8,
+    "quantile": 0.999,
+    "position_span": 64,
+    "calibration_tokens": {
+      "mixed@0": 7680,
+      "mixed@128": 7680,
+      "mixed@192": 7679,
+      "mixed@64": 7680,
+      "novel@0": 7680,
+      "novel@128": 7680,
+      "novel@192": 7680,
+      "novel@64": 7680,
+      "pinyin@0": 21065,
+      "pinyin@64": 7071,
+      "pools@0": 10818,
+      "sentences@0": 9338
+    },
+    "calibration_sources": {
+      "pools": {
+        "sha256": "59c6a60bf108ab668b02a0bc5e3822921c603dac6be2be3a6c4011bd73cb4269",
+        "sequences": 891
+      },
+      "sentences": {
+        "sha256": "2e5cd20b8c6cf2c826b5c512c24011bb4f4fa960d316b01a1fad029b5e7ab55b",
+        "sequences": 1000
+      },
+      "novel": {
+        "sha256": "01881e0993ccc9f7049fe55c67164858498102e4c260310ffb9164d2d6ecd605",
+        "sequences": 120
+      },
+      "mixed": {
+        "sha256": "538ffe4f41e1f0358316a17f0d5da7c7f15924f244dccfea55991406e743415a",
+        "sequences": 120
+      },
+      "pinyin": {
+        "sha256": "4873e67849a884e2e5634b37f5088c754fe7cf34f7c6044fe60f31419a8f8664",
+        "sequences": 445
+      }
+    }
   },
+  "custom_operators": [
+    "cassotis:TrieAttention"
+  ],
+  "input_embedding": "float16",
   "n_layer": 11,
   "n_head": 16,
   "n_embd": 1024,
@@ -29,10 +58,10 @@
   "bos_id": 0,
   "unk_id": 1,
   "source_checkpoint_sha256": "4128e76bc46d3efea3c6af28ae9dc4fa07a3197be77d093f4eb7bfedf01b4715",
-  "correction_context_chars": 48,
   "files": {
-    "char_lm.onnx": "e8d583c5b941f1a9f7a9dcbcd3a83b196af7a6db6f3932c286382e95bd9b6cf6",
+    "char_lm.onnx": "738bb88172f8467d7989742f93a48275d96f25870a54ba45e8bd2ba367209ed1",
     "char_lm_vocab.bin": "376c19b415024a2350083ca7c229bbe9f1d11191e562ef8ee174fd3afe7ec120",
     "pinyin_readings.json": "77a7cb4bc2b4159d78af78d25032f30de0f22376f3dfb961c85fe16f05877433"
-  }
+  },
+  "correction_context_chars": 48
 }

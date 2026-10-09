@@ -2,19 +2,25 @@
 // the ORT helpers.
 //
 // The graph (tools/char_lm_onnx.py) takes ids, positions, an attention mask that
-// is combined with the causal mask, and a per-layer KV cache. Scoring packs the
+// is combined with the causal mask, and per layer the keys and values of
+// earlier tokens; it returns those of the new tokens. Scoring packs the
 // candidates into one trie (every node after its ancestors, position = depth,
 // mask = ancestors only), so shared prefixes are computed once and every
-// candidate gets exactly the log-probability of a separate run.
+// candidate gets exactly the log-probability of a separate run: the model's
+// activations have fixed ranges and its attention (nc_trie_attention.inc)
+// computes a token from its own chain alone, so a token's output is the same
+// bits whatever else a run holds and wherever the run puts it. A scoring call
+// therefore keeps the tokens it computed, and a later call runs only the ones
+// it does not find among them (CharLmMemo).
 namespace {
 
 constexpr int64_t kCharLmBos = 0;
 constexpr int64_t kCharLmUnknown = 1;
 constexpr size_t kCharLmMaxNodes = 1024;
-// A scoring call keeps a context of at least this many tokens between calls
-// (see CharLmScore).
-constexpr size_t kCharLmContextSplit = 16;
 constexpr int kCharLmMaxTexts = 256;
+// Tokens a handle keeps between scoring calls (about 90 KiB each: eleven
+// layers of keys and values).
+constexpr size_t kCharLmMemoCapacity = 384;
 
 // A real ORT cancellation deadline, not merely discarding an already-late result.
 class CharLmDeadline {
@@ -40,6 +46,167 @@ public:
     }
 };
 
+// Keys and values of tokens kept between graph runs: one buffer per layer in
+// the layout the attention operator reads, [2][heads][capacity][head size]. A
+// run gets the whole buffer as its past and names in its mask the tokens it
+// sees; a slot that holds nothing is named by no mask and never read.
+class CharLmKeys {
+    int64_t heads_{}, head_dim_{};
+    size_t capacity_{}, count_{};
+    std::vector<std::unique_ptr<float[]>> layers_;
+
+    size_t LayerSize() const {
+        return static_cast<size_t>(2 * heads_) * capacity_ * static_cast<size_t>(head_dim_);
+    }
+
+public:
+    size_t count() const { return count_; }
+    size_t capacity() const { return capacity_; }
+
+    // Empties the store and makes room for at least `capacity` tokens.
+    void Reset(int64_t layers, int64_t heads, int64_t head_dim, size_t capacity) {
+        count_ = 0;
+        if (layers_.size() == static_cast<size_t>(layers) && heads_ == heads && head_dim_ == head_dim &&
+            capacity_ >= capacity) return;
+        layers_.clear();
+        heads_ = heads;
+        head_dim_ = head_dim;
+        capacity_ = capacity;
+        for (int64_t layer = 0; layer < layers; ++layer)
+            layers_.emplace_back(new float[LayerSize()]);
+    }
+
+    void Truncate(size_t count) { count_ = std::min(count_, count); }
+
+    // Appends the rows `taken` of a run of `rows` tokens; outputs[1..] are its
+    // per-layer keys and values, [2, 1, heads, rows, head size].
+    void Append(const std::vector<Ort::Value>& outputs, size_t rows, const std::vector<size_t>& taken) {
+        if (outputs.size() != layers_.size() + 1) throw std::runtime_error("character LM run without its cache");
+        if (count_ + taken.size() > capacity_) throw std::runtime_error("character LM cache is full");
+        const size_t dim = static_cast<size_t>(head_dim_), blocks = static_cast<size_t>(2 * heads_);
+        for (size_t layer = 0; layer < layers_.size(); ++layer) {
+            const auto shape = outputs[layer + 1].GetTensorTypeAndShapeInfo().GetShape();
+            if (shape.size() != 5 || shape[0] != 2 || shape[1] != 1 || shape[2] != heads_ ||
+                shape[3] != static_cast<int64_t>(rows) || shape[4] != head_dim_)
+                throw std::runtime_error("unexpected character LM cache shape");
+            const float* source = outputs[layer + 1].GetTensorData<float>();
+            float* target = layers_[layer].get();
+            for (size_t block = 0; block < blocks; ++block)
+                for (size_t k = 0; k < taken.size(); ++k)
+                    std::memcpy(target + (block * capacity_ + count_ + k) * dim,
+                        source + (block * rows + taken[k]) * dim, sizeof(float) * dim);
+        }
+        count_ += taken.size();
+    }
+
+    // Keeps the listed tokens (ascending); they become tokens 0, 1, ...
+    void Keep(const std::vector<int32_t>& kept) {
+        const size_t dim = static_cast<size_t>(head_dim_), blocks = static_cast<size_t>(2 * heads_);
+        for (auto& layer : layers_) {
+            for (size_t block = 0; block < blocks; ++block) {
+                float* rows = layer.get() + block * capacity_ * dim;
+                for (size_t k = 0; k < kept.size(); ++k)
+                    if (static_cast<size_t>(kept[k]) != k)
+                        std::memcpy(rows + k * dim, rows + static_cast<size_t>(kept[k]) * dim, sizeof(float) * dim);
+            }
+        }
+        count_ = kept.size();
+    }
+
+    // The buffers as the past of a run.
+    std::vector<Ort::Value> Past() {
+        auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        const std::array<int64_t, 5> shape{2, 1, heads_, static_cast<int64_t>(capacity_), head_dim_};
+        std::vector<Ort::Value> past;
+        for (auto& layer : layers_)
+            past.push_back(Ort::Value::CreateTensor<float>(memory, layer.get(), LayerSize(), shape.data(),
+                shape.size()));
+        return past;
+    }
+};
+
+// The tokens of a handle's earlier scoring calls, as a trie below BOS: each
+// with its log-probability after its ancestors and, in `keys`, what a later
+// token needs to attend to it. A token's numbers do not depend on the run that
+// computed them, so a call that finds its tokens here gets the scores of a
+// run of its own, bit for bit.
+struct CharLmMemo {
+    struct Node {
+        int64_t token;
+        int32_t parent;    // -1 for BOS
+        int32_t position;
+        float logp;
+    };
+    std::vector<Node> nodes;  // each after its ancestors; node k is token k of `keys`
+    std::unordered_map<uint64_t, int32_t> children;
+    CharLmKeys keys;
+    // The keys and values of the newest nodes (those from keys.count() on) are
+    // not copied into `keys` when their run ends: they wait in the run's
+    // outputs. The next call settles them: it takes over the ones it uses and
+    // forgets the others, so a call that nothing follows up on costs no copy.
+    std::vector<Ort::Value> waiting;
+    size_t waiting_rows{};            // tokens of that run
+    std::vector<size_t> waiting_row;  // the run's row of node keys.count() + k
+
+    static uint64_t ChildKey(int32_t parent, int64_t token) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(parent + 1)) << 32) | static_cast<uint32_t>(token);
+    }
+
+    void Clear() {
+        nodes.clear();
+        children.clear();
+        keys.Truncate(0);
+        waiting.clear();
+        waiting_row.clear();
+    }
+
+    void Index() {
+        children.clear();
+        for (size_t i = 0; i < nodes.size(); ++i)
+            children.emplace(ChildKey(nodes[i].parent, nodes[i].token), static_cast<int32_t>(i));
+    }
+
+    // Brings the waiting nodes that `used` marks into `keys` and forgets the
+    // other waiting nodes (a node's ancestors are marked with it).
+    void Settle(const std::vector<uint8_t>& used) {
+        const size_t settled = keys.count();
+        std::vector<size_t> taken;
+        std::vector<int32_t> renumbered(nodes.size(), -1);
+        std::vector<Node> remaining(nodes.begin(), nodes.begin() + static_cast<std::ptrdiff_t>(settled));
+        for (size_t i = 0; i < settled; ++i) renumbered[i] = static_cast<int32_t>(i);
+        for (size_t i = settled; i < nodes.size(); ++i) {
+            if (!used[i]) continue;
+            renumbered[i] = static_cast<int32_t>(remaining.size());
+            taken.push_back(waiting_row[i - settled]);
+            Node node = nodes[i];
+            if (node.parent >= 0) node.parent = renumbered[static_cast<size_t>(node.parent)];
+            remaining.push_back(node);
+        }
+        if (!taken.empty()) keys.Append(waiting, waiting_rows, taken);
+        nodes.swap(remaining);
+        Index();
+        waiting.clear();
+        waiting_row.clear();
+    }
+
+    // Keeps the nodes marked in `used` (a node's ancestors are marked with it).
+    void Keep(const std::vector<uint8_t>& used) {
+        std::vector<int32_t> kept, renumbered(nodes.size(), -1);
+        std::vector<Node> remaining;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            if (!used[i]) continue;
+            renumbered[i] = static_cast<int32_t>(kept.size());
+            kept.push_back(static_cast<int32_t>(i));
+            Node node = nodes[i];
+            if (node.parent >= 0) node.parent = renumbered[static_cast<size_t>(node.parent)];
+            remaining.push_back(node);
+        }
+        nodes.swap(remaining);
+        Index();
+        keys.Keep(kept);
+    }
+};
+
 struct CharLmHandle {
     // Handles opened on the same model share one session (and its weights);
     // each keeps its own lock and buffers.
@@ -55,13 +222,19 @@ struct CharLmHandle {
     std::vector<std::string> input_names;
     std::vector<std::string> output_names;
     std::mutex mutex;
-    // BOS + context of the last scoring call (CharLmScore): the token ids
-    // after BOS, the per-layer cache of that run and the distribution after
-    // its last token.
-    bool context_valid{};
-    std::vector<int64_t> context_ids;
-    std::vector<std::vector<float>> context_cache;
-    std::vector<float> context_next;
+    // What the scoring calls keep between them (CharLmScore), the chain of
+    // the last correction with its keys and values (CharLmCorrect), and the
+    // cache of one continuation. Of the correction's chain the first
+    // correction_settled tokens are in `correction`; the rest wait in the
+    // outputs of the run that computed them, as in the memo.
+    CharLmMemo memo;
+    bool memo_enabled{true};
+    std::vector<int64_t> correction_chain;
+    CharLmKeys correction;
+    size_t correction_settled{};
+    std::vector<Ort::Value> correction_waiting;
+    size_t correction_waiting_rows{};
+    CharLmKeys scratch;
 };
 
 // Sessions by model path, so the shared LM and the repair host load one copy of
@@ -133,8 +306,8 @@ void CharLmAppendUtf16(std::wstring& out, uint32_t cp) {
     }
 }
 
-// Runs the graph. past may be null (empty cache). Returns logp_all, and the
-// per-layer presents when want_presents is set.
+// Runs the graph. past may be null (no earlier tokens). Returns logp_all, and
+// the per-layer keys and values of the run's tokens when want_presents is set.
 std::vector<Ort::Value> CharLmRun(CharLmHandle& h, const std::vector<int64_t>& ids,
     const std::vector<int64_t>& positions, const std::vector<int32_t>& mask,
     int64_t past_length, std::vector<Ort::Value>* past, bool want_presents,
@@ -189,49 +362,18 @@ void CharLmTopNext(const CharLmHandle& h, const float* row, int top_k, uint32_t*
     }
 }
 
-// Runs BOS + context alone and keeps its per-layer cache and the distribution
-// after its last token in the handle, unless the handle holds them already.
-void CharLmPrepareContext(CharLmHandle& h, const std::vector<int64_t>& context_ids,
-    Ort::RunOptions& options) {
-    if (h.context_valid && h.context_ids == context_ids) return;
-    h.context_valid = false;
-    std::vector<int64_t> ids{kCharLmBos};
-    ids.insert(ids.end(), context_ids.begin(), context_ids.end());
-    const size_t m = ids.size();
-    std::vector<int64_t> positions(m);
-    std::vector<int32_t> mask(m * m, 0);
-    for (size_t i = 0; i < m; ++i) {
-        positions[i] = static_cast<int64_t>(i);
-        for (size_t j = 0; j <= i; ++j) mask[i * m + j] = 1;
-    }
-    auto outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, true, options);
-    const float* logp = outputs[0].GetTensorData<float>();
-    const size_t vocab = static_cast<size_t>(h.vocab_size);
-    h.context_next.assign(logp + (m - 1) * vocab, logp + m * vocab);
-    h.context_cache.clear();
-    for (size_t i = 1; i < outputs.size(); ++i) {
-        const auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();  // [2,1,H,T,D]
-        if (shape.size() != 5 || shape[3] != static_cast<int64_t>(m))
-            throw std::runtime_error("unexpected character LM cache shape");
-        const float* data = outputs[i].GetTensorData<float>();
-        h.context_cache.emplace_back(data, data + static_cast<size_t>(shape[0] * shape[1] * shape[2] * shape[3] * shape[4]));
-    }
-    h.context_ids = context_ids;
-    h.context_valid = true;
-}
-
 // Sum of log P(text | BOS + context) for each leading text, from one packed trie.
 // Texts are taken in order while the trie (BOS and context included) stays within
 // max_nodes; the first min_count texts are always taken. For each of next_count
 // text indices, also writes the top_k Han characters after that text (code point
 // 0 when the text was not scored). Returns how many texts were scored, or -1.
 //
-// A context of at least kCharLmContextSplit tokens runs on its own with BOS
-// (CharLmPrepareContext) and the trie runs against that cache, in every such
-// call: a request's scores then do not depend on whether an earlier call left
-// the same context behind. A shorter context runs with the trie, as one graph
-// run: a run costs about as much as twenty nodes however small it is, so the
-// split only pays when the calls that reuse the context save more than that.
+// The trie is looked up in the handle's memo first. Only the tokens it lacks
+// are run, against the kept keys and values of their ancestors, together with
+// the kept tokens whose distribution the call needs (the parent of a new
+// token, the end of a text whose next characters are asked for); a call that
+// finds everything runs nothing. The node budget counts the call's own trie,
+// whatever the memo holds, so the texts taken do not depend on earlier calls.
 int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* texts, int count,
     int min_count, size_t max_nodes, float* out, Ort::RunOptions& options,
     const int* next_indices = nullptr, int next_count = 0, int top_k = 0,
@@ -247,120 +389,187 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
     const size_t context_room = static_cast<size_t>(h.block_size) - 1 - longest;
     if (context_ids.size() > context_room)
         context_ids.erase(context_ids.begin(), context_ids.end() - static_cast<std::ptrdiff_t>(context_room));
-
-    // The root chain is BOS, then the context; the trie hangs below its last
-    // token. Trie nodes are numbered from 0, parent -1 is that last token.
     const size_t root_chain = 1 + context_ids.size();
-    std::vector<int64_t> ids, positions;
-    std::vector<int32_t> parents;
-    std::unordered_map<uint64_t, int32_t> children;
-    std::vector<std::vector<int32_t>> paths;
-    auto child_key = [](int32_t node, int64_t token) {
-        return (static_cast<uint64_t>(static_cast<uint32_t>(node + 1)) << 32) | static_cast<uint32_t>(token);
-    };
-    for (int i = 0; i < count; ++i) {
-        // Nodes this text would add; a text that does not fit ends the batch.
-        size_t added = 0;
-        int32_t node = -1;
-        const auto& text = encoded[static_cast<size_t>(i)];
-        for (size_t t = 0; t < text.size(); ++t) {
-            const auto found = children.find(child_key(node, text[t]));
-            if (found == children.end()) {
-                added = text.size() - t;
+    const size_t vocab = static_cast<size_t>(h.vocab_size);
+
+    CharLmMemo& memo = h.memo;
+    if (!h.memo_enabled) memo.Clear();
+    if (memo.keys.capacity() == 0) memo.keys.Reset(h.layers, h.heads, h.head_dim, kCharLmMemoCapacity);
+    // Laid out again after the memo changed under the call: once its waiting
+    // nodes are settled, and once it has been cut down to the tokens the call
+    // uses because it had no room for the new ones.
+    for (bool cut = false;;) {
+        const int32_t kept = static_cast<int32_t>(memo.nodes.size());
+        // The call's tokens that the memo lacks, numbered after the kept ones.
+        std::vector<CharLmMemo::Node> fresh;
+        std::unordered_map<uint64_t, int32_t> fresh_children;
+        std::vector<uint8_t> used(static_cast<size_t>(kept), 0);  // on a path of this call
+        auto node_at = [&](int32_t i) -> const CharLmMemo::Node& {
+            return i < kept ? memo.nodes[static_cast<size_t>(i)] : fresh[static_cast<size_t>(i - kept)];
+        };
+        auto find = [&](int32_t parent, int64_t token) {
+            const uint64_t key = CharLmMemo::ChildKey(parent, token);
+            const auto known = memo.children.find(key);
+            if (known != memo.children.end()) return known->second;
+            const auto added = fresh_children.find(key);
+            return added == fresh_children.end() ? -1 : added->second;
+        };
+        auto step = [&](int32_t parent, int64_t token) {
+            int32_t node = find(parent, token);
+            if (node < 0) {
+                node = kept + static_cast<int32_t>(fresh.size());
+                const int32_t position = parent < 0 ? 0 : node_at(parent).position + 1;
+                fresh.push_back({token, parent, position, 0.0f});
+                fresh_children.emplace(CharLmMemo::ChildKey(parent, token), node);
+                used.push_back(0);
+            }
+            used[static_cast<size_t>(node)] = 1;
+            return node;
+        };
+
+        // The root chain is BOS, then the context; the trie hangs below its last token.
+        int32_t root = step(-1, kCharLmBos);
+        for (int64_t token : context_ids) root = step(root, token);
+        std::vector<std::vector<int32_t>> paths;
+        size_t trie_nodes = 0;
+        for (int i = 0; i < count; ++i) {
+            // Nodes this text would add to the call's trie; a text that does not fit ends the batch.
+            size_t added = 0;
+            int32_t node = root;
+            const auto& text = encoded[static_cast<size_t>(i)];
+            for (size_t t = 0; t < text.size(); ++t) {
+                const int32_t next = find(node, text[t]);
+                if (next < 0 || !used[static_cast<size_t>(next)]) {
+                    added = text.size() - t;
+                    break;
+                }
+                node = next;
+            }
+            const size_t limit = i < min_count ? kCharLmMaxNodes : std::min(max_nodes, kCharLmMaxNodes);
+            if (root_chain + trie_nodes + added > limit) {
+                if (i < min_count) return -1;
                 break;
             }
-            node = found->second;
-        }
-        const size_t limit = i < min_count ? kCharLmMaxNodes : std::min(max_nodes, kCharLmMaxNodes);
-        if (root_chain + ids.size() + added > limit) {
-            if (i < min_count) return -1;
-            break;
-        }
-        node = -1;
-        paths.emplace_back();
-        for (int64_t token : text) {
-            auto found = children.find(child_key(node, token));
-            if (found == children.end()) {
-                found = children.emplace(child_key(node, token), static_cast<int32_t>(ids.size())).first;
-                parents.push_back(node);
-                positions.push_back(node < 0 ? static_cast<int64_t>(root_chain)
-                    : positions[static_cast<size_t>(node)] + 1);
-                ids.push_back(token);
+            node = root;
+            paths.emplace_back();
+            for (int64_t token : text) {
+                node = step(node, token);
+                paths.back().push_back(node);
             }
-            node = found->second;
-            paths.back().push_back(node);
+            trie_nodes += added;
         }
-    }
-    const size_t n = ids.size();
-    const size_t vocab = static_cast<size_t>(h.vocab_size);
-    std::vector<Ort::Value> outputs;
-    const float* logp = nullptr;
-    const bool split = context_ids.size() >= kCharLmContextSplit;
-    std::vector<float> root_next;
-    if (!split) {
-        // One run: the root chain, then the trie nodes behind it.
-        const size_t total = root_chain + n;
-        std::vector<int64_t> all_ids{kCharLmBos}, all_positions;
-        all_ids.insert(all_ids.end(), context_ids.begin(), context_ids.end());
-        for (size_t i = 0; i < root_chain; ++i) all_positions.push_back(static_cast<int64_t>(i));
-        all_ids.insert(all_ids.end(), ids.begin(), ids.end());
-        all_positions.insert(all_positions.end(), positions.begin(), positions.end());
-        std::vector<int32_t> mask(total * total, 0);
-        for (size_t i = 0; i < root_chain; ++i)
-            for (size_t j = 0; j <= i; ++j) mask[i * total + j] = 1;
-        for (size_t i = 0; i < n; ++i) {
-            for (size_t j = 0; j < root_chain; ++j) mask[(root_chain + i) * total + j] = 1;
-            for (int32_t j = static_cast<int32_t>(i); j >= 0; j = parents[static_cast<size_t>(j)])
-                mask[(root_chain + i) * total + root_chain + static_cast<size_t>(j)] = 1;
-        }
-        outputs = CharLmRun(h, all_ids, all_positions, mask, 0, nullptr, false, options);
-        const float* all_logp = outputs[0].GetTensorData<float>();
-        root_next.assign(all_logp + (root_chain - 1) * vocab, all_logp + root_chain * vocab);
-        logp = all_logp + root_chain * vocab;
-    } else {
-        CharLmPrepareContext(h, context_ids, options);
-    }
-    const float* root_row = split ? h.context_next.data() : root_next.data();
-    if (split && n > 0) {
-        // Every node sees the whole root chain and its own ancestors.
-        const size_t width = root_chain + n;
-        std::vector<int32_t> mask(n * width, 0);
-        for (size_t i = 0; i < n; ++i) {
-            for (size_t j = 0; j < root_chain; ++j) mask[i * width + j] = 1;
-            for (int32_t j = static_cast<int32_t>(i); j >= 0; j = parents[static_cast<size_t>(j)])
-                mask[i * width + root_chain + static_cast<size_t>(j)] = 1;
-        }
-        auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        const std::array<int64_t, 5> past_shape{2, 1, h.heads, static_cast<int64_t>(root_chain), h.head_dim};
-        std::vector<Ort::Value> past;
-        for (auto& layer : h.context_cache)
-            past.push_back(Ort::Value::CreateTensor<float>(memory, layer.data(), layer.size(),
-                past_shape.data(), past_shape.size()));
-        outputs = CharLmRun(h, ids, positions, mask, static_cast<int64_t>(root_chain), &past, false, options);
-        logp = outputs[0].GetTensorData<float>();
-    }
-    for (size_t i = 0; i < paths.size(); ++i) {
-        double total = 0.0;
-        for (int32_t node : paths[i]) {
-            const int32_t parent = parents[static_cast<size_t>(node)];
-            const float* row = parent < 0 ? root_row : logp + static_cast<size_t>(parent) * vocab;
-            total += row[static_cast<size_t>(ids[static_cast<size_t>(node)])];
-        }
-        out[i] = static_cast<float>(total);
-    }
-    for (int j = 0; j < next_count; ++j) {
-        const int i = next_indices[j];
-        uint32_t* cps = next_code_points + static_cast<size_t>(j) * static_cast<size_t>(top_k);
-        float* lps = next_logps + static_cast<size_t>(j) * static_cast<size_t>(top_k);
-        if (i < 0 || i >= static_cast<int>(paths.size()) || paths[static_cast<size_t>(i)].empty()) {
-            std::fill(cps, cps + top_k, 0u);
-            std::fill(lps, lps + top_k, 0.0f);
+
+        if (!memo.waiting.empty()) {
+            used.resize(static_cast<size_t>(kept));
+            memo.Settle(used);
             continue;
         }
-        const size_t node = static_cast<size_t>(paths[static_cast<size_t>(i)].back());
-        CharLmTopNext(h, logp + node * vocab, top_k, cps, lps);
+        if (!cut && static_cast<size_t>(kept) + fresh.size() > memo.keys.capacity()) {
+            used.resize(static_cast<size_t>(kept));
+            if (std::find(used.begin(), used.end(), uint8_t{0}) != used.end()) {
+                memo.Keep(used);
+                cut = true;
+                continue;
+            }
+        }
+        // A call too large to keep is run against what is kept and leaves no trace.
+        const bool store = static_cast<size_t>(kept) + fresh.size() <= memo.keys.capacity();
+
+        // A kept token is run again where the call needs its distribution.
+        std::vector<uint8_t> again(static_cast<size_t>(kept), 0);
+        for (const auto& node : fresh)
+            if (node.parent >= 0 && node.parent < kept) again[static_cast<size_t>(node.parent)] = 1;
+        for (int j = 0; j < next_count; ++j) {
+            const int i = next_indices[j];
+            if (i < 0 || i >= static_cast<int>(paths.size()) || paths[static_cast<size_t>(i)].empty()) continue;
+            const int32_t last = paths[static_cast<size_t>(i)].back();
+            if (last < kept) again[static_cast<size_t>(last)] = 1;
+        }
+        std::vector<int32_t> row_of(static_cast<size_t>(kept) + fresh.size(), -1);
+        std::vector<int32_t> row_nodes;
+        for (int32_t i = 0; i < kept; ++i)
+            if (again[static_cast<size_t>(i)]) {
+                row_of[static_cast<size_t>(i)] = static_cast<int32_t>(row_nodes.size());
+                row_nodes.push_back(i);
+            }
+        const size_t first_fresh = row_nodes.size();
+        for (size_t k = 0; k < fresh.size(); ++k) {
+            row_of[static_cast<size_t>(kept) + k] = static_cast<int32_t>(row_nodes.size());
+            row_nodes.push_back(kept + static_cast<int32_t>(k));
+        }
+
+        std::vector<Ort::Value> outputs;
+        const float* logp = nullptr;
+        const size_t rows = row_nodes.size();
+        if (rows > 0) {
+            // A row sees itself as a token of this run and its ancestors where they are:
+            // the kept ones in the memo (also one that is run again), the new ones in the run.
+            const size_t past_width = kept > 0 ? memo.keys.capacity() : 0;
+            std::vector<int64_t> ids(rows), positions(rows);
+            std::vector<int32_t> mask(rows * (past_width + rows), 0);
+            for (size_t r = 0; r < rows; ++r) {
+                const auto& node = node_at(row_nodes[r]);
+                ids[r] = node.token;
+                positions[r] = node.position;
+                int32_t* line = mask.data() + r * (past_width + rows);
+                line[past_width + r] = 1;
+                for (int32_t a = node.parent; a >= 0; a = node_at(a).parent)
+                    line[a < kept ? static_cast<size_t>(a)
+                         : past_width + static_cast<size_t>(row_of[static_cast<size_t>(a)])] = 1;
+            }
+            const bool want_keys = store && !fresh.empty();
+            if (past_width > 0) {
+                auto past = memo.keys.Past();
+                outputs = CharLmRun(h, ids, positions, mask, static_cast<int64_t>(past_width), &past, want_keys,
+                    options);
+            } else {
+                outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, want_keys, options);
+            }
+            logp = outputs[0].GetTensorData<float>();
+        }
+        for (auto& node : fresh)
+            if (node.parent >= 0)
+                node.logp = logp[static_cast<size_t>(row_of[static_cast<size_t>(node.parent)]) * vocab +
+                    static_cast<size_t>(node.token)];
+
+        for (size_t i = 0; i < paths.size(); ++i) {
+            double total = 0.0;
+            for (int32_t node : paths[i]) total += node_at(node).logp;
+            out[i] = static_cast<float>(total);
+        }
+        for (int j = 0; j < next_count; ++j) {
+            const int i = next_indices[j];
+            uint32_t* cps = next_code_points + static_cast<size_t>(j) * static_cast<size_t>(top_k);
+            float* lps = next_logps + static_cast<size_t>(j) * static_cast<size_t>(top_k);
+            if (i < 0 || i >= static_cast<int>(paths.size()) || paths[static_cast<size_t>(i)].empty()) {
+                std::fill(cps, cps + top_k, 0u);
+                std::fill(lps, lps + top_k, 0.0f);
+                continue;
+            }
+            const size_t row = static_cast<size_t>(row_of[static_cast<size_t>(paths[static_cast<size_t>(i)].back())]);
+            CharLmTopNext(h, logp + row * vocab, top_k, cps, lps);
+        }
+
+        if (store && !fresh.empty()) {
+            // The new nodes join the memo; their keys and values wait in the outputs.
+            try {
+                memo.waiting_row.resize(fresh.size());
+                for (size_t k = 0; k < fresh.size(); ++k) {
+                    memo.waiting_row[k] = first_fresh + k;
+                    memo.children.emplace(CharLmMemo::ChildKey(fresh[k].parent, fresh[k].token),
+                        kept + static_cast<int32_t>(k));
+                    memo.nodes.push_back(fresh[k]);
+                }
+                memo.waiting_rows = rows;
+                outputs[0] = Ort::Value(nullptr);  // the distributions have been read
+                memo.waiting = std::move(outputs);
+            } catch (...) {
+                memo.Clear();
+                throw;
+            }
+        }
+        return static_cast<int>(paths.size());
     }
-    return static_cast<int>(paths.size());
 }
 
 // Greedy continuation over Han characters only; returns the number of characters.
@@ -381,6 +590,11 @@ int CharLmContinue(CharLmHandle& h, const wchar_t* context, const wchar_t* prefi
     std::vector<int32_t> mask(ids.size() * ids.size(), 1);  // causal mask applies on top
     auto outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, true, options);
     int64_t length = static_cast<int64_t>(ids.size());
+    CharLmKeys& keys = h.scratch;
+    keys.Reset(h.layers, h.heads, h.head_dim, ids.size() + static_cast<size_t>(max_chars));
+    std::vector<size_t> every(ids.size());
+    for (size_t i = 0; i < every.size(); ++i) every[i] = i;
+    keys.Append(outputs, ids.size(), every);
     for (int step = 0; step < max_chars; ++step) {
         const float* row = outputs[0].GetTensorData<float>() +
             static_cast<size_t>(outputs[0].GetTensorTypeAndShapeInfo().GetShape()[1] - 1) *
@@ -392,11 +606,15 @@ int CharLmContinue(CharLmHandle& h, const wchar_t* context, const wchar_t* prefi
         CharLmAppendUtf16(text, h.code_points[static_cast<size_t>(best - 2)]);
         logps.push_back(row[best]);
         if (step + 1 == max_chars) break;
-        std::vector<Ort::Value> past;
-        for (size_t i = 1; i < outputs.size(); ++i) past.push_back(std::move(outputs[i]));
         const std::vector<int64_t> next_ids{best}, next_positions{length};
-        const std::vector<int32_t> next_mask(static_cast<size_t>(length + 1), 1);
-        outputs = CharLmRun(h, next_ids, next_positions, next_mask, length, &past, true, options);
+        // Every kept token, and the new one itself (behind the buffer's width).
+        std::vector<int32_t> next_mask(keys.capacity() + 1, 0);
+        std::fill(next_mask.begin(), next_mask.begin() + static_cast<std::ptrdiff_t>(keys.count()), 1);
+        next_mask[keys.capacity()] = 1;
+        auto past = keys.Past();
+        outputs = CharLmRun(h, next_ids, next_positions, next_mask, static_cast<int64_t>(keys.capacity()), &past,
+            true, options);
+        keys.Append(outputs, 1, {0});
         ++length;
     }
     return static_cast<int>(logps.size());
@@ -426,11 +644,54 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
     ids.insert(ids.end(), draft_ids.begin(), draft_ids.end());
     std::vector<int64_t> positions(static_cast<size_t>(total));
     for (int64_t i = 0; i < total; ++i) positions[static_cast<size_t>(i)] = i;
-    std::vector<int32_t> mask(static_cast<size_t>(total * total), 1);
-    auto outputs = CharLmRun(h, ids, positions, mask, 0, nullptr, true, options);
+    // The handle keeps the chain of its last correction with its keys and
+    // values. While a sentence is typed the next chain begins the same (the
+    // context and the syllables so far), so only the rest is run; a token's
+    // numbers are the same either way. The rows from the last prompt token on
+    // are needed below and always run.
+    CharLmKeys& keys = h.correction;
+    const size_t needed = static_cast<size_t>(total) + static_cast<size_t>(width) * n;
+    if (keys.capacity() < needed) {
+        keys.Reset(h.layers, h.heads, h.head_dim, needed);
+        h.correction_chain.clear();
+        h.correction_waiting.clear();
+    }
+    const int64_t room = static_cast<int64_t>(keys.capacity());
+    size_t common = 0;
+    if (h.memo_enabled)
+        while (common < h.correction_chain.size() && common < static_cast<size_t>(prompt - 1) &&
+            h.correction_chain[common] == ids[common]) ++common;
+    if (common > h.correction_settled) {
+        // The shared tokens beyond the settled ones wait in the previous run's outputs.
+        keys.Truncate(h.correction_settled);
+        std::vector<size_t> taken(common - h.correction_settled);
+        for (size_t k = 0; k < taken.size(); ++k) taken[k] = k;
+        keys.Append(h.correction_waiting, h.correction_waiting_rows, taken);
+    } else {
+        keys.Truncate(common);
+    }
+    h.correction_chain.clear();
+    h.correction_waiting.clear();
+    const int64_t shared = static_cast<int64_t>(common), run = total - shared;
+    const std::vector<int64_t> run_ids(ids.begin() + shared, ids.end());
+    const std::vector<int64_t> run_positions(positions.begin() + shared, positions.end());
+    const int64_t past_width = shared > 0 ? room : 0;
+    std::vector<int32_t> mask(static_cast<size_t>(run * (past_width + run)), 0);
+    for (int64_t r = 0; r < run; ++r) {
+        int32_t* line = mask.data() + r * (past_width + run);
+        std::fill(line, line + shared, 1);
+        std::fill(line + past_width, line + past_width + r + 1, 1);
+    }
+    std::vector<Ort::Value> outputs;
+    if (shared > 0) {
+        auto past = keys.Past();
+        outputs = CharLmRun(h, run_ids, run_positions, mask, past_width, &past, true, options);
+    } else {
+        outputs = CharLmRun(h, run_ids, run_positions, mask, 0, nullptr, true, options);
+    }
     const int64_t vocab = h.vocab_size;
     const float* logp = outputs[0].GetTensorData<float>();
-    auto row = [&](int64_t r) { return logp + static_cast<size_t>(r * vocab); };
+    auto row = [&](int64_t r) { return logp + static_cast<size_t>((r - shared) * vocab); };
 
     float draft_total = 0.0f;
     std::vector<float> draft_prefix(n + 1, 0.0f);
@@ -447,25 +708,25 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
         }
     }
     draft_total = draft_prefix[n];
-    if (first == n) return 0;
-
-    // Keep the cache of the prompt and the draft before the first disagreement.
-    const int64_t kept = prompt + static_cast<int64_t>(first);
-    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::AllocatorWithDefaultOptions allocator;
-    std::vector<Ort::Value> past;
-    for (size_t i = 1; i < outputs.size(); ++i) {
-        const auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();  // [2,1,H,T,D]
-        const std::array<int64_t, 5> cut{shape[0], shape[1], shape[2], kept, shape[4]};
-        Ort::Value value = Ort::Value::CreateTensor<float>(allocator, cut.data(), cut.size());
-        const float* src = outputs[i].GetTensorData<float>();
-        float* dst = value.GetTensorMutableData<float>();
-        const int64_t blocks = shape[0] * shape[1] * shape[2];
-        for (int64_t b = 0; b < blocks; ++b)
-            std::memcpy(dst + b * kept * shape[4], src + b * shape[3] * shape[4],
-                sizeof(float) * static_cast<size_t>(kept * shape[4]));
-        past.push_back(std::move(value));
+    h.correction_chain = ids;
+    if (first == n) {
+        // No search: the run's keys and values wait for the next correction.
+        h.correction_settled = common;
+        h.correction_waiting_rows = static_cast<size_t>(run);
+        outputs[0] = Ort::Value(nullptr);
+        h.correction_waiting = std::move(outputs);
+        return 0;
     }
+    // The search below reads the chain's keys and values, so they are copied now.
+    std::vector<size_t> every(static_cast<size_t>(run));
+    for (size_t i = 0; i < every.size(); ++i) every[i] = i;
+    keys.Append(outputs, static_cast<size_t>(run), every);
+    h.correction_settled = static_cast<size_t>(total);
+
+    // The beams grow over the prompt and the draft before the first
+    // disagreement (the first `kept` tokens of the chain); every step appends
+    // its tokens behind the chain.
+    const int64_t kept = prompt + static_cast<int64_t>(first);
 
     struct Beam { std::vector<int64_t> tokens; std::vector<int64_t> nodes; float score; };
     auto expand = [&](const std::vector<Beam>& beams, const std::vector<const float*>& dists, size_t t) {
@@ -487,7 +748,6 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
     };
     std::vector<Beam> beams{{{}, {}, draft_prefix[first]}};
     beams = expand(beams, {row(prompt - 1 + static_cast<int64_t>(first))}, first);
-    int64_t cached = kept;
     // Once every path is back on the draft for two characters and the draft
     // has no later disagreement, each path finishes with the draft: one run
     // scores those suffixes instead of one run per remaining position.
@@ -506,19 +766,20 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
             const int64_t chain = static_cast<int64_t>(n - t);
             const int64_t s = static_cast<int64_t>(beams.size()) * chain;
             std::vector<int64_t> step_ids, step_positions;
-            std::vector<int32_t> step_mask(static_cast<size_t>(s * (cached + s)), 0);
+            std::vector<int32_t> step_mask(static_cast<size_t>(s * (room + s)), 0);
             for (size_t j = 0; j < beams.size(); ++j) {
                 for (int64_t k = 0; k < chain; ++k) {
                     const int64_t node = static_cast<int64_t>(j) * chain + k;
                     step_ids.push_back(k == 0 ? beams[j].tokens.back() : draft_ids[t - 1 + static_cast<size_t>(k)]);
                     step_positions.push_back(prompt + static_cast<int64_t>(t) - 1 + k);
-                    int32_t* m = step_mask.data() + node * (cached + s);
+                    int32_t* m = step_mask.data() + node * (room + s);
                     for (int64_t c = 0; c < kept; ++c) m[c] = 1;
                     for (int64_t prior : beams[j].nodes) m[prior] = 1;
-                    for (int64_t q = 0; q <= k; ++q) m[cached + static_cast<int64_t>(j) * chain + q] = 1;
+                    for (int64_t q = 0; q <= k; ++q) m[room + static_cast<int64_t>(j) * chain + q] = 1;
                 }
             }
-            auto step = CharLmRun(h, step_ids, step_positions, step_mask, cached, &past, false, options);
+            auto past = keys.Past();
+            auto step = CharLmRun(h, step_ids, step_positions, step_mask, room, &past, false, options);
             const float* step_logp = step[0].GetTensorData<float>();
             for (size_t j = 0; j < beams.size(); ++j) {
                 for (int64_t k = 0; k < chain; ++k) {
@@ -532,21 +793,23 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
         }
         const int64_t s = static_cast<int64_t>(beams.size());
         std::vector<int64_t> step_ids, step_positions;
-        std::vector<int32_t> step_mask(static_cast<size_t>(s * (cached + s)), 0);
+        std::vector<int32_t> step_mask(static_cast<size_t>(s * (room + s)), 0);
+        const int64_t cached = static_cast<int64_t>(keys.count());
+        std::vector<size_t> all(static_cast<size_t>(s));
         for (int64_t j = 0; j < s; ++j) {
             Beam& beam = beams[static_cast<size_t>(j)];
             step_ids.push_back(beam.tokens.back());
             step_positions.push_back(prompt + static_cast<int64_t>(t) - 1);
-            int32_t* m = step_mask.data() + j * (cached + s);
+            int32_t* m = step_mask.data() + j * (room + s);
             for (int64_t c = 0; c < kept; ++c) m[c] = 1;
             for (int64_t node : beam.nodes) m[node] = 1;
-            m[cached + j] = 1;
+            m[room + j] = 1;
             beam.nodes.push_back(cached + j);
+            all[static_cast<size_t>(j)] = static_cast<size_t>(j);
         }
-        auto step = CharLmRun(h, step_ids, step_positions, step_mask, cached, &past, true, options);
-        past.clear();
-        for (size_t i = 1; i < step.size(); ++i) past.push_back(std::move(step[i]));
-        cached += s;
+        auto past = keys.Past();
+        auto step = CharLmRun(h, step_ids, step_positions, step_mask, room, &past, true, options);
+        keys.Append(step, static_cast<size_t>(s), all);
         const float* step_logp = step[0].GetTensorData<float>();
         std::vector<const float*> dists;
         for (int64_t j = 0; j < s; ++j) dists.push_back(step_logp + static_cast<size_t>(j * vocab));
@@ -587,6 +850,7 @@ extern "C" __declspec(dllexport) void* __cdecl nc_lm_create(
         options.AddConfigEntry("session.force_spinning_stop", "1");
         UseReleasableInitializers(options);
         options.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
+        nc_trie_attention::Register(options);
         const std::wstring path = std::wstring(directory) + L"\\char_lm.onnx";
         const std::wstring key = CharLmSessionKey(path);
         h->session = CharLmSessions()[key].lock();
@@ -611,6 +875,17 @@ extern "C" __declspec(dllexport) void* __cdecl nc_lm_create(
             throw std::runtime_error("character LM graph does not match its vocabulary");
         h->heads = past_shape[2];
         h->head_dim = past_shape[4];
+        // The caches here append what a run returns: the graph has to return
+        // the keys and values of its new tokens only, and a token's numbers
+        // must not depend on the run (tools/char_lm_onnx.py static_int8).
+        const auto cache = h->session->GetModelMetadata().LookupCustomMetadataMapAllocated(
+            "cassotis_lm_cache", allocator);
+        if (!cache || std::string(cache.get()) != "new_tokens")
+            throw std::runtime_error("character LM graph is not in the runtime form (export it as int8_static)");
+        // CASSOTIS_LM_NO_MEMO=1: every scoring call and correction runs all of its tokens (tests).
+        char no_memo[8];
+        const DWORD no_memo_length = GetEnvironmentVariableA("CASSOTIS_LM_NO_MEMO", no_memo, sizeof(no_memo));
+        h->memo_enabled = !(no_memo_length == 1 && no_memo[0] == '1');
         return h.release();
     } catch (const std::exception& e) { SetError(error, capacity, Utf8ToWide(e.what())); }
     catch (...) { SetError(error, capacity, L"character LM initialization failed"); }

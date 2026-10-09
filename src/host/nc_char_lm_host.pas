@@ -90,20 +90,50 @@ type
 
 { ORT intra-op threads for the shared LM session. The repair and shared-LM
   hosts open one model and share its session (created by whichever loads
-  first), so both ask for the same count: one thread per logical processor,
-  at least 4 and at most 8. Every thread of the pool stays busy for the length
-  of a run, so the count trades processor time for latency about one to one:
-  on six cores with twelve logical processors, six threads took 10 to 18%
-  less processor time than eight for runs 4 to 12% longer. }
+  first), so both ask for the same count: one thread per processor core, at
+  least 4 and at most 8. Every thread of the pool stays busy for the length of
+  a run, so the count is the share of the processors a run takes, and it
+  trades processor time for latency about one to one: on six cores with
+  twelve logical processors, six threads took 10 to 18% less processor time
+  than eight (39% instead of 49% of the processors on the long suite) for
+  runs 4 to 12% longer. One per core leaves the other logical processors to
+  the application being typed into. }
 function nc_shared_lm_threads: Integer;
 
 implementation
 
 uses System.IOUtils, System.JSON, System.Hash, System.Character, nc_log;
 
+// Processor cores (not logical processors); 0 when the system does not tell.
+function processor_core_count: Integer;
+var
+    buffer: TBytes;
+    needed, offset: DWORD;
+begin
+    Result := 0;
+    needed := 0;
+    if GetLogicalProcessorInformation(nil, needed) or
+        (GetLastError <> ERROR_INSUFFICIENT_BUFFER) or (needed = 0) then
+        Exit;
+    SetLength(buffer, needed);
+    if not GetLogicalProcessorInformation(
+        PSystemLogicalProcessorInformation(@buffer[0]), needed) then
+        Exit;
+    offset := 0;
+    while offset + SizeOf(TSystemLogicalProcessorInformation) <= needed do
+    begin
+        if PSystemLogicalProcessorInformation(@buffer[offset]).Relationship =
+            RelationProcessorCore then
+            Inc(Result);
+        Inc(offset, SizeOf(TSystemLogicalProcessorInformation));
+    end;
+end;
+
 function nc_shared_lm_threads: Integer;
 begin
-    Result := TThread.ProcessorCount;
+    Result := processor_core_count;
+    if Result <= 0 then
+        Result := TThread.ProcessorCount;
     if Result < 4 then
         Result := 4
     else if Result > 8 then
