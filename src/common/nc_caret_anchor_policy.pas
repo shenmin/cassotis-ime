@@ -41,6 +41,7 @@ function normalize_caret_text_extent(const candidate: TRect;
     const view_rect: TRect; const has_view_rect: Boolean;
     const fallback_line_height: Integer): TRect;
 function gui_caret_rect_is_usable(const bounds: TRect): Boolean;
+function context_rect_bounds_caret(const bounds: TRect): Boolean;
 function should_probe_imm_anchor(const comless_target: Boolean;
     const has_tsf_anchor: Boolean; const has_gui_anchor: Boolean;
     const has_caret_anchor: Boolean): Boolean;
@@ -220,6 +221,19 @@ function gui_caret_rect_is_usable(const bounds: TRect): Boolean;
 begin
     // Zero-width insertion carets are valid; an empty/default rectangle is not.
     Result := (bounds.Bottom > bounds.Top) and (bounds.Right >= bounds.Left);
+end;
+
+function context_rect_bounds_caret(const bounds: TRect): Boolean;
+const
+    c_min_extent = 8;
+begin
+    // The window of a TSF view limits where a caret may lie only when it has
+    // room for one. The input site of a XAML island can be an empty rectangle
+    // at the island's origin (File Explorer's address bar on Windows 11);
+    // every real caret lies outside it, and the foreground window is the
+    // bound to use instead.
+    Result := (bounds.Right - bounds.Left >= c_min_extent) and
+        (bounds.Bottom - bounds.Top >= c_min_extent);
 end;
 
 function should_probe_imm_anchor(const comless_target: Boolean;

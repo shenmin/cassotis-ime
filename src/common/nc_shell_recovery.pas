@@ -16,7 +16,9 @@ type
         function OriginalExited: Boolean;
         function Finished: Boolean;
         function StopAbandonedExplorer: DWORD;
-        function StartExplorer: DWORD;
+        // beside_original: the original is still running without a desktop
+        // and could not be stopped.
+        function StartExplorer(const beside_original: Boolean): DWORD;
         procedure Pause(const milliseconds: DWORD);
     end;
 
@@ -62,7 +64,7 @@ type
         function OriginalExited: Boolean;
         function Finished: Boolean;
         function StopAbandonedExplorer: DWORD;
-        function StartExplorer: DWORD;
+        function StartExplorer(const beside_original: Boolean): DWORD;
         procedure Pause(const milliseconds: DWORD);
     end;
 
@@ -142,13 +144,20 @@ function nc_monitor_shell_recovery(const monitor: IncShellRecoveryMonitor;
     out detail: string): DWORD;
 const
     c_handoff_timeout_ms = 120000;
-    c_recovery_timeout_ms = 30000;
+    c_recovery_timeout_ms = 60000;
     c_missing_grace_ms = 2000;
     c_abandoned_grace_ms = 5000;
+    // How long an original that was not stopped may keep the desktop away
+    // before a new Explorer is started beside it: briefly when the stop was
+    // refused or withheld (it will not exit), longer when it was accepted
+    // (the process is on its way out).
+    c_beside_refused_ms = 5000;
+    c_beside_accepted_ms = 15000;
     c_retry_ms = 8000;
+    c_max_launches = 4;
 var
-    started, recovery_started, missing_since, last_launch, now_ms: UInt64;
-    missing_seen, recovery_seen, finished, original_exited: Boolean;
+    started, recovery_started, missing_since, last_launch, stopped_at, now_ms: UInt64;
+    missing_seen, recovery_seen, finished, original_exited, beside_original: Boolean;
     attempts, stop_attempts: Integer;
     last_error, stop_error: DWORD;
     state: TncDesktopState;
@@ -158,6 +167,7 @@ begin
     recovery_seen := False;
     missing_since := 0;
     last_launch := 0;
+    stopped_at := 0;
     missing_seen := False;
     attempts := 0;
     stop_attempts := 0;
@@ -198,13 +208,27 @@ begin
             begin
                 stop_error := monitor.StopAbandonedExplorer;
                 Inc(stop_attempts);
+                stopped_at := now_ms;
                 original_exited := monitor.OriginalExited;
             end;
-            if original_exited and (now_ms - missing_since >= c_missing_grace_ms) and
-                (attempts < 2) and
+            // An original that stays (a folder window or a dialog is still
+            // open, or the stop was refused) must not keep the desktop away:
+            // without a shell window a new Explorer becomes the shell, and
+            // the old process keeps what it shows.
+            beside_original := not original_exited and finished and (stop_attempts > 0);
+            if beside_original then
+            begin
+                if (stop_error = ERROR_SUCCESS) or (stop_error = ERROR_TIMEOUT) then
+                    beside_original := now_ms - stopped_at >= c_beside_accepted_ms
+                else
+                    beside_original := now_ms - stopped_at >= c_beside_refused_ms;
+            end;
+            if (original_exited or beside_original) and
+                (now_ms - missing_since >= c_missing_grace_ms) and
+                (attempts < c_max_launches) and
                 ((attempts = 0) or (now_ms - last_launch >= c_retry_ms)) then
             begin
-                last_error := monitor.StartExplorer;
+                last_error := monitor.StartExplorer(not original_exited);
                 Inc(attempts);
                 last_launch := now_ms;
             end;
@@ -326,7 +350,7 @@ begin
     end;
 end;
 
-function TncNativeRecoveryMonitor.StartExplorer: DWORD;
+function TncNativeRecoveryMonitor.StartExplorer(const beside_original: Boolean): DWORD;
 var
     startup: TStartupInfo;
     process: TProcessInformation;
@@ -334,7 +358,7 @@ var
     launched: BOOL;
 begin
     // Windows may have restored the desktop since the monitor's last check.
-    if (DesktopState <> ds_missing) or not OriginalExited then
+    if (DesktopState <> ds_missing) or not (OriginalExited or beside_original) then
         Exit(ERROR_NOT_READY);
     FillChar(startup, SizeOf(startup), 0);
     startup.cb := SizeOf(startup);
@@ -358,7 +382,8 @@ begin
         CloseHandle(process.hProcess);
         Result := ERROR_SUCCESS;
     end;
-    trace(log_path, Format('Fallback Explorer launch=%d (original user token)', [Result]));
+    trace(log_path, Format('Fallback Explorer launch=%d (original user token) beside_original=%d',
+        [Result, Ord(not OriginalExited)]));
 end;
 
 procedure TncNativeRecoveryMonitor.Pause(const milliseconds: DWORD);

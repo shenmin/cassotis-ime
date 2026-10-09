@@ -72,7 +72,7 @@ function nc_query_full_process_image_name(process_handle: THandle; flags: DWORD;
 
 procedure print_usage;
 begin
-    Writeln('Usage: cassotis_ime_profile_reg register|unregister|register_tsf|unregister_tsf|start|stop|list_force_stop_targets|force_stop_runtime|list_stale_tsf_holders|list_stale_shell_holders|restart_stale_shell_holders');
+    Writeln('Usage: cassotis_ime_profile_reg register|unregister|register_tsf|unregister_tsf|start|stop|stop_hosts|list_force_stop_targets|force_stop_runtime|list_stale_tsf_holders|list_stale_shell_holders|restart_stale_shell_holders');
 end;
 
 function hr_succeeded(const hr: HRESULT): Boolean;
@@ -747,6 +747,51 @@ begin
     end;
 end;
 
+// The input method's own two processes, and of those only the ones started
+// from below `under` when it is given. An uninstall stops these and no
+// application: a text service module an application still has loaded is
+// removed at the next restart.
+function run_stop_hosts_action: Boolean;
+const
+    c_names: array[0..1] of string = ('cassotis_ime_host', 'cassotis_ime_tray_host');
+var
+    under: string;
+    image_path: string;
+    processes: TArray<TncProcessInfo>;
+    name_idx: Integer;
+    idx: Integer;
+begin
+    Result := True;
+    under := '';
+    if get_param_value('under', under) and (under <> '') then
+    begin
+        under := IncludeTrailingPathDelimiter(nc_normalize_runtime_executable_path(under));
+    end;
+    for name_idx := Low(c_names) to High(c_names) do
+    begin
+        processes := enumerate_processes_by_name(c_names[name_idx]);
+        for idx := 0 to High(processes) do
+        begin
+            if (under <> '') and (not get_process_image_path(processes[idx].pid, image_path) or
+                not StartsStr(under, nc_normalize_runtime_executable_path(image_path))) then
+            begin
+                Writeln(Format('Left running, not from %s: %s (PID %d)',
+                    [under, processes[idx].name, processes[idx].pid]));
+                Continue;
+            end;
+            if terminate_process_id(processes[idx].pid) then
+            begin
+                Writeln(Format('Stopped %s (PID %d)', [processes[idx].name, processes[idx].pid]));
+            end
+            else
+            begin
+                Writeln(Format('Failed to stop %s (PID %d)', [processes[idx].name, processes[idx].pid]));
+                Result := False;
+            end;
+        end;
+    end;
+end;
+
 function parse_csv_fields(const line: string): TArray<string>;
 var
     idx: Integer;
@@ -1156,6 +1201,21 @@ begin
     end;
 end;
 
+// The Windows shell is never a force-stop target. Terminating Explorer takes
+// the desktop and the taskbar away and nothing here brings them back (Windows
+// restarts a shell that crashed, not one that was terminated). An upgrade
+// restarts the shell processes through Restart Manager under a recovery
+// watcher instead (restart_stale_shell_holders).
+function is_shell_process(const info: TncProcessInfo): Boolean;
+var
+    name: string;
+begin
+    // A locker reported by Restart Manager may carry a display name.
+    name := get_process_name_by_pid(info.pid);
+    Result := SameText(info.name, 'explorer.exe') or SameText(info.name, 'SearchHost.exe') or
+        SameText(name, 'explorer.exe') or SameText(name, 'SearchHost.exe');
+end;
+
 function collect_force_stop_targets(const runtime_dir: string; const data_dir: string;
     const include_dll_holders: Boolean): TArray<TncProcessInfo>;
 var
@@ -1206,7 +1266,8 @@ begin
                 processes := get_processes_using_dll(file_name);
                 for proc_idx := 0 to High(processes) do
                 begin
-                    if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
+                    if not excluded_pids.ContainsKey(processes[proc_idx].pid) and
+                        not is_shell_process(processes[proc_idx]) then
                     begin
                         add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
                     end;
@@ -1216,7 +1277,8 @@ begin
             processes := get_processes_locking_path(files[idx]);
             for proc_idx := 0 to High(processes) do
             begin
-                if not excluded_pids.ContainsKey(processes[proc_idx].pid) then
+                if not excluded_pids.ContainsKey(processes[proc_idx].pid) and
+                    not is_shell_process(processes[proc_idx]) then
                 begin
                     add_process_info_if_missing(list, seen, processes[proc_idx].name, processes[proc_idx].pid);
                 end;
@@ -2600,6 +2662,12 @@ begin
     if action = 'stop' then
     begin
         Result := run_stop_action;
+        Exit;
+    end;
+
+    if action = 'stop_hosts' then
+    begin
+        Result := run_stop_hosts_action;
         Exit;
     end;
 

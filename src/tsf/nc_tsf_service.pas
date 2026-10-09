@@ -5378,6 +5378,9 @@ begin
             if has_context_rect then
             begin
                 try_normalize_screen_rect_for_hwnd(context_hwnd, context_rect);
+                // An input site without an area bounds nothing: the
+                // foreground window does (context_rect_bounds_caret).
+                has_context_rect := context_rect_bounds_caret(context_rect);
             end;
         end;
     end;
@@ -5453,6 +5456,11 @@ begin
         if has_context_rect then
         begin
             m_logger.debug(Format('Caret context rect=(%d,%d,%d,%d)',
+                [context_rect.Left, context_rect.Top, context_rect.Right, context_rect.Bottom]));
+        end
+        else if context_hwnd <> 0 then
+        begin
+            m_logger.debug(Format('Caret context rect=(%d,%d,%d,%d) has no area, not a bound',
                 [context_rect.Left, context_rect.Top, context_rect.Right, context_rect.Bottom]));
         end;
         if has_foreground_rect then

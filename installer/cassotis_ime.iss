@@ -38,6 +38,11 @@ SetupIconFile={#SourceRoot}\cassotis_ime_yanquan.ico
 UninstallDisplayIcon={#InstallRuntimeDir}\cassotis_ime_tray_host.exe
 CloseApplications=no
 RestartApplications=no
+; An install never asks for a restart of Windows: a module still in use is
+; moved aside and the shell is restarted instead. Inno would otherwise ask
+; whenever anything on the machine queued a file operation while [Run] ran,
+; and a silent install would then restart without asking.
+RestartIfNeededByRun=no
 SetupLogging=yes
 SetupMutex=Local\CassotisIme.Setup.Upgrade
 
@@ -109,21 +114,22 @@ Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
     Flags: runhidden waituntilterminated runasoriginaluser; \
     AfterInstall: RestartTsfShellApplications; \
     StatusMsg: "Verifying Cassotis IME runtime..."
-Filename: "{sys}\cmd.exe"; \
-    Parameters: "/c start """" explorer.exe"; \
-    Flags: runhidden nowait runasoriginaluser; \
-    Check: ShouldRestartExplorer; \
-    StatusMsg: "Restarting Windows shell..."
 
 [UninstallRun]
-Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
-    Parameters: "force_stop_runtime -runtime_dir ""{#InstallRuntimeDir}"" -data_dir ""{localappdata}\CassotisIme\data"" -exclude_pid ""{code:GetCurrentProcessIdText}"""; \
-    Flags: runhidden waituntilterminated skipifdoesntexist; \
-    RunOnceId: "StopTSF"
+; An uninstall closes no application. It unregisters the text service and
+; stops the input method's own two processes; a module an application still
+; has loaded is left to the next restart (RemoveRuntimeLeftovers).
+; Keep the two ids: earlier versions recorded entries under them that stopped
+; every process with the text service loaded, File Explorer included, and of
+; the entries with one id only the newest runs.
 Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
     Parameters: "unregister_tsf -dll_path ""{#InstallRuntimeDir}\cassotis_ime_svr.dll"""; \
     Flags: runhidden waituntilterminated skipifdoesntexist; \
     RunOnceId: "UnregisterTSF"
+Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
+    Parameters: "stop_hosts -under ""{app}"""; \
+    Flags: runhidden waituntilterminated skipifdoesntexist; \
+    RunOnceId: "StopTSF"
 
 [CustomMessages]
 chs.PreparingStopRuntime=正在停止旧版本输入法...
@@ -192,7 +198,6 @@ var
     InstallerProfileRegPath: string;
     ForceStopTargetsPath: string;
     ForceStopApprovalGranted: Boolean;
-    ExplorerRestartNeeded: Boolean;
     PreparedRuntimeDir: string;
     LastRuntimeFileError: Cardinal;
     TsfIncomingExtracted: Boolean;
@@ -252,20 +257,11 @@ begin
     InstallerProfileRegPath := '';
     ForceStopTargetsPath := ExpandConstant('{tmp}\cassotis_force_stop_targets.txt');
     ForceStopApprovalGranted := False;
-    ExplorerRestartNeeded := False;
     PreparedRuntimeDir := '';
     LastRuntimeFileError := 0;
     TsfIncomingExtracted := False;
     TsfUpgradeFinalized := False;
     TsfUpgradeScanComplete := False;
-end;
-
-procedure UpdateExplorerRestartNeeded(const TargetsText: string);
-begin
-    if Pos(LowerCase('explorer.exe'), LowerCase(TargetsText)) > 0 then
-    begin
-        ExplorerRestartNeeded := True;
-    end;
 end;
 
 function GetInstallerProfileRegPath: string;
@@ -580,18 +576,12 @@ begin
         if Result <> '' then
         begin
             Log('Force-stop target list:' + #13#10 + Result);
-            UpdateExplorerRestartNeeded(Result);
         end
         else
         begin
             Log('Force-stop target list is empty.');
         end;
     end;
-end;
-
-function ShouldRestartExplorer: Boolean;
-begin
-    Result := ExplorerRestartNeeded;
 end;
 
 function ConfirmForceStopProcesses(const RuntimeDir: string): Boolean;
@@ -710,138 +700,7 @@ begin
     end;
 end;
 
-{ A NULL new name (0) registers the path for deletion at the next restart. }
-function MoveFileExDelete(ExistingName: string; NewName: Cardinal; Flags: DWORD): BOOL;
-external 'MoveFileExW@kernel32.dll stdcall';
-
-const
-    c_movefile_delay_until_reboot = $4;
-
-var
-    RetiredTrashDir: string;
-    RetiredTrashCount: Integer;
-
-function RetiredTrashRoot: string;
-begin
-    Result := ExpandConstant('{app}\runtime-retired');
-end;
-
-procedure DeleteAtRestart(const Path: string);
-begin
-    if MoveFileExDelete(Path, 0, c_movefile_delay_until_reboot) then
-    begin
-        Log('Scheduled for deletion at the next restart: ' + Path);
-    end
-    else
-    begin
-        Log(Format('Could not schedule deletion at restart (error %d): %s', [DLLGetLastError, Path]));
-    end;
-end;
-
-{ A file still loaded by a running application cannot be deleted, but it can be
-  renamed on the same volume. It moves to a per-install directory under
-  runtime-retired and only that path is scheduled for deletion at the next
-  restart: those paths are never reused, so reinstalling the version that owned
-  the file before the restart cannot lose its new copy. A file that cannot be
-  moved stays where it is until a later install. }
-procedure RetireLockedFile(const Path: string);
-var
-    Target: string;
-begin
-    if RetiredTrashDir = '' then
-    begin
-        RetiredTrashDir := AddBackslash(RetiredTrashRoot) +
-            GetDateTimeString('yyyymmddhhnnsszzz', #0, #0);
-    end;
-    if not ForceDirectories(RetiredTrashDir) then
-    begin
-        Log('Retired runtime file kept until a later install: ' + Path);
-        Exit;
-    end;
-    RetiredTrashCount := RetiredTrashCount + 1;
-    Target := AddBackslash(RetiredTrashDir) + IntToStr(RetiredTrashCount) + '_' + ExtractFileName(Path);
-    if RenameFile(Path, Target) then
-    begin
-        DeleteAtRestart(Target);
-    end
-    else
-    begin
-        Log('Retired runtime file kept until a later install: ' + Path);
-    end;
-end;
-
-procedure RetireLockedTree(const Path: string);
-var
-    FindRec: TFindRec;
-begin
-    if FindFirst(AddBackslash(Path) + '*', FindRec) then
-    begin
-        try
-            repeat
-                if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
-                begin
-                    if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
-                    begin
-                        RetireLockedTree(AddBackslash(Path) + FindRec.Name);
-                    end
-                    else
-                    begin
-                        RetireLockedFile(AddBackslash(Path) + FindRec.Name);
-                    end;
-                end;
-            until not FindNext(FindRec);
-        finally
-            FindClose(FindRec);
-        end;
-    end;
-end;
-
-procedure DeleteRetiredRuntime(const Path: string);
-begin
-    if DelTree(Path, True, True, True) then
-    begin
-        Log('Removed retired runtime: ' + Path);
-        Exit;
-    end;
-    { Move the files still in use out of the way; the emptied tree then goes now. }
-    Log('Retired runtime partly in use: ' + Path);
-    RetireLockedTree(Path);
-    if DelTree(Path, True, True, True) then
-    begin
-        Log('Removed retired runtime: ' + Path);
-    end
-    else
-    begin
-        Log('Retired runtime kept until a later install: ' + Path);
-    end;
-end;
-
-{ Files moved away by an earlier install are gone once Windows restarted; their
-  emptied directories (and anything not yet restarted away) are retried here. }
-procedure CleanRetiredTrash;
-var
-    FindRec: TFindRec;
-begin
-    if not DirExists(RetiredTrashRoot) then
-    begin
-        Exit;
-    end;
-    if FindFirst(AddBackslash(RetiredTrashRoot) + '*', FindRec) then
-    begin
-        try
-            repeat
-                if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
-                    (FindRec.Name <> '.') and (FindRec.Name <> '..') then
-                begin
-                    DelTree(AddBackslash(RetiredTrashRoot) + FindRec.Name, True, True, True);
-                end;
-            until not FindNext(FindRec);
-        finally
-            FindClose(FindRec);
-        end;
-    end;
-    RemoveDir(RetiredTrashRoot);
-end;
+#include "runtime_retire.iss"
 
 function RegisteredRuntimeDirIn(const RootKey: Integer): string;
 var
@@ -1346,6 +1205,9 @@ begin
     begin
         Exit;
     end;
+
+    { Not asked when the uninstall already needs a restart for its own reasons. }
+    RemoveRuntimeLeftovers;
 
     if not DirExists(GetRuntimeRoot) then
     begin
