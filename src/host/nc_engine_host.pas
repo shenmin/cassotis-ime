@@ -16,6 +16,7 @@ uses
     nc_engine_intf,
     nc_candidate_window,
     nc_candidate_paging,
+    nc_candidate_click,
     nc_config,
     nc_ipc_common,
     nc_caret_anchor_policy,
@@ -52,6 +53,12 @@ type
         m_preedit_text: string;
         m_candidate_dirty: Boolean;
         m_candidate_generation: UInt64;
+        m_candidate_selection_generation: UInt64;
+        m_quick_input_active: Boolean;
+        m_candidate_selection_keys: string;
+        m_selection_window: HWND;
+        m_selection_epoch: UInt64;
+        m_click: TncCandidateClick;
         m_pending_candidate_caret: TPoint;
         m_pending_candidate_has_caret: Boolean;
         m_pending_candidate_line_height: Integer;
@@ -68,7 +75,7 @@ type
         procedure ensure_candidate_window;
         procedure handle_remove_user_candidate(const candidate_index: Integer);
         function handle_prepare_candidate(const page_index, candidate_index: Integer;
-            const generation: UInt64): Boolean;
+            const generation: UInt64): TncCandidateClickResult;
         procedure refresh_candidate_pages(const input_changed: Boolean);
     public
         constructor create(const owner: TncEngineHost; const session_id: string; const instance_id: UInt64;
@@ -87,6 +94,9 @@ type
         function needs_candidate_refresh(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean; const comless_target: Boolean): Boolean;
         function candidate_generation: UInt64;
+        property candidate_selection_generation: UInt64 read m_candidate_selection_generation;
+        property quick_input_active: Boolean read m_quick_input_active;
+        property candidate_selection_keys: string read m_candidate_selection_keys;
         procedure store_candidates(const candidates: TncCandidateList; const page_index: Integer;
             const page_count: Integer; const selected_index: Integer;
             const preedit_text: string;
@@ -163,7 +173,8 @@ type
         function process_key_admitted(const session_id: string; const key_code: Word; const key_state: TncKeyState;
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
             out full_width_mode: Boolean; out punctuation_full_width: Boolean;
-            const input_epoch: UInt64): Boolean;
+            const input_epoch: UInt64; const selection_window: HWND;
+            const selection_token: Cardinal): Boolean;
         procedure reset_session_admitted(const session_id: string;
             const preserve_document_context: Boolean; const input_epoch: UInt64);
         function get_config_write_time: TDateTime;
@@ -201,7 +212,8 @@ type
         function process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
             out full_width_mode: Boolean; out punctuation_full_width: Boolean;
-            const input_epoch: UInt64 = 0): Boolean;
+            const input_epoch: UInt64 = 0; const selection_window: HWND = 0;
+            const selection_token: Cardinal = 0): Boolean;
         function get_last_lookup_perf_info: string;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
@@ -750,6 +762,8 @@ begin
     m_preedit_text := '';
     m_candidate_dirty := True;
     m_candidate_generation := 0;
+    m_candidate_selection_generation := 0;
+    m_candidate_selection_keys := '123456789';
     m_pending_candidate_caret := Point(0, 0);
     m_pending_candidate_has_caret := False;
     m_pending_candidate_line_height := 0;
@@ -861,7 +875,7 @@ function TncHostSession.prepare_candidate_selection(const page_index,
 var row: Integer; expected, current: TncCandidateList;
 begin
     Result := False;
-    if (generation <> m_candidate_generation) or m_release_requested then Exit;
+    if (generation <> m_candidate_selection_generation) or m_release_requested then Exit;
     expected := nil;
     if page_index = m_page_index then expected := m_candidates
     else
@@ -877,18 +891,30 @@ begin
     m_selected_index := candidate_index;
     m_candidate_dirty := True;
     Inc(m_candidate_generation);
+    Inc(m_candidate_selection_generation);
     refresh_candidate_pages(False);
     Result := True;
 end;
 
 function TncHostSession.handle_prepare_candidate(const page_index,
-    candidate_index: Integer; const generation: UInt64): Boolean;
+    candidate_index: Integer; const generation: UInt64): TncCandidateClickResult;
+var token: Cardinal;
 begin
-    Result := False;
+    Result := ccr_rejected;
     if m_owner = nil then Exit;
     m_owner.m_lock.Acquire;
     try
-        Result := prepare_candidate_selection(page_index, candidate_index, generation);
+        if (generation <> m_candidate_selection_generation) or m_release_requested then Exit;
+        if m_selection_window <> 0 then
+        begin
+            token := m_click.queue(generation, m_selection_epoch, GetTickCount64,
+                page_index, candidate_index);
+            if PostMessage(m_selection_window, get_nc_candidate_click_message,
+                token, LPARAM(GetForegroundWindow)) then Result := ccr_dispatched
+            else m_click.cancel;
+        end
+        else if prepare_candidate_selection(page_index, candidate_index, generation) then
+            Result := ccr_prepared;
     finally
         m_owner.m_lock.Release;
     end;
@@ -908,6 +934,7 @@ begin
             m_candidate_viewport := Default(TncCandidateViewport);
             m_candidate_pages := nil;
             Inc(m_candidate_generation);
+            Inc(m_candidate_selection_generation);
         end;
     end;
     if m_candidate_window <> nil then
@@ -985,18 +1012,21 @@ procedure TncHostSession.store_candidates(const candidates: TncCandidateList; co
     const one_key_completion: TncOneKeyCompletion);
 var
     changed: Boolean;
+    selection_changed: Boolean;
     input_changed: Boolean;
     previous_visible_rows: Integer;
 begin
     previous_visible_rows := Length(m_candidate_pages);
     input_changed := m_preedit_text <> preedit_text;
-    changed := (m_page_index <> page_index) or
+    selection_changed := (m_page_index <> page_index) or
         (m_page_count <> page_count) or
         (m_selected_index <> selected_index) or
         (m_preedit_text <> preedit_text) or
-        (not one_key_completions_equal(m_one_key_completion,
-        one_key_completion)) or
+        (m_quick_input_active <> m_engine.quick_input_active) or
+        (m_candidate_selection_keys <> m_engine.candidate_selection_keys) or
         (not candidates_equal(m_candidates, candidates));
+    changed := selection_changed or
+        not one_key_completions_equal(m_one_key_completion, one_key_completion);
     // Async UI generations must own their snapshot, not the producer's array.
     m_candidates := Copy(candidates);
     m_one_key_completion := one_key_completion;
@@ -1004,9 +1034,15 @@ begin
     m_page_count := page_count;
     m_selected_index := selected_index;
     m_preedit_text := preedit_text;
+    m_quick_input_active := m_engine.quick_input_active;
+    m_candidate_selection_keys := m_engine.candidate_selection_keys;
     refresh_candidate_pages(input_changed);
     // Expanding at the first row does not change the page or selected item.
-    changed := changed or (previous_visible_rows <> Length(m_candidate_pages));
+    selection_changed := selection_changed or
+        (previous_visible_rows <> Length(m_candidate_pages));
+    // A Tab-only refresh must not invalidate an ordinary candidate click.
+    if selection_changed then Inc(m_candidate_selection_generation);
+    changed := changed or selection_changed;
     if changed then
     begin
         Inc(m_candidate_generation);
@@ -1023,6 +1059,7 @@ end;
 
 procedure TncHostSession.clear_candidates;
 begin
+    m_click.cancel;
     SetLength(m_candidates, 0);
     m_candidate_pages := nil;
     m_candidate_viewport := Default(TncCandidateViewport);
@@ -1032,7 +1069,10 @@ begin
     m_page_count := 0;
     m_selected_index := 0;
     m_preedit_text := '';
+    m_quick_input_active := False;
+    m_candidate_selection_keys := '123456789';
     Inc(m_candidate_generation);
+    Inc(m_candidate_selection_generation);
     m_candidate_dirty := True;
 end;
 
@@ -1105,7 +1145,8 @@ begin
             m_preedit_text, m_one_key_completion,
             m_engine.config.one_key_completion_key,
             m_engine.config.debug_mode, m_engine.config.pinyin_input_scheme,
-            m_candidate_pages, m_candidate_generation);
+            m_candidate_pages, m_candidate_selection_generation, m_quick_input_active,
+            m_candidate_selection_keys);
         m_last_candidate_debug_mode := m_engine.config.debug_mode;
     end;
     if candidate_generation = m_candidate_generation then
@@ -1156,7 +1197,8 @@ begin
             m_preedit_text, m_one_key_completion,
             m_engine.config.one_key_completion_key,
             m_engine.config.debug_mode, m_engine.config.pinyin_input_scheme,
-            m_candidate_pages, m_candidate_generation);
+            m_candidate_pages, m_candidate_selection_generation, m_quick_input_active,
+            m_candidate_selection_keys);
         m_last_candidate_debug_mode := m_engine.config.debug_mode;
     end;
 
@@ -2666,14 +2708,16 @@ end;
 function TncEngineHost.process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
     out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
     out full_width_mode: Boolean; out punctuation_full_width: Boolean;
-    const input_epoch: UInt64): Boolean;
+    const input_epoch: UInt64; const selection_window: HWND;
+    const selection_token: Cardinal): Boolean;
 begin
     // Registered before config reload and session creation, where a request
     // can stall past its client timeout, so its epoch floor is not trimmed.
     m_input_epochs.enter(session_id);
     try
         Result := process_key_admitted(session_id, key_code, key_state, handled, commit_text,
-            display_text, input_mode, full_width_mode, punctuation_full_width, input_epoch);
+            display_text, input_mode, full_width_mode, punctuation_full_width, input_epoch,
+            selection_window, selection_token);
     finally
         m_input_epochs.leave(session_id);
     end;
@@ -2682,11 +2726,13 @@ end;
 function TncEngineHost.process_key_admitted(const session_id: string; const key_code: Word;
     const key_state: TncKeyState; out handled: Boolean; out commit_text: string; out display_text: string;
     out input_mode: TncInputMode; out full_width_mode: Boolean; out punctuation_full_width: Boolean;
-    const input_epoch: UInt64): Boolean;
+    const input_epoch: UInt64; const selection_window: HWND;
+    const selection_token: Cardinal): Boolean;
 const
     c_slow_host_process_key_ms = 12;
 var
     session: TncHostSession;
+    click_page, click_slot: Integer;
     candidates: TncCandidateList;
     one_key_completion: TncOneKeyCompletion;
     page_index: Integer;
@@ -2800,6 +2846,21 @@ begin
         end;
         touch_session_activity(session_id);
         sync_session_config_locked(session);
+        if selection_token <> 0 then
+        begin
+            if (selection_window = 0) or (selection_window <> session.m_selection_window) or
+                not session.m_click.consume(selection_token, session.m_candidate_selection_generation,
+                    input_epoch, GetTickCount64, click_page, click_slot) then Exit(False);
+            if not session.prepare_candidate_selection(click_page, click_slot,
+                session.m_candidate_selection_generation) then Exit(False);
+        end
+        else
+        begin
+            // Every real key fences a delayed click, including digits in i/v.
+            session.m_click.cancel;
+            session.m_selection_window := selection_window;
+            session.m_selection_epoch := input_epoch;
+        end;
         reload_start_tick := GetTickCount64;
         session.engine.reload_dictionary_if_needed;
         reload_elapsed_ms := Int64(GetTickCount64 - reload_start_tick);
@@ -4034,6 +4095,8 @@ var
     shortcut_config: TncShortcutConfig;
     state_source: string;
     input_epoch: UInt64;
+    selection_window: HWND;
+    selection_token: Cardinal;
 begin
     Result := 'ERROR'#9'bad_request';
     try
@@ -4392,7 +4455,7 @@ begin
             Exit;
         end;
 
-        if SameText(cmd, 'PROCESS_KEY') then
+        if SameText(cmd, 'PROCESS_KEY') or SameText(cmd, 'SELECT_CANDIDATE') then
         begin
             if Length(fields) < 7 then
             begin
@@ -4410,6 +4473,16 @@ begin
             begin
                 input_epoch := parse_input_epoch(fields[7]);
             end;
+            selection_window := 0;
+            selection_token := 0;
+            if Length(fields) >= 9 then selection_window := HWND(StrToUInt64Def(fields[8], 0));
+            if SameText(cmd, 'SELECT_CANDIDATE') then
+            begin
+                if Length(fields) >= 10 then selection_token := StrToUIntDef(fields[9], 0);
+                if selection_token = 0 then Exit('ERROR'#9'bad_click');
+                key_code := VK_SPACE;
+                key_state := Default(TncKeyState);
+            end;
             if host_log_enabled_for(ll_debug) then
             begin
                 host_log_debug(Format('process_key session=%s key=%d shift=%d ctrl=%d alt=%d caps=%d',
@@ -4417,7 +4490,8 @@ begin
                     Ord(key_state.alt_down), Ord(key_state.caps_lock)]));
             end;
             if m_host.process_key(session_id, Word(key_code), key_state, handled, commit_text, display_text, input_mode,
-                full_width_mode, punctuation_full_width, input_epoch) then
+                full_width_mode, punctuation_full_width, input_epoch,
+                selection_window, selection_token) then
             begin
                 if host_log_enabled_for(ll_debug) then
                 begin

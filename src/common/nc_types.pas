@@ -38,7 +38,7 @@ type
     );
     TncFuzzyPinyinRules = set of TncFuzzyPinyinRule;
 
-    TncCandidateSource = (cs_rule, cs_user);
+    TncCandidateSource = (cs_rule, cs_user, cs_quick_input);
     TncCandidateDisplayKind = (cdk_default, cdk_lm_compound, cdk_sentence_prefix);
     TncLogLevel = (ll_debug, ll_info, ll_warn, ll_error);
 

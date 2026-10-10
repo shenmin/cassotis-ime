@@ -11,6 +11,7 @@ uses
     System.Generics.Defaults,
     Winapi.Windows,
     nc_types,
+    nc_quick_input,
     nc_candidate_presentation,
     nc_prefix_completion_policy,
     nc_shortcut,
@@ -603,6 +604,7 @@ type
     private
         m_config: TncEngineConfig;
         m_composition_text: string;
+        m_quick_input: TncQuickInputState;
         m_composition_display_text: string;
         m_candidates: TncCandidateList;
         m_one_key_completion: TncOneKeyCompletion;
@@ -1070,6 +1072,7 @@ type
         function merge_candidate_lists(const primary_candidates: TncCandidateList;
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
+        function build_quick_input_candidates: Boolean;
         procedure clear_keystroke_decode_state;
         function composition_reuses_earlier_keys: Boolean;
         procedure build_candidates_core;
@@ -1258,6 +1261,8 @@ type
         function next_page: Boolean;
         function prev_page: Boolean;
         function get_composition_text: string;
+        function quick_input_active: Boolean;
+        function candidate_selection_keys: string;
         function get_last_lookup_key: string;
         function get_display_text: string;
         function get_confirmed_length: Integer;
@@ -4446,6 +4451,7 @@ end;
 
 procedure TncEngine.reset(const preserve_document_context: Boolean);
 begin
+    m_quick_input.clear;
     clear_one_key_completion;
     clear_one_key_completion_feedback_target;
     m_composition_text := '';
@@ -4838,9 +4844,13 @@ end;
 procedure TncEngine.debug_set_composition_text(const text: string);
 begin
     reload_dictionary_if_needed;
+    m_quick_input.clear;
+    m_quick_input.explicit_entry := (text <> '') and CharInSet(text[1], ['U', 'I', 'V']);
     m_composition_built_incrementally := False;
     m_composition_display_text := text;
-    if is_shuangpin_input then
+    if is_shuangpin_input and
+        (nc_quick_input_kind(text, m_config.pinyin_input_scheme,
+        m_quick_input.explicit_entry) = qik_none) then
     begin
         rebuild_shuangpin_composition_from_input_code;
     end
@@ -4870,6 +4880,7 @@ function TncEngine.debug_query_one_key_completion(const query_text: string;
     const left_context: string): TncOneKeyCompletion;
 begin
     reload_dictionary_if_needed;
+    m_quick_input.clear;
     m_composition_built_incrementally := False;
     m_composition_display_text := LowerCase(Trim(query_text));
     m_composition_text := m_composition_display_text;
@@ -8548,6 +8559,67 @@ begin
         (not m_composition_decoded_as_whole);
 end;
 
+function TncEngine.build_quick_input_candidates: Boolean;
+var
+    kind: TncQuickInputKind;
+    shortcuts: TncCandidateList;
+    idx: Integer;
+    was_explicit: Boolean;
+begin
+    was_explicit := m_quick_input.explicit_mode;
+    if m_composition_display_text = '' then m_quick_input.explicit_entry := False;
+    kind := qik_none;
+    if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') then
+        kind := nc_quick_input_kind(m_composition_display_text,
+            m_config.pinyin_input_scheme, m_quick_input.explicit_entry);
+    m_quick_input.explicit_mode := m_quick_input.explicit_entry and
+        (kind in [qik_symbols, qik_number, qik_symbol_prefix]);
+    if m_quick_input.explicit_mode then
+        m_composition_text := m_composition_display_text
+    else if was_explicit and is_shuangpin_input then
+    begin
+        // Incomplete commands such as Uj remain ordinary double-pinyin syllables.
+        rebuild_shuangpin_composition_from_input_code;
+    end;
+    if m_quick_input.exclusive or
+        (kind in [qik_symbols, qik_number, qik_symbol_prefix]) then
+    begin
+        clear_keystroke_decode_state;
+        clear_one_key_completion;
+    end;
+    m_quick_input.kind := kind;
+    m_quick_input.generated := nil;
+    if kind <> qik_none then
+        m_quick_input.generated := nc_quick_input_candidates(m_composition_display_text,
+            m_config.dictionary_variant = dv_traditional, Now);
+    // Aliases only decorate the final ordinary pool. They never replace the
+    // normal lookup, learning, ranking or completion pipeline.
+    Result := m_quick_input.exclusive;
+    if not Result then Exit;
+    clear_one_key_completion_feedback_target;
+    m_composition_decoded_as_whole := False;
+    m_last_lookup_key := m_composition_text;
+    shortcuts := Copy(m_quick_input.generated);
+    if Length(shortcuts) = 0 then
+    begin
+        SetLength(shortcuts, 1);
+        shortcuts[0] := Default(TncCandidate);
+        shortcuts[0].text := m_composition_display_text;
+        shortcuts[0].source := cs_quick_input;
+    end;
+    m_candidates := shortcuts;
+    m_page_index := 0;
+    m_selected_index := 0;
+    m_candidate_navigation_started := False;
+    m_candidate_paging_expanded := False;
+    // Reuse the normal page snapshots and click generation checks, not the
+    // pinyin presentation filters (which discard non-Han symbol candidates).
+    m_long_visible_candidate_pool_cache := Copy(m_candidates);
+    SetLength(m_long_visible_candidate_pool_source_indices_cache, Length(m_candidates));
+    for idx := 0 to High(m_candidates) do
+        m_long_visible_candidate_pool_source_indices_cache[idx] := idx;
+end;
+
 procedure TncEngine.build_candidates;
 const
     c_completion_emergency_skip_ms = 250;
@@ -8556,6 +8628,7 @@ const
 var
     build_started_at: UInt64;
 begin
+    if build_quick_input_candidates then Exit;
     build_started_at := GetTickCount64;
     // A fresh page may promote a different reading; let Tab follow it again.
     m_visible_completion_key := '';
@@ -8574,6 +8647,26 @@ begin
     if m_composition_decoded_as_whole then
         clear_keystroke_decode_state;
     build_candidates_core;
+
+    // Once a decimal stops being a quick command, pinyin lookup may have no
+    // result. Keep the original input selectable without learning it as a word.
+    if (m_composition_display_text <> '') and
+        CharInSet(m_composition_display_text[1], ['i', 'I', 'v', 'V']) and
+        (Pos('.', m_composition_display_text) > 0) and
+        (Length(get_candidates) = 0) then
+    begin
+        m_quick_input.kind := qik_literal;
+        SetLength(m_candidates, 1);
+        m_candidates[0] := Default(TncCandidate);
+        m_candidates[0].text := m_composition_display_text;
+        m_candidates[0].source := cs_quick_input;
+        m_long_visible_candidate_pool_cache := Copy(m_candidates);
+        m_long_visible_candidate_pool_source_indices_cache := TArray<Integer>.Create(0);
+        m_page_index := 0;
+        m_selected_index := 0;
+        clear_one_key_completion;
+        Exit;
+    end;
 
     // Candidate visibility is more important than the optional Tab hint during
     // real incremental typing. Direct whole-query evaluation uses fixed work so
@@ -8885,8 +8978,8 @@ var
         const pinyin_key: string): Boolean; forward;
     procedure ensure_best_fixed_boundary_exact_chain_candidate_visible(
         var candidates: TncCandidateList); forward;
-    procedure ensure_simple_fixed_boundary_chain_candidate_visible(
-        var candidates: TncCandidateList); forward;
+    function ensure_simple_fixed_boundary_chain_candidate_visible(
+        var candidates: TncCandidateList): Boolean; forward;
     procedure ensure_short_full_query_exact_cluster_visible(
         var candidates: TncCandidateList); forward;
     procedure ensure_high_quality_complete_candidate_in_top2(
@@ -20764,7 +20857,11 @@ var
             m_last_full_path_debug_info := m_last_full_path_debug_info +
                 ' [ps-chain]';
         end;
-        ensure_simple_fixed_boundary_chain_candidate_visible(m_candidates);
+        if ensure_simple_fixed_boundary_chain_candidate_visible(m_candidates) then
+        begin
+            // Preserve the complete-word comparison, not the earlier split path.
+            top_to_preserve := m_candidates[0];
+        end;
         ensure_supported_short_four_two_prefix_partial_visible_local(
             get_effective_compact_pinyin_syllables(lookup_text),
             m_candidates);
@@ -70775,8 +70872,8 @@ var
         end;
     end;
 
-    procedure ensure_simple_fixed_boundary_chain_candidate_visible(
-        var candidates: TncCandidateList);
+    function ensure_simple_fixed_boundary_chain_candidate_visible(
+        var candidates: TncCandidateList): Boolean;
     var
         syllables_local: TncPinyinParseResult;
         syllable_count_local: Integer;
@@ -70798,6 +70895,9 @@ var
         picked_local: TncCandidate;
         built_has_preferred_phrase_local: Boolean;
         built_has_fixed_single_local: Boolean;
+        built_kept_exact_word_local: Boolean;
+        kept_word_chain_wins_local: Boolean;
+        top_path_parts_local: TArray<string>;
 
         function build_query_key_local(const local_start_idx: Integer;
             const local_span_len: Integer): string;
@@ -70938,6 +71038,42 @@ var
             end;
         end;
 
+        function try_keep_ranked_exact_word_local(out text_local: string): Boolean;
+        var
+            part_local: string;
+            key_local: string;
+            units_local: TArray<string>;
+            start_local, count_local, unit_local: Integer;
+        begin
+            Result := False;
+            text_local := '';
+            // This protection belongs to short composition. Six-syllable
+            // full paths keep the fallback their long-path models were fit on.
+            if syllable_count_local > 5 then Exit;
+            start_local := 0;
+            for part_local in top_path_parts_local do
+            begin
+                units_local := split_text_units(part_local);
+                count_local := Length(units_local);
+                if start_local = pos_local then
+                begin
+                    if count_local <= 1 then Exit;
+                    key_local := build_query_key_local(start_local, count_local);
+                    if (key_local = '') or
+                        (not (m_dictionary.is_base_entry(key_local, part_local) or
+                        m_dictionary.is_user_entry(key_local, part_local))) then Exit;
+                    for unit_local := 0 to count_local - 1 do
+                        if not m_dictionary.single_char_matches_pinyin(
+                            syllables_local[start_local + unit_local].text,
+                            units_local[unit_local]) then Exit;
+                    text_local := part_local;
+                    Exit(True);
+                end;
+                Inc(start_local, count_local);
+                if start_local > pos_local then Exit;
+            end;
+        end;
+
         procedure append_segment_local(const segment_text: string);
         begin
             built_text_local := built_text_local + segment_text;
@@ -71053,7 +71189,35 @@ var
             end;
         end;
 
+        function kept_word_chain_has_lm_support_local: Boolean;
+        const
+            c_min_char_margin = 256;
+        var
+            texts_local: TArray<string>;
+            scores_local: TArray<Integer>;
+            context_local: string;
+        begin
+            Result := False;
+            if (not built_kept_exact_word_local) or
+                (built_text_local = candidates[0].text) then Exit;
+            texts_local := TArray<string>.Create(candidates[0].text, built_text_local);
+            if (not m_dictionary.get_char_lm_continuation_scores('',
+                texts_local, scores_local)) or (Length(scores_local) <> 2) or
+                (Int64(scores_local[1]) - scores_local[0] < c_min_char_margin) then Exit;
+            context_local := Trim(m_segment_left_context);
+            if context_local = '' then context_local := Trim(m_external_left_context);
+            if context_local = '' then context_local := Trim(m_left_context);
+            context_local := context_model_tail(context_local);
+            if context_local <> '' then
+                if (not m_dictionary.get_char_lm_continuation_scores(context_local,
+                    texts_local, scores_local)) or (Length(scores_local) <> 2) or
+                    (scores_local[1] <= scores_local[0]) then Exit;
+            Result := True;
+        end;
+
     begin
+        // Only an LM-supported intact-word choice supersedes a preserved top.
+        Result := False;
         if (Length(candidates) = 0) or (m_dictionary = nil) or
             (not is_full_pinyin_key(lookup_text)) or
             (input_syllable_count < 4) or (input_syllable_count > 6) then
@@ -71074,17 +71238,37 @@ var
             Exit;
         end;
 
+        SetLength(top_path_parts_local, 0);
+        if (syllable_count_local <= 5) and
+            (Trim(candidates[0].comment) = '') and
+            (get_candidate_text_unit_count(candidates[0].text) = syllable_count_local) then
+        begin
+            top_path_parts_local := get_segment_path_for_candidate(candidates[0], 0).
+                Split([c_segment_path_separator]);
+            if string.Join('', top_path_parts_local) <> candidates[0].text then
+                SetLength(top_path_parts_local, 0);
+        end;
         pos_local := 0;
         built_text_local := '';
         built_path_local := '';
         built_has_preferred_phrase_local := False;
         built_has_fixed_single_local := False;
+        built_kept_exact_word_local := False;
         while pos_local < syllable_count_local do
         begin
             fixed_text_local := get_fixed_single_local(
                 syllables_local[pos_local].text);
             if fixed_text_local <> '' then
             begin
+                // A fixed single is a fallback, not evidence for splitting a
+                // complete exact word already present in the ranked path.
+                if try_keep_ranked_exact_word_local(phrase_text_local) then
+                begin
+                    append_segment_local(phrase_text_local);
+                    built_kept_exact_word_local := True;
+                    Inc(pos_local, get_candidate_text_unit_count(phrase_text_local));
+                    Continue;
+                end;
                 append_segment_local(fixed_text_local);
                 built_has_fixed_single_local := True;
                 Inc(pos_local);
@@ -71137,13 +71321,18 @@ var
             Inc(pos_local);
         end;
 
+        kept_word_chain_wins_local := kept_word_chain_has_lm_support_local;
         if (built_text_local = '') or
-            (not built_has_fixed_single_local) or
+            ((not built_has_fixed_single_local) and
+            (not (built_kept_exact_word_local and
+            (top_conflicts_with_built_preferred_phrase_local or
+            kept_word_chain_wins_local)))) or
             (get_candidate_text_unit_count(built_text_local) <>
             input_syllable_count) or
             SameText(built_text_local, Trim(candidates[0].text)) or
             ((get_candidate_text_unit_count(Trim(candidates[0].text)) =
             input_syllable_count) and
+            (not kept_word_chain_wins_local) and
             (not top_conflicts_with_built_fixed_boundary_local) and
             (not top_conflicts_with_built_preferred_phrase_local)) then
         begin
@@ -71188,6 +71377,8 @@ var
         end;
         remember_segment_path_for_candidate(candidates[0].text, '',
             built_path_local, candidates[0].score);
+        Result := kept_word_chain_wins_local;
+        if Result then candidates[0].display_kind := cdk_lm_compound;
     end;
 
     procedure ensure_best_strong_complete_candidate_precedes_long_exact_prefix_partial(
@@ -152306,6 +152497,7 @@ var
     normalized_remaining: string;
 begin
     m_pending_commit_text := text;
+    m_quick_input.pending_commit := m_quick_input.exclusive;
     m_pending_commit_remaining := remaining_pinyin;
     m_pending_commit_remaining_input_code := remaining_input_code;
     if (m_pending_commit_remaining_input_code = '') and
@@ -152333,6 +152525,7 @@ end;
 
 procedure TncEngine.clear_pending_commit;
 begin
+    m_quick_input.pending_commit := False;
     if not m_has_pending_commit then
     begin
         Exit;
@@ -154089,6 +154282,23 @@ var
                 m_dictionary.is_user_entry(head_key_local, head_text_local));
         end;
     begin
+        if selected.source = cs_quick_input then
+        begin
+            if (m_quick_input.kind = qik_symbols) and
+                (nc_quick_input_command(m_composition_display_text) = '') then
+            begin
+                m_composition_display_text := selected.text;
+                m_composition_text := selected.text;
+                build_candidates;
+                Exit(True);
+            end;
+            set_pending_commit(nc_quick_input_commit(m_composition_display_text,
+                selected, m_quick_input.generated,
+                m_config.dictionary_variant = dv_traditional, Now), '', False, '', False, '',
+                False, False, '', True);
+            m_quick_input.pending_commit := True;
+            Exit(True);
+        end;
         segment_path := get_segment_path_for_candidate(selected, selected_candidate_index);
         if (selected.comment <> '') and is_compact_ascii_pinyin(selected.comment) then
         begin
@@ -154243,6 +154453,41 @@ begin
         Exit(False);
     end;
 
+    if (m_quick_input.kind = qik_number) and
+        nc_quick_number_key(key_code, key_state, key_char) then
+    begin
+        clear_pending_commit;
+        if (key_char = '-') and (Length(m_composition_display_text) <> 1) then
+        begin
+            if nc_candidate_page_key_matches_previous(
+                m_config.candidate_page_key_scheme, key_code, key_state) then
+                prev_page;
+            Exit(True);
+        end;
+        if Length(m_composition_display_text) < c_quick_input_max_length then
+        begin
+            m_composition_display_text := m_composition_display_text + key_char;
+            m_composition_text := m_composition_display_text;
+            build_candidates;
+        end;
+        Exit(True);
+    end;
+
+    if (m_quick_input.kind = qik_number) and not key_state.shift_down and
+        not key_state.caps_lock and (key_code >= Ord('A')) and
+        (key_code <= Ord('D')) and (Length(m_quick_input.generated) > 1) then
+    begin
+        normalize_page_and_selection;
+        page_size := get_candidate_page_size;
+        index := m_page_index * page_size + key_code - Ord('A');
+        if (key_code - Ord('A') < page_size) and (index < Length(m_candidates)) then
+        begin
+            clear_pending_commit;
+            Exit(apply_candidate_selection(m_candidates[index], index, True, True));
+        end;
+        Exit(True);
+    end;
+
     if m_composition_text <> '' then
     begin
         normalize_page_and_selection;
@@ -154251,7 +154496,14 @@ begin
     if is_alpha_key(key_code, key_state, key_char, display_key_char) then
     begin
         clear_pending_commit;
-        if is_shuangpin_input then
+        if (m_composition_display_text = '') and (m_confirmed_text = '') and
+            key_state.shift_down and not key_state.caps_lock and
+            CharInSet(key_char, ['u', 'i', 'v']) then
+            m_quick_input.explicit_entry := True;
+        if (m_quick_input.kind <> qik_none) and
+            (m_quick_input.kind <> qik_date_alias) and
+            (Length(m_composition_display_text) >= c_quick_input_max_length) then Exit(True);
+        if is_shuangpin_input and not m_quick_input.explicit_mode then
         begin
             m_composition_display_text := m_composition_display_text + display_key_char;
             rebuild_shuangpin_composition_from_input_code;
@@ -154268,6 +154520,7 @@ begin
 
     if (key_code = VK_OEM_1) and (not key_state.shift_down) and
         (not key_state.ctrl_down) and (not key_state.alt_down) and
+        (not m_quick_input.explicit_mode) and
         nc_shuangpin_accepts_semicolon(m_config.pinyin_input_scheme,
         m_composition_display_text) then
     begin
@@ -154327,7 +154580,8 @@ begin
 
     if get_punctuation_char(key_code, key_state, punct_char) then
     begin
-        if (key_code <> VK_OEM_7) or (m_composition_text = '') then
+        if (key_code <> VK_OEM_7) or (m_composition_text = '') or
+            m_quick_input.explicit_mode or m_quick_input.exclusive then
         begin
             if (key_code = VK_ADD) or (key_code = VK_SUBTRACT) or
                 (key_code = VK_MULTIPLY) then
@@ -154343,7 +154597,21 @@ begin
                 commit_text := punct_text;
                 if m_composition_text <> '' then
                 begin
-                    get_selected_candidate(candidate);
+                    get_selected_candidate(candidate, m_quick_input.kind <> qik_none);
+                    if candidate.source = cs_quick_input then
+                    begin
+                        if (m_quick_input.kind = qik_symbols) and
+                            (nc_quick_input_command(m_composition_display_text) = '') then
+                            commit_text := m_composition_display_text
+                        else
+                            commit_text := nc_quick_input_commit(m_composition_display_text,
+                                candidate, m_quick_input.generated,
+                                m_config.dictionary_variant = dv_traditional, Now);
+                        set_pending_commit(commit_text + punct_text,
+                            '', False, '', False, '', False, False, '', True);
+                        m_quick_input.pending_commit := True;
+                        Exit(True);
+                    end;
                     selected_segment_path := get_segment_path_for_candidate(candidate,
                         index);
                     prefer_longer_default_partial_for_punctuation(candidate,
@@ -154405,7 +154673,7 @@ begin
                 if (not Result) and (m_composition_text <> '') then
                 begin
                     clear_pending_commit;
-                    if is_shuangpin_input then
+                    if is_shuangpin_input and not m_quick_input.explicit_mode then
                     begin
                         if m_composition_display_text <> '' then
                         begin
@@ -154432,7 +154700,7 @@ begin
                 if m_composition_text <> '' then
                 begin
                     clear_pending_commit;
-                    if is_shuangpin_input then
+                    if is_shuangpin_input and not m_quick_input.explicit_mode then
                     begin
                         if (m_composition_display_text <> '') and
                             (m_composition_display_text[Length(m_composition_display_text)] <> '''') then
@@ -161259,15 +161527,52 @@ var
             end;
         end;
 
-        function should_keep_supported_pair_before_particle_local(
-            const candidate_value: TncCandidate;
+        function should_keep_ranked_path_before_particle_local(
+            const candidate_value: TncCandidate; const candidate_index: Integer;
             const particle_candidate_value: TncCandidate): Boolean;
+        var
+            path_local: string;
+            path_parts_local: TArray<string>;
+            part_local: string;
+            joined_local: string;
         begin
-            Result := (Trim(candidate_value.comment) = '') and
-                is_current_short_three_exact_pair_candidate_supported(
-                normalized_pinyin, Trim(candidate_value.text)) and
-                (display_candidate_effective_weight(candidate_value) >=
-                display_candidate_effective_weight(particle_candidate_value));
+            Result := False;
+            if (Trim(candidate_value.comment) <> '') or
+                SameText(Trim(candidate_value.text), particle_candidate_value.text) or
+                (display_candidate_effective_weight(candidate_value) <
+                display_candidate_effective_weight(particle_candidate_value)) then
+            begin
+                Exit;
+            end;
+            if is_current_short_three_exact_pair_candidate_supported(
+                normalized_pinyin, Trim(candidate_value.text)) then
+            begin
+                Exit(True);
+            end;
+
+            // Display-only particle completion must not override an already
+            // ranked complete path. Reuse its stored path, never infer one here.
+            if get_candidate_text_unit_count(Trim(candidate_value.text)) <>
+                expected_units then
+            begin
+                Exit;
+            end;
+            path_local := get_segment_path_for_candidate(candidate_value, candidate_index);
+            if get_encoded_path_segment_count_local(path_local) <= 1 then
+            begin
+                Exit;
+            end;
+            path_parts_local := path_local.Split([c_segment_path_separator]);
+            joined_local := '';
+            for part_local in path_parts_local do
+            begin
+                if Trim(part_local) = '' then
+                begin
+                    Exit;
+                end;
+                joined_local := joined_local + Trim(part_local);
+            end;
+            Result := SameText(joined_local, Trim(candidate_value.text));
         end;
 
         function append_head_candidates(
@@ -161480,8 +161785,8 @@ var
         begin
             fixed_candidate := fixed_candidates[fixed_idx];
             while (target_idx <= High(m_candidates)) and
-                should_keep_supported_pair_before_particle_local(
-                m_candidates[target_idx], fixed_candidate) do
+                should_keep_ranked_path_before_particle_local(
+                m_candidates[target_idx], target_idx, fixed_candidate) do
             begin
                 Inc(target_idx);
             end;
@@ -161500,7 +161805,7 @@ var
                         candidate_is_full_query_exact := True;
                         Break;
                     end;
-                    if candidate_idx <> target_idx then
+                    if candidate_idx > target_idx then
                     begin
                         force_move_display_candidate_to_index(candidate_idx,
                             target_idx);
@@ -161510,6 +161815,13 @@ var
             end;
 
             if candidate_is_full_query_exact then
+            begin
+                Continue;
+            end;
+
+            // A later head variant may duplicate a path we have just protected.
+            // Keep that earlier slot, including its path and original score.
+            if candidate_found and (candidate_idx < target_idx) then
             begin
                 Continue;
             end;
@@ -164510,6 +164822,66 @@ var
                 SameText(normalized_key_value, 'ma');
         end;
 
+        function partial_cuts_existing_exact_word_local: Boolean;
+        var
+            complete_local: TncCandidate;
+            parts_local, units_local: TArray<string>;
+            path_local, word_local, key_local, prefix_local: string;
+            complete_idx_local, word_units_local, start_local, unit_local: Integer;
+            aligned_local: Boolean;
+        begin
+            Result := False;
+            // Protect the same short compositions as the chain repair.
+            // Full long paths retain their complete-pool and particle decisions.
+            if (m_dictionary = nil) or (expected_units < 4) or
+                (expected_units > 5) then Exit;
+            for complete_idx_local := 0 to High(m_candidates) do
+            begin
+                complete_local := m_candidates[complete_idx_local];
+                if (complete_local.comment <> '') or
+                    (get_candidate_text_unit_count(complete_local.text) <> expected_units) or
+                    (Copy(complete_local.text, 1, Length(head_text)) <> head_text) or
+                    (complete_local.text = head_text + tail_text) then Continue;
+                path_local := get_display_candidate_path_for_index(
+                    complete_local, complete_idx_local);
+                parts_local := path_local.Split([c_segment_path_separator]);
+                if (Length(parts_local) = 0) or
+                    (string.Join('', parts_local) <> complete_local.text) then Continue;
+                word_local := parts_local[High(parts_local)];
+                units_local := split_text_units(word_local);
+                word_units_local := Length(units_local);
+                if (word_units_local < 2) or (word_units_local > 4) then Continue;
+                start_local := expected_units - word_units_local;
+                key_local := build_display_query_key(start_local, word_units_local);
+                if not display_exact_key_has_text(key_local, word_local) then Continue;
+                aligned_local := True;
+                for unit_local := 0 to word_units_local - 1 do
+                    if not m_dictionary.single_char_matches_pinyin(
+                        syllables[start_local + unit_local].text,
+                        units_local[unit_local]) then
+                    begin
+                        aligned_local := False;
+                        Break;
+                    end;
+                if not aligned_local then Continue;
+                Result := True;
+                // A productive particle can follow an independently intact
+                // word. Do not freeze it merely because the longer form is
+                // also in the dictionary (e.g. an adverb ending in "de").
+                if tail_accepts_supported_compound_head_local(tail_key) and
+                    (word_units_local >= 3) then
+                begin
+                    prefix_local := '';
+                    for unit_local := 0 to word_units_local - 2 do
+                        prefix_local := prefix_local + units_local[unit_local];
+                    key_local := build_display_query_key(start_local,
+                        word_units_local - 1);
+                    if display_exact_key_has_text(key_local, prefix_local) then
+                        Exit(False);
+                end;
+            end;
+        end;
+
         function get_supported_exact_head_path_local(
             const candidate_idx: Integer; const local_head_units: Integer;
             out path_value: string): Boolean;
@@ -164839,6 +165211,9 @@ var
             begin
                 Continue;
             end;
+            // A selectable prefix cut from a complete word does not authorize
+            // replacing that word's last character with a fixed single.
+            if partial_cuts_existing_exact_word_local then Continue;
             head_has_supported_exact_path :=
                 tail_accepts_supported_compound_head_local(tail_key) and
                 get_supported_exact_head_path_local(idx, head_units,
@@ -184288,7 +184663,8 @@ var
         var idx, count: Integer; value: TncCandidate; key: string;
             pool: TncCandidateList; sources: TArray<Integer>;
         begin
-            if ((not m_config.candidate_expand_on_paging) and (not short_context_swapped)) or (m_page_index <> 0) or
+            if ((not m_config.candidate_expand_on_paging) and (not short_context_swapped) and
+                (m_quick_input.kind <> qik_date_alias)) or (m_page_index <> 0) or
                 long_visible_candidate_pool_cache_is_current(visible_page_size) then Exit;
             // Most queries already have a final pool. Freeze the same filtered
             // tail for single syllables/long exacts without another search.
@@ -184317,7 +184693,10 @@ var
                 Inc(count);
             end;
             // A sparse first page must not change when navigating back to it.
-            if (Length(Result) < visible_page_size) and (count > Length(Result)) then Exit;
+            // Aliases add their date/time choices to this pool before the page
+            // is published, so freeze their entire filtered tail even if sparse.
+            if (Length(Result) < visible_page_size) and (count > Length(Result)) and
+                (m_quick_input.kind <> qik_date_alias) then Exit;
             SetLength(pool, count);
             SetLength(sources, count);
             m_long_visible_candidate_pool_cache := pool;
@@ -184544,6 +184923,23 @@ var
                     m_long_visible_candidate_pool_source_indices_cache[page_idx] := visible_source_indices[page_idx];
                 end;
             freeze_remaining_pages;
+            if (m_quick_input.kind = qik_date_alias) and (m_page_index = 0) then
+            begin
+                if not long_visible_candidate_pool_cache_is_current(visible_page_size) then
+                begin
+                    m_long_visible_candidate_pool_cache := Copy(Result);
+                    m_long_visible_candidate_pool_source_indices_cache := Copy(visible_source_indices);
+                end;
+                nc_insert_quick_candidates(m_long_visible_candidate_pool_cache,
+                    m_long_visible_candidate_pool_source_indices_cache, m_quick_input.generated);
+                m_long_visible_candidate_pool_cache_key :=
+                    get_long_visible_candidate_pool_cache_key(visible_page_size);
+                m_long_visible_candidate_pool_source_signature := get_candidate_state_signature;
+                m_long_visible_candidate_pool_cache_valid := True;
+                nc_copy_candidate_page(m_long_visible_candidate_pool_cache,
+                    m_long_visible_candidate_pool_source_indices_cache, 0,
+                    visible_page_size, Result, visible_source_indices);
+            end;
             cache_visible_candidate_page(Result, visible_source_indices, visible_page_size);
         finally
             emitted_visible_texts.Free;
@@ -184797,6 +185193,14 @@ var
 
 begin
     display_phase_tick := GetTickCount64;
+    if m_quick_input.exclusive then
+    begin
+        nc_copy_candidate_page(m_candidates,
+            m_long_visible_candidate_pool_source_indices_cache,
+            m_page_index, get_candidate_page_size, Result, cached_page_sources);
+        cache_visible_candidate_page(Result, cached_page_sources, get_candidate_page_size);
+        Exit;
+    end;
     umlaut_raw_prefixes_ready := False;
     relaxed_boundary_cache_ready := False;
     relaxed_boundary_cache_found := False;
@@ -185345,6 +185749,7 @@ end;
 
 function TncEngine.get_one_key_completion: TncOneKeyCompletion;
 begin
+    if m_quick_input.exclusive then Exit(Default(TncOneKeyCompletion));
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
     carry_validated_prefix_completion;
     if GetEnvironmentVariable('CASSOTIS_TAB_REPAIRED_PREFIX') = 'carry' then
@@ -185807,6 +186212,13 @@ begin
     page_size := get_candidate_page_size;
     if (page_index = m_page_index) and visible_candidates_cache_is_current(page_size) then
         Exit(Copy(m_visible_candidates_cache));
+    if m_quick_input.exclusive then
+    begin
+        nc_copy_candidate_page(m_candidates,
+            m_long_visible_candidate_pool_source_indices_cache, page_index,
+            page_size, Result, sources);
+        Exit;
+    end;
     if long_visible_candidate_pool_cache_is_current(page_size) then
         nc_copy_candidate_page(m_long_visible_candidate_pool_cache,
             m_long_visible_candidate_pool_source_indices_cache, page_index,
@@ -185822,7 +186234,8 @@ begin
         page := Copy(m_visible_candidates_cache)
     else
     begin
-        if not long_visible_candidate_pool_cache_is_current(page_size) then Exit;
+        if (not m_quick_input.exclusive) and
+            not long_visible_candidate_pool_cache_is_current(page_size) then Exit;
         nc_copy_candidate_page(m_long_visible_candidate_pool_cache,
             m_long_visible_candidate_pool_source_indices_cache, page_index,
             page_size, page, sources);
@@ -185918,6 +186331,21 @@ begin
     else
     begin
         Result := m_composition_text;
+    end;
+end;
+
+function TncEngine.quick_input_active: Boolean;
+begin
+    Result := m_quick_input.exclusive;
+end;
+
+function TncEngine.candidate_selection_keys: string;
+begin
+    Result := '123456789';
+    if m_quick_input.kind = qik_number then
+    begin
+        Result := '';
+        if Length(m_quick_input.generated) > 1 then Result := 'abcd';
     end;
 end;
 
@@ -186392,6 +186820,9 @@ begin
         Exit;
     end;
 
+    if (m_quick_input.kind = qik_number) and
+        nc_quick_number_key(key_code, key_state, key_char) then Exit(True);
+
     if is_alpha_key(key_code, key_state, key_char, display_key_char) then
     begin
         Result := True;
@@ -186399,6 +186830,7 @@ begin
     end;
 
     if (key_code = VK_OEM_1) and (not key_state.shift_down) and
+        (not m_quick_input.explicit_mode) and
         nc_shuangpin_accepts_semicolon(m_config.pinyin_input_scheme,
         m_composition_display_text) then
     begin
@@ -186952,6 +187384,18 @@ begin
     begin
         Result := False;
         Exit;
+    end;
+
+    if m_quick_input.pending_commit then
+    begin
+        out_text := m_confirmed_text + m_pending_commit_text;
+        update_left_context(out_text);
+        m_prev_committed_text := '';
+        m_prev_committed_pinyin := '';
+        m_last_committed_text := '';
+        m_last_committed_pinyin := '';
+        reset(False);
+        Exit(True);
     end;
 
     commit_segment_text := m_pending_commit_text;
@@ -187542,7 +187986,14 @@ begin
 end;
 
 procedure TncEngine.notify_user_dictionary_cleared;
+var
+    saved_page, saved_selection: Integer;
+    saved_navigation, saved_expanded: Boolean;
 begin
+    saved_page := m_page_index;
+    saved_selection := m_selected_index;
+    saved_navigation := m_candidate_navigation_started;
+    saved_expanded := m_candidate_paging_expanded;
     clear_session_learning_after_user_removal;
     if m_build_lookup_cache <> nil then
     begin
@@ -187557,6 +188008,17 @@ begin
     m_forced_visible_top_composition_text := '';
     m_forced_visible_top_lookup_key := '';
     clear_segment_path_tracking;
+    if m_quick_input.exclusive then
+    begin
+        // These candidates do not depend on the user dictionary. Rebuild their
+        // source mapping together with the pool, retaining the active page.
+        build_quick_input_candidates;
+        m_page_index := saved_page;
+        m_selected_index := saved_selection;
+        m_candidate_navigation_started := saved_navigation;
+        m_candidate_paging_expanded := saved_expanded;
+        normalize_page_and_selection;
+    end;
 end;
 
 end.

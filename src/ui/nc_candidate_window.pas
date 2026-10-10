@@ -28,8 +28,9 @@ uses
 
 type
     TncCandidateRemoveEvent = procedure(const candidate_index: Integer) of object;
+    TncCandidateClickResult = (ccr_rejected, ccr_prepared, ccr_dispatched);
     TncCandidatePrepareEvent = function(const page_index, candidate_index: Integer;
-        const generation: UInt64): Boolean of object;
+        const generation: UInt64): TncCandidateClickResult of object;
 
     TncCandidateWindow = class(TForm)
     private
@@ -45,6 +46,7 @@ type
         m_candidate_rows: TArray<Integer>;
         m_candidate_pages: TArray<Integer>;
         m_candidate_slots: TArray<Integer>;
+        m_candidate_selection_keys: string;
         m_row_count: Integer;
         m_active_page_index: Integer;
         m_horizontal_placement: TncCandidateHorizontalPlacement;
@@ -127,7 +129,7 @@ type
         function hit_test_remove_candidate_index(const point: TPoint): Integer;
         procedure recompute_remove_button_rects;
         procedure draw_remove_button(const bounds: TRect; const selected: Boolean);
-        procedure send_candidate_digit_key(const candidate_index: Integer);
+        procedure send_prepared_selection_key;
         function format_page_text(const page_index: Integer; const page_count: Integer): string;
         procedure update_size;
     protected
@@ -153,7 +155,10 @@ type
             const one_key_completion_key: TncOneKeyCompletionKey;
             const debug_mode: Boolean;
             const pinyin_scheme: TncPinyinInputScheme = pis_full_pinyin;
-            const pages: TncCandidatePages = nil; const generation: UInt64 = 0);
+            const pages: TncCandidatePages = nil; const generation: UInt64 = 0;
+            const quick_input_active: Boolean = False;
+            const selection_keys: string = '123456789');
+        function candidate_selection_label(const candidate_index: Integer): string;
         procedure show_at(const x: Integer; const y: Integer;
             const prefer_above: Boolean = False; const clearance: Integer = 0);
         procedure hide_window;
@@ -838,17 +843,14 @@ begin
     Canvas.LineTo(bounds.Left + inset, bounds.Bottom - inset);
 end;
 
-procedure TncCandidateWindow.send_candidate_digit_key(const candidate_index: Integer);
+procedure TncCandidateWindow.send_prepared_selection_key;
 var
     key_code: Word;
     input_events: array[0..1] of TInput;
 begin
-    if (candidate_index < 0) or (candidate_index > 8) then
-    begin
-        Exit;
-    end;
-
-    key_code := Ord('1') + candidate_index;
+    // Compatibility with an already loaded older TSF DLL: the host has
+    // selected the item. Space cannot be mistaken for numeric-mode input.
+    key_code := VK_SPACE;
     ZeroMemory(@input_events, SizeOf(input_events));
 
     input_events[0].Itype := INPUT_KEYBOARD;
@@ -910,16 +912,16 @@ begin
     click_index := hit_test_candidate_index(Point(Message.XPos, Message.YPos));
     if click_index >= 0 then
     begin
-        if Assigned(m_on_prepare_candidate) and
-            not m_on_prepare_candidate(m_candidate_pages[click_index],
-                m_candidate_slots[click_index], m_generation) then
+        if (not Assigned(m_on_prepare_candidate)) or
+            (m_on_prepare_candidate(m_candidate_pages[click_index],
+                m_candidate_slots[click_index], m_generation) <> ccr_prepared) then
         begin
             Message.Result := 0;
             Exit;
         end;
         m_selected_index := click_index;
         Invalidate;
-        send_candidate_digit_key(m_candidate_slots[click_index]);
+        send_prepared_selection_key;
     end;
 
     Message.Result := 0;
@@ -1489,7 +1491,7 @@ begin
     begin
         assign_list_font_for_text(m_candidate_lines[i], m_list_font.Color);
         // Reserve numbering on every row so changing the active page cannot shift text.
-        m_candidate_number_widths[i] := Canvas.TextWidth(IntToStr(m_candidate_slots[i] + 1) + '. ');
+        m_candidate_number_widths[i] := Canvas.TextWidth(candidate_selection_label(i));
         main_text_width := m_candidate_number_widths[i] + Canvas.TextWidth(m_candidate_lines[i]);
         weight_text_width := 0;
         if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
@@ -1974,7 +1976,7 @@ begin
         number_rect := text_rect;
         number_rect.Right := number_rect.Left + m_candidate_number_widths[i];
         if m_candidate_pages[i] = m_active_page_index then
-            draw_canvas_text(Canvas, IntToStr(m_candidate_slots[i] + 1) + '. ', number_rect,
+            draw_canvas_text(Canvas, candidate_selection_label(i), number_rect,
                 DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
         text_rect.Left := number_rect.Right;
         draw_canvas_text(Canvas, m_candidate_lines[i], text_rect,
@@ -2006,6 +2008,16 @@ begin
     end;
 end;
 
+function TncCandidateWindow.candidate_selection_label(const candidate_index: Integer): string;
+var key_index: Integer;
+begin
+    Result := '';
+    if (candidate_index < 0) or (candidate_index >= Length(m_candidate_slots)) then Exit;
+    key_index := m_candidate_slots[candidate_index] + 1;
+    if (key_index >= 1) and (key_index <= Length(m_candidate_selection_keys)) then
+        Result := m_candidate_selection_keys[key_index] + '. ';
+end;
+
 procedure TncCandidateWindow.update_candidates(const candidates: TncCandidateList; const page_index: Integer;
     const page_count: Integer; const selected_index: Integer;
     const preedit_text: string;
@@ -2013,7 +2025,8 @@ procedure TncCandidateWindow.update_candidates(const candidates: TncCandidateLis
     const one_key_completion_key: TncOneKeyCompletionKey;
     const debug_mode: Boolean;
     const pinyin_scheme: TncPinyinInputScheme;
-    const pages: TncCandidatePages; const generation: UInt64);
+    const pages: TncCandidatePages; const generation: UInt64;
+    const quick_input_active: Boolean; const selection_keys: string);
 const
     c_show_page_label = False;
 var
@@ -2023,6 +2036,7 @@ var
     displayed: TncCandidateList;
 begin
     m_generation := generation;
+    m_candidate_selection_keys := selection_keys;
     if (m_preedit_label.Caption <> preedit_text) or (Length(pages) <= 1) then
         m_horizontal_placement := Default(TncCandidateHorizontalPlacement);
     m_active_page_index := page_index;
@@ -2134,7 +2148,7 @@ begin
     end;
     m_page_label.Visible := False;
 
-    m_preedit_spans := m_preedit_diagnostics.check(preedit_text, pinyin_scheme);
+    m_preedit_spans := m_preedit_diagnostics.check(preedit_text, pinyin_scheme, quick_input_active);
     if preedit_text <> '' then
     begin
         m_preedit_label.Caption := preedit_text;

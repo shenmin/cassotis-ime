@@ -29,6 +29,7 @@ uses
     nc_caret_anchor_policy,
     nc_ipc_client,
     nc_ipc_common,
+    nc_candidate_click,
     nc_ipc_health;
 
 type
@@ -70,6 +71,7 @@ type
         m_composition: ITfComposition;
         m_composition_context: ITfContext;
         m_ipc_client: TncIpcClient;
+        m_candidate_click_window: HWND;
         m_session_id: string;
         m_attr_input_atom: TfGuidAtom;
         m_display_attribute_provider: ITfDisplayAttributeProvider;
@@ -156,11 +158,17 @@ type
         procedure mark_session_dirty;
         procedure reset_session_if_needed(const force: Boolean = False);
         procedure note_ipc_result(const operation: string; const ok: Boolean);
+        procedure candidate_click_message(var message: TMessage);
+        procedure apply_host_text_result(const context: ITfContext;
+            const commit_text, display_text: string; const had_existing_composition: Boolean;
+            out composition_ms, candidate_point_ms, caret_push_ms: Int64);
         procedure resync_host_session_after_timeout;
         function process_key_on_host(const operation: string; const key_code: Word;
             const key_state: TncKeyState; out handled: Boolean; out commit_text: string;
             out display_text: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
-            out punctuation_full_width: Boolean; out lookup_perf_info: string): Boolean;
+            out punctuation_full_width: Boolean; out lookup_perf_info: string;
+            const selection_token: Cardinal = 0;
+            const candidate_click: Boolean = False): Boolean;
         function send_state_to_host(const input_mode: TncInputMode; const full_width_mode: Boolean;
             const punctuation_full_width: Boolean; const source: string): Boolean;
         procedure invalidate_sent_caret;
@@ -352,6 +360,10 @@ end;
 function nc_imm_get_hot_key(const hot_key_id: DWORD; out modifiers: UINT;
     out virtual_key: UINT; out keyboard_layout: HKL): BOOL; stdcall;
     external 'imm32.dll' name 'ImmGetHotKey';
+
+function nc_change_window_message_filter_ex(const window: HWND;
+    const message: UINT; const action: DWORD; const change_filter: Pointer): BOOL; stdcall;
+    external 'user32.dll' name 'ChangeWindowMessageFilterEx';
 
 function nc_windows_ime_toggle_owns_shortcut(
     const shortcut: TncShortcut): Boolean;
@@ -855,6 +867,11 @@ end;
 
 destructor TncTextService.Destroy;
 begin
+    if m_candidate_click_window <> 0 then
+    begin
+        DeallocateHWnd(m_candidate_click_window);
+        m_candidate_click_window := 0;
+    end;
     if m_compartment_deferred <> nil then
         m_compartment_deferred.Close;
     try
@@ -1284,15 +1301,118 @@ end;
 function TncTextService.process_key_on_host(const operation: string; const key_code: Word;
     const key_state: TncKeyState; out handled: Boolean; out commit_text: string;
     out display_text: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
-    out punctuation_full_width: Boolean; out lookup_perf_info: string): Boolean;
+    out punctuation_full_width: Boolean; out lookup_perf_info: string;
+    const selection_token: Cardinal; const candidate_click: Boolean): Boolean;
+const
+    c_msgflt_allow = 1;
 begin
+    if m_candidate_click_window = 0 then
+    begin
+        m_candidate_click_window := AllocateHWnd(candidate_click_message);
+        // Only this payload-free notification may cross UIPI. The host still
+        // validates the click token, input epoch and rendered snapshot.
+        nc_change_window_message_filter_ex(m_candidate_click_window,
+            get_nc_candidate_click_message, c_msgflt_allow, nil);
+    end;
     Result := m_ipc_client.process_key(m_session_id, key_code, key_state, handled, commit_text,
         display_text, input_mode, full_width_mode, punctuation_full_width, lookup_perf_info,
-        m_input_epoch);
+        m_input_epoch, m_candidate_click_window, selection_token, candidate_click);
     note_ipc_result(operation, Result);
     if (not Result) and (m_ipc_client.last_error = ERROR_TIMEOUT) then
     begin
         m_host_resync_pending := True;
+    end;
+end;
+
+procedure TncTextService.candidate_click_message(var message: TMessage);
+var
+    doc: ITfDocumentMgr;
+    context: ITfContext;
+    handled, full_width, punctuation: Boolean;
+    committed, displayed, perf: string;
+    mode: TncInputMode;
+    token: Cardinal;
+    had_existing_composition: Boolean;
+    composition_ms, candidate_point_ms, caret_push_ms: Int64;
+begin
+    if message.Msg <> get_nc_candidate_click_message then
+    begin
+        message.Result := DefWindowProc(m_candidate_click_window,
+            message.Msg, message.WParam, message.LParam);
+        Exit;
+    end;
+    message.Result := 0;
+    // Validate before narrowing WPARAM: high bits must not alias a valid token.
+    if not nc_try_candidate_click_token(UInt64(message.WParam), token) then Exit;
+    try
+        // Do not commit into a different document after a delayed notification.
+        if (m_thread_mgr = nil) or (m_context = nil) or
+            m_host_resync_pending or (HWND(message.LParam) <> GetForegroundWindow) then Exit;
+        if Failed(m_thread_mgr.GetFocus(doc)) or (doc = nil) or
+            Failed(doc.GetTop(context)) or (context <> m_context) then Exit;
+        mark_session_dirty;
+        had_existing_composition := m_composition <> nil;
+        if not process_key_on_host('candidate_click', VK_SPACE, Default(TncKeyState),
+            handled, committed, displayed, mode, full_width, punctuation, perf,
+            token, True) or not handled then Exit;
+        apply_engine_state_to_compartments(mode, full_width, punctuation);
+        apply_host_text_result(context, committed, displayed, had_existing_composition,
+            composition_ms, candidate_point_ms, caret_push_ms);
+    except
+        log_tsf_boundary_exception('CandidateClick');
+    end;
+end;
+
+procedure TncTextService.apply_host_text_result(const context: ITfContext;
+    const commit_text, display_text: string; const had_existing_composition: Boolean;
+    out composition_ms, candidate_point_ms, caret_push_ms: Int64);
+var
+    started: UInt64;
+    point: TPoint;
+    line_height, score: Integer;
+    terminal_like: Boolean;
+    source: TncCaretAnchorSource;
+begin
+    composition_ms := 0;
+    candidate_point_ms := 0;
+    caret_push_ms := 0;
+    if commit_text <> '' then
+    begin
+        request_commit(context, commit_text);
+        Exit;
+    end;
+    if display_text = '' then
+    begin
+        end_composition(context);
+        Exit;
+    end;
+    if not had_existing_composition then invalidate_sent_caret;
+    started := GetTickCount64;
+    if not update_composition(context, display_text) then
+    begin
+        composition_ms := Int64(GetTickCount64 - started);
+        end_composition(context);
+        Exit;
+    end;
+    composition_ms := Int64(GetTickCount64 - started);
+    started := GetTickCount64;
+    if get_candidate_point(point, line_height, terminal_like, source, score) then
+    begin
+        candidate_point_ms := Int64(GetTickCount64 - started);
+        started := GetTickCount64;
+        push_caret_to_host(point, True, line_height, terminal_like, source, score,
+            not had_existing_composition);
+        caret_push_ms := Int64(GetTickCount64 - started);
+        m_pending_caret_update := False;
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+            m_logger.debug(Format('Caret point set x=%d y=%d has=1', [point.X, point.Y]));
+    end
+    else
+    begin
+        candidate_point_ms := Int64(GetTickCount64 - started);
+        m_pending_caret_update := True;
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+            m_logger.debug('Caret point unavailable, defer candidate positioning');
     end;
 end;
 
@@ -2377,11 +2497,6 @@ var
     input_mode: TncInputMode;
     full_width_mode: Boolean;
     punctuation_full_width: Boolean;
-    point: TPoint;
-    placement_line_height: Integer;
-    terminal_like_target: Boolean;
-    chosen_source: TncCaretAnchorSource;
-    chosen_score: Integer;
     key_state: TncKeyState;
     key_code: Word;
     had_existing_composition: Boolean;
@@ -2391,11 +2506,8 @@ var
     surrounding_elapsed_ms: Int64;
     process_start_tick: UInt64;
     process_elapsed_ms: Int64;
-    composition_start_tick: UInt64;
     composition_elapsed_ms: Int64;
-    candidate_point_start_tick: UInt64;
     candidate_point_elapsed_ms: Int64;
-    caret_push_start_tick: UInt64;
     caret_push_elapsed_ms: Int64;
     surrounding_sent: Boolean;
     lookup_perf_info: string;
@@ -2527,56 +2639,9 @@ begin
             if handled then
             begin
                 eaten := 1;
-                if commit_text <> '' then
-                begin
-                    request_commit(context, commit_text);
-                end
-                else if display_text <> '' then
-                begin
-                    if not had_existing_composition then
-                    begin
-                        invalidate_sent_caret;
-                    end;
-                    composition_start_tick := GetTickCount64;
-                    if update_composition(context, display_text) then
-                    begin
-                        composition_elapsed_ms := Int64(GetTickCount64 - composition_start_tick);
-                        candidate_point_start_tick := GetTickCount64;
-                        if get_candidate_point(point, placement_line_height, terminal_like_target, chosen_source,
-                            chosen_score) then
-                        begin
-                            candidate_point_elapsed_ms := Int64(GetTickCount64 - candidate_point_start_tick);
-                            caret_push_start_tick := GetTickCount64;
-                            push_caret_to_host(point, True, placement_line_height,
-                                terminal_like_target, chosen_source, chosen_score, not had_existing_composition);
-                            caret_push_elapsed_ms := Int64(GetTickCount64 - caret_push_start_tick);
-                            m_pending_caret_update := False;
-                            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                            begin
-                                m_logger.debug(Format('Caret point set x=%d y=%d has=1',
-                                    [point.X, point.Y]));
-                            end;
-                        end
-                        else
-                        begin
-                            candidate_point_elapsed_ms := Int64(GetTickCount64 - candidate_point_start_tick);
-                            m_pending_caret_update := True;
-                            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
-                            begin
-                                m_logger.debug('Caret point unavailable, defer candidate positioning');
-                            end;
-                        end;
-                    end
-                    else
-                    begin
-                        composition_elapsed_ms := Int64(GetTickCount64 - composition_start_tick);
-                        end_composition(context);
-                    end;
-                end
-                else
-                begin
-                    end_composition(context);
-                end;
+                apply_host_text_result(context, commit_text, display_text,
+                    had_existing_composition, composition_elapsed_ms,
+                    candidate_point_elapsed_ms, caret_push_elapsed_ms);
             end;
         end;
     end;

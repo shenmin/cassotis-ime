@@ -18,6 +18,7 @@ function get_nc_host_mutex: string;
 function get_nc_active_event: string;
 function get_nc_inactive_event: string;
 function get_nc_open_settings_message: Cardinal;
+function get_nc_candidate_click_message: Cardinal;
 
 implementation
 
@@ -31,6 +32,7 @@ var
     g_scope_suffix: string = '';
     g_scope_ready: Boolean = False;
     g_open_settings_message: Cardinal = 0;
+    g_candidate_click_message: Cardinal = 0;
 
 function get_process_scope_suffix: string;
 var
@@ -90,6 +92,13 @@ begin
     end;
 
     Result := TNetEncoding.Base64.EncodeBytesToString(TEncoding.UTF8.GetBytes(value));
+end;
+
+function get_nc_candidate_click_message: Cardinal;
+begin
+    if g_candidate_click_message = 0 then
+        g_candidate_click_message := RegisterWindowMessage('CassotisIme.CandidateClick.v1');
+    Result := g_candidate_click_message;
 end;
 
 function decode_ipc_text(const value: string): string;

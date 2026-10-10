@@ -81,7 +81,7 @@ Double Pinyin follows these rules:
 | `full_width_toggle` | Full-width mode toggle | Shortcut text | `Shift+Space` | Toggles half-width and full-width ASCII output. |
 | `open_settings` | Open Settings | Shortcut text | `Ctrl+Shift+F10` | Opens the Settings window. |
 | `candidate_page_keys` | Candidate paging key scheme | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | Represents `-/=`, `[/]`, `,/.`, or `Shift+Tab/Tab`. |
-| `one_key_completion_key` | One-key completion trigger | `tab` / `backtick` | `tab` | After at least two complete syllables, accepts the single completion shown at the bottom of the candidate window. Sources are checked in order: user lexicon, base lexicon, then the offline-generated strong-transition index. Transition completions use the theme accent and are not learned as ordinary user words. `backtick` means the `` ` `` key. |
+| `one_key_completion_key` | One-key completion trigger | `tab` / `backtick` | `tab` | After at least two complete syllables, accepts the single completion shown at the bottom of the candidate window. Sources are checked in order: user lexicon, base lexicon, then the offline-generated strong-transition index; the language model then reranks the completion in the background and may replace it, and in a long sentence it supplies the continuation. Transition completions use the theme accent and are not learned as ordinary user words. `backtick` means the `` ` `` key. |
 
 When `one_key_completion_key=tab`, `candidate_page_keys=shift-tab` conflicts with completion. Settings therefore hides that paging option, and an INI file containing both values is normalized to `minus-plus`.
 

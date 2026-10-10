@@ -33,12 +33,13 @@ type
         m_unresponsive_until_tick: UInt64;
         function transact(const request_bytes: TBytes; var response_bytes: TBytes;
             out bytes_read: DWORD): Boolean;
-        function call_pipe(const request_text: string; out response_text: string): Boolean;
         function ping_host: Boolean;
         function start_host: Boolean;
         function wait_for_host_ready(const timeout_ms: DWORD): Boolean;
         function host_mutex_exists: Boolean;
         function get_module_directory: string;
+    protected
+        function call_pipe(const request_text: string; out response_text: string): Boolean; virtual;
     public
         // pipe_name overrides the per-session host pipe (tests only).
         constructor create(const auto_start: Boolean = True;
@@ -51,7 +52,9 @@ type
         function process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
             out full_width_mode: Boolean; out punctuation_full_width: Boolean; out lookup_perf_info: string;
-            const input_epoch: UInt64 = 0): Boolean;
+            const input_epoch: UInt64 = 0; const selection_window: HWND = 0;
+            const selection_token: Cardinal = 0;
+            const candidate_click: Boolean = False): Boolean;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
         function get_shortcut_config(const session_id: string;
@@ -545,7 +548,8 @@ end;
 function TncIpcClient.process_key(const session_id: string; const key_code: Word; const key_state: TncKeyState;
     out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
     out full_width_mode: Boolean; out punctuation_full_width: Boolean; out lookup_perf_info: string;
-    const input_epoch: UInt64): Boolean;
+    const input_epoch: UInt64; const selection_window: HWND;
+    const selection_token: Cardinal; const candidate_click: Boolean): Boolean;
 var
     request_text: string;
     response_text: string;
@@ -559,13 +563,29 @@ begin
     full_width_mode := False;
     punctuation_full_width := False;
     lookup_perf_info := '';
+    // Invalid clicks must never degrade into PROCESS_KEY (in particular Space).
+    if (candidate_click and ((selection_token = 0) or (selection_window = 0))) or
+        ((not candidate_click) and (selection_token <> 0)) then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Exit(False);
+    end;
     request_text := Format('PROCESS_KEY'#9'%s'#9'%d'#9'%d'#9'%d'#9'%d'#9'%d',
         [session_id, key_code, Ord(key_state.shift_down), Ord(key_state.ctrl_down),
         Ord(key_state.alt_down), Ord(key_state.caps_lock)]);
-    if input_epoch <> 0 then
+    if (input_epoch <> 0) or (selection_window <> 0) or (selection_token <> 0) then
     begin
         // Older hosts ignore the extra field.
         request_text := request_text + #9 + UIntToStr(input_epoch);
+    end;
+    if (selection_window <> 0) or (selection_token <> 0) then
+        request_text := request_text + #9 + UIntToStr(selection_window);
+    if candidate_click then
+    begin
+        // A separate command prevents an old host from interpreting a click
+        // as an ordinary key after ignoring the new fields.
+        request_text := 'SELECT_CANDIDATE' + Copy(request_text, Length('PROCESS_KEY') + 1, MaxInt);
+        request_text := request_text + #9 + UIntToStr(selection_token);
     end;
     if not call_pipe(request_text, response_text) then
     begin

@@ -13,31 +13,29 @@
 
 English | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Linux version](https://github.com/shenmin/cassotis-ime-linux)
 
-Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework).
+Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework). Candidate ranking runs entirely on the local CPU, around a single character-level language model trained by the project.
+
+The project focus is:
+- build a stable TSF-based IME foundation,
+- keep the architecture modular (TSF DLL + host process + tools),
+- rank long sentences, short words and completions with one local language model and a small set of corpus-trained rankers.
 
 ## Name Origin
 The English name **Cassotis** comes from the sacred spring inside the Temple of Delphi. Before delivering oracles, the priestess Pythia was said to drink from this spring to enter a prophetic state. The spring was regarded as the true source of prophecy and inspiration, where oracles were born, which resonates with the path from Delphi to human language.
 
 The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a prophetic spring, while also carrying the meaning of **言如泉涌** ("words flowing like a spring"), reflecting our expectation of a fluent and intelligent input experience.
 
-The project focus is:
-- build a stable TSF-based IME foundation,
-- keep the architecture modular (TSF DLL + host process + tools),
-- improve corpus-trained local ranking for long sentences and context-aware short-word selection.
-
 ## Features
-- TSF text service pipeline is available (registration, activation, composition lifecycle), including the TSF COM-less capability category for hosts that use that activation path.
-- TSF binaries support Win64 and Win32 (`svr.dll` / `svr32.dll`), while host process is Win64 only.
-- Candidate paging, selection and text commitment are supported, with an optional expanded view showing up to three rows when paging. Number keys select from the active row; the Tab completion area is unchanged.
-- Cassotis' original one-key completion displays exactly one trusted continuation and accepts it with the configured key. It prioritizes exact completion from the user and base dictionaries, then falls back to offline-vetted strong-transition completion. On long-sentence static misses, a constrained local model can review exact-lexicon suffix paths asynchronously and abstains when confidence is insufficient.
-- Full Pinyin and six selectable Double Pinyin schemes—Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia—share the same candidate ranking and user-learning data.
-- Configurable fuzzy Pinyin is supported for common initial and final pairs.
-- Dictionary split is supported: simplified base DB, traditional base DB, and user DB.
-- Base dictionary now includes `dict_jianpin` index entries for initial-letter abbreviations (for example `jt -> 今天`; retroflex variants like `zsjs/zhshjsh` are both generated).
-- Full-path segmented phrase decoding is enabled (for example `womenjintian -> 我们今天`) while keeping prefix candidates for partial-commit fallback.
-- Corpus-trained multi-stage long-sentence ranking guides path search, second-stage comparison, and final candidate selection without affecting short exact-query mode.
-- An independent short-word context reranker uses already committed text to resolve ambiguous exact candidates while preserving normal no-context order.
-- Surrounding-text/context synchronization and key state synchronization are implemented.
+- **TSF text service.** Registration, activation and the composition lifecycle are in place, including the TSF COM-less capability category for hosts that use that activation path. The TSF DLL is built for Win64 and Win32 (`svr.dll` / `svr32.dll`); the host process is Win64 only.
+- **Candidate window.** Paging, selection and text commitment, with an optional expanded view showing up to three rows when paging. Number keys select from the active row; the Tab completion area is unchanged.
+- **One-key completion**, original to Cassotis. Exactly one trusted continuation is shown and accepted with the configured key. Exact completions from the user and base dictionaries and offline-vetted strong-transition completions appear at once; the language model then reranks them in the background, using the text before the cursor when there is any. In a long sentence it finishes the current word or continues with the next phrase, and shows nothing when its confidence is insufficient.
+- **Long sentences.** Lexicon-constrained path search builds complete candidates (for example `womenjintian` → `我们今天`) while keeping prefix candidates for partial commitment. The language model chooses among the complete candidates and then corrects small homophone errors in the chosen sentence against the typed Pinyin and the text before the input.
+- **Short words.** The language model resolves competing exact candidates, using the text already committed before the cursor when there is any.
+- **Pinyin schemes.** Full Pinyin and six selectable Double Pinyin schemes (Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia) share the same candidate ranking and user-learning data. Fuzzy Pinyin is configurable for common initial and final pairs, and initial-letter abbreviations are supported (for example `jt` → `今天`).
+- **Dictionaries.** Separate simplified and traditional base databases and a user database.
+- **Quick input.** Use `ufh` for symbols, `uxh` for numbered markers, `usx` for mathematical symbols, and `urq` for the current date. `i123.45` or `v123.45` offers Chinese numbers and uppercase currency amounts; digits keep entering the number, so select with the displayed `a/b/c/d` keys, arrow keys and Space, or the mouse. Double Pinyin requires Shift+U/I/V to enter these modes. See the [quick-input guide (Chinese)](QUICK_INPUT.md).
+- **Application context.** Surrounding text and key state are synchronized with the application.
+- **Local by design.** No network and no GPU. While the language model is loading or unavailable, candidates are ranked without it.
 
 <p align="center">
   <img src="snapshot_multiplelines.png" alt="Three-row candidate window with the second row active" width="532" height="153">
@@ -48,32 +46,31 @@ The project focus is:
 ## Architecture
 - `src/tsf`: TSF COM in-proc server (text service integration).
 - `src/engine`: Pinyin parsing, candidate generation, ranking, and user learning.
-- `src/host`: external host process for engine/UI orchestration.
+- `src/host`: external host process for engine/UI orchestration and language-model inference.
 - `src/ui`: candidate window and tray UI.
 - `src/common`: config, logging, IPC, sqlite wrapper, shared utilities.
 - `tools`: registration, dictionary build/import/diagnostics, helper executables.
+- `data`: database schema and the language model (`data/models/char_lm`, stored as numbered parts).
+- `out`: scripts for build, registration, rebuild and tests; build outputs land here.
+- `installer`: Inno Setup script.
+- `third_party`: vendored third-party binaries (SQLite, ONNX Runtime).
 
-## Repository Layout
-- `src/` source code
-- `tools/` utility projects and helper executables
-- `data/` schema and sample dictionary import data
-- `out/` scripts for build/register/rebuild/test
-- `third_party/` vendored third-party binaries/sources (for example sqlite runtime package files)
+## Runtime Files
+- `cassotis_ime_svr.dll` / `cassotis_ime_svr32.dll`: Win64 and Win32 TSF in-proc COM servers.
+- `cassotis_ime_host.exe`: Win64 host process; it runs the engine and the language model.
+- `cassotis_ime_tray_host.exe`: Win64 tray/status host for the tray menu, floating status window, and input-state indicator.
+- `cassotis_ime_profile_reg.exe`: TSF profile/category registration utility.
+- `cassotis_pinyin_transformer_ort.dll`, the ONNX Runtime DLLs and `char_lm\`: the language-model bridge, its runtime and the model. Only the host process loads them, never the TSF DLL.
+- `sqlite3_64.dll`: SQLite runtime.
 
-## Key Binaries
-- `cassotis_ime_svr.dll` (Win64 TSF in-proc COM server)
-- `cassotis_ime_svr32.dll` (Win32 TSF in-proc COM server)
-- `cassotis_ime_host.exe` (Win64 host process)
-- `cassotis_ime_tray_host.exe` (Win64 tray/status host for tray menu, floating status window, and input-state indicator)
-- `cassotis_ime_profile_reg.exe` (TSF profile/category registration utility)
-
-Without TSF DLL + main host process, IME input will not work. Without the tray/status host, the core input path may still run, but the tray menu, floating status window, and state indicator will be unavailable.
+Without the TSF DLL and the main host process, IME input will not work. Without the tray/status host, the core input path may still run, but the tray menu, floating status window, and state indicator will be unavailable. Without the language-model files, the IME still works and ranks candidates without the language model.
 
 ## Build and Run (Quick Start)
 Prerequisites:
 - Windows 10/11
 - Delphi 10.4
-- SQLite runtime DLL (`sqlite3_64.dll`)
+- Visual Studio 2022 C++ build tools (x64), for the language-model bridge
+- the SQLite and ONNX Runtime binaries are included under `third_party/`
 
 From `out/`:
 
@@ -83,14 +80,16 @@ From `out/`:
 .\rebuild_dict.ps1
 ```
 
+`rebuild_all.ps1` also builds the language-model bridge and joins the model parts in `data/models/char_lm` into the runtime's `char_lm.onnx`. `rebuild_dict.ps1` expects a checkout of [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) beside this repository.
+
 For full build details, see `BUILD.md`.
 
 ## Dictionary Workflow
-Current base dictionary pipeline imports generated lexicon artifacts from the [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) project:
-- lexicon inputs: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt`
-- runtime DB files are rebuilt under `%LOCALAPPDATA%\CassotisIme\data\` (for example `dict_sc.db`, `dict_tc.db`)
-- user dictionary defaults to `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
-- `rebuild_dict.ps1` imports `pinyin<TAB>text<TAB>weight` and auto-builds `dict_jianpin` (including `z/c/s` and `zh/ch/sh` abbreviation variants)
+The base dictionaries are built from the generated artifacts of the [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) project:
+- word lists: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt` (`pinyin<TAB>text<TAB>weight`)
+- corpus-trained tables from the same directory: word-transition priors, completion priors, and the short-word promotion table
+- runtime databases are rebuilt under `%LOCALAPPDATA%\CassotisIme\data\` (`dict_sc.db`, `dict_tc.db`), together with the initial-letter abbreviation index
+- the user dictionary defaults to `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 
 Main rebuild entry:
 
@@ -98,52 +97,34 @@ Main rebuild entry:
 .\rebuild_dict.ps1
 ```
 
-## Corpus-Trained Local Ranking
-Cassotis v1.1.0 introduces an offline-trained local statistical language model for long-sentence path ranking. The training pipeline learns lexicon-constrained word bigram/trigram transition priors and a smoothed character trigram model from cleaned general Chinese and fiction corpora. The Benchmark-16300 corpus is kept separate and is not used for training.
+## Models and Ranking
 
-Cassotis v1.3.0 adds the project's first deployable neural residual reranker. The compact feed-forward model is trained offline on lexicon-constrained N-best candidate comparisons and conservatively promotes better complete long-sentence candidates while retaining the original engine result as a fallback.
+### v2.0.0: one language model
+The v1.x releases improved ranking by adding models. Between v1.1.0 and v1.31.0 nearly every release introduced another ranker, scorer, generator or correction model for one stage of one input path. By v1.31.0 the installer carried 11 ONNX model files, the engine compiled in 43 exported parameter units, and a decision often passed through several of them in turn (the section “Version History” below keeps what each release added).
 
-Cassotis v1.4.0 extends the same offline-training approach to short-word input. A separate context reranker combines character-LM evidence with the text immediately before the cursor when comparing exact candidates. It only participates when left context is available and the query has competing exact candidates; without usable context, the original short-word order is retained.
+v2.0.0 clears that stack away and rebuilds ranking around a single model, so that the next round of work has one thing to improve:
 
-Cassotis v1.5.0 extends short-word context ranking into a two-stage local neural reranker. The first stage selects the exact candidate that best fits the preceding text, while an independently trained residual model conservatively corrects that result only when its score advantage clears a promotion threshold. Short-word input without context remains outside this model path.
+- **One ONNX model instead of eleven.** A character-level autoregressive language model of about 150 million parameters (11 layers, 1,024 dimensions, a 12,017-character vocabulary, 8-bit quantized), trained by the project on independent Chinese corpora both as a plain language model and conditioned on Pinyin. It scores complete long-sentence candidates, corrects the chosen sentence against the typed syllables, chooses among short words, reranks one-key completions, and proposes and selects long-sentence Tab continuations.
+- **Seven compact units instead of 43.** Three structural rankers remain for long-sentence search and the pool of complete candidates. Four small gradient-boosted policies, one per task, turn language-model scores into decisions: the long-sentence choice, the short-word choice, one-key completion and Tab continuation. The no-context short-word residual model became a precomputed table in the dictionary. The other rerankers, scorers, generators and correction models added during v1.x are gone.
+- **Scores that do not depend on the call.** The model is quantized with fixed activation ranges and computes attention with an operator of its own, so a text gets bit-identical scores however it is batched and whatever was computed before. A long sentence typed key by key therefore gets the same candidates as the same Pinyin entered at once, and what one keystroke computed is reused by the next.
+- **Less than half the model memory.** Loading the models took about 447 MiB of host-process memory in v1.31.0 and takes about 183 MiB now.
+- **One place to improve.** A better language model now improves every input path at once, and the four policies are refit from engine traces.
 
-Cassotis v1.6.0 advances long-sentence decoding into a corpus-trained multi-stage pipeline. A learned search-state ranker helps retain promising paths before pruning, a separate second-stage model compares surviving complete paths, and a final-candidate ranker with a learned fallback policy changes the original order only when the evidence is sufficiently reliable. These models are trained offline from lexicon-constrained candidate comparisons rather than benchmark-specific sentence rules.
+v2.0.0 also fixes the missing candidate window in File Explorer's address bar, hardens desktop recovery when an upgrade has to restart Windows Explorer, and changes the installer: an upgrade never asks to restart Windows, and uninstalling no longer closes running applications (files still in use are removed at the next restart).
 
-Cassotis v1.7.0 refines short-input phrase composition. Four-syllable inputs can combine two complete dictionary phrases when corpus-trained transition evidence is strong, while unsupported combinations remain excluded. Phrase prefixes and first-syllable character choices stay visible, and after a partial selection the remaining single-character candidates use the already selected text as contextual ranking evidence.
+### How candidates are ranked
+- **Long sentences.** Lexicon-constrained search builds complete candidates; two rankers decide which paths survive pruning and a third orders the pool of complete candidates. The language model scores the leading candidates and the long-sentence policy picks the first and the second. For full-Pinyin input in the simplified variant, the model then rewrites the chosen sentence against the typed syllables and up to 48 characters before the input, which repairs small homophone errors; user words and exact full-query dictionary matches are left alone.
+- **Short words.** Exact candidates keep their dictionary order unless the language model's scores, with the text before the cursor when there is any, give the short-word policy a clear reason to change it. Where nothing but the dictionary decides, a table precomputed for the dictionary sets the order.
+- **One-key completion.** Dictionary and strong-transition completions are shown at once. The language model reranks a wider set of dictionary words in the background and replaces the shown completion only when the gain is clear; a completion the user has rejected does not come back this way.
+- **Tab continuation in long sentences.** The language model proposes the next characters and scores the ways to finish the current word or continue with the next phrase; the Tab policy picks one or shows nothing.
 
-Cassotis v1.8.0 strengthens learned ranking on both paths. Long-sentence decoding adds pairwise, local-difference, and visible-candidate residual checks around the existing multi-stage ranker, improving choices among complete candidates without changing lexicon-constrained generation. Short-word input adds a separately trained no-context residual ranker; conservative confidence calibration preserves strong exact candidates when model evidence is weak.
-
-Cassotis v1.9.0 upgrades long-sentence recall and ranking with a unified, corpus-trained complete-candidate pool. It retains structurally diverse, lexicon-constrained complete paths and ranks them with language-model, N-best consensus, and residual signals under confidence and latency controls.
-
-Cassotis v1.10.0 extends corpus-trained transition evidence to controlled 1+2 and 2+1 exact-word combinations for three-syllable input, while adding a conservative pairwise review of the leading complete long-sentence candidates. Both paths change results only when the learned evidence is sufficiently strong.
-
-Cassotis v1.11.0 broadens corpus-trained word-transition coverage, improving short-phrase composition and long-sentence path selection when LM evidence is strong.
-
-Cassotis v1.12.0 extends this evidence to tightly gated 1+1 single-character combinations absent from the lexicon. Only common readings with multi-source corpus support are retained, dictionary exact matches remain ahead, and the same signal only breaks close ties in long-sentence ranking.
-
-Cassotis v1.13.0 adds bidirectional exact-word-anchored recovery for long sentences and difference-aware short-context reranking. Forward/reverse LM evidence, 8-12 characters of preceding text, and strict confidence gates are used to adjust only genuinely competing candidates.
-
-Cassotis v1.14.0 expands exact-word-anchored recovery into a controlled complete-path pool and strengthens difference-aware short-context ranking and LM-backed phrase continuation. Complete paths from different recovery channels are compared conservatively by the unified local ranker using corpus-trained evidence.
-
-Cassotis v1.15.0 consolidates long-sentence Top1/Top2 decisions in a corpus-trained final arbiter and expands evidence for short-word context reranking, changing order only when the learned advantage is clear.
-
-Cassotis v1.18.0 adds a constrained neural fallback for long-sentence local continuation. The 13.82M-parameter ranker compares at most 32 suffix paths composed only of exact lexicon words, and either returns one to three words within six syllables or abstains. Existing static completion remains the zero-cost first tier; only misses are queued to a background CPU worker in `cassotis_ime_host.exe`, and stale or low-confidence results are discarded.
-
-Cassotis v1.19.0 deploys a Pinyin-conditioned sequence scorer in the final long-sentence decision stage: the external host jointly compares the complete Pinyin input with up to 16 stable candidates, while offline-trained gate and fusion models decide whether to reorder them. Long-sentence one-key completion also expands its multi-level suffix-recall index, using a native recall selector to filter exact-lexicon continuations before the existing completion model reviews them.
-
-Cassotis v1.20.0 adds document-local adaptation and constrained generation to the existing ranking pipeline. A cached snapshot of text before the cursor supplies temporary term and transition evidence, while quantized generators add Pinyin-aligned complete candidates and local long-sentence continuations that static recall misses; low-confidence or unavailable model results are discarded.
-
-Cassotis v1.22.0 introduces Pinyin-constrained local correction with cross-sentence context. A local model distilled from a Chinese pretrained teacher uses the current draft, original Pinyin, and up to 256 available preceding characters to conservatively repair small homophone errors in simplified-Chinese full-Pinyin long sentences, rather than only rearranging existing candidates; user words, full-query dictionary exact matches, and confirmed text remain protected.
-
-Cassotis v1.26.0 extends local correction for long sentences from per-character decisions to joint selection among a small set of complete corrections. To reduce harmful edits, models trained on independent corpora compare the edited spans in context and recheck proposed corrections against the existing result, keeping that result when evidence is insufficient.
-
-Cassotis v1.30.0 adds a shared character-level autoregressive language model trained on independent Chinese corpora to select complete long-sentence candidates, context-sensitive short words, and long-sentence Tab continuations. The former RBT3 short-word context model has been removed; the new model combines sentence coherence and preceding context with the existing ranking and protections to improve homophone selection and continuation quality.
-
-Cassotis v1.31.0 upgrades the shared character language model and trains dedicated Tab selection policies on real engine candidates from independent corpora, comparing ways to finish the current word and continue with subsequent phrases. Short-input Tab candidates are reranked with preceding context in the background, while Pinyin syllable boundaries and user completion preferences remain protected.
-
-To keep the deeper ranking pipeline responsive, search, second-stage ranking, residual comparison, and final selection reuse character-LM scores, exact dictionary lookups, path features, and context features. Expensive consensus and lookup work uses shared caches and explicit time budgets to limit long-tail latency. Exact and prefix candidate visibility remains protected, while repeated work across ranking stages is avoided.
-
-Statistical priors are quantized into the local dictionary database, while most compact rerankers are exported as deterministic native Pascal parameters. The v1.30.0 shared character language model and a Pinyin-conditioned language model fine-tuned from it are deployed as quantized ONNX models. The shared language model has taken over long-sentence continuation from the v1.18.0 continuation fallback and the v1.20.0 continuation generator, and complete-candidate reranking from the v1.19.0 Pinyin-conditioned scorer; the Pinyin-conditioned model rewrites the settled long-sentence result against the typed syllables and the text before the input, taking over from the v1.20.0 constrained candidate generator and the v1.22.0 and v1.26.0 local correction models. The replaced models are no longer shipped; ONNX Runtime is loaded only by the external host process, never by the TSF DLL. Runtime scoring remains local and bounded, requires no network or GPU, and falls back to the existing result while a model is loading or unavailable. Long-sentence and short-word ranking remain separate paths, so improvements to one do not replace the other's matching rules.
+### Runtime behavior
+- Everything is computed locally on the CPU; no network and no GPU are used.
+- ONNX Runtime and the model are loaded only by the external host process, never by the TSF DLL. The model loads in the background; until it is ready, or if it is unavailable, candidates are ranked without it.
+- A language-model call has a deadline (100 ms by default). A late result is dropped and the existing result stays.
+- The model uses one thread per processor core, at least four and at most eight.
+- Statistical priors (word transitions, completion priors, the short-word table) are stored in the local dictionary database; the compact rankers and policies are compiled in as deterministic native Pascal parameters.
+- Long-sentence and short-word ranking remain separate paths, so improving one does not replace the other's matching rules.
 
 ## Long Sentence Benchmark-16300
 See [BENCHMARK.md](BENCHMARK.md) for the Benchmark-16300 methodology, corpus source, and scoring rules.
@@ -289,17 +270,68 @@ Runtime dictionary paths are fixed under `%LOCALAPPDATA%\CassotisIme\data\` and 
 ## Documentation
 - Simplified Chinese documentation: [README.zh-Hans.md](README.zh-Hans.md)
 - Traditional Chinese documentation: [README.zh-Hant.md](README.zh-Hant.md)
+- Benchmark methodology: [BENCHMARK.md](BENCHMARK.md)
 - Configuration reference: `CONFIGURE.md`
 - Build details: `BUILD.md`
 - Third-party notices: `THIRD_PARTY.md`
+
+## Roadmap
+- improve the one language model (training data, capacity, quantization), since every input path now follows it
+- keep the remaining rankers and policies few, and retire those the language model can take over
+- extend language-model correction beyond simplified full-Pinyin input (traditional variant, Double Pinyin)
+- shorten the time from a keystroke to its candidates, above all in long sentences
+- expand independent benchmarks and failure attribution
+- improve user-dictionary quality control and tooling
+- extend the compatibility matrix across editors, browsers and IDEs
+
+## Version History
+Each paragraph records what a release introduced at the time. The separate models of v1.x named here were retired or absorbed in v2.0.0; the section “Models and Ranking” above describes what runs today.
+
+Cassotis v1.1.0 introduces an offline-trained local statistical language model for long-sentence path ranking. The training pipeline learns lexicon-constrained word bigram/trigram transition priors and a smoothed character trigram model from cleaned general Chinese and fiction corpora. The Benchmark-16300 corpus is kept separate and is not used for training.
+
+Cassotis v1.3.0 adds the project's first deployable neural residual reranker. The compact feed-forward model is trained offline on lexicon-constrained N-best candidate comparisons and conservatively promotes better complete long-sentence candidates while retaining the original engine result as a fallback.
+
+Cassotis v1.4.0 extends the same offline-training approach to short-word input. A separate context reranker combines character-LM evidence with the text immediately before the cursor when comparing exact candidates. It only participates when left context is available and the query has competing exact candidates; without usable context, the original short-word order is retained.
+
+Cassotis v1.5.0 extends short-word context ranking into a two-stage local neural reranker. The first stage selects the exact candidate that best fits the preceding text, while an independently trained residual model conservatively corrects that result only when its score advantage clears a promotion threshold. Short-word input without context remains outside this model path.
+
+Cassotis v1.6.0 advances long-sentence decoding into a corpus-trained multi-stage pipeline. A learned search-state ranker helps retain promising paths before pruning, a separate second-stage model compares surviving complete paths, and a final-candidate ranker with a learned fallback policy changes the original order only when the evidence is sufficiently reliable. These models are trained offline from lexicon-constrained candidate comparisons rather than benchmark-specific sentence rules.
+
+Cassotis v1.7.0 refines short-input phrase composition. Four-syllable inputs can combine two complete dictionary phrases when corpus-trained transition evidence is strong, while unsupported combinations remain excluded. Phrase prefixes and first-syllable character choices stay visible, and after a partial selection the remaining single-character candidates use the already selected text as contextual ranking evidence.
+
+Cassotis v1.8.0 strengthens learned ranking on both paths. Long-sentence decoding adds pairwise, local-difference, and visible-candidate residual checks around the existing multi-stage ranker, improving choices among complete candidates without changing lexicon-constrained generation. Short-word input adds a separately trained no-context residual ranker; conservative confidence calibration preserves strong exact candidates when model evidence is weak.
+
+Cassotis v1.9.0 upgrades long-sentence recall and ranking with a unified, corpus-trained complete-candidate pool. It retains structurally diverse, lexicon-constrained complete paths and ranks them with language-model, N-best consensus, and residual signals under confidence and latency controls.
+
+Cassotis v1.10.0 extends corpus-trained transition evidence to controlled 1+2 and 2+1 exact-word combinations for three-syllable input, while adding a conservative pairwise review of the leading complete long-sentence candidates. Both paths change results only when the learned evidence is sufficiently strong.
+
+Cassotis v1.11.0 broadens corpus-trained word-transition coverage, improving short-phrase composition and long-sentence path selection when LM evidence is strong.
+
+Cassotis v1.12.0 extends this evidence to tightly gated 1+1 single-character combinations absent from the lexicon. Only common readings with multi-source corpus support are retained, dictionary exact matches remain ahead, and the same signal only breaks close ties in long-sentence ranking.
+
+Cassotis v1.13.0 adds bidirectional exact-word-anchored recovery for long sentences and difference-aware short-context reranking. Forward/reverse LM evidence, 8-12 characters of preceding text, and strict confidence gates are used to adjust only genuinely competing candidates.
+
+Cassotis v1.14.0 expands exact-word-anchored recovery into a controlled complete-path pool and strengthens difference-aware short-context ranking and LM-backed phrase continuation. Complete paths from different recovery channels are compared conservatively by the unified local ranker using corpus-trained evidence.
+
+Cassotis v1.15.0 consolidates long-sentence Top1/Top2 decisions in a corpus-trained final arbiter and expands evidence for short-word context reranking, changing order only when the learned advantage is clear.
+
+Cassotis v1.18.0 adds a constrained neural fallback for long-sentence local continuation. The 13.82M-parameter ranker compares at most 32 suffix paths composed only of exact lexicon words, and either returns one to three words within six syllables or abstains. Existing static completion remains the zero-cost first tier; only misses are queued to a background CPU worker in `cassotis_ime_host.exe`, and stale or low-confidence results are discarded.
+
+Cassotis v1.19.0 deploys a Pinyin-conditioned sequence scorer in the final long-sentence decision stage: the external host jointly compares the complete Pinyin input with up to 16 stable candidates, while offline-trained gate and fusion models decide whether to reorder them. Long-sentence one-key completion also expands its multi-level suffix-recall index, using a native recall selector to filter exact-lexicon continuations before the existing completion model reviews them.
+
+Cassotis v1.20.0 adds document-local adaptation and constrained generation to the existing ranking pipeline. A cached snapshot of text before the cursor supplies temporary term and transition evidence, while quantized generators add Pinyin-aligned complete candidates and local long-sentence continuations that static recall misses; low-confidence or unavailable model results are discarded.
+
+Cassotis v1.22.0 introduces Pinyin-constrained local correction with cross-sentence context. A local model distilled from a Chinese pretrained teacher uses the current draft, original Pinyin, and up to 256 available preceding characters to conservatively repair small homophone errors in simplified-Chinese full-Pinyin long sentences, rather than only rearranging existing candidates; user words, full-query dictionary exact matches, and confirmed text remain protected.
+
+Cassotis v1.26.0 extends local correction for long sentences from per-character decisions to joint selection among a small set of complete corrections. To reduce harmful edits, models trained on independent corpora compare the edited spans in context and recheck proposed corrections against the existing result, keeping that result when evidence is insufficient.
+
+Cassotis v1.30.0 adds a shared character-level autoregressive language model trained on independent Chinese corpora to select complete long-sentence candidates, context-sensitive short words, and long-sentence Tab continuations. The former RBT3 short-word context model has been removed; the new model combines sentence coherence and preceding context with the existing ranking and protections to improve homophone selection and continuation quality.
+
+Cassotis v1.31.0 upgrades the shared character language model and trains dedicated Tab selection policies on real engine candidates from independent corpora, comparing ways to finish the current word and continue with subsequent phrases. Short-input Tab candidates are reranked with preceding context in the background, while Pinyin syllable boundaries and user completion preferences remain protected.
+
+Cassotis v2.0.0 replaces the model stack of v1.x with a single character-level language model. One ONNX model takes over from eleven and seven compact units from 43. The model is quantized with fixed ranges and computes attention with an operator of its own, so its scores no longer depend on how a call is batched, and what one keystroke computed is reused by the next. The four remaining decision policies are refit on the new model's scores. The benchmark corpus stays separate from all training data.
 
 ## License
 This project is licensed under GPL-3.0. See `LICENSE` for the full license text.
 
 Keep third-party notices and attribution files consistent with `THIRD_PARTY.md`.
-
-## Roadmap
-- continue training compact local rerankers from independent corpora and N-best comparisons
-- expand independent benchmarks and failure attribution to tune model gates and fallback behavior
-- improve user-dictionary quality control and tooling
-- extend compatibility matrix across editors/browsers/IDEs

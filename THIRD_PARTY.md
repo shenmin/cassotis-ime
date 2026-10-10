@@ -29,7 +29,7 @@ This file lists third-party software/data used by Cassotis IME and the related l
 ## 3) ONNX Runtime
 
 - Component: Microsoft ONNX Runtime 1.20.1 (`onnxruntime.dll`)
-- Used for: CPU inference for the host-side character language models
+- Used for: CPU inference for the host-side character language model
 - Source: https://github.com/microsoft/onnxruntime/tree/v1.20.1
 - Local artifacts: `third_party/onnxruntime/`
 - License: MIT
@@ -39,38 +39,37 @@ This file lists third-party software/data used by Cassotis IME and the related l
   - The model is loaded only by `cassotis_ime_host.exe`; it is not linked into
     the TSF DLL.
 
-## 4) Cassotis Pinyin-Conditioned Language Model
+## 4) Cassotis Character Language Model
 
-- Component: quantized character-level causal language model with pinyin tokens
-- Used for: correcting long-sentence drafts against the typed syllables and
-  the text before the input
-- Local artifact: `data/models/char_lm/` (one model with section 6)
+- Component: quantized character-level causal language model, with pinyin
+  tokens for pinyin-conditioned correction
+- Used for: scoring long-sentence and short-word candidates, reranking one-key
+  completions, choosing long-sentence one-key continuations, and correcting
+  long-sentence drafts against the typed syllables and the text before the
+  input
+- Local artifact: `data/models/char_lm/` (stored as numbered parts and joined
+  during the build)
 - Notes:
-  - The model was trained by this project on separately licensed corpora for
+  - The model was trained by this project on separately licensed corpora, for
     both plain text and pinyin-conditioned correction; it does not contain or
     redistribute training documents.
-  - It replaces the pinyin parallel generator and the MacBERT-derived local
-    correction model, which are no longer shipped.
-  - Inference and background loading run in the IME host process, not TSF.
+  - It is the only neural model shipped from `v2.0.0`. It replaces the
+    RBT3-derived short-word context model (no longer shipped from `v1.30.0`),
+    the pinyin parallel generator and the MacBERT-derived local correction
+    model, none of which is shipped any more.
+  - Its attention is computed by an operator written for this project
+    (`src/host/native/nc_trie_attention.inc`) and registered with ONNX Runtime
+    as a custom operator.
+  - Inference and background loading run in the IME host process, not TSF;
+    an unavailable model leaves the existing ranking unchanged.
 
 ## 5) Proprietary Build Toolchain (Not Redistributed)
 
 - Embarcadero Delphi 10.4 is required to build this project.
 - Delphi itself is not bundled in this repository and is licensed separately by Embarcadero.
-
-## 6) Cassotis Character Language Model
-
-- Component: quantized character-level causal language model
-- Used for: reranking long-sentence and short-word candidates, choosing
-  long-sentence one-key continuations, and the draft correction in section 4
-- Local artifact: `data/models/char_lm/`
-- Notes:
-  - The model was trained by this project from separately licensed corpora;
-    it does not contain or redistribute training documents.
-  - It replaces the RBT3-derived short-word context model, which is no longer
-    shipped from `v1.30.0`.
-  - Inference and background loading run in the IME host process, not TSF;
-    an unavailable model leaves the existing ranking unchanged.
+- The native language-model bridge is built with the Microsoft Visual C++
+  build tools (Visual Studio 2022), which are likewise not bundled and are
+  licensed separately by Microsoft.
 
 ## GPL-3.0 Notice
 

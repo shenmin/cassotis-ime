@@ -81,7 +81,7 @@
 | `full_width_toggle` | 全角模式切换 | 快捷键文本 | `Shift+Space` | 切换 ASCII 半角与全角输出。 |
 | `open_settings` | 打开设置 | 快捷键文本 | `Ctrl+Shift+F10` | 打开设置窗口。 |
 | `candidate_page_keys` | 候选翻页按键方案 | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | 分别表示 `-/=`、`[/]`、`,/.`、`Shift+Tab/Tab`。 |
-| `one_key_completion_key` | 一键补全触发按键 | `tab` / `backtick` | `tab` | 输入至少两个完整音节后，接受候选窗底部的唯一补全。补全依次取自用户词、基础词库和离线生成的强转移证据；强转移补全使用主题强调色，接受后不写入普通用户词；`backtick` 表示反引号键 `` ` ``。 |
+| `one_key_completion_key` | 一键补全触发按键 | `tab` / `backtick` | `tab` | 输入至少两个完整音节后，接受候选窗底部的唯一补全。补全依次取自用户词、基础词库和离线生成的强转移证据；语言模型随后在后台重新排序，可能替换已显示的补全，长句中的续写也由它给出。强转移补全使用主题强调色，接受后不写入普通用户词；`backtick` 表示反引号键 `` ` ``。 |
 
 当 `one_key_completion_key=tab` 时，`candidate_page_keys=shift-tab` 会与一键补全冲突，因此该翻页方案在设置界面不可选；若 INI 中同时配置这两个值，翻页方案会自动规范化为 `minus-plus`。
 
