@@ -173,6 +173,7 @@ type
         m_chk_fuzzy_pinyin_rules:
             array[TncFuzzyPinyinRule] of TncModernCheckBox;
         m_combo_punctuation_mode: TComboBox;
+        m_chk_decimal_period_after_digit: TncModernCheckBox;
         m_chk_full_width_mode: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
         m_track_status_widget_transparency: TTrackBar;
@@ -234,6 +235,7 @@ type
         procedure preview_status_widget;
         procedure update_apply_button;
         procedure update_logging_controls;
+        procedure update_punctuation_controls;
         procedure update_fuzzy_pinyin_controls;
         procedure on_fuzzy_pinyin_enabled_click(Sender: TObject);
         procedure restore_current_page_defaults;
@@ -378,6 +380,7 @@ resourcestring
     SOptionPinyinJiajiaShuangpin = '拼音加加';
     SCheckEnableFuzzyPinyin = '启用模糊拼音';
     SLabelPunctuationMode = '标点';
+    SCheckDecimalPeriodAfterDigit = '连续输入数字后面的“。”转为“.”';
     SCheckFullWidthMode = '使用全角输入';
     SCheckShowStatusWidget = '显示状态浮窗';
     SLabelStatusWidgetTransparency = '浮窗透明度';
@@ -1381,6 +1384,7 @@ begin
     Result.enable_ctrl_period_punct_toggle := True;
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
+    Result.decimal_period_after_digit := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1743,6 +1747,7 @@ begin
     end;
     m_scaled_dpi := dpi;
     update_check_box_metrics(m_chk_full_width_mode);
+    update_check_box_metrics(m_chk_decimal_period_after_digit);
     update_check_box_metrics(m_chk_fuzzy_pinyin_enabled);
     for fuzzy_rule := Low(TncFuzzyPinyinRule) to
         High(TncFuzzyPinyinRule) do
@@ -1985,11 +1990,19 @@ begin
     m_combo_punctuation_mode.Parent := defaults_group;
     m_combo_punctuation_mode.Left := scale_ui(c_control_left);
     m_combo_punctuation_mode.Top := top;
-    m_combo_punctuation_mode.Width := scale_ui(c_combo_width);
+    m_combo_punctuation_mode.Width := scale_ui(96);
     m_combo_punctuation_mode.Style := csDropDownList;
     m_combo_punctuation_mode.Items.Add(SOptionChinese);
     m_combo_punctuation_mode.Items.Add(SOptionEnglish);
     m_combo_punctuation_mode.OnChange := mark_dirty;
+
+    m_chk_decimal_period_after_digit := create_check_box(Self, defaults_group,
+        top, SCheckDecimalPeriodAfterDigit, mark_dirty);
+    m_chk_decimal_period_after_digit.Left := m_combo_punctuation_mode.Left +
+        m_combo_punctuation_mode.Width + scale_ui(14);
+    m_chk_decimal_period_after_digit.Width := defaults_group.ClientWidth -
+        m_chk_decimal_period_after_digit.Left - scale_ui(c_label_left);
+    m_chk_decimal_period_after_digit.Anchors := [akLeft, akTop, akRight];
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
@@ -2812,6 +2825,7 @@ procedure TncSettingsForm.mark_dirty(Sender: TObject);
 begin
     m_dirty := True;
     update_logging_controls;
+    update_punctuation_controls;
     update_apply_button;
 end;
 
@@ -2843,6 +2857,14 @@ begin
     begin
         m_btn_apply.Enabled := m_dirty;
     end;
+end;
+
+procedure TncSettingsForm.update_punctuation_controls;
+begin
+    if (m_chk_decimal_period_after_digit <> nil) and
+        (m_combo_punctuation_mode <> nil) then
+        m_chk_decimal_period_after_digit.Enabled :=
+            m_combo_punctuation_mode.ItemIndex = 0;
 end;
 
 procedure TncSettingsForm.update_logging_controls;
@@ -2926,6 +2948,7 @@ begin
         end;
         m_combo_pinyin_input_scheme.ItemIndex := Ord(default_engine_config.pinyin_input_scheme);
         m_combo_punctuation_mode.ItemIndex := Ord(not default_engine_config.punctuation_full_width);
+        m_chk_decimal_period_after_digit.Checked := default_engine_config.decimal_period_after_digit;
         m_chk_full_width_mode.Checked := default_engine_config.full_width_mode;
     end
     else if m_page_control.ActivePage = m_tab_appearance then
@@ -3000,6 +3023,7 @@ begin
     m_dirty := True;
     update_logging_controls;
     update_fuzzy_pinyin_controls;
+    update_punctuation_controls;
     update_candidate_preview;
     update_apply_button;
 end;
@@ -3517,6 +3541,8 @@ begin
             m_combo_punctuation_mode.ItemIndex := 1;
         end;
     end;
+    if m_chk_decimal_period_after_digit <> nil then
+        m_chk_decimal_period_after_digit.Checked := m_engine_config.decimal_period_after_digit;
     if m_chk_show_status_widget <> nil then
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
@@ -3590,6 +3616,7 @@ begin
     m_dirty := False;
     update_logging_controls;
     update_fuzzy_pinyin_controls;
+    update_punctuation_controls;
     update_candidate_preview;
     update_apply_button;
 end;
@@ -3691,6 +3718,7 @@ begin
 
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
+    next_config.decimal_period_after_digit := m_chk_decimal_period_after_digit.Checked;
     next_config.enable_segment_candidates := True;
     next_config.segment_head_only_multi_syllable := True;
     next_config.enable_ctrl_space_toggle := False;

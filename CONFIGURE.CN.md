@@ -37,6 +37,7 @@
 | `pinyin_scheme` | 拼音输入方案 | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | 可选择全拼或六种双拼方案，无法识别的值回退为全拼。 |
 | `full_width_mode` | 全角输出模式 | `true` / `false` | `false` | `full_width_mode=false` | 开启后 ASCII 字符映射为全角形式。运行时可按 Shift+Space 切换。 |
 | `punctuation_full_width` | 中文标点风格 | `true` / `false` | `true` | `punctuation_full_width=true` | 开启后标点键输出中文全角符号。运行时可按 Ctrl+句号 切换。 |
+| `decimal_period_after_digit` | 连续输入数字后使用小数点 | `true` / `false` | `true` | `decimal_period_after_digit=true` | 中文标点模式下，连续键入数字后紧接着按句号键，输出 `.` 而不是 `。`；不根据光标前已有或粘贴的文本判断，移动光标或输入其他按键后不再转换。设置中选为英文标点时，此选项不可操作，但保留勾选状态。 |
 | `debug` | 调试模式 | `0` / `1` | `0` | `debug=1` | 开启后候选窗显示得分与分词路径信息。 |
 
 > **说明：** 候选数量、候选外观和快捷键均可通过设置界面修改；快捷键统一保存在 `[shortcuts]` 段。
@@ -125,6 +126,7 @@ input_mode=0
 pinyin_scheme=full-pinyin
 full_width_mode=false
 punctuation_full_width=true
+decimal_period_after_digit=true
 debug=0
 
 [pinyin]

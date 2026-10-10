@@ -216,6 +216,7 @@ type
         enable_ctrl_period_punct_toggle: Boolean;
         full_width_mode: Boolean;
         punctuation_full_width: Boolean;
+        decimal_period_after_digit: Boolean;
         enable_segment_candidates: Boolean;
         segment_head_only_multi_syllable: Boolean;
         candidate_font_name: string;

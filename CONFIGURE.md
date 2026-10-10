@@ -37,6 +37,7 @@ Notes:
 | `pinyin_scheme` | Pinyin input scheme | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | Selects Full Pinyin or one of six Double Pinyin layouts. Unknown values fall back to Full Pinyin. |
 | `full_width_mode` | Full-width output | `true` / `false` | `false` | `full_width_mode=false` | When enabled, ASCII characters are mapped to full-width forms. Toggle at runtime with Shift+Space. |
 | `punctuation_full_width` | Chinese punctuation style | `true` / `false` | `true` | `punctuation_full_width=true` | When enabled, punctuation keys produce Chinese full-width symbols. Toggle at runtime with Ctrl+Period. |
+| `decimal_period_after_digit` | Decimal point after consecutively typed digits | `true` / `false` | `true` | `decimal_period_after_digit=true` | In Chinese punctuation mode, pressing the period key immediately after typing a digit produces `.` rather than `。`. Existing or pasted text is not considered; moving the caret or pressing another key cancels the conversion. The checkbox is disabled in English punctuation mode without clearing the saved preference. |
 | `debug` | Debug mode | `0` / `1` | `0` | `debug=1` | Shows candidate scores and path info in the candidate window. |
 
 > **Note:** Candidate count, candidate appearance, and shortcuts can be changed in Settings. Shortcut values are stored in `[shortcuts]`.
@@ -125,6 +126,7 @@ input_mode=0
 pinyin_scheme=full-pinyin
 full_width_mode=false
 punctuation_full_width=true
+decimal_period_after_digit=true
 debug=0
 
 [pinyin]

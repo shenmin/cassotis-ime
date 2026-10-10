@@ -886,6 +886,7 @@ begin
     Result.enable_ctrl_period_punct_toggle := True;
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
+    Result.decimal_period_after_digit := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1115,6 +1116,7 @@ begin
         Result.enable_ctrl_period_punct_toggle := True;
         Result.full_width_mode := safe_ini_read_bool(ini, 'engine', 'full_width_mode', False);
         Result.punctuation_full_width := safe_ini_read_bool(ini, 'engine', 'punctuation_full_width', True);
+        Result.decimal_period_after_digit := safe_ini_read_bool(ini, 'engine', 'decimal_period_after_digit', True);
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
         Result.candidate_font_name := Trim(safe_ini_read_string(ini, 'appearance', 'candidate_font_name',
@@ -1309,6 +1311,7 @@ begin
             nc_fuzzy_pinyin_rules_to_text(config.fuzzy_pinyin_rules));
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
+        ini.WriteBool('engine', 'decimal_period_after_digit', config.decimal_period_after_digit);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         candidate_font_name := Trim(config.candidate_font_name);
         if candidate_font_name = '' then
@@ -1352,6 +1355,7 @@ procedure TncConfigManager.save_engine_state_config(const input_mode: TncInputMo
 var
     ini: TMemIniFile;
     debug_mode: Boolean;
+    decimal_period_after_digit: Boolean;
     pinyin_input_scheme: TncPinyinInputScheme;
 begin
     if (m_config_path = '') or (not m_config_mutex_owned) then
@@ -1368,6 +1372,8 @@ begin
     end;
     try
         debug_mode := safe_ini_read_bool(ini, 'engine', 'debug', False);
+        decimal_period_after_digit := safe_ini_read_bool(ini, 'engine',
+            'decimal_period_after_digit', True);
         pinyin_input_scheme := parse_pinyin_input_scheme_text(
             safe_ini_read_string(ini, 'engine', 'pinyin_scheme', 'full-pinyin'));
         ini.EraseSection('engine');
@@ -1376,6 +1382,7 @@ begin
             pinyin_input_scheme_to_text(pinyin_input_scheme));
         ini.WriteBool('engine', 'full_width_mode', full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', punctuation_full_width);
+        ini.WriteBool('engine', 'decimal_period_after_digit', decimal_period_after_digit);
         ini.WriteInteger('engine', 'debug', Ord(debug_mode));
         write_config_version(ini);
         ini.UpdateFile;

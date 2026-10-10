@@ -654,6 +654,7 @@ type
         m_user_dictionary_write_time: TDateTime;
         m_last_dictionary_reload_check_tick: UInt64;
         m_left_context: string;
+        m_punctuation_preceding_char: Char;
         m_external_left_context: string;
         // The host has reported the text before the caret in this session, so
         // an empty report means an empty context, not an unreadable one.
@@ -1189,6 +1190,7 @@ type
         procedure set_external_left_context(const left_context: string;
             const document_key: string = '';
             const document_snapshot: string = '');
+        procedure set_punctuation_preceding_char(const value: Char);
         function debug_query_one_key_completion(const query_text: string;
             const left_context: string): TncOneKeyCompletion;
         function debug_query_one_key_completion_candidates(
@@ -1697,6 +1699,7 @@ begin
     m_last_dictionary_reload_check_tick := 0;
     m_left_context := '';
     m_external_left_context := '';
+    m_punctuation_preceding_char := #0;
     m_external_context_reported := False;
     m_left_context_document_key := '';
     m_segment_left_context := '';
@@ -4479,6 +4482,7 @@ begin
     m_confirmed_text := '';
     m_confirmed_explicit_choice := False;
     m_external_left_context := '';
+    m_punctuation_preceding_char := #0;
     if (m_document_context_model <> nil) and
         (not preserve_document_context) then
     begin
@@ -5656,6 +5660,12 @@ end;
 function context_model_tail(const value: string): string;
 begin
     Result := trim_left_context_to_sentence(value, c_context_model_max_len);
+end;
+
+procedure TncEngine.set_punctuation_preceding_char(const value: Char);
+begin
+    // Per-key hint from TSF, never inferred from document or committed text.
+    m_punctuation_preceding_char := value;
 end;
 
 procedure TncEngine.set_external_left_context(const left_context: string;
@@ -141758,7 +141768,15 @@ begin
             ',':
                 Result := Char($FF0C);
             '.':
-                Result := Char($3002);
+                if m_config.decimal_period_after_digit and
+                    (m_composition_text = '') and (m_confirmed_text = '') and
+                    (((m_punctuation_preceding_char >= '0') and
+                    (m_punctuation_preceding_char <= '9')) or
+                    ((m_punctuation_preceding_char >= Char($FF10)) and
+                    (m_punctuation_preceding_char <= Char($FF19)))) then
+                    Result := '.'
+                else
+                    Result := Char($3002);
             '?':
                 Result := Char($FF1F);
             '!':

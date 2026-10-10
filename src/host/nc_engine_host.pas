@@ -174,7 +174,7 @@ type
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
             out full_width_mode: Boolean; out punctuation_full_width: Boolean;
             const input_epoch: UInt64; const selection_window: HWND;
-            const selection_token: Cardinal): Boolean;
+            const selection_token: Cardinal; const punctuation_preceding_char: Integer): Boolean;
         procedure reset_session_admitted(const session_id: string;
             const preserve_document_context: Boolean; const input_epoch: UInt64);
         function get_config_write_time: TDateTime;
@@ -213,7 +213,8 @@ type
             out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
             out full_width_mode: Boolean; out punctuation_full_width: Boolean;
             const input_epoch: UInt64 = 0; const selection_window: HWND = 0;
-            const selection_token: Cardinal = 0): Boolean;
+            const selection_token: Cardinal = 0;
+            const punctuation_preceding_char: Integer = -1): Boolean;
         function get_last_lookup_perf_info: string;
         function get_state(const session_id: string; out input_mode: TncInputMode; out full_width_mode: Boolean;
             out punctuation_full_width: Boolean): Boolean;
@@ -2709,7 +2710,7 @@ function TncEngineHost.process_key(const session_id: string; const key_code: Wor
     out handled: Boolean; out commit_text: string; out display_text: string; out input_mode: TncInputMode;
     out full_width_mode: Boolean; out punctuation_full_width: Boolean;
     const input_epoch: UInt64; const selection_window: HWND;
-    const selection_token: Cardinal): Boolean;
+    const selection_token: Cardinal; const punctuation_preceding_char: Integer): Boolean;
 begin
     // Registered before config reload and session creation, where a request
     // can stall past its client timeout, so its epoch floor is not trimmed.
@@ -2717,7 +2718,7 @@ begin
     try
         Result := process_key_admitted(session_id, key_code, key_state, handled, commit_text,
             display_text, input_mode, full_width_mode, punctuation_full_width, input_epoch,
-            selection_window, selection_token);
+            selection_window, selection_token, punctuation_preceding_char);
     finally
         m_input_epochs.leave(session_id);
     end;
@@ -2727,7 +2728,7 @@ function TncEngineHost.process_key_admitted(const session_id: string; const key_
     const key_state: TncKeyState; out handled: Boolean; out commit_text: string; out display_text: string;
     out input_mode: TncInputMode; out full_width_mode: Boolean; out punctuation_full_width: Boolean;
     const input_epoch: UInt64; const selection_window: HWND;
-    const selection_token: Cardinal): Boolean;
+    const selection_token: Cardinal; const punctuation_preceding_char: Integer): Boolean;
 const
     c_slow_host_process_key_ms = 12;
 var
@@ -2865,6 +2866,9 @@ begin
         session.engine.reload_dictionary_if_needed;
         reload_elapsed_ms := Int64(GetTickCount64 - reload_start_tick);
         process_start_tick := GetTickCount64;
+        if (punctuation_preceding_char >= 0) and
+            (punctuation_preceding_char <= High(Word)) then
+            session.engine.set_punctuation_preceding_char(Char(punctuation_preceding_char));
         handled := session.engine.process_key(key_code, key_state);
         process_elapsed_ms := Int64(GetTickCount64 - process_start_tick);
 
@@ -4097,6 +4101,7 @@ var
     input_epoch: UInt64;
     selection_window: HWND;
     selection_token: Cardinal;
+    punctuation_preceding_char: Integer;
 begin
     Result := 'ERROR'#9'bad_request';
     try
@@ -4475,6 +4480,9 @@ begin
             end;
             selection_window := 0;
             selection_token := 0;
+            punctuation_preceding_char := -1;
+            if Length(fields) >= 11 then
+                punctuation_preceding_char := StrToIntDef(fields[10], -1);
             if Length(fields) >= 9 then selection_window := HWND(StrToUInt64Def(fields[8], 0));
             if SameText(cmd, 'SELECT_CANDIDATE') then
             begin
@@ -4491,7 +4499,7 @@ begin
             end;
             if m_host.process_key(session_id, Word(key_code), key_state, handled, commit_text, display_text, input_mode,
                 full_width_mode, punctuation_full_width, input_epoch,
-                selection_window, selection_token) then
+                selection_window, selection_token, punctuation_preceding_char) then
             begin
                 if host_log_enabled_for(ll_debug) then
                 begin

@@ -26,6 +26,7 @@ uses
     nc_tsf_compartments,
     nc_tsf_display_attr,
     nc_tsf_edit_session,
+    nc_punctuation_key_context,
     nc_caret_anchor_policy,
     nc_ipc_client,
     nc_ipc_common,
@@ -104,6 +105,7 @@ type
         m_last_sent_surrounding_valid: Boolean;
         m_document_context_serial: UInt64;
         m_read_lock_surrounding_text: string;
+        m_punctuation_key_context: TncPunctuationKeyContext;
         m_read_lock_document_key: string;
         m_read_lock_surrounding_valid: Boolean;
         m_last_read_lock_capture_tick: UInt64;
@@ -256,6 +258,8 @@ type
             const ec: TfEditCookie): Boolean;
         procedure capture_surrounding_text_under_lock(const context: ITfContext;
             const ec: TfEditCookie);
+        procedure note_punctuation_key(const context: ITfContext;
+            const key_code: Word; const handled: Boolean);
         function maybe_update_surrounding_text(const context: ITfContext; const force: Boolean = False): Boolean;
         function update_surrounding_text(const context: ITfContext): Boolean;
         function update_composition(const context: ITfContext; const text: string): Boolean;
@@ -981,6 +985,7 @@ begin
     m_last_sent_surrounding_valid := False;
     m_document_context_serial := 1;
     m_read_lock_surrounding_text := '';
+    m_punctuation_key_context.clear;
     m_read_lock_document_key := '';
     m_read_lock_surrounding_valid := False;
     m_last_read_lock_capture_tick := 0;
@@ -1305,6 +1310,8 @@ function TncTextService.process_key_on_host(const operation: string; const key_c
     const selection_token: Cardinal; const candidate_click: Boolean): Boolean;
 const
     c_msgflt_allow = 1;
+var
+    punctuation_preceding_char: Integer;
 begin
     if m_candidate_click_window = 0 then
     begin
@@ -1314,9 +1321,22 @@ begin
         nc_change_window_message_filter_ex(m_candidate_click_window,
             get_nc_candidate_click_message, c_msgflt_allow, nil);
     end;
+    punctuation_preceding_char := -1;
+    if (key_code in [VK_OEM_PERIOD, VK_DECIMAL]) and
+        not (key_state.ctrl_down or key_state.alt_down or key_state.shift_down) then
+    begin
+        punctuation_preceding_char := m_punctuation_key_context.digit_char;
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+            m_logger.debug(Format('Decimal period key context session=%s char=%d continuous=%d',
+                [m_session_id, punctuation_preceding_char,
+                Ord(m_punctuation_key_context.has_digit)]));
+    end;
     Result := m_ipc_client.process_key(m_session_id, key_code, key_state, handled, commit_text,
         display_text, input_mode, full_width_mode, punctuation_full_width, lookup_perf_info,
-        m_input_epoch, m_candidate_click_window, selection_token, candidate_click);
+        m_input_epoch, m_candidate_click_window, selection_token, candidate_click,
+        punctuation_preceding_char);
+    if Result and handled then
+        m_punctuation_key_context.clear;
     note_ipc_result(operation, Result);
     if (not Result) and (m_ipc_client.last_error = ERROR_TIMEOUT) then
     begin
@@ -2479,6 +2499,7 @@ begin
     Result := S_OK;
     try
         Result := on_test_key_down_core(context, wParam, lParam, eaten);
+        note_punctuation_key(context, Word(wParam), eaten <> 0);
     except
         eaten := 0;
         log_tsf_boundary_exception('KeyEventSink.OnTestKeyDown');
@@ -2677,6 +2698,8 @@ begin
     Result := S_OK;
     try
         Result := on_key_down_core(context, wParam, lParam, eaten);
+        if eaten = 0 then
+            note_punctuation_key(context, Word(wParam), False);
     except
         eaten := 0;
         log_tsf_boundary_exception('KeyEventSink.OnKeyDown');
@@ -4065,6 +4088,9 @@ begin
         Exit;
     end;
 
+    if (pic = m_context) and m_punctuation_key_context.has_digit and
+        nc_edit_record_moves_selection_only(pEditRecord) then
+        m_punctuation_key_context.clear;
     capture_surrounding_text_under_lock(pic, ecReadOnly);
 
     if m_composition = nil then
@@ -5844,6 +5870,7 @@ end;
 
 procedure TncTextService.rotate_document_context;
 begin
+    m_punctuation_key_context.clear;
     Inc(m_document_context_serial);
     if m_document_context_serial = 0 then
     begin
@@ -5858,6 +5885,41 @@ begin
     m_last_read_lock_capture_tick := 0;
     m_last_surrounding_request_tick := 0;
     m_surrounding_needs_refresh := True;
+end;
+
+procedure TncTextService.note_punctuation_key(const context: ITfContext;
+    const key_code: Word; const handled: Boolean);
+var
+    state: TncKeyState;
+    keyboard: TKeyboardState;
+    chars: array[0..3] of WideChar;
+    translated_char: Char;
+begin
+    state := build_key_state;
+    translated_char := #0;
+    if not handled and (m_composition = nil) and
+        not (state.shift_down or state.ctrl_down or state.alt_down) and
+        ((GetKeyState(VK_LWIN) or GetKeyState(VK_RWIN)) and $8000 = 0) and
+        (((key_code >= Ord('0')) and (key_code <= Ord('9'))) or
+         ((key_code >= VK_NUMPAD0) and (key_code <= VK_NUMPAD9))) and
+        GetKeyboardState(keyboard) then
+    begin
+        // Flag 4 translates without changing the keyboard's dead-key state.
+        if ToUnicodeEx(key_code, MapVirtualKey(key_code, MAPVK_VK_TO_VSC),
+            keyboard, @chars[0], Length(chars), 4, GetKeyboardLayout(0)) = 1 then
+            if (chars[0] >= '0') and (chars[0] <= '9') then
+                translated_char := chars[0];
+    end;
+    if (translated_char <> #0) and (context <> nil) then
+        // A passed-through first key does not get OnKeyDown. Subscribe before
+        // it reaches the app, and do not lose its digit on the next key.
+        ensure_active_context(context);
+    m_punctuation_key_context.observe_key(key_code, state, handled,
+        (m_composition <> nil) or (context = nil), translated_char);
+    if (translated_char <> #0) and m_punctuation_key_context.has_digit and
+        (m_logger <> nil) and (m_logger.level <= ll_debug) then
+        m_logger.debug(Format('Decimal passed digit session=%s key=%d char=%d',
+            [m_session_id, key_code, Ord(translated_char)]));
 end;
 
 procedure TncTextService.capture_surrounding_text_under_lock(
@@ -5879,13 +5941,14 @@ var
     end;
 
 begin
-    if context = nil then
+    if (context = nil) or (context <> m_context) then
     begin
         Exit;
     end;
     if is_password_window_context(context) or
         is_protected_input_scope(context, ec) then
     begin
+        m_punctuation_key_context.clear;
         clear_cached_snapshot;
         Exit;
     end;
