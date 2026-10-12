@@ -51,6 +51,8 @@ type
         explicit_choice: Boolean;
         literal_choice: Boolean;
         fuzzy_choice: Boolean;
+        // The last key of pinyin was typed after the first key of the rest.
+        boundary_swapped: Boolean;
     end;
 
     TncInferredPathCacheValue = record
@@ -769,6 +771,10 @@ type
         m_last_debug_commit_segment_path: string;
         m_last_lookup_key: string;
         m_last_lookup_normalized_from: string;
+        // The remainder of a partial selection made under a swap-corrected
+        // lookup, when the swap lies in it: its keys stay as typed, its
+        // lookup may be corrected below the usual length.
+        m_partial_tail_swap_key: string;
         m_last_lookup_syllable_count: Integer;
         m_last_three_syllable_partial_preference_kind: Integer;
         m_last_three_syllable_head_exact_text: string;
@@ -1091,7 +1097,8 @@ type
             const allow_relaxed_split: Boolean = False): TncPinyinParseResult;
         function get_effective_compact_pinyin_unit_count(const input_text: string;
             const allow_relaxed_split: Boolean = False): Integer;
-        function normalize_adjacent_swap_typo(const value: string): string;
+        function normalize_adjacent_swap_typo(const value: string;
+            const allow_short: Boolean = False): string;
         function split_text_units(const input_text: string): TArray<string>;
         function is_common_surname_text(const value: string): Boolean;
         function merge_candidate_lists(const primary_candidates: TncCandidateList;
@@ -1141,7 +1148,8 @@ type
             const input_code: string; const canonical_pinyin: string = '';
             const explicit_choice: Boolean = False;
             const literal_choice: Boolean = False;
-            const fuzzy_choice: Boolean = False);
+            const fuzzy_choice: Boolean = False;
+            const boundary_swapped: Boolean = False);
         function pop_confirmed_segment(out out_segment: TncConfirmedSegment): Boolean;
         procedure rebuild_confirmed_text;
         function rollback_last_segment: Boolean;
@@ -1642,6 +1650,7 @@ begin
     m_pending_commit_query_key := '';
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
+    m_partial_tail_swap_key := '';
     m_last_lookup_syllable_count := 0;
     m_last_three_syllable_partial_preference_kind := 0;
     m_last_three_syllable_head_exact_text := '';
@@ -4397,6 +4406,7 @@ begin
     // confirmed text and the contexts are not part of it.
     m_last_lookup_key := '';
     m_last_lookup_normalized_from := '';
+    m_partial_tail_swap_key := '';
     m_last_lookup_syllable_count := 0;
     m_last_three_syllable_partial_preference_kind := 0;
     m_last_three_syllable_head_exact_text := '';
@@ -122380,6 +122390,7 @@ var
         clear_lookup_bonus_caches;
         if m_composition_text = '' then
         begin
+            m_partial_tail_swap_key := '';
             Exit;
         end;
 
@@ -122397,7 +122408,8 @@ var
             not ((m_dictionary <> nil) and
             m_dictionary.lookup_mixed_abbreviation_words(lookup_text, mixed_abbreviation_words)) then
         begin
-            normalized_lookup_text := normalize_adjacent_swap_typo(lookup_text);
+            normalized_lookup_text := normalize_adjacent_swap_typo(lookup_text,
+                (m_partial_tail_swap_key <> '') and (lookup_text = m_partial_tail_swap_key));
             if (normalized_lookup_text <> '') and (not SameText(normalized_lookup_text, lookup_text)) then
             begin
                 m_last_lookup_normalized_from := lookup_text;
@@ -145619,7 +145631,8 @@ begin
     Result := Length(syllables);
 end;
 
-function TncEngine.normalize_adjacent_swap_typo(const value: string): string;
+function TncEngine.normalize_adjacent_swap_typo(const value: string;
+    const allow_short: Boolean): string;
 const
     c_adjacent_swap_typo_min_query_len = 5;
 var
@@ -145631,7 +145644,8 @@ var
     swap_unit_count: Integer;
 begin
     Result := '';
-    if (value = '') or (Length(value) < c_adjacent_swap_typo_min_query_len) then
+    if (value = '') or (Length(value) < 3) or
+        ((Length(value) < c_adjacent_swap_typo_min_query_len) and not allow_short) then
     begin
         Exit;
     end;
@@ -151583,7 +151597,7 @@ end;
 procedure TncEngine.push_confirmed_segment(const text: string; const pinyin: string;
     const input_code: string; const canonical_pinyin: string;
     const explicit_choice: Boolean; const literal_choice: Boolean;
-    const fuzzy_choice: Boolean);
+    const fuzzy_choice: Boolean; const boundary_swapped: Boolean);
 var
     item: TncConfirmedSegment;
 begin
@@ -151604,6 +151618,7 @@ begin
     item.explicit_choice := explicit_choice;
     item.literal_choice := literal_choice;
     item.fuzzy_choice := fuzzy_choice;
+    item.boundary_swapped := boundary_swapped;
     m_confirmed_segments.Add(item);
     m_confirmed_text := m_confirmed_text + text;
     if Length(split_text_units(Trim(text))) = 1 then
@@ -151658,6 +151673,17 @@ function TncEngine.rollback_last_segment: Boolean;
 var
     segment: TncConfirmedSegment;
     remaining_segment: TncConfirmedSegment;
+
+    // Puts the keys of a segment back in front of the rest, the transposed
+    // pair in the order it was typed.
+    function restored(const keys, rest: string): string;
+    begin
+        if segment.boundary_swapped and (keys <> '') and (rest <> '') then
+            Result := Copy(keys, 1, Length(keys) - 1) + rest[1] + keys[Length(keys)] +
+                Copy(rest, 2, MaxInt)
+        else
+            Result := keys + rest;
+    end;
 begin
     Result := False;
     if not pop_confirmed_segment(segment) then
@@ -151665,6 +151691,7 @@ begin
         Exit;
     end;
     clear_short_exact_pair_tail_handoff;
+    m_partial_tail_swap_key := '';
 
     if is_shuangpin_input then
     begin
@@ -151682,16 +151709,16 @@ begin
     end
     else
     begin
-        m_composition_text := segment.pinyin + m_composition_text;
+        m_composition_text := restored(segment.pinyin, m_composition_text);
         if segment.input_code <> '' then
         begin
-            m_composition_display_text := segment.input_code +
-                m_composition_display_text;
+            m_composition_display_text := restored(segment.input_code,
+                m_composition_display_text);
         end
         else if m_composition_display_text <> '' then
         begin
-            m_composition_display_text := segment.pinyin +
-                m_composition_display_text;
+            m_composition_display_text := restored(segment.pinyin,
+                m_composition_display_text);
         end
         else
         begin
@@ -151723,6 +151750,8 @@ var
     prefix_pinyin: string;
     original_prefix_pinyin: string;
     effective_remaining_pinyin: string;
+    boundary_swapped: Boolean;
+    display_boundary_swapped: Boolean;
     normalized_remaining_pinyin: string;
     full_input_code: string;
     prefix_input_code: string;
@@ -151839,7 +151868,8 @@ begin
     // Candidate comments may use a typo-corrected lookup key. Consume only
     // the corresponding original keys, never replace the unselected tail.
     if not nc_try_split_pinyin_input(m_composition_text, m_last_lookup_key,
-        remaining_pinyin, original_prefix_pinyin, effective_remaining_pinyin) then Exit;
+        remaining_pinyin, original_prefix_pinyin, effective_remaining_pinyin,
+        boundary_swapped, not is_shuangpin_input) then Exit;
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
     prefix_pinyin := normalize_pinyin_text(original_prefix_pinyin);
     normalized_remaining_pinyin := normalize_pinyin_text(effective_remaining_pinyin);
@@ -151860,7 +151890,8 @@ begin
             Length(full_input_code) - Length(effective_remaining_input_code));
     end
     else if not nc_try_split_pinyin_input(full_input_code, m_last_lookup_key,
-        remaining_pinyin, prefix_input_code, effective_remaining_input_code) then Exit;
+        remaining_pinyin, prefix_input_code, effective_remaining_input_code,
+        display_boundary_swapped) then Exit;
 
     effective_segment_path := Trim(segment_path);
     if (effective_segment_path = '') and (selected_text <> '') and (prefix_pinyin <> '') then
@@ -151925,8 +151956,15 @@ begin
     end;
     push_confirmed_segment(selected_text, original_prefix_pinyin, prefix_input_code,
         canonical_prefix_pinyin, explicit_choice, literal_choice,
-        fuzzy_choice);
+        fuzzy_choice, boundary_swapped);
     m_confirmed_explicit_choice := m_confirmed_explicit_choice or explicit_choice;
+
+    // The keys of the rest stay as typed. Where the candidate showed another
+    // rest, the swap lies in it: let its lookup be corrected, however short.
+    m_partial_tail_swap_key := '';
+    if (not boundary_swapped) and
+        (normalized_remaining_pinyin <> normalize_pinyin_text(remaining_pinyin)) then
+        m_partial_tail_swap_key := normalized_remaining_pinyin;
 
     m_composition_text := effective_remaining_pinyin;
     m_composition_display_text := effective_remaining_input_code;
@@ -186387,7 +186425,7 @@ var
             end;
             append_canonical_segment(confirmed_segment.canonical_pinyin);
             has_nonfull_input := has_nonfull_input or
-                (not is_full_pinyin_key(confirmed_segment.pinyin));
+                (not is_full_pinyin_key(normalize_pinyin_text(confirmed_segment.pinyin)));
         end;
 
         if (not has_nonfull_input) or

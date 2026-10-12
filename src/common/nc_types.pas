@@ -3,7 +3,7 @@ unit nc_types;
 interface
 
 const
-    c_markdown_punctuation_ascii_symbols = '-#*+_=`~[]<>|\@';
+    c_markdown_punctuation_ascii_symbols = '-#*+_=`~[]<>|@';
     c_default_candidate_font_name = 'Microsoft YaHei UI';
     c_min_candidate_font_size = 7;
     c_default_candidate_font_size = 12;

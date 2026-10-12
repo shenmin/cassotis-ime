@@ -242,7 +242,6 @@ type
         procedure update_punctuation_controls;
         procedure update_fuzzy_pinyin_controls;
         procedure on_fuzzy_pinyin_enabled_click(Sender: TObject);
-        procedure restore_current_page_defaults;
         procedure load_from_config;
         procedure populate_candidate_font_combo;
         procedure populate_candidate_page_size_combo;
@@ -302,6 +301,8 @@ type
         procedure on_cancel_click(Sender: TObject);
         procedure CMDialogKey(var Message: TCMDialogKey); message CM_DIALOGKEY;
     protected
+        procedure restore_current_page_defaults;
+        function try_apply_changes(out error_text: string): Boolean;
         procedure CreateParams(var Params: TCreateParams); override;
         procedure DoShow; override;
         procedure WMDpiChanged(var Message: TMessage); message WM_DPICHANGED;
@@ -1385,35 +1386,6 @@ begin
     end;
 end;
 
-function build_default_engine_config_value: TncEngineConfig;
-begin
-    Result.input_mode := im_chinese;
-    Result.pinyin_input_scheme := pis_full_pinyin;
-    Result.fuzzy_pinyin_enabled := False;
-    Result.fuzzy_pinyin_rules := [];
-    Result.max_candidates := 9;
-    Result.enable_ctrl_space_toggle := False;
-    Result.enable_shift_space_full_width_toggle := True;
-    Result.enable_ctrl_period_punct_toggle := True;
-    Result.full_width_mode := False;
-    Result.punctuation_full_width := True;
-    Result.decimal_period_after_digit := True;
-    Result.punctuation_ascii_symbols := c_markdown_punctuation_ascii_symbols;
-    Result.auto_english := True;
-    Result.enable_segment_candidates := True;
-    Result.segment_head_only_multi_syllable := True;
-    Result.candidate_font_name := c_default_candidate_font_name;
-    Result.candidate_font_size := c_default_candidate_font_size;
-    Result.candidate_page_size := c_default_candidate_page_size;
-    Result.candidate_expand_on_paging := False;
-    Result.candidate_page_key_scheme := cpks_minus_plus;
-    Result.one_key_completion_key := ock_tab;
-    Result.candidate_color_scheme := c_default_candidate_color_scheme;
-    Result.debug_mode := False;
-    Result.dictionary_variant := dv_simplified;
-    Result.shortcuts := nc_default_shortcut_config;
-end;
-
 function build_default_log_config_value: TncLogConfig;
 begin
     Result.enabled := False;
@@ -1429,7 +1401,7 @@ begin
     m_dirty := False;
     m_applied := False;
     m_scaled_dpi := get_ui_scale_dpi;
-    m_engine_config := build_default_engine_config_value;
+    m_engine_config := nc_default_engine_config;
     m_log_config := build_default_log_config_value;
     m_status_widget_visible := True;
     m_status_widget_transparency := c_default_status_widget_transparency;
@@ -2999,7 +2971,7 @@ var
     fuzzy_rule: TncFuzzyPinyinRule;
     restored: Boolean;
 begin
-    default_engine_config := build_default_engine_config_value;
+    default_engine_config := nc_default_engine_config;
     default_log_config := build_default_log_config_value;
     restored := True;
 
@@ -3798,14 +3770,18 @@ begin
     next_config.auto_english := m_chk_auto_english.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.decimal_period_after_digit := m_chk_decimal_period_after_digit.Checked;
-    next_config.punctuation_ascii_symbols := nc_normalize_punctuation_ascii_symbols(
-        m_edit_punctuation_ascii_symbols.Text);
-    for symbol in m_edit_punctuation_ascii_symbols.Text do
-        if (symbol > ' ') and (Pos(symbol, next_config.punctuation_ascii_symbols) = 0) then
-        begin
-            error_text := SPunctuationAsciiInvalid;
-            Exit(False);
-        end;
+    // An inactive edit must not reject Apply or overwrite the saved preference.
+    if m_edit_punctuation_ascii_symbols.Enabled then
+    begin
+        next_config.punctuation_ascii_symbols := nc_normalize_punctuation_ascii_symbols(
+            m_edit_punctuation_ascii_symbols.Text);
+        for symbol in m_edit_punctuation_ascii_symbols.Text do
+            if (symbol > ' ') and (Pos(symbol, next_config.punctuation_ascii_symbols) = 0) then
+            begin
+                error_text := SPunctuationAsciiInvalid;
+                Exit(False);
+            end;
+    end;
     next_config.enable_segment_candidates := True;
     next_config.segment_head_only_multi_syllable := True;
     next_config.enable_ctrl_space_toggle := False;
@@ -3993,19 +3969,14 @@ begin
     end;
 end;
 
-procedure TncSettingsForm.apply_changes;
+function TncSettingsForm.try_apply_changes(out error_text: string): Boolean;
 var
     next_config: TncEngineConfig;
     next_log_config: TncLogConfig;
     next_status_widget_visible: Boolean;
-    error_text: string;
 begin
     if not build_config_from_controls(next_config, next_log_config, next_status_widget_visible, error_text) then
-    begin
-        Application.MessageBox(PChar(error_text), PChar(get_settings_window_title),
-            MB_OK or MB_ICONWARNING);
-        Exit;
-    end;
+        Exit(False);
 
     m_engine_config := next_config;
     m_log_config := next_log_config;
@@ -4015,9 +3986,19 @@ begin
     begin
         m_apply_proc(m_engine_config, m_log_config, m_status_widget_visible, m_status_widget_transparency);
     end;
+    m_edit_punctuation_ascii_symbols.Text := m_engine_config.punctuation_ascii_symbols;
     m_dirty := False;
     m_applied := True;
     update_apply_button;
+    Result := True;
+end;
+
+procedure TncSettingsForm.apply_changes;
+var error_text: string;
+begin
+    if not try_apply_changes(error_text) then
+        Application.MessageBox(PChar(error_text), PChar(get_settings_window_title),
+            MB_OK or MB_ICONWARNING);
 end;
 
 procedure TncSettingsForm.on_apply_click(Sender: TObject);
