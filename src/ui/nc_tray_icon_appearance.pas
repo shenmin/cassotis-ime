@@ -11,6 +11,9 @@ type
         icon_size: Integer;
     end;
 
+    // Sends one Shell_NotifyIcon message for an icon and says whether the shell took it.
+    TncTrayNotify = reference to function(const message: DWORD): Boolean;
+
     TncTrayIconTheme = class
     private
         m_original: TIcon;
@@ -30,24 +33,53 @@ function nc_tray_icon_needs_backplate(const system_uses_light_theme: Integer;
     const high_contrast: Boolean; const system_background: COLORREF): Boolean;
 function nc_read_tray_icon_appearance: TncTrayIconAppearance;
 procedure nc_set_tray_icon(const tray: TTrayIcon; const icon: TIcon);
+function nc_publish_notification_icon(const notify: TncTrayNotify): Boolean;
+function nc_republish_tray_icon(const tray: TTrayIcon): Boolean;
 function nc_create_profile_icon(const instance: HINST; const resource_name: string;
     const size: Integer): TIcon;
 
 implementation
 
 uses
-    System.SysUtils, System.Classes, System.Math, Winapi.ActiveX,
+    System.SysUtils, System.Classes, System.Math, Winapi.ActiveX, Winapi.ShellAPI,
     Winapi.GDIPAPI, Winapi.GDIPOBJ;
 
 type
     TncGetDpiForWindow = function(window: HWND): UINT; stdcall;
     TncGetSystemMetricsForDpi = function(index: Integer; dpi: UINT): Integer; stdcall;
 
+    TncTrayIconAccess = class(TTrayIcon);
+
 procedure nc_set_tray_icon(const tray: TTrayIcon; const icon: TIcon);
 begin
     if (tray = nil) or (icon = nil) then Exit;
     // The setter updates VCL's FCurrentIcon and NOTIFYICONDATA; Icon.Assign does not.
     tray.Icon := icon;
+end;
+
+// An icon that should be shown is modified in place, and added when the shell
+// does not have it: Explorer was restarted, or was not up when the icon was
+// first added. It is never removed on the way.
+function nc_publish_notification_icon(const notify: TncTrayNotify): Boolean;
+begin
+    Result := Assigned(notify) and (notify(NIM_MODIFY) or notify(NIM_ADD));
+end;
+
+// VCL's own way to show an icon again is Visible := False and then True. When
+// the shell no longer has the icon the removal fails, VCL raises "Cannot
+// remove shell notification icon" and leaves the icon hidden, so that it does
+// not come back with the next taskbar either.
+function nc_republish_tray_icon(const tray: TTrayIcon): Boolean;
+begin
+    Result := False;
+    if tray = nil then Exit;
+    // A hidden icon is added by VCL, which does not say whether that worked.
+    if not tray.Visible then tray.Visible := True;
+    Result := nc_publish_notification_icon(
+        function(const message: DWORD): Boolean
+        begin
+            Result := TncTrayIconAccess(tray).Refresh(message);
+        end);
 end;
 
 function nc_tray_icon_needs_backplate(const system_uses_light_theme: Integer;

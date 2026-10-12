@@ -107,10 +107,14 @@ begin
     if (image_path = '') or (windows_dir = '') then
         Exit;
     root := IncludeTrailingPathDelimiter(windows_dir);
+    // Search is SearchHost.exe on Windows 11 and SearchApp.exe on Windows 10
+    // (from version 2004); both are started again by Windows on demand.
     if SameText(image_path, root + 'explorer.exe') then
         Result := sk_explorer
     else if SameText(image_path, root +
-        'SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SearchHost.exe') then
+        'SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SearchHost.exe') or
+        SameText(image_path, root +
+        'SystemApps\Microsoft.Windows.Search_cw5n1h2txyewy\SearchApp.exe') then
         Result := sk_search;
 end;
 
@@ -199,7 +203,7 @@ begin
     if kind = sk_search then
     begin
         stopped := backend.StopSearch;
-        detail := Format('SearchHost stop=%d; Windows restarts Search on demand', [stopped]);
+        detail := Format('Search stop=%d; Windows restarts Search on demand', [stopped]);
         Exit(stopped = ERROR_SUCCESS);
     end;
     if kind <> sk_explorer then

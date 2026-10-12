@@ -179209,8 +179209,6 @@ var
             head_key_local: string;
             tail_key_local: string;
             tail_text_local: string;
-            fixed_head_text_local: string;
-            fixed_tail_units_local: Integer;
 
             function candidate_is_short_particle_tail_completion_local: Boolean;
             var

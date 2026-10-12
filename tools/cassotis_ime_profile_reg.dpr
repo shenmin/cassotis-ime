@@ -345,6 +345,60 @@ begin
     end;
 end;
 
+// Setup that needs elevation starts itself again and the instance Windows
+// started first stays behind, hidden, until the elevated one ends. It has the
+// same image name and may have loaded the installed TSF DLL before any script
+// ran (Setup's ImmDisableIME call is made by the elevated instance only). It
+// ends by itself and is nothing the user can close.
+procedure add_other_instances_of_excluded_process(const value_text: string;
+    const excluded_pids: TDictionary<Cardinal, Boolean>);
+var
+    parsed_pid: Integer;
+    snapshot: THandle;
+    entry: TProcessEntry32;
+    names: TDictionary<Cardinal, string>;
+    installer_name: string;
+    pair: TPair<Cardinal, string>;
+begin
+    if (excluded_pids = nil) or (not TryStrToInt(Trim(value_text), parsed_pid)) or
+        (parsed_pid <= 0) then
+    begin
+        Exit;
+    end;
+    snapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if snapshot = INVALID_HANDLE_VALUE then
+    begin
+        Exit;
+    end;
+    names := TDictionary<Cardinal, string>.Create;
+    try
+        FillChar(entry, SizeOf(entry), 0);
+        entry.dwSize := SizeOf(entry);
+        if Process32First(snapshot, entry) then
+        begin
+            repeat
+                names.AddOrSetValue(entry.th32ProcessID, string(entry.szExeFile));
+            until not Process32Next(snapshot, entry);
+        end;
+        if (not names.TryGetValue(Cardinal(parsed_pid), installer_name)) or
+            (installer_name = '') then
+        begin
+            Exit;
+        end;
+        for pair in names do
+        begin
+            if SameText(pair.Value, installer_name) and
+                (not excluded_pids.ContainsKey(pair.Key)) then
+            begin
+                excluded_pids.Add(pair.Key, True);
+            end;
+        end;
+    finally
+        names.Free;
+        CloseHandle(snapshot);
+    end;
+end;
+
 function build_excluded_pid_set: TDictionary<Cardinal, Boolean>;
 var
     installer_pid_text: string;
@@ -355,6 +409,7 @@ begin
     if get_param_value('exclude_pid', installer_pid_text) then
     begin
         add_excluded_pid_if_valid(installer_pid_text, Result);
+        add_other_instances_of_excluded_process(installer_pid_text, Result);
     end;
 end;
 
@@ -1028,6 +1083,13 @@ begin
     end;
 end;
 
+// The image names of Windows Search: Windows 11 and Windows 10. The path is
+// checked by nc_shell_kind before anything is done to such a process.
+function is_search_process_name(const name: string): Boolean;
+begin
+    Result := SameText(name, 'SearchHost.exe') or SameText(name, 'SearchApp.exe');
+end;
+
 function get_interactive_processes(const only_pid: DWORD;
     out scan_succeeded: Boolean; const shell_only: Boolean = False): TArray<TncProcessInfo>;
 var
@@ -1056,7 +1118,7 @@ begin
                     ((only_pid <> 0) and (only_pid <> entry.th32ProcessID)) then
                     Continue;
                 if shell_only and not SameText(string(entry.szExeFile), 'explorer.exe') and
-                    not SameText(string(entry.szExeFile), 'SearchHost.exe') then
+                    not is_search_process_name(string(entry.szExeFile)) then
                     Continue;
                 session_id := 0;
                 if not ProcessIdToSessionId(entry.th32ProcessID, session_id) then
@@ -1212,8 +1274,8 @@ var
 begin
     // A locker reported by Restart Manager may carry a display name.
     name := get_process_name_by_pid(info.pid);
-    Result := SameText(info.name, 'explorer.exe') or SameText(info.name, 'SearchHost.exe') or
-        SameText(name, 'explorer.exe') or SameText(name, 'SearchHost.exe');
+    Result := SameText(info.name, 'explorer.exe') or is_search_process_name(info.name) or
+        SameText(name, 'explorer.exe') or is_search_process_name(name);
 end;
 
 function collect_force_stop_targets(const runtime_dir: string; const data_dir: string;
@@ -1636,10 +1698,10 @@ begin
             for info in candidates do
             begin
                 if not SameText(info.name, 'explorer.exe') and
-                    not SameText(info.name, 'SearchHost.exe') then
+                    not is_search_process_name(info.name) then
                     Continue;
                 access := c_process_query_limited_information or SYNCHRONIZE;
-                if restart and SameText(info.name, 'SearchHost.exe') then
+                if restart and is_search_process_name(info.name) then
                     access := access or PROCESS_TERMINATE;
                 process := OpenProcess(access, False, info.pid);
                 if process = 0 then

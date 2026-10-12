@@ -81,6 +81,8 @@ type
         m_icon_english: TIcon;
         m_tray_icon_theme: TncTrayIconTheme;
         m_last_tray_theme_check_tick: UInt64;
+        // The taskbar the notification icon was last published to; 0 when unknown.
+        m_tray_taskbar_window: HWND;
         m_last_tray_mode: TncInputMode;
         m_last_tray_variant: TncDictionaryVariant;
         m_tray_state_inited: Boolean;
@@ -144,6 +146,7 @@ type
         procedure enforce_host_form_toolwindow_style;
         procedure configure_tray;
         procedure refresh_tray_icon_appearance;
+        procedure publish_tray_icon;
         procedure configure_menu;
         procedure configure_status_widget;
         procedure apply_status_widget_font_metrics(const dpi: Integer);
@@ -1136,6 +1139,16 @@ begin
     m_icon_english.Assign(m_tray_icon_theme.icon);
     // Publish the new handle without removing/re-adding the notification icon.
     nc_set_tray_icon(m_tray_icon, m_tray_icon_theme.icon);
+end;
+
+procedure TncTrayHost.publish_tray_icon;
+begin
+    if m_tray_icon = nil then Exit;
+    // On failure the timer tries again once a taskbar is there.
+    if nc_republish_tray_icon(m_tray_icon) then
+        m_tray_taskbar_window := FindWindow('Shell_TrayWnd', nil)
+    else
+        m_tray_taskbar_window := 0;
 end;
 
 procedure TncTrayHost.configure_menu;
@@ -2554,16 +2567,17 @@ begin
         end;
     end;
 
-    // Preserve the existing mode-change refresh; appearance changes update in place.
+    // Icon and hint change in place and the icon is added again when the shell
+    // has lost it. It is not removed first: after a restart of Explorer the
+    // removal fails and VCL raises "Cannot remove shell notification icon".
     if should_refresh_icon and (m_tray_icon <> nil) then
     begin
-        m_tray_icon.Visible := False;
         if (target_icon <> nil) and (target_icon.Handle <> 0) then
         begin
             nc_set_tray_icon(m_tray_icon, target_icon);
         end;
         m_tray_icon.Hint := 'Cassotis IME (' + mode_text + ')';
-        m_tray_icon.Visible := True;
+        publish_tray_icon;
         m_last_tray_mode := m_engine_config.input_mode;
         m_last_tray_variant := m_engine_config.dictionary_variant;
         m_tray_state_inited := True;
@@ -2980,6 +2994,9 @@ begin
         (now_tick - m_last_tray_theme_check_tick >= c_style_refresh_interval_idle_ms) then
     begin
         refresh_tray_icon_appearance;
+        // A new taskbar window: Explorer was restarted, or was not up before.
+        if FindWindow('Shell_TrayWnd', nil) <> m_tray_taskbar_window then
+            publish_tray_icon;
         m_last_tray_theme_check_tick := now_tick;
     end;
 

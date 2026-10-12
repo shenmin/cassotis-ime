@@ -61,8 +61,10 @@ begin
         begin
             Row := Applications[Index];
             Automatic := False;
+            { Search is SearchHost.exe on Windows 11 and SearchApp.exe on Windows 10. }
             if (Pos('explorer.exe (pid ', LowerCase(Row)) = 1) or
-                (Pos('searchhost.exe (pid ', LowerCase(Row)) = 1) then
+                (Pos('searchhost.exe (pid ', LowerCase(Row)) = 1) or
+                (Pos('searchapp.exe (pid ', LowerCase(Row)) = 1) then
                 for PlanIndex := 2 to GetArrayLength(Plan) - 1 do
                     if CompareText('auto=' + Row, Plan[PlanIndex]) = 0 then
                         Automatic := True;
