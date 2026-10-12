@@ -17,7 +17,7 @@ uses
     System.Generics.Collections, nc_engine_intf;
 
 type
-    TncLmRepairHost = class(TInterfacedObject, IncLongLocalRepair)
+    TncLmRepairHost = class(TInterfacedObject, IncLongLocalRepair, IncShortPhraseCorrector)
     private type
         TCreateModel = function(directory: PWideChar; intra_threads: Integer;
             error_text: PWideChar; capacity: Integer): Pointer; cdecl;
@@ -46,6 +46,9 @@ type
         procedure load;
         function align(const query_text, draft_text: string;
             out syllables: TArray<string>): Boolean;
+        function correct(const query_text, draft_text, preceding_text: string;
+            const minimum_units, width: Integer; out corrected_text, aligned_pinyin: string;
+            out gain: Single): Integer;
     public
         { background_load loads on a lower-priority thread so the dictionary
           starts first; repairs are skipped until the model is ready. }
@@ -63,6 +66,11 @@ type
             const document_key, preceding_text: string;
             out repaired_text, aligned_pinyin: string;
             out minimum_word_ratio: Double): Boolean;
+        { The correction of a phrase of three to five characters, without a
+          threshold: 1 with the preferred text and its gain, 0 when the model
+          keeps the draft, -1 without an answer. The engine decides. }
+        function correct_short_phrase(const query_text, draft_text, preceding_text: string;
+            out corrected_text, aligned_pinyin: string; out gain: Single): Integer;
     end;
 
 implementation
@@ -73,6 +81,9 @@ const
     // Beam width and the whole-sentence log-probability margin over the draft,
     // chosen on the 8,000-sentence fiction long dev set.
     c_lm_repair_width = 2;
+    // A phrase of three to five characters: widths 3 and 4 changed nothing
+    // on the clause development set.
+    c_short_phrase_width = 2;
     c_lm_repair_min_gain = 1.0;
     // The dictionary path check accepts any segmentation, as for local repair.
     c_lm_repair_word_ratio = 0.01;
@@ -307,9 +318,12 @@ begin
     Result := True;
 end;
 
-function TncLmRepairHost.try_repair(const query_text, draft_text: string;
-    const document_key, preceding_text: string;
-    out repaired_text, aligned_pinyin: string; out minimum_word_ratio: Double): Boolean;
+// The model's correction of a draft of at least minimum_units characters: 1
+// with the text it prefers and the gain, 0 when it keeps the draft, -1 without
+// an answer. aligned_pinyin is set whenever the draft aligns.
+function TncLmRepairHost.correct(const query_text, draft_text, preceding_text: string;
+    const minimum_units, width: Integer; out corrected_text, aligned_pinyin: string;
+    out gain: Single): Integer;
 var
     syllables: TArray<string>;
     homophones: TArray<Cardinal>;
@@ -318,16 +332,15 @@ var
     context, syllable, prefix: string;
     buffer: array[0..255] of WideChar;
     error_text: array[0..1023] of WideChar;
-    gain: Single;
     draft_point, point: Cardinal;
-    i, index, rc: Integer;
+    i, index: Integer;
     present: Boolean;
 begin
-    Result := False;
-    repaired_text := '';
+    Result := -1;
+    corrected_text := '';
     aligned_pinyin := '';
-    minimum_word_ratio := 1;
-    if not ready or (Length(draft_text) < 6) or (Length(draft_text) > 40) then Exit;
+    gain := 0;
+    if not ready or (Length(draft_text) < minimum_units) or (Length(draft_text) > 40) then Exit;
     // Only BMP drafts: one UTF-16 unit per character, as the engine counts units.
     for i := 1 to Length(draft_text) do
         if draft_text[i].IsSurrogate then Exit;
@@ -350,7 +363,11 @@ begin
     for i := 0 to High(syllables) do
     begin
         syllable := syllables[i];
-        if not m_syllable_index.TryGetValue(syllable, index) then Exit;
+        if not m_syllable_index.TryGetValue(syllable, index) then
+        begin
+            aligned_pinyin := '';
+            Exit;
+        end;
         context := context + Char.ConvertFromUtf32(m_syllable_base + Cardinal(index));
         if aligned_pinyin <> '' then aligned_pinyin := aligned_pinyin + #3;
         aligned_pinyin := aligned_pinyin + syllable;
@@ -369,21 +386,50 @@ begin
     context := context + Char.ConvertFromUtf32(m_draft) + draft_text + Char.ConvertFromUtf32(m_sep);
     m_run_lock.Acquire;
     try
-        rc := m_correct(m_handle, PWideChar(context), PWideChar(draft_text), @allowed[0],
-            @offsets[0], c_lm_repair_width, @buffer[0], Length(buffer), @gain, 0,
+        Result := m_correct(m_handle, PWideChar(context), PWideChar(draft_text), @allowed[0],
+            @offsets[0], width, @buffer[0], Length(buffer), @gain, 0,
             @error_text[0], Length(error_text));
     finally
         m_run_lock.Release;
     end;
-    if (rc <> 1) or (gain < c_lm_repair_min_gain) then Exit;
-    repaired_text := string(PWideChar(@buffer[0]));
-    if Length(repaired_text) <> Length(draft_text) then
+    if Result <> 1 then
     begin
-        repaired_text := '';
+        if Result <> 0 then Result := -1;
         Exit;
     end;
-    minimum_word_ratio := c_lm_repair_word_ratio;
-    Result := True;
+    corrected_text := string(PWideChar(@buffer[0]));
+    if Length(corrected_text) <> Length(draft_text) then
+    begin
+        corrected_text := '';
+        Result := -1;
+    end;
+end;
+
+function TncLmRepairHost.try_repair(const query_text, draft_text: string;
+    const document_key, preceding_text: string;
+    out repaired_text, aligned_pinyin: string; out minimum_word_ratio: Double): Boolean;
+var
+    gain: Single;
+begin
+    minimum_word_ratio := 1;
+    Result := (correct(query_text, draft_text, preceding_text, 6, c_lm_repair_width,
+        repaired_text, aligned_pinyin, gain) = 1) and (gain >= c_lm_repair_min_gain);
+    if Result then minimum_word_ratio := c_lm_repair_word_ratio
+    else repaired_text := '';
+end;
+
+function TncLmRepairHost.correct_short_phrase(const query_text, draft_text, preceding_text: string;
+    out corrected_text, aligned_pinyin: string; out gain: Single): Integer;
+begin
+    if Length(draft_text) > 5 then
+    begin
+        corrected_text := '';
+        aligned_pinyin := '';
+        gain := 0;
+        Exit(-1);
+    end;
+    Result := correct(query_text, draft_text, preceding_text, 3, c_short_phrase_width,
+        corrected_text, aligned_pinyin, gain);
 end;
 
 end.

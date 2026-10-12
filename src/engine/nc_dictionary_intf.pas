@@ -102,6 +102,7 @@ type
             const text: string); virtual;
         procedure record_commit(const pinyin: string; const text: string;
             const explicit_choice: Boolean = False); virtual;
+        procedure record_selected_short_phrase(const pinyin, text: string); virtual;
         procedure record_context_pair(const left_text: string; const committed_text: string); virtual;
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); virtual;
@@ -442,6 +443,11 @@ end;
 procedure TncDictionaryProvider.record_commit(const pinyin: string; const text: string;
     const explicit_choice: Boolean = False);
 begin
+end;
+
+procedure TncDictionaryProvider.record_selected_short_phrase(const pinyin, text: string);
+begin
+    record_commit(pinyin, text, True);
 end;
 
 procedure TncDictionaryProvider.record_context_pair(const left_text: string; const committed_text: string);

@@ -110,6 +110,8 @@ v2.0.0 clears that stack away and rebuilds ranking around a single model, so tha
 - **Less than half the model memory.** Loading the models took about 447 MiB of host-process memory in v1.31.0 and takes about 183 MiB now.
 - **One place to improve.** A better language model now improves every input path at once, and the four policies are refit from engine traces.
 
+The cost is latency. Every decision now passes through one larger model, which is kept to one thread per processor core, so the mean and P95 latencies in the benchmark tables below are higher than in v1.31.0 (long sentences 74 ms on average against 61 ms; one-key completion settles within 21 ms at P95 against 12 ms), while accuracy is higher in all four benchmarks. These are times for decoding a whole query at once; in everyday typing each keystroke is still answered within a few tens of milliseconds, and the difference is not noticeable.
+
 v2.0.0 also fixes the missing candidate window in File Explorer's address bar, hardens desktop recovery when an upgrade has to restart Windows Explorer, and changes the installer: an upgrade never asks to restart Windows, and uninstalling no longer closes running applications (files still in use are removed at the next restart).
 
 ### How candidates are ranked
@@ -133,6 +135,7 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 | Version | Top1 | Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|
+| `v2.0.0` | 13378/16300 (82.07%) | 14266/16300 (87.52%) | 74.1 | 78 | 125 | 344 |
 | `v1.31.0` | 12940/16300 (79.39%) | 13534/16300 (83.03%) | 61.29 | 62 | 94 | 282 |
 | `v1.30.0` | 12828/16300 (78.70%) | 13514/16300 (82.91%) | 55.25 | 47 | 94 | 266 |
 | `v1.29.0` | 11997/16300 (73.60%) | 12970/16300 (79.57%) | 39.89 | 32 | 63 | 234 |
@@ -184,6 +187,7 @@ See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case c
 
 | Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `v2.0.0` | 63213/65000 (97.25%) | 64140/65000 (98.68%) | 10528/11728 (89.77%) | 11240/11728 (95.84%) | 4.837 | 2.471 | 13.275 | 38.495 |
 | `v1.31.0` | 63036/65000 (96.98%) | 64104/65000 (98.62%) | 10491/11728 (89.45%) | 11196/11728 (95.46%) | 4.582 | 3.262 | 10.352 | 22.327 |
 | `v1.30.0` | 62926/65000 (96.81%) | 64073/65000 (98.57%) | 10449/11728 (89.09%) | 11169/11728 (95.23%) | 3.525 | 3.192 | 7.660 | 21.122 |
 | `v1.29.0` | 61971/65000 (95.34%) | 63568/65000 (97.80%) | 9675/11728 (82.49%) | 10776/11728 (91.88%) | 2.999 | 2.198 | 7.316 | 27.596 |
@@ -216,6 +220,7 @@ Public results retain five columns: `Completion Hit`, `Avg Keys Saved`, `Stabili
 
 | Version | Completion Hit | Avg Keys Saved | Stability | Keystroke P95 (ms) | Final P95 (ms) |
 | --- | --- | --- | --- | --- | --- |
+| `v2.0.0` | 10440/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.637 | 20.879 |
 | `v1.31.0` | 10336/12831 (80.55%) | 2.638 | 2123/2185 (97.16%) | 1.238 | 11.881 |
 | `v1.30.0`<br/>`v1.29.0` | 9420/12831 (73.42%) | 2.548 | 1691/1749 (96.68%) | 0.968 | 0.968 |
 | `v1.18.0` - `v1.28.0` | 9419/12831 (73.41%) | 2.549 | 1691/1749 (96.68%) | 2.026 | 2.026 |
@@ -230,6 +235,7 @@ This benchmark leaves the final four complete Pinyin syllables untyped and evalu
 
 | Version | Local Completion Hit | Predictive Prompt Coverage | Total Keys Saved | P95 (ms) |
 | --- | --- | --- | --- | --- |
+| `v2.0.0` | 3569/16300 (21.90%) | 15823/16300 (97.07%) | 8790 | 133.405 |
 | `v1.31.0` | 3513/16300 (21.55%) | 15815/16300 (97.02%) | 7478 | 116.682 |
 | `v1.30.0` | 855/16300 (5.25%) | 7203/16300 (44.19%) | 1822 | 77.819 |
 | `v1.29.0` | 449/16300 (2.75%)<br>*424/16300 (2.60%)* | 6778/16300 (41.58%) | 1023<br>*987* | 53.085 |

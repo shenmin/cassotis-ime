@@ -242,6 +242,8 @@ type
             const text: string): Boolean;
         function is_nonbase_structured_rule_exact_phrase(const pinyin: string;
             const text: string): Boolean;
+        procedure record_commit_internal(const pinyin, text: string;
+            const explicit_choice, selected_short_phrase: Boolean);
         function is_suppressible_nonbase_exact_phrase(const pinyin: string; const text: string): Boolean;
         function is_likely_noisy_constructed_phrase(const pinyin: string; const text: string;
             const commit_count: Integer = 0; const user_weight: Integer = 0): Boolean;
@@ -392,6 +394,7 @@ type
             const text: string); override;
         procedure record_commit(const pinyin: string; const text: string;
             const explicit_choice: Boolean = False); override;
+        procedure record_selected_short_phrase(const pinyin, text: string); override;
         procedure record_context_pair(const left_text: string; const committed_text: string); override;
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); override;
@@ -9389,28 +9392,7 @@ function TncSqliteDictionary.is_nonbase_structured_rule_exact_phrase(const pinyi
 var
     pinyin_key: string;
     text_key: string;
-    syllables: TArray<string>;
     text_units: TArray<string>;
-    tail_pinyin: string;
-    tail_text: string;
-
-    function head_matches_local: Boolean;
-    begin
-        Result := ((SameText(syllables[0], 'wo')) and
-            (text_units[0] = string(Char($6211)))) or
-            ((SameText(syllables[0], 'ni')) and
-            (text_units[0] = string(Char($4F60)))) or
-            ((SameText(syllables[0], 'zui')) and
-            (text_units[0] = string(Char($6700)))) or
-            ((SameText(syllables[0], 'bu')) and
-            (text_units[0] = string(Char($4E0D)))) or
-            ((SameText(syllables[0], 'hen')) and
-            (text_units[0] = string(Char($5F88)))) or
-            ((SameText(syllables[0], 'jiu')) and
-            (text_units[0] = string(Char($5C31)))) or
-            ((SameText(syllables[0], 'qing')) and
-            (text_units[0] = string(Char($8BF7))));
-    end;
 
     function fixed_suffix_text_matches_local(const suffix_pinyin: string;
         const suffix_text: string): Boolean;
@@ -9536,25 +9518,6 @@ var
             explicit_user_entry_exists(prefix_pinyin, prefix_text);
     end;
 
-    function has_exact_tail_phrase_local: Boolean;
-    var
-        tail_idx: Integer;
-    begin
-        tail_pinyin := '';
-        tail_text := '';
-        for tail_idx := 1 to High(syllables) do
-        begin
-            tail_pinyin := tail_pinyin + syllables[tail_idx];
-            tail_text := tail_text + text_units[tail_idx];
-        end;
-        if (tail_pinyin = '') or (tail_text = '') then
-        begin
-            Exit(False);
-        end;
-
-        Result := normalized_base_entry_exists(tail_pinyin, tail_text) or
-            explicit_user_entry_exists(tail_pinyin, tail_text);
-    end;
 begin
     Result := False;
     pinyin_key := LowerCase(Trim(pinyin));
@@ -9572,29 +9535,11 @@ begin
         Exit;
     end;
 
+    // A phrase the user put together from a head word and an exact tail
+    // ("jiu" + "guize") is learned like any other: no engine rule writes
+    // such a phrase by itself any more.
     text_units := split_text_units_local(text_key);
-    if has_exact_fixed_suffix_phrase_local then
-    begin
-        Exit(True);
-    end;
-
-    syllables := split_full_pinyin_syllables(pinyin_key);
-    if (Length(syllables) < 3) or (Length(syllables) > 4) or
-        (Length(text_units) <> Length(syllables)) then
-    begin
-        Exit;
-    end;
-    if not head_matches_local then
-    begin
-        Exit;
-    end;
-
-    if head_matches_local and has_exact_tail_phrase_local then
-    begin
-        Exit(True);
-    end;
-
-    Result := False;
+    Result := has_exact_fixed_suffix_phrase_local;
 end;
 
 function TncSqliteDictionary.is_base_entry(const pinyin: string; const text: string): Boolean;
@@ -15997,6 +15942,22 @@ end;
 
 procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: string;
     const explicit_choice: Boolean = False);
+begin
+    record_commit_internal(pinyin, text, explicit_choice, False);
+end;
+
+procedure TncSqliteDictionary.record_selected_short_phrase(const pinyin, text: string);
+var
+    units: Integer;
+begin
+    units := get_valid_cjk_codepoint_count(text);
+    // Only an explicit short-phrase alternative bypasses the automatic
+    // particle rule. Alignment, user-word length and other guards still apply.
+    record_commit_internal(pinyin, text, True, (units >= 3) and (units <= 4));
+end;
+
+procedure TncSqliteDictionary.record_commit_internal(const pinyin, text: string;
+    const explicit_choice, selected_short_phrase: Boolean);
 const
     update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
@@ -16066,7 +16027,9 @@ begin
     base_entry_exists := normalized_base_entry_exists(pinyin_key, text);
     existing_user_entry := is_valid_user_text(text) and
         explicit_user_entry_exists(pinyin_key, text);
+    // Do not erase a deliberately learned phrase when it becomes the top choice.
     suppress_structured_rule_phrase_user_row := full_pinyin_input and
+        (not selected_short_phrase) and (not existing_user_entry) and
         is_nonbase_structured_rule_exact_phrase(pinyin_key, text);
     suppress_admin_alias_user_row := full_pinyin_input and
         is_low_evidence_admin_place_alias_user_entry(pinyin_key, text, '', 0, 0);

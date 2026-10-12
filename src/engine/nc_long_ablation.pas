@@ -20,7 +20,13 @@ type
         // Not a ranking stage either: the long choice's runner-up, and the
         // choice a repair replaces, take the second complete slot. Ablated,
         // the second slot is what the final ranking left there.
-        la_second_slot_choice);
+        la_second_slot_choice,
+        // The stage that writes a phrase of three to five syllables which is
+        // no dictionary entry (the shared LM picks a draft, the
+        // pinyin-conditioned model corrects it). Ablated, the page is what
+        // the dictionary paths left; short_phrase_draft alone takes the first
+        // draft without asking the shared LM.
+        la_short_phrase, la_short_phrase_draft);
 
 function nc_long_ablated(const stage: TncLongAblation): Boolean;
 
@@ -33,7 +39,8 @@ const
     c_names: array[TncLongAblation] of string = (
         'pool_ranker', 'exact_edge_lattice',
         'short_nocontext', 'short_empty_context',
-        'keystroke_whole_decode', 'second_slot_choice');
+        'keystroke_whole_decode', 'second_slot_choice',
+        'short_phrase', 'short_phrase_draft');
 
 var
     g_ablated: array[TncLongAblation] of Boolean;
