@@ -11,7 +11,7 @@
   <img src="snapshot.png" alt="Cassotis IME snapshot" width="550" height="442">
 </p>
 
-English | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Linux version](https://github.com/shenmin/cassotis-ime-linux)
+English | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Linux version](https://github.com/shenmin/cassotis-ime-linux) | [macOS version](https://github.com/shenmin/cassotis-ime-mac)
 
 Cassotis IME (言泉输入法) is an experimental Chinese Pinyin input method for Windows 10/11, built primarily with Delphi on top of TSF (Text Services Framework). Candidate ranking runs entirely on the local CPU, around a single character-level language model trained by the project.
 
