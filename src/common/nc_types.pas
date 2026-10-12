@@ -3,6 +3,7 @@ unit nc_types;
 interface
 
 const
+    c_markdown_punctuation_ascii_symbols = '-#*+_=`~[]<>|\@';
     c_default_candidate_font_name = 'Microsoft YaHei UI';
     c_min_candidate_font_size = 7;
     c_default_candidate_font_size = 12;
@@ -217,6 +218,7 @@ type
         full_width_mode: Boolean;
         punctuation_full_width: Boolean;
         decimal_period_after_digit: Boolean;
+        punctuation_ascii_symbols: string;
         enable_segment_candidates: Boolean;
         segment_head_only_multi_syllable: Boolean;
         candidate_font_name: string;

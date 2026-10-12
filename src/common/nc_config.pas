@@ -51,6 +51,7 @@ function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
 function get_default_user_dictionary_path: string;
 function nc_default_engine_config: TncEngineConfig;
+function nc_normalize_punctuation_ascii_symbols(const value: string): string;
 function nc_create_utf8_ini_file(const config_path: string): TMemIniFile;
 function nc_fuzzy_pinyin_rules_to_text(
     const rules: TncFuzzyPinyinRules): string;
@@ -67,6 +68,17 @@ const
     c_config_mutex_timeout_ms = 30000;
 
 function get_module_directory: string; forward;
+
+function nc_normalize_punctuation_ascii_symbols(const value: string): string;
+var
+    symbol: Char;
+begin
+    Result := '';
+    for symbol in value do
+        if CharInSet(symbol, ['!'..'/', ':'..'@', '['..'`', '{'..'~']) and
+            (Pos(symbol, Result) = 0) then
+            Result := Result + symbol;
+end;
 
 function parse_variant_text(const value: string): TncDictionaryVariant;
 begin
@@ -887,6 +899,7 @@ begin
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
     Result.decimal_period_after_digit := True;
+    Result.punctuation_ascii_symbols := c_markdown_punctuation_ascii_symbols;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1117,6 +1130,9 @@ begin
         Result.full_width_mode := safe_ini_read_bool(ini, 'engine', 'full_width_mode', False);
         Result.punctuation_full_width := safe_ini_read_bool(ini, 'engine', 'punctuation_full_width', True);
         Result.decimal_period_after_digit := safe_ini_read_bool(ini, 'engine', 'decimal_period_after_digit', True);
+        Result.punctuation_ascii_symbols := nc_normalize_punctuation_ascii_symbols(
+            safe_ini_read_string(ini, 'punctuation', 'ascii_symbols',
+                c_markdown_punctuation_ascii_symbols));
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
         Result.candidate_font_name := Trim(safe_ini_read_string(ini, 'appearance', 'candidate_font_name',
@@ -1312,6 +1328,9 @@ begin
         ini.WriteBool('engine', 'full_width_mode', config.full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', config.punctuation_full_width);
         ini.WriteBool('engine', 'decimal_period_after_digit', config.decimal_period_after_digit);
+        // Old TSF modules rewrite [engine] when saving mode changes.
+        ini.WriteString('punctuation', 'ascii_symbols',
+            nc_normalize_punctuation_ascii_symbols(config.punctuation_ascii_symbols));
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         candidate_font_name := Trim(config.candidate_font_name);
         if candidate_font_name = '' then

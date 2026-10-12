@@ -174,6 +174,9 @@ type
             array[TncFuzzyPinyinRule] of TncModernCheckBox;
         m_combo_punctuation_mode: TComboBox;
         m_chk_decimal_period_after_digit: TncModernCheckBox;
+        m_edit_punctuation_ascii_symbols: TEdit;
+        m_btn_punctuation_markdown: TncModernButton;
+        m_btn_punctuation_standard: TncModernButton;
         m_chk_full_width_mode: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
         m_track_status_widget_transparency: TTrackBar;
@@ -285,6 +288,8 @@ type
         procedure on_browse_log_path(Sender: TObject);
         procedure on_open_log_folder(Sender: TObject);
         procedure on_log_defaults_click(Sender: TObject);
+        procedure on_punctuation_markdown_click(Sender: TObject);
+        procedure on_punctuation_standard_click(Sender: TObject);
         procedure on_clear_user_dictionary_click(Sender: TObject);
         procedure on_open_config_folder(Sender: TObject);
         procedure on_open_config_file(Sender: TObject);
@@ -381,6 +386,12 @@ resourcestring
     SCheckEnableFuzzyPinyin = '启用模糊拼音';
     SLabelPunctuationMode = '标点';
     SCheckDecimalPeriodAfterDigit = '连续输入数字后面的“。”转为“.”';
+    SLabelPunctuationAsciiSymbols = '保持半角的符号';
+    SPunctuationAsciiHint = '仅在中文标点、半角输入时生效；移除 # 可恢复输入 ＃。';
+    SPunctuationAsciiEmpty = '留空使用标准中文标点';
+    SPunctuationAsciiInvalid = '“保持半角的符号”只能填写 ASCII 标点符号，不能包含文字或数字。';
+    SButtonPunctuationMarkdown = 'Markdown 预设';
+    SButtonPunctuationStandard = '标准中文标点';
     SCheckFullWidthMode = '使用全角输入';
     SCheckShowStatusWidget = '显示状态浮窗';
     SLabelStatusWidgetTransparency = '浮窗透明度';
@@ -1385,6 +1396,7 @@ begin
     Result.full_width_mode := False;
     Result.punctuation_full_width := True;
     Result.decimal_period_after_digit := True;
+    Result.punctuation_ascii_symbols := c_markdown_punctuation_ascii_symbols;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1952,7 +1964,7 @@ var
     defaults_group: TPanel;
 begin
     section_top := scale_ui(18);
-    defaults_group := create_section_group(Self, m_scroll_general, SGroupDefaultBehavior, section_top, 194);
+    defaults_group := create_section_group(Self, m_scroll_general, SGroupDefaultBehavior, section_top, 270);
 
     top := scale_ui(c_section_inner_top);
     create_label(Self, defaults_group, SLabelInputMode, top);
@@ -2003,6 +2015,34 @@ begin
     m_chk_decimal_period_after_digit.Width := defaults_group.ClientWidth -
         m_chk_decimal_period_after_digit.Left - scale_ui(c_label_left);
     m_chk_decimal_period_after_digit.Anchors := [akLeft, akTop, akRight];
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    create_label(Self, defaults_group, SLabelPunctuationAsciiSymbols, top);
+    m_edit_punctuation_ascii_symbols := TEdit.Create(Self);
+    m_edit_punctuation_ascii_symbols.Name := 'PunctuationAsciiSymbols';
+    m_edit_punctuation_ascii_symbols.Parent := defaults_group;
+    m_edit_punctuation_ascii_symbols.Left := scale_ui(c_control_left);
+    m_edit_punctuation_ascii_symbols.Top := top;
+    m_edit_punctuation_ascii_symbols.Width := defaults_group.ClientWidth -
+        m_edit_punctuation_ascii_symbols.Left - scale_ui(c_label_left);
+    m_edit_punctuation_ascii_symbols.Anchors := [akLeft, akTop, akRight];
+    m_edit_punctuation_ascii_symbols.ImeMode := imDisable;
+    m_edit_punctuation_ascii_symbols.MaxLength := 128;
+    m_edit_punctuation_ascii_symbols.TextHint := SPunctuationAsciiEmpty;
+    m_edit_punctuation_ascii_symbols.Hint := SPunctuationAsciiHint;
+    m_edit_punctuation_ascii_symbols.ShowHint := True;
+    m_edit_punctuation_ascii_symbols.OnChange := mark_dirty;
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    m_btn_punctuation_markdown := create_action_button(Self, defaults_group,
+        scale_ui(c_control_left), top, SButtonPunctuationMarkdown,
+        on_punctuation_markdown_click);
+    m_btn_punctuation_markdown.Name := 'PunctuationMarkdownPreset';
+    m_btn_punctuation_markdown.Width := scale_ui(128);
+    m_btn_punctuation_standard := create_action_button(Self, defaults_group,
+        m_btn_punctuation_markdown.Left + m_btn_punctuation_markdown.Width + scale_ui(8),
+        top, SButtonPunctuationStandard, on_punctuation_standard_click);
+    m_btn_punctuation_standard.Name := 'PunctuationStandardPreset';
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
@@ -2860,11 +2900,32 @@ begin
 end;
 
 procedure TncSettingsForm.update_punctuation_controls;
+var
+    ascii_enabled: Boolean;
 begin
     if (m_chk_decimal_period_after_digit <> nil) and
         (m_combo_punctuation_mode <> nil) then
         m_chk_decimal_period_after_digit.Enabled :=
             m_combo_punctuation_mode.ItemIndex = 0;
+    ascii_enabled := (m_combo_punctuation_mode <> nil) and
+        (m_combo_punctuation_mode.ItemIndex = 0) and
+        (m_chk_full_width_mode <> nil) and (not m_chk_full_width_mode.Checked);
+    if m_edit_punctuation_ascii_symbols <> nil then
+        m_edit_punctuation_ascii_symbols.Enabled := ascii_enabled;
+    if m_btn_punctuation_markdown <> nil then
+        m_btn_punctuation_markdown.Enabled := ascii_enabled;
+    if m_btn_punctuation_standard <> nil then
+        m_btn_punctuation_standard.Enabled := ascii_enabled;
+end;
+
+procedure TncSettingsForm.on_punctuation_markdown_click(Sender: TObject);
+begin
+    m_edit_punctuation_ascii_symbols.Text := c_markdown_punctuation_ascii_symbols;
+end;
+
+procedure TncSettingsForm.on_punctuation_standard_click(Sender: TObject);
+begin
+    m_edit_punctuation_ascii_symbols.Clear;
 end;
 
 procedure TncSettingsForm.update_logging_controls;
@@ -2949,6 +3010,7 @@ begin
         m_combo_pinyin_input_scheme.ItemIndex := Ord(default_engine_config.pinyin_input_scheme);
         m_combo_punctuation_mode.ItemIndex := Ord(not default_engine_config.punctuation_full_width);
         m_chk_decimal_period_after_digit.Checked := default_engine_config.decimal_period_after_digit;
+        m_edit_punctuation_ascii_symbols.Text := default_engine_config.punctuation_ascii_symbols;
         m_chk_full_width_mode.Checked := default_engine_config.full_width_mode;
     end
     else if m_page_control.ActivePage = m_tab_appearance then
@@ -3543,6 +3605,8 @@ begin
     end;
     if m_chk_decimal_period_after_digit <> nil then
         m_chk_decimal_period_after_digit.Checked := m_engine_config.decimal_period_after_digit;
+    if m_edit_punctuation_ascii_symbols <> nil then
+        m_edit_punctuation_ascii_symbols.Text := m_engine_config.punctuation_ascii_symbols;
     if m_chk_show_status_widget <> nil then
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
@@ -3654,6 +3718,7 @@ var
     action: TncShortcutAction;
     other_action: TncShortcutAction;
     fuzzy_rule: TncFuzzyPinyinRule;
+    symbol: Char;
 begin
     next_config := m_engine_config;
     next_log_config := m_log_config;
@@ -3719,6 +3784,14 @@ begin
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.decimal_period_after_digit := m_chk_decimal_period_after_digit.Checked;
+    next_config.punctuation_ascii_symbols := nc_normalize_punctuation_ascii_symbols(
+        m_edit_punctuation_ascii_symbols.Text);
+    for symbol in m_edit_punctuation_ascii_symbols.Text do
+        if (symbol > ' ') and (Pos(symbol, next_config.punctuation_ascii_symbols) = 0) then
+        begin
+            error_text := SPunctuationAsciiInvalid;
+            Exit(False);
+        end;
     next_config.enable_segment_candidates := True;
     next_config.segment_head_only_multi_syllable := True;
     next_config.enable_ctrl_space_toggle := False;

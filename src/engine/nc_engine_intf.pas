@@ -1141,11 +1141,11 @@ type
         function pop_confirmed_segment(out out_segment: TncConfirmedSegment): Boolean;
         procedure rebuild_confirmed_text;
         function rollback_last_segment: Boolean;
-        procedure apply_partial_commit(const selected_text: string; const remaining_pinyin: string;
+        function apply_partial_commit(const selected_text: string; const remaining_pinyin: string;
             const segment_path: string = ''; const explicit_choice: Boolean = False;
             const remaining_input_code: string = '';
             const literal_choice: Boolean = False;
-            const fuzzy_choice: Boolean = False);
+            const fuzzy_choice: Boolean = False): Boolean;
         procedure update_left_context(const committed_text: string);
         procedure record_context_pair(const left_text: string; const committed_text: string);
         procedure note_session_commit(const text: string);
@@ -141268,6 +141268,10 @@ function TncEngine.map_punctuation_char(const input_char: Char): string;
 begin
     if get_effective_punctuation_full_width then
     begin
+        if (not m_config.full_width_mode) and
+            (Pos(input_char, m_config.punctuation_ascii_symbols) > 0) then
+            Exit(input_char);
+
         case input_char of
             ',':
                 Result := Char($FF0C);
@@ -151661,14 +151665,16 @@ begin
     Result := True;
 end;
 
-procedure TncEngine.apply_partial_commit(const selected_text: string; const remaining_pinyin: string;
+function TncEngine.apply_partial_commit(const selected_text: string; const remaining_pinyin: string;
     const segment_path: string = ''; const explicit_choice: Boolean = False;
     const remaining_input_code: string = '';
     const literal_choice: Boolean = False;
-    const fuzzy_choice: Boolean = False);
+    const fuzzy_choice: Boolean = False): Boolean;
 var
     normalized_pinyin: string;
     prefix_pinyin: string;
+    original_prefix_pinyin: string;
+    effective_remaining_pinyin: string;
     normalized_remaining_pinyin: string;
     full_input_code: string;
     prefix_input_code: string;
@@ -151776,53 +151782,37 @@ var
         end;
     end;
 begin
+    Result := False;
     if (selected_text = '') or (remaining_pinyin = '') then
     begin
         Exit;
     end;
 
+    // Candidate comments may use a typo-corrected lookup key. Consume only
+    // the corresponding original keys, never replace the unselected tail.
+    if not nc_try_split_pinyin_input(m_composition_text, m_last_lookup_key,
+        remaining_pinyin, original_prefix_pinyin, effective_remaining_pinyin) then Exit;
     normalized_pinyin := normalize_pinyin_text(m_composition_text);
-    prefix_pinyin := normalized_pinyin;
-    normalized_remaining_pinyin := normalize_pinyin_text(remaining_pinyin);
+    prefix_pinyin := normalize_pinyin_text(original_prefix_pinyin);
+    normalized_remaining_pinyin := normalize_pinyin_text(effective_remaining_pinyin);
     full_input_code := m_composition_display_text;
     if full_input_code = '' then
     begin
         full_input_code := m_composition_text;
     end;
-    effective_remaining_input_code := remaining_input_code;
-    if effective_remaining_input_code = '' then
+    if is_shuangpin_input then
     begin
-        effective_remaining_input_code := remaining_pinyin;
-    end;
-    prefix_input_code := full_input_code;
-    if (effective_remaining_input_code <> '') and
-        (Length(effective_remaining_input_code) <= Length(prefix_input_code)) and
-        SameText(Copy(prefix_input_code,
-        Length(prefix_input_code) - Length(effective_remaining_input_code) + 1,
-        Length(effective_remaining_input_code)), effective_remaining_input_code) then
-    begin
-        prefix_input_code := Copy(prefix_input_code, 1,
-            Length(prefix_input_code) - Length(effective_remaining_input_code));
-    end;
-    if (normalized_remaining_pinyin <> '') and
-        (Length(normalized_remaining_pinyin) <= Length(prefix_pinyin)) then
-    begin
-        if Copy(prefix_pinyin, Length(prefix_pinyin) - Length(normalized_remaining_pinyin) + 1,
-            Length(normalized_remaining_pinyin)) = normalized_remaining_pinyin then
-        begin
-            prefix_pinyin := Copy(prefix_pinyin, 1,
-                Length(prefix_pinyin) - Length(normalized_remaining_pinyin));
-        end;
-    end;
-
-    if prefix_pinyin = '' then
-    begin
-        prefix_pinyin := normalized_pinyin;
-    end;
-    if prefix_input_code = '' then
-    begin
-        prefix_input_code := prefix_pinyin;
-    end;
+        effective_remaining_input_code := remaining_input_code;
+        if (effective_remaining_input_code = '') or
+            (Length(effective_remaining_input_code) >= Length(full_input_code)) or
+            (not SameText(Copy(full_input_code,
+            Length(full_input_code) - Length(effective_remaining_input_code) + 1,
+            MaxInt), effective_remaining_input_code)) then Exit;
+        prefix_input_code := Copy(full_input_code, 1,
+            Length(full_input_code) - Length(effective_remaining_input_code));
+    end
+    else if not nc_try_split_pinyin_input(full_input_code, m_last_lookup_key,
+        remaining_pinyin, prefix_input_code, effective_remaining_input_code) then Exit;
 
     effective_segment_path := Trim(segment_path);
     if (effective_segment_path = '') and (selected_text <> '') and (prefix_pinyin <> '') then
@@ -151885,12 +151875,12 @@ begin
         m_dictionary.resolve_literal_user_word_pinyin(prefix_pinyin,
             selected_text, canonical_prefix_pinyin);
     end;
-    push_confirmed_segment(selected_text, prefix_pinyin, prefix_input_code,
+    push_confirmed_segment(selected_text, original_prefix_pinyin, prefix_input_code,
         canonical_prefix_pinyin, explicit_choice, literal_choice,
         fuzzy_choice);
     m_confirmed_explicit_choice := m_confirmed_explicit_choice or explicit_choice;
 
-    m_composition_text := remaining_pinyin;
+    m_composition_text := effective_remaining_pinyin;
     m_composition_display_text := effective_remaining_input_code;
     m_pending_commit_text := '';
     m_pending_commit_remaining := '';
@@ -151907,6 +151897,7 @@ begin
     m_page_index := 0;
     build_candidates;
     apply_short_exact_pair_tail_handoff;
+    Result := True;
 end;
 
 procedure TncEngine.set_pending_commit(const text: string; const remaining_pinyin: string = '';
@@ -153540,6 +153531,8 @@ var
                     head_text, tail_pinyin);
                 apply_partial_commit(head_text, tail_pinyin, '', False,
                     get_shuangpin_remaining_input_code_for_partial(head_text));
+                // Do not fall through and commit the literal tail if the raw
+                // input-code boundary could not be validated.
                 Result := True;
             end;
         end;
@@ -154068,13 +154061,13 @@ begin
                     begin
                         remaining_pinyin := get_display_remaining_pinyin_for_partial(
                             candidate.text, candidate.comment);
-                        apply_partial_commit(candidate.text, remaining_pinyin,
+                        if apply_partial_commit(candidate.text, remaining_pinyin,
                             selected_segment_path, False,
                             get_shuangpin_remaining_input_code_for_partial(
                             candidate.text), False,
                             is_fuzzy_pinyin_active and
-                            (candidate.fuzzy_cost > 0));
-                        set_pending_commit(punct_text, remaining_pinyin, False);
+                            (candidate.fuzzy_cost > 0)) then
+                            set_pending_commit(punct_text, m_composition_text, False);
                     end
                     else
                     begin
@@ -186445,7 +186438,7 @@ begin
         for segment in m_confirmed_segments do
         begin
             fuzzy_commit_choice := fuzzy_commit_choice or segment.fuzzy_choice;
-            full_pinyin := full_pinyin + segment.pinyin;
+            full_pinyin := full_pinyin + normalize_pinyin_text(segment.pinyin);
             append_path_segment(segment.text);
         end;
     end;
@@ -186510,7 +186503,7 @@ begin
                 begin
                     if segment.fuzzy_choice then
                     begin
-                        m_dictionary.record_fuzzy_choice(segment.pinyin,
+                        m_dictionary.record_fuzzy_choice(normalize_pinyin_text(segment.pinyin),
                             segment.text);
                     end;
                 end;

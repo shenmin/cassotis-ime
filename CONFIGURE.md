@@ -36,11 +36,19 @@ Notes:
 | `input_mode` | Initial input mode | `0` = Chinese, `1` = English | `0` | `input_mode=0` | Any value other than `1` defaults to Chinese. Can be toggled at runtime with the Shift key. |
 | `pinyin_scheme` | Pinyin input scheme | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | Selects Full Pinyin or one of six Double Pinyin layouts. Unknown values fall back to Full Pinyin. |
 | `full_width_mode` | Full-width output | `true` / `false` | `false` | `full_width_mode=false` | When enabled, ASCII characters are mapped to full-width forms. Toggle at runtime with Shift+Space. |
-| `punctuation_full_width` | Chinese punctuation style | `true` / `false` | `true` | `punctuation_full_width=true` | When enabled, punctuation keys produce Chinese full-width symbols. Toggle at runtime with Ctrl+Period. |
+| `punctuation_full_width` | Chinese punctuation style | `true` / `false` | `true` | `punctuation_full_width=true` | Uses Chinese punctuation, except for the half-width symbols in `[punctuation]`. Toggle at runtime with Ctrl+Period. |
 | `decimal_period_after_digit` | Decimal point after consecutively typed digits | `true` / `false` | `true` | `decimal_period_after_digit=true` | In Chinese punctuation mode, pressing the period key immediately after typing a digit produces `.` rather than `。`. Existing or pasted text is not considered; moving the caret or pressing another key cancels the conversion. The checkbox is disabled in English punctuation mode without clearing the saved preference. |
 | `debug` | Debug mode | `0` / `1` | `0` | `debug=1` | Shows candidate scores and path info in the candidate window. |
 
 > **Note:** Candidate count, candidate appearance, and shortcuts can be changed in Settings. Shortcut values are stored in `[shortcuts]`.
+
+In Settings > General, edit **保持半角的符号** (symbols to keep in ASCII), or select **Markdown 预设** (Markdown preset) or **标准中文标点** (standard Chinese punctuation). The default preset keeps these symbols in ASCII while commas, periods, question marks, exclamation marks, parentheses and quotation marks retain their Chinese forms:
+
+```text
+-#*+_=`~[]<>|\@
+```
+
+The list is inactive and cannot be edited in English punctuation or full-width input mode, but its saved value is preserved. Candidate paging, completion and Pinyin separator shortcuts still take precedence during composition.
 
 Double Pinyin follows these rules:
 
@@ -48,6 +56,14 @@ Double Pinyin follows these rules:
 - Candidate lookup and user learning use decoded canonical Full Pinyin, so all Pinyin schemes share ranking and user data.
 - An apostrophe explicitly separates syllables. In Microsoft, Sogou, and Ziguang Double Pinyin, semicolon represents the `ing` final only as the second key of a pair; elsewhere it remains punctuation.
 - The status widget uses `拼`, `微`, `鹤`, `自`, `搜`, `紫`, and `加` for Full Pinyin, Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia respectively.
+
+---
+
+## `[punctuation]`
+
+| Key | Meaning | Allowed values | Default | Example | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `ascii_symbols` | Symbols to keep in ASCII | ASCII punctuation list; may be empty | Markdown preset | `ascii_symbols=-#*` | Applies only with Chinese punctuation and half-width input. Clear the list for standard Chinese punctuation, or remove individual symbols: removing `#` restores `＃`. Older configurations without this key also use the Markdown preset. |
 
 ---
 
@@ -128,6 +144,9 @@ full_width_mode=false
 punctuation_full_width=true
 decimal_period_after_digit=true
 debug=0
+
+[punctuation]
+ascii_symbols=-#*+_=`~[]<>|\@
 
 [pinyin]
 fuzzy_enabled=false

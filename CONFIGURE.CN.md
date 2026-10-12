@@ -36,11 +36,19 @@
 | `input_mode` | 初始输入模式 | `0`=中文, `1`=英文 | `0` | `input_mode=0` | 非 `1` 的值均回退为中文模式。运行时可按 Shift 键切换。 |
 | `pinyin_scheme` | 拼音输入方案 | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | 可选择全拼或六种双拼方案，无法识别的值回退为全拼。 |
 | `full_width_mode` | 全角输出模式 | `true` / `false` | `false` | `full_width_mode=false` | 开启后 ASCII 字符映射为全角形式。运行时可按 Shift+Space 切换。 |
-| `punctuation_full_width` | 中文标点风格 | `true` / `false` | `true` | `punctuation_full_width=true` | 开启后标点键输出中文全角符号。运行时可按 Ctrl+句号 切换。 |
+| `punctuation_full_width` | 中文标点风格 | `true` / `false` | `true` | `punctuation_full_width=true` | 开启后标点键按中文习惯输出，半角例外见 `[punctuation]` 段。运行时可按 Ctrl+句号 切换。 |
 | `decimal_period_after_digit` | 连续输入数字后使用小数点 | `true` / `false` | `true` | `decimal_period_after_digit=true` | 中文标点模式下，连续键入数字后紧接着按句号键，输出 `.` 而不是 `。`；不根据光标前已有或粘贴的文本判断，移动光标或输入其他按键后不再转换。设置中选为英文标点时，此选项不可操作，但保留勾选状态。 |
 | `debug` | 调试模式 | `0` / `1` | `0` | `debug=1` | 开启后候选窗显示得分与分词路径信息。 |
 
 > **说明：** 候选数量、候选外观和快捷键均可通过设置界面修改；快捷键统一保存在 `[shortcuts]` 段。
+
+“设置 > 常规 > 保持半角的符号”可直接编辑例外列表，也可选择“Markdown 预设”或“标准中文标点”。默认预设保留以下符号的 ASCII 写法，逗号、句号、问号、感叹号、圆括号及引号仍按中文习惯输入：
+
+```text
+-#*+_=`~[]<>|\@
+```
+
+切换到英文标点或全角输入时，该列表暂不生效且不能编辑，但已保存的内容不会丢失。候选窗口中的翻页、补全和拼音分隔按键仍按原有快捷键规则处理。
 
 双拼输入遵循以下规则：
 
@@ -48,6 +56,14 @@
 - 候选查询和用户学习统一使用解码后的标准全拼，因此所有拼音方案共享候选排序和用户数据。
 - 单引号可显式分隔音节。微软、搜狗和紫光双拼中的分号仅在作为双拼码第二键时表示 `ing`，其他位置仍作为标点。
 - 状态浮窗以 `拼`、`微`、`鹤`、`自`、`搜`、`紫`、`加` 分别表示全拼、微软、小鹤、自然码、搜狗、紫光和拼音加加。
+
+---
+
+## `[punctuation]` 段
+
+| 键 | 含义 | 可取值 | 默认值 | 示例 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `ascii_symbols` | 中文标点中保持半角的符号 | ASCII 标点列表，可留空 | Markdown 预设 | `ascii_symbols=-#*` | 仅在中文标点、半角输入时生效。清空恢复标准中文标点；移除某个符号即可恢复它的中文映射，例如移除 `#` 后输出 `＃`。缺少此键的旧配置也使用 Markdown 预设。 |
 
 ---
 
@@ -128,6 +144,9 @@ full_width_mode=false
 punctuation_full_width=true
 decimal_period_after_digit=true
 debug=0
+
+[punctuation]
+ascii_symbols=-#*+_=`~[]<>|\@
 
 [pinyin]
 fuzzy_enabled=false

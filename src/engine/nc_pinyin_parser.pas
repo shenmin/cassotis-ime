@@ -28,6 +28,10 @@ function nc_is_canonical_pinyin_syllable(const value: string): Boolean;
 function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
     const remainder: string; const units: Integer): Boolean;
 function nc_normalize_umlaut_spelling(const value: string): string;
+{ Split the original keys, not a corrected lookup key. Only a literal suffix
+  or one verified adjacent transposition may supply the consumption boundary. }
+function nc_try_split_pinyin_input(const input_text, lookup_key,
+    remaining_pinyin: string; out consumed_input, remaining_input: string): Boolean;
 procedure nc_merge_abbreviated_retroflex_initials(var syllables: TncPinyinParseResult);
 
 implementation
@@ -590,6 +594,59 @@ begin
             Exit;
         end;
     end;
+end;
+
+function nc_try_split_pinyin_input(const input_text, lookup_key,
+    remaining_pinyin: string; out consumed_input, remaining_input: string): Boolean;
+var
+    input_key, tail_key, corrected_key, swapped_key: string;
+    idx, consumed_letters, boundary: Integer;
+    ch: Char;
+
+    function compact_key(const value: string): string;
+    begin
+        Result := LowerCase(nc_normalize_umlaut_spelling(value)).Replace('''', '');
+    end;
+begin
+    Result := False;
+    consumed_input := '';
+    remaining_input := '';
+    input_key := compact_key(input_text);
+    tail_key := compact_key(remaining_pinyin);
+    if (tail_key = '') or (Length(tail_key) >= Length(input_key)) then Exit;
+    for ch in input_key do
+        if not CharInSet(ch, ['a'..'z']) then Exit;
+
+    consumed_letters := Length(input_key) - Length(tail_key);
+    if Copy(input_key, consumed_letters + 1, MaxInt) <> tail_key then
+    begin
+        corrected_key := compact_key(lookup_key);
+        if (Length(corrected_key) <> Length(input_key)) or
+            (Copy(corrected_key, consumed_letters + 1, MaxInt) <> tail_key) then Exit;
+        idx := 1;
+        while (idx <= Length(input_key)) and
+            (input_key[idx] = corrected_key[idx]) do Inc(idx);
+        if idx >= Length(input_key) then Exit;
+        swapped_key := input_key;
+        swapped_key[idx] := input_key[idx + 1];
+        swapped_key[idx + 1] := input_key[idx];
+        if swapped_key <> corrected_key then Exit;
+    end;
+
+    boundary := 1;
+    while (boundary <= Length(input_text)) and (consumed_letters > 0) do
+    begin
+        if input_text[boundary] <> '''' then Dec(consumed_letters);
+        Inc(boundary);
+    end;
+    // A separator immediately after the chosen prefix belongs to that prefix;
+    // keeping it there also makes Backspace restore the exact original input.
+    while (boundary <= Length(input_text)) and (input_text[boundary] = '''') do
+        Inc(boundary);
+    if boundary > Length(input_text) then Exit;
+    consumed_input := Copy(input_text, 1, boundary - 1);
+    remaining_input := Copy(input_text, boundary, MaxInt);
+    Result := True;
 end;
 
 initialization
