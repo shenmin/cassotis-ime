@@ -56,6 +56,8 @@ type
         m_candidate_selection_generation: UInt64;
         m_quick_input_active: Boolean;
         m_candidate_selection_keys: string;
+        m_raw_input_candidate: string;
+        m_raw_input_selected: Boolean;
         m_selection_window: HWND;
         m_selection_epoch: UInt64;
         m_click: TncCandidateClick;
@@ -97,6 +99,8 @@ type
         property candidate_selection_generation: UInt64 read m_candidate_selection_generation;
         property quick_input_active: Boolean read m_quick_input_active;
         property candidate_selection_keys: string read m_candidate_selection_keys;
+        property raw_input_candidate: string read m_raw_input_candidate;
+        property raw_input_selected: Boolean read m_raw_input_selected;
         procedure store_candidates(const candidates: TncCandidateList; const page_index: Integer;
             const page_count: Integer; const selected_index: Integer;
             const preedit_text: string;
@@ -874,22 +878,37 @@ end;
 function TncHostSession.prepare_candidate_selection(const page_index,
     candidate_index: Integer; const generation: UInt64): Boolean;
 var row: Integer; expected, current: TncCandidateList;
+    visible_page, raw_choice: Boolean;
 begin
     Result := False;
     if (generation <> m_candidate_selection_generation) or m_release_requested then Exit;
     expected := nil;
-    if page_index = m_page_index then expected := m_candidates
+    visible_page := page_index = m_page_index;
+    if visible_page then expected := m_candidates
     else
         for row := 0 to High(m_candidate_pages) do
             if m_candidate_pages[row].page_index = page_index then
+            begin
+                visible_page := True;
                 expected := m_candidate_pages[row].candidates;
-    if (candidate_index < 0) or (candidate_index >= Length(expected)) then Exit;
+            end;
+    if not visible_page then Exit;
+    raw_choice := (candidate_index = -1) and (page_index = 0) and
+        (m_raw_input_candidate <> '') and
+        (m_raw_input_candidate = m_engine.raw_input_candidate);
+    if not raw_choice and
+        ((candidate_index < 0) or (candidate_index >= Length(expected))) then Exit;
     current := m_engine.get_candidate_page_snapshot(page_index);
     if not candidates_equal(expected, current) then Exit;
-    if not m_engine.activate_candidate_page(page_index, candidate_index) then Exit;
+    if raw_choice then
+    begin
+        if not m_engine.activate_raw_input_candidate then Exit;
+    end
+    else if not m_engine.activate_candidate_page(page_index, candidate_index) then Exit;
     m_candidates := Copy(current);
     m_page_index := page_index;
-    m_selected_index := candidate_index;
+    m_selected_index := m_engine.get_selected_index;
+    m_raw_input_selected := m_engine.raw_input_selected;
     m_candidate_dirty := True;
     Inc(m_candidate_generation);
     Inc(m_candidate_selection_generation);
@@ -1025,6 +1044,8 @@ begin
         (m_preedit_text <> preedit_text) or
         (m_quick_input_active <> m_engine.quick_input_active) or
         (m_candidate_selection_keys <> m_engine.candidate_selection_keys) or
+        (m_raw_input_candidate <> m_engine.raw_input_candidate) or
+        (m_raw_input_selected <> m_engine.raw_input_selected) or
         (not candidates_equal(m_candidates, candidates));
     changed := selection_changed or
         not one_key_completions_equal(m_one_key_completion, one_key_completion);
@@ -1037,6 +1058,8 @@ begin
     m_preedit_text := preedit_text;
     m_quick_input_active := m_engine.quick_input_active;
     m_candidate_selection_keys := m_engine.candidate_selection_keys;
+    m_raw_input_candidate := m_engine.raw_input_candidate;
+    m_raw_input_selected := m_engine.raw_input_selected;
     refresh_candidate_pages(input_changed);
     // Expanding at the first row does not change the page or selected item.
     selection_changed := selection_changed or
@@ -1072,6 +1095,8 @@ begin
     m_preedit_text := '';
     m_quick_input_active := False;
     m_candidate_selection_keys := '123456789';
+    m_raw_input_candidate := '';
+    m_raw_input_selected := False;
     Inc(m_candidate_generation);
     Inc(m_candidate_selection_generation);
     m_candidate_dirty := True;
@@ -1119,6 +1144,7 @@ end;
 function TncHostSession.has_candidates: Boolean;
 begin
     Result := (Length(m_candidates) > 0) or
+        (m_raw_input_candidate <> '') or
         (m_one_key_completion.text <> '');
 end;
 
@@ -1147,7 +1173,7 @@ begin
             m_engine.config.one_key_completion_key,
             m_engine.config.debug_mode, m_engine.config.pinyin_input_scheme,
             m_candidate_pages, m_candidate_selection_generation, m_quick_input_active,
-            m_candidate_selection_keys);
+            m_candidate_selection_keys, m_raw_input_candidate, m_raw_input_selected);
         m_last_candidate_debug_mode := m_engine.config.debug_mode;
     end;
     if candidate_generation = m_candidate_generation then
@@ -1199,7 +1225,7 @@ begin
             m_engine.config.one_key_completion_key,
             m_engine.config.debug_mode, m_engine.config.pinyin_input_scheme,
             m_candidate_pages, m_candidate_selection_generation, m_quick_input_active,
-            m_candidate_selection_keys);
+            m_candidate_selection_keys, m_raw_input_candidate, m_raw_input_selected);
         m_last_candidate_debug_mode := m_engine.config.debug_mode;
     end;
 
@@ -2925,7 +2951,8 @@ begin
             end;
 
             if (Length(candidates) = 0) and
-                (one_key_completion.text = '') then
+                (one_key_completion.text = '') and
+                (session.engine.raw_input_candidate = '') then
             begin
                 session.clear_candidates;
                 should_hide_candidates := True;
@@ -2997,7 +3024,8 @@ begin
             end;
 
             if (Length(candidates) = 0) and
-                (one_key_completion.text = '') then
+                (one_key_completion.text = '') and
+                (session.engine.raw_input_candidate = '') then
             begin
                 session.clear_candidates;
                 should_hide_candidates := True;

@@ -900,6 +900,7 @@ begin
     Result.punctuation_full_width := True;
     Result.decimal_period_after_digit := True;
     Result.punctuation_ascii_symbols := c_markdown_punctuation_ascii_symbols;
+    Result.auto_english := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1133,6 +1134,7 @@ begin
         Result.punctuation_ascii_symbols := nc_normalize_punctuation_ascii_symbols(
             safe_ini_read_string(ini, 'punctuation', 'ascii_symbols',
                 c_markdown_punctuation_ascii_symbols));
+        Result.auto_english := safe_ini_read_bool(ini, 'input', 'auto_english', True);
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
         Result.candidate_font_name := Trim(safe_ini_read_string(ini, 'appearance', 'candidate_font_name',
@@ -1331,6 +1333,7 @@ begin
         // Old TSF modules rewrite [engine] when saving mode changes.
         ini.WriteString('punctuation', 'ascii_symbols',
             nc_normalize_punctuation_ascii_symbols(config.punctuation_ascii_symbols));
+        ini.WriteBool('input', 'auto_english', config.auto_english);
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         candidate_font_name := Trim(config.candidate_font_name);
         if candidate_font_name = '' then

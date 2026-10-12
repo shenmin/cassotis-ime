@@ -219,6 +219,7 @@ type
         punctuation_full_width: Boolean;
         decimal_period_after_digit: Boolean;
         punctuation_ascii_symbols: string;
+        auto_english: Boolean;
         enable_segment_candidates: Boolean;
         segment_head_only_multi_syllable: Boolean;
         candidate_font_name: string;

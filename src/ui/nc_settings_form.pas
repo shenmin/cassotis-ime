@@ -178,6 +178,7 @@ type
         m_btn_punctuation_markdown: TncModernButton;
         m_btn_punctuation_standard: TncModernButton;
         m_chk_full_width_mode: TncModernCheckBox;
+        m_chk_auto_english: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
         m_track_status_widget_transparency: TTrackBar;
         m_label_status_widget_transparency: TLabel;
@@ -393,6 +394,7 @@ resourcestring
     SButtonPunctuationMarkdown = 'Markdown 预设';
     SButtonPunctuationStandard = '标准中文标点';
     SCheckFullWidthMode = '使用全角输入';
+    SCheckAutoEnglish = '识别英文单词，空格直接上屏';
     SCheckShowStatusWidget = '显示状态浮窗';
     SLabelStatusWidgetTransparency = '浮窗透明度';
     SLabelCandidateFont = '候选字体';
@@ -1397,6 +1399,7 @@ begin
     Result.punctuation_full_width := True;
     Result.decimal_period_after_digit := True;
     Result.punctuation_ascii_symbols := c_markdown_punctuation_ascii_symbols;
+    Result.auto_english := True;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1759,6 +1762,7 @@ begin
     end;
     m_scaled_dpi := dpi;
     update_check_box_metrics(m_chk_full_width_mode);
+    update_check_box_metrics(m_chk_auto_english);
     update_check_box_metrics(m_chk_decimal_period_after_digit);
     update_check_box_metrics(m_chk_fuzzy_pinyin_enabled);
     for fuzzy_rule := Low(TncFuzzyPinyinRule) to
@@ -1964,7 +1968,7 @@ var
     defaults_group: TPanel;
 begin
     section_top := scale_ui(18);
-    defaults_group := create_section_group(Self, m_scroll_general, SGroupDefaultBehavior, section_top, 270);
+    defaults_group := create_section_group(Self, m_scroll_general, SGroupDefaultBehavior, section_top, 308);
 
     top := scale_ui(c_section_inner_top);
     create_label(Self, defaults_group, SLabelInputMode, top);
@@ -2046,6 +2050,12 @@ begin
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
     m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
+    m_chk_full_width_mode.Name := 'FullWidthMode';
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    m_chk_auto_english := create_check_box(Self, defaults_group, top, SCheckAutoEnglish, mark_dirty);
+    m_chk_auto_english.Name := 'AutoEnglish';
+    m_chk_auto_english.Hint := '全拼、半角输入时生效；中文候选的数字编号保持不变。';
+    m_chk_auto_english.ShowHint := True;
 end;
 
 procedure TncSettingsForm.add_fuzzy_pinyin_controls;
@@ -3012,6 +3022,7 @@ begin
         m_chk_decimal_period_after_digit.Checked := default_engine_config.decimal_period_after_digit;
         m_edit_punctuation_ascii_symbols.Text := default_engine_config.punctuation_ascii_symbols;
         m_chk_full_width_mode.Checked := default_engine_config.full_width_mode;
+        m_chk_auto_english.Checked := default_engine_config.auto_english;
     end
     else if m_page_control.ActivePage = m_tab_appearance then
     begin
@@ -3607,6 +3618,8 @@ begin
         m_chk_decimal_period_after_digit.Checked := m_engine_config.decimal_period_after_digit;
     if m_edit_punctuation_ascii_symbols <> nil then
         m_edit_punctuation_ascii_symbols.Text := m_engine_config.punctuation_ascii_symbols;
+    if m_chk_auto_english <> nil then
+        m_chk_auto_english.Checked := m_engine_config.auto_english;
     if m_chk_show_status_widget <> nil then
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
@@ -3782,6 +3795,7 @@ begin
     end;
 
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
+    next_config.auto_english := m_chk_auto_english.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.decimal_period_after_digit := m_chk_decimal_period_after_digit.Checked;
     next_config.punctuation_ascii_symbols := nc_normalize_punctuation_ascii_symbols(

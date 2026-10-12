@@ -12,6 +12,7 @@ uses
     Winapi.Windows,
     nc_types,
     nc_quick_input,
+    nc_english_input,
     nc_candidate_presentation,
     nc_prefix_completion_policy,
     nc_fixed_top_policy,
@@ -873,6 +874,8 @@ type
         m_double_quote_open: Boolean;
         m_page_index: Integer;
         m_selected_index: Integer;
+        m_raw_input_candidate: string;
+        m_raw_input_selected: Boolean;
         m_confirmed_text: string;
         m_confirmed_explicit_choice: Boolean;
         m_recent_partial_prefix_text: string;
@@ -881,6 +884,7 @@ type
         m_last_committed_text: string;
         m_last_committed_pinyin: string;
         m_confirmed_segments: TList<TncConfirmedSegment>;
+        procedure refresh_raw_input_candidate;
         function is_alpha_key(const key_code: Word; const key_state: TncKeyState; out normalized_char: Char;
             out display_char: Char): Boolean;
         function get_candidate_limit: Integer;
@@ -1281,6 +1285,9 @@ type
         function get_page_index: Integer;
         function get_page_count: Integer;
         function get_selected_index: Integer;
+        property raw_input_candidate: string read m_raw_input_candidate;
+        property raw_input_selected: Boolean read m_raw_input_selected;
+        function activate_raw_input_candidate: Boolean;
         function next_page: Boolean;
         function prev_page: Boolean;
         function get_composition_text: string;
@@ -4478,6 +4485,8 @@ end;
 
 procedure TncEngine.reset(const preserve_document_context: Boolean);
 begin
+    m_raw_input_candidate := '';
+    m_raw_input_selected := False;
     m_quick_input.clear;
     clear_one_key_completion;
     clear_one_key_completion_feedback_target;
@@ -5154,6 +5163,10 @@ begin
             normalize_page_and_selection;
         end;
     end;
+    if (previous_config.auto_english <> m_config.auto_english) or
+        (previous_config.full_width_mode <> m_config.full_width_mode) or
+        (previous_config.input_mode <> m_config.input_mode) then
+        refresh_raw_input_candidate;
 end;
 
 procedure TncEngine.set_dictionary_provider(const dictionary: TncDictionaryProvider);
@@ -8657,6 +8670,38 @@ begin
         m_long_visible_candidate_pool_source_indices_cache[idx] := idx;
 end;
 
+procedure TncEngine.refresh_raw_input_candidate;
+var raw: string; candidate: TncCandidate; words: TncCandidateList;
+begin
+    m_raw_input_candidate := '';
+    m_raw_input_selected := False;
+    if (not m_config.auto_english) or (m_config.input_mode <> im_chinese) or
+        m_config.full_width_mode or is_shuangpin_input or
+        (m_quick_input.kind <> qik_none) then Exit;
+    raw := get_composition_text;
+    if not nc_is_english_word(raw) then Exit;
+    // Mixed words are finalized by visible-page assembly after this method.
+    if (m_dictionary <> nil) and
+        m_dictionary.lookup_mixed_abbreviation_words(LowerCase(raw), words) then Exit;
+    // A real user/exact or mixed-abbreviation word takes precedence over the
+    // English recognizer. Prefix-only Chinese candidates remain selectable.
+    for candidate in m_candidates do
+        if (candidate.comment = '') and
+            ((candidate.source = cs_user) or candidate.has_dict_weight) then Exit;
+    m_raw_input_candidate := raw;
+    m_raw_input_selected := m_page_index = 0;
+end;
+
+function TncEngine.activate_raw_input_candidate: Boolean;
+begin
+    Result := m_raw_input_candidate <> '';
+    if not Result then Exit;
+    m_page_index := 0;
+    m_selected_index := 0;
+    m_raw_input_selected := True;
+    m_candidate_navigation_started := True;
+end;
+
 procedure TncEngine.build_candidates;
 const
     c_completion_emergency_skip_ms = 250;
@@ -8665,6 +8710,8 @@ const
 var
     build_started_at: UInt64;
 begin
+    m_raw_input_candidate := '';
+    m_raw_input_selected := False;
     if build_quick_input_candidates then Exit;
     build_started_at := GetTickCount64;
     // A fresh page may promote a different reading; let Tab follow it again.
@@ -8684,6 +8731,7 @@ begin
     if m_composition_decoded_as_whole then
         clear_keystroke_decode_state;
     build_candidates_core;
+    refresh_raw_input_candidate;
 
     // Once a decimal stops being a quick command, pinyin lookup may have no
     // result. Keep the original input selectable without learning it as a word.
@@ -154038,6 +154086,12 @@ begin
                 commit_text := punct_text;
                 if m_composition_text <> '' then
                 begin
+                    if m_raw_input_selected then
+                    begin
+                        set_pending_commit(get_raw_composition_commit_text + punct_text,
+                            '', False, '', False, '', False, False, '', True);
+                        Exit(True);
+                    end;
                     get_selected_candidate(candidate, m_quick_input.kind <> qik_none);
                     if candidate.source = cs_quick_input then
                     begin
@@ -154174,6 +154228,12 @@ begin
             begin
                 if m_composition_text <> '' then
                 begin
+                    if m_raw_input_selected then
+                    begin
+                        set_pending_commit(get_raw_composition_commit_text,
+                            '', False, '', False, '', False, False, '', True);
+                        Exit(True);
+                    end;
                     if get_selected_candidate(candidate, True) then
                     begin
                         // Space confirms the selected candidate with the same
@@ -154244,6 +154304,13 @@ begin
                     end;
 
                     normalize_page_and_selection;
+                    if (m_page_index = 0) and (m_selected_index = 0) and
+                        (m_raw_input_candidate <> '') then
+                    begin
+                        m_raw_input_selected := True;
+                        m_candidate_navigation_started := True;
+                        Exit(True);
+                    end;
                     if m_selected_index > 0 then
                     begin
                         m_candidate_navigation_started := True;
@@ -154287,6 +154354,15 @@ begin
                     normalize_page_and_selection;
                     index := get_current_page_candidate_count(page_size);
 
+                    if m_raw_input_selected then
+                    begin
+                        if index = 0 then Exit(True);
+                        m_raw_input_selected := False;
+                        m_selected_index := 0;
+                        m_candidate_navigation_started := True;
+                        Exit(True);
+                    end;
+
                     if (index > 0) and (m_selected_index < index - 1) then
                     begin
                         m_candidate_navigation_started := True;
@@ -154312,6 +154388,7 @@ begin
                         (index < get_current_page_candidate_count(page_size)) then
                     begin
                         m_selected_index := index;
+                        m_raw_input_selected := False;
                         if get_selected_candidate(candidate, True) then
                         begin
                             Result := apply_candidate_selection(candidate, index,
@@ -185191,6 +185268,7 @@ begin
         cache_visible_candidate_page(page, sources, page_size);
     end;
     m_selected_index := selected_index;
+    m_raw_input_selected := False;
     m_candidate_navigation_started := True;
     Result := True;
 end;
@@ -185249,6 +185327,7 @@ begin
         long_visible_candidate_pool_cache_is_current(get_candidate_page_size));
     m_candidate_navigation_started := True;
     m_page_index := target_page;
+    m_raw_input_selected := False;
     if preserve_selection then
         normalize_page_and_selection
     else
@@ -185310,6 +185389,9 @@ begin
         Result := '';
         Exit;
     end;
+
+    if m_raw_input_selected then
+        Exit(m_confirmed_text + get_raw_composition_commit_text);
 
     display_text := '';
     if m_composition_text <> '' then

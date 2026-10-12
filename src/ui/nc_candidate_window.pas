@@ -157,7 +157,8 @@ type
             const pinyin_scheme: TncPinyinInputScheme = pis_full_pinyin;
             const pages: TncCandidatePages = nil; const generation: UInt64 = 0;
             const quick_input_active: Boolean = False;
-            const selection_keys: string = '123456789');
+            const selection_keys: string = '123456789';
+            const raw_input_text: string = ''; const raw_input_selected: Boolean = False);
         function candidate_selection_label(const candidate_index: Integer): string;
         procedure show_at(const x: Integer; const y: Integer;
             const prefer_above: Boolean = False; const clearance: Integer = 0);
@@ -2026,7 +2027,8 @@ procedure TncCandidateWindow.update_candidates(const candidates: TncCandidateLis
     const debug_mode: Boolean;
     const pinyin_scheme: TncPinyinInputScheme;
     const pages: TncCandidatePages; const generation: UInt64;
-    const quick_input_active: Boolean; const selection_keys: string);
+    const quick_input_active: Boolean; const selection_keys: string;
+    const raw_input_text: string; const raw_input_selected: Boolean);
 const
     c_show_page_label = False;
 var
@@ -2034,6 +2036,7 @@ var
     count: Integer;
     row, slot, offset, active_slot: Integer;
     displayed: TncCandidateList;
+    show_raw: Boolean;
 begin
     m_generation := generation;
     m_candidate_selection_keys := selection_keys;
@@ -2058,12 +2061,27 @@ begin
             count := 0;
             for row := 0 to m_row_count - 1 do Inc(count, Length(pages[row].candidates));
         end;
+        show_raw := raw_input_text <> '';
+        if Length(pages) > 0 then show_raw := show_raw and (pages[0].page_index = 0)
+        else show_raw := show_raw and (page_index = 0);
+        if show_raw then Inc(count);
         SetLength(displayed, count);
         SetLength(m_candidate_rows, count);
         SetLength(m_candidate_pages, count);
         SetLength(m_candidate_slots, count);
         m_selected_index := -1;
         offset := 0;
+        if show_raw then
+        begin
+            displayed[0] := Default(TncCandidate);
+            displayed[0].text := raw_input_text;
+            displayed[0].source := cs_rule;
+            m_candidate_rows[0] := 0;
+            m_candidate_pages[0] := 0;
+            m_candidate_slots[0] := -1;
+            if raw_input_selected then m_selected_index := 0;
+            Inc(offset);
+        end;
         active_slot := Max(0, selected_index);
         for row := 0 to m_row_count - 1 do
         begin
@@ -2075,7 +2093,8 @@ begin
                     m_candidate_rows[offset] := row;
                     m_candidate_pages[offset] := pages[row].page_index;
                     m_candidate_slots[offset] := slot;
-                    if (pages[row].page_index = page_index) and
+                    if not (show_raw and raw_input_selected) and
+                        (pages[row].page_index = page_index) and
                         (slot = Min(active_slot, High(pages[row].candidates))) then
                         m_selected_index := offset;
                     Inc(offset);
@@ -2084,11 +2103,13 @@ begin
             else
                 for slot := 0 to High(candidates) do
                 begin
-                    displayed[slot] := candidates[slot];
-                    m_candidate_rows[slot] := 0;
-                    m_candidate_pages[slot] := page_index;
-                    m_candidate_slots[slot] := slot;
-                    if slot = Min(active_slot, High(candidates)) then m_selected_index := slot;
+                    displayed[offset] := candidates[slot];
+                    m_candidate_rows[offset] := 0;
+                    m_candidate_pages[offset] := page_index;
+                    m_candidate_slots[offset] := slot;
+                    if not (show_raw and raw_input_selected) and
+                        (slot = Min(active_slot, High(candidates))) then m_selected_index := offset;
+                    Inc(offset);
                 end;
         end;
         if (m_selected_index < 0) and (count > 0) then
@@ -2148,7 +2169,8 @@ begin
     end;
     m_page_label.Visible := False;
 
-    m_preedit_spans := m_preedit_diagnostics.check(preedit_text, pinyin_scheme, quick_input_active);
+    m_preedit_spans := m_preedit_diagnostics.check(preedit_text, pinyin_scheme,
+        quick_input_active or (raw_input_text <> ''));
     if preedit_text <> '' then
     begin
         m_preedit_label.Caption := preedit_text;

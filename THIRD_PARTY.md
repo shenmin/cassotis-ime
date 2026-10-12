@@ -71,11 +71,27 @@ This file lists third-party software/data used by Cassotis IME and the related l
   build tools (Visual Studio 2022), which are likewise not bundled and are
   licensed separately by Microsoft.
 
+## 6) 12Dicts English Word List
+
+- Component: a filtered subset of Alan Beale's 12Dicts `2of12full.txt`,
+  packaged by Kevin Atkinson; public-domain word-list data.
+- Used for: conservative English-word recognition, without network access
+  or neural inference.
+- Source: https://github.com/en-wl/wordlist/tree/b22230cc5250887737fdefe9ca4c9d9d01230eaa/alt12dicts
+- The source README states that all files in that directory are in the
+  public domain. The generated `src/engine/nc_english_words.inc` retains the
+  source URL and SHA-256. Only lowercase ASCII words supported by at least
+  eight dictionaries are included, plus a small project-maintained list of
+  computing terms. Compact letter-pair and letter-triple tables derived from
+  these spellings also support conservative recognition of unlisted names;
+  each sequence must occur in at least two different words.
+
 ## GPL-3.0 Notice
 
 This project is licensed under GPL-3.0. The redistributed third-party items listed above are generally GPL-compatible:
 - SQLite (public domain)
 - Unicode data used under Unicode terms with required notices
 - ONNX Runtime (MIT)
+- 12Dicts English word-list data (public domain)
 
 This file is engineering documentation and not legal advice.
