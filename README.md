@@ -31,6 +31,7 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 - **One-key completion**, original to Cassotis. Exactly one trusted continuation is shown and accepted with the configured key. Exact completions from the user and base dictionaries and offline-vetted strong-transition completions appear at once; the language model then reranks them in the background, using the text before the cursor when there is any. In a long sentence it finishes the current word or continues with the next phrase, and shows nothing when its confidence is insufficient.
 - **Long sentences.** Lexicon-constrained path search builds complete candidates (for example `womenjintian` → `我们今天`) while keeping prefix candidates for partial commitment. The language model chooses among the complete candidates and then corrects small homophone errors in the chosen sentence against the typed Pinyin and the text before the input.
 - **Short words.** The language model resolves competing exact candidates, using the text already committed before the cursor when there is any.
+- **Short phrases.** An input of three to five syllables that the dictionary does not contain (for example `jiuguize` → `旧规则`) gets whole phrases put together from dictionary words. The language model picks one, using the text before the cursor when there is any, and corrects its homophones against the typed Pinyin; when the choice is close, up to two more whole phrases follow the first.
 - **Pinyin schemes.** Full Pinyin and six selectable Double Pinyin schemes (Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia) share the same candidate ranking and user-learning data. Fuzzy Pinyin is configurable for common initial and final pairs, and initial-letter abbreviations are supported (for example `jt` → `今天`).
 - **Dictionaries.** Separate simplified and traditional base databases and a user database.
 - **Quick input.** Use `ufh` for symbols, `uxh` for numbered markers, `usx` for mathematical symbols, and `urq` for the current date. `i123.45` or `v123.45` offers Chinese numbers and uppercase currency amounts; digits keep entering the number, so select with the displayed `a/b/c/d` keys, arrow keys and Space, or the mouse. Double Pinyin requires Shift+U/I/V to enter these modes. See the [quick-input guide (Chinese)](QUICK_INPUT.md).
@@ -42,6 +43,13 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
   <br>
   <em>Three-row candidate view, with selection numbers on the active row.</em>
 </p>
+
+## Download and Install
+- **Download.** Get `cassotis_ime_setup_<version>.exe` from the [Releases](https://github.com/shenmin/cassotis-ime/releases) page. The installer is about 290 MB and includes the simplified and traditional base dictionaries and the language model.
+- **Requirements.** 64-bit Windows 10 or Windows 11; installing needs administrator rights. No network and no GPU are needed.
+- **Install.** Run the installer, then switch to "Cassotis 言泉拼音输入法" in the system's input method list (`Win + Space`).
+- **Upgrade.** Run the new installer over the installed version; there is no need to uninstall first, and Windows is never asked to restart. Applications that still have the previous text service loaded are listed: exit them first, or continue and restart them later. When necessary the installer restarts Windows Explorer, and the taskbar disappears for a moment. The user dictionary and the settings stay in `%LOCALAPPDATA%\CassotisIme`; an upgrade replaces only the base dictionaries.
+- **Uninstall.** Use Apps in Windows Settings. The uninstaller asks whether to remove the settings, dictionaries, user dictionary and logs under `%LOCALAPPDATA%\CassotisIme`; by default they are kept.
 
 ## Architecture
 - `src/tsf`: TSF COM in-proc server (text service integration).
@@ -110,13 +118,14 @@ v2.0.0 clears that stack away and rebuilds ranking around a single model, so tha
 - **Less than half the model memory.** Loading the models took about 447 MiB of host-process memory in v1.31.0 and takes about 183 MiB now.
 - **One place to improve.** A better language model now improves every input path at once, and the four policies are refit from engine traces.
 
-The cost is latency. Every decision now passes through one larger model, which is kept to one thread per processor core, so the mean and P95 latencies in the benchmark tables below are higher than in v1.31.0 (long sentences 74 ms on average against 61 ms; one-key completion settles within 21 ms at P95 against 12 ms), while accuracy is higher in all four benchmarks. These are times for decoding a whole query at once; in everyday typing each keystroke is still answered within a few tens of milliseconds, and the difference is not noticeable.
+The cost is latency. Every decision now passes through one larger model, which is kept to one thread per processor core, so the mean and P95 latencies in the benchmark tables below are higher than in v1.31.0 (long sentences 75 ms on average against 61 ms; one-key completion settles within 20 ms at P95 against 12 ms), while accuracy is higher in all four benchmarks. These are times for decoding a whole query at once; in everyday typing each keystroke is still answered within a few tens of milliseconds, and the difference is not noticeable. Phrases outside the dictionary pay the same price: the keystroke that completes the last syllable runs the model at least twice more, about 20 ms on average (32 to 39 ms at P95), where the dictionary alone took 2 to 4 ms.
 
 v2.0.0 also fixes the missing candidate window in File Explorer's address bar, hardens desktop recovery when an upgrade has to restart Windows Explorer, and changes the installer: an upgrade never asks to restart Windows, and uninstalling no longer closes running applications (files still in use are removed at the next restart).
 
 ### How candidates are ranked
 - **Long sentences.** Lexicon-constrained search builds complete candidates; two rankers decide which paths survive pruning and a third orders the pool of complete candidates. The language model scores the leading candidates and the long-sentence policy picks the first and the second. For full-Pinyin input in the simplified variant, the model then rewrites the chosen sentence against the typed syllables and up to 48 characters before the input, which repairs small homophone errors; user words and exact full-query dictionary matches are left alone.
 - **Short words.** Exact candidates keep their dictionary order unless the language model's scores, with the text before the cursor when there is any, give the short-word policy a clear reason to change it. Where nothing but the dictionary decides, a table precomputed for the dictionary sets the order.
+- **Phrases outside the dictionary.** For an input of three to five syllables that is neither a dictionary entry nor a user word, the dictionary supplies whole-phrase drafts for every way of cutting the input. The language model scores each by how well it stands as a clause of its own, with the text before the cursor when there is any, and picks one; it then corrects the chosen draft against the typed syllables. Where the two steps disagree, the more confident one decides. This also runs for Double Pinyin; with fuzzy Pinyin enabled, a separator `'` in the input, or the traditional dictionary it does not, and the candidates stay as they were. The fixed rules of v1.x that joined a head character such as 我, 你, 就, 不 or 很 to a word are gone. A phrase the user picks from behind the first one is kept as a user word.
 - **One-key completion.** Dictionary and strong-transition completions are shown at once. The language model reranks a wider set of dictionary words in the background and replaces the shown completion only when the gain is clear; a completion the user has rejected does not come back this way.
 - **Tab continuation in long sentences.** The language model proposes the next characters and scores the ways to finish the current word or continue with the next phrase; the Tab policy picks one or shows nothing.
 
@@ -269,6 +278,7 @@ Important options include:
 - Pinyin scheme (Full Pinyin / Microsoft Double Pinyin / Xiaohe Double Pinyin / Ziranma Double Pinyin / Sogou Double Pinyin / Ziguang Double Pinyin / Pinyin Jiajia)
 - simplified/traditional variant switching (`variant`)
 - full-width / punctuation mode
+- whether a full stop typed after consecutive digits becomes a decimal point (`decimal_period_after_digit`)
 - debug logging and log path
 
 Runtime dictionary paths are fixed under `%LOCALAPPDATA%\CassotisIme\data\` and are no longer configured through the INI file.
@@ -283,8 +293,9 @@ Runtime dictionary paths are fixed under `%LOCALAPPDATA%\CassotisIme\data\` and 
 
 ## Roadmap
 - improve the one language model (training data, capacity, quantization), since every input path now follows it
-- keep the remaining rankers and policies few, and retire those the language model can take over
+- keep the remaining rankers and policies few, and retire those the language model can take over, including statistical priors left from v1.x such as the word-transition table
 - extend language-model correction beyond simplified full-Pinyin input (traditional variant, Double Pinyin)
+- extend the handling of phrases outside the dictionary to fuzzy Pinyin and the traditional variant, and build a public benchmark for such input
 - shorten the time from a keystroke to its candidates, above all in long sentences
 - expand independent benchmarks and failure attribution
 - improve user-dictionary quality control and tooling
@@ -335,7 +346,7 @@ Cassotis v1.30.0 adds a shared character-level autoregressive language model tra
 
 Cassotis v1.31.0 upgrades the shared character language model and trains dedicated Tab selection policies on real engine candidates from independent corpora, comparing ways to finish the current word and continue with subsequent phrases. Short-input Tab candidates are reranked with preceding context in the background, while Pinyin syllable boundaries and user completion preferences remain protected.
 
-Cassotis v2.0.0 replaces the model stack of v1.x with a single character-level language model. One ONNX model takes over from eleven and seven compact units from 43. The model is quantized with fixed ranges and computes attention with an operator of its own, so its scores no longer depend on how a call is batched, and what one keystroke computed is reused by the next. The four remaining decision policies are refit on the new model's scores. The benchmark corpus stays separate from all training data.
+Cassotis v2.0.0 replaces the model stack of v1.x with a single character-level language model. One ONNX model takes over from eleven and seven compact units from 43. The model is quantized with fixed ranges and computes attention with an operator of its own, so its scores no longer depend on how a call is batched, and what one keystroke computed is reused by the next. The four remaining decision policies are refit on the new model's scores. Phrases of three to five syllables outside the dictionary are now composed by the language model and corrected against the typed Pinyin, in place of the rules that joined fixed head characters to words. The benchmark corpus stays separate from all training data.
 
 ## License
 This project is licensed under GPL-3.0. See `LICENSE` for the full license text.
