@@ -410,6 +410,8 @@ type
             const query_key: string; const candidate_text: string): Integer; override;
         function get_query_choice_bonus(const query_key: string; const candidate_text: string): Integer; override;
         function get_query_latest_choice_text(const query_key: string): string; override;
+        procedure record_raw_input_choice(const input_key, text: string); override;
+        function get_raw_input_choice(const input_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
         function get_long_query_segment_path_bonus(const query_key: string;
             const encoded_path: string): Integer; override;
@@ -15944,6 +15946,73 @@ procedure TncSqliteDictionary.record_commit(const pinyin: string; const text: st
     const explicit_choice: Boolean = False);
 begin
     record_commit_internal(pinyin, text, explicit_choice, False);
+end;
+
+procedure TncSqliteDictionary.record_raw_input_choice(const input_key, text: string);
+const
+    update_latest_sql = 'UPDATE dict_user_query_latest SET text = ?2, ' +
+        'last_used = strftime(''%s'',''now'') WHERE query_pinyin = ?1';
+    insert_latest_sql = 'INSERT OR IGNORE INTO dict_user_query_latest(query_pinyin, text, last_used) ' +
+        'VALUES (?1, ?2, strftime(''%s'',''now''))';
+var
+    key, sql: string;
+    stmt: Psqlite3_stmt;
+begin
+    key := LowerCase(Trim(input_key));
+    if (key = '') or (text = '') or (not ensure_open) or (not m_user_ready) or
+        (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+    clear_user_read_caches;
+    for sql in TArray<string>.Create(update_latest_sql, insert_latest_sql) do
+    begin
+        stmt := nil;
+        try
+            if m_user_connection.prepare(sql, stmt) and
+                m_user_connection.bind_text(stmt, 1, key) and
+                m_user_connection.bind_text(stmt, 2, text) then
+            begin
+                m_user_connection.step(stmt);
+            end;
+        finally
+            if stmt <> nil then
+            begin
+                m_user_connection.finalize(stmt);
+            end;
+        end;
+    end;
+end;
+
+function TncSqliteDictionary.get_raw_input_choice(const input_key: string): string;
+const
+    query_sql = 'SELECT text FROM dict_user_query_latest WHERE query_pinyin = ?1 LIMIT 1';
+var
+    key: string;
+    stmt: Psqlite3_stmt;
+begin
+    // Read as stored: get_query_latest_choice_text checks its text against the
+    // pinyin of the query, which raw letters never pass.
+    Result := '';
+    key := LowerCase(Trim(input_key));
+    if (key = '') or (not ensure_open) or (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+    stmt := nil;
+    try
+        if m_user_connection.prepare(query_sql, stmt) and
+            m_user_connection.bind_text(stmt, 1, key) and
+            (m_user_connection.step(stmt) = SQLITE_ROW) then
+        begin
+            Result := m_user_connection.column_text(stmt, 0);
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_user_connection.finalize(stmt);
+        end;
+    end;
 end;
 
 procedure TncSqliteDictionary.record_selected_short_phrase(const pinyin, text: string);

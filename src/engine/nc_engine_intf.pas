@@ -882,6 +882,17 @@ type
         m_selected_index: Integer;
         m_raw_input_candidate: string;
         m_raw_input_selected: Boolean;
+        // Why the raw slot is as it is (probes and the debug text).
+        m_raw_input_debug: string;
+        // The last LM comparison of the raw letters with a Chinese reading.
+        m_raw_input_arbitration_key: string;
+        m_raw_input_arbitration_margin: Single;
+        // The input whose letters are selected, lower case; empty when they
+        // are not. The next key reads it: letters stay selected while the
+        // user types on.
+        m_raw_input_sticky: string;
+        // The user selected them by hand (Left or Up, the mouse).
+        m_raw_input_chosen: Boolean;
         m_confirmed_text: string;
         m_confirmed_explicit_choice: Boolean;
         m_recent_partial_prefix_text: string;
@@ -891,6 +902,8 @@ type
         m_last_committed_pinyin: string;
         m_confirmed_segments: TList<TncConfirmedSegment>;
         procedure refresh_raw_input_candidate;
+        procedure set_raw_input_selected_by_user(const selected: Boolean);
+        procedure note_raw_input_choice;
         function is_alpha_key(const key_code: Word; const key_state: TncKeyState; out normalized_char: Char;
             out display_char: Char): Boolean;
         function get_candidate_limit: Integer;
@@ -1295,6 +1308,7 @@ type
         function get_selected_index: Integer;
         property raw_input_candidate: string read m_raw_input_candidate;
         property raw_input_selected: Boolean read m_raw_input_selected;
+        property raw_input_debug: string read m_raw_input_debug;
         function activate_raw_input_candidate: Boolean;
         function next_page: Boolean;
         function prev_page: Boolean;
@@ -4496,7 +4510,7 @@ end;
 procedure TncEngine.reset(const preserve_document_context: Boolean);
 begin
     m_raw_input_candidate := '';
-    m_raw_input_selected := False;
+    set_raw_input_selected_by_user(False);
     m_quick_input.clear;
     clear_one_key_completion;
     clear_one_key_completion_feedback_target;
@@ -8681,25 +8695,245 @@ begin
 end;
 
 procedure TncEngine.refresh_raw_input_candidate;
-var raw: string; candidate: TncCandidate; words: TncCandidateList;
+const
+    // With a Chinese reading of the whole input on the page, the letters go
+    // first when the LM holds them this far above the best such reading, and
+    // are shown without being selected down to this far below it. On chat
+    // text the LM never saw, no word typed in full pinyin lost its place at
+    // these values (tools/ENGLISH_INPUT_EXECUTION.md).
+    c_select_margin = 2.0;
+    c_show_margin = -3.0;
+    // Letters the user committed last time for an input that is also complete
+    // pinyin (name, like): the LM still has a say, this much in their favour.
+    c_learned_bonus = 4.0;
+    c_max_readings = 3;
+    c_initials = ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x',
+        'r', 'z', 'c', 's', 'y', 'w'];
+var
+    raw, key, context, state, shown_reading, sticky: string;
+    candidate: TncCandidate;
+    words, page: TncCandidateList;
+    evidence: TncEnglishEvidence;
+    learned, capital, reading_is_user, one_syllable, complete, two_initials: Boolean;
+    scored, gate, decided, built_reading, chosen, typed_on: Boolean;
+    readings, texts: TArray<string>;
+    scores: TArray<Single>;
+    lm_margin, margin, best: Single;
+    ch: Char;
+    index: Integer;
+
+    procedure offer(const selected: Boolean);
+    begin
+        m_raw_input_candidate := raw;
+        m_raw_input_selected := selected and (m_page_index = 0);
+        if selected then state := 'first' else state := 'shown';
+    end;
 begin
+    sticky := m_raw_input_sticky;
+    chosen := m_raw_input_chosen;
+    m_raw_input_sticky := '';
+    m_raw_input_chosen := False;
     m_raw_input_candidate := '';
     m_raw_input_selected := False;
+    m_raw_input_debug := '';
     if (not m_config.auto_english) or (m_config.input_mode <> im_chinese) or
         m_config.full_width_mode or is_shuangpin_input or
         (m_quick_input.kind <> qik_none) then Exit;
     raw := get_composition_text;
-    if not nc_is_english_word(raw) then Exit;
-    // Mixed words are finalized by visible-page assembly after this method.
-    if (m_dictionary <> nil) and
-        m_dictionary.lookup_mixed_abbreviation_words(LowerCase(raw), words) then Exit;
-    // A real user/exact or mixed-abbreviation word takes precedence over the
-    // English recognizer. Prefix-only Chinese candidates remain selectable.
-    for candidate in m_candidates do
-        if (candidate.comment = '') and
-            ((candidate.source = cs_user) or candidate.has_dict_weight) then Exit;
-    m_raw_input_candidate := raw;
-    m_raw_input_selected := m_page_index = 0;
+    if (Length(raw) < 2) or (Length(raw) > 32) then Exit;
+    for ch in raw do
+        if not CharInSet(ch, ['a'..'z', 'A'..'Z']) then Exit;
+    key := LowerCase(raw);
+    // The letters were selected before this key, and the user typed on.
+    typed_on := (sticky <> '') and (Copy(key, 1, Length(sticky)) = sticky);
+    if chosen and (typed_on or (Copy(sticky, 1, Length(key)) = key)) then
+    begin
+        // Selected by hand: that holds while the user types on or deletes,
+        // whatever the page reads now.
+        offer(True);
+        m_raw_input_chosen := m_raw_input_selected;
+        if m_raw_input_selected then m_raw_input_sticky := key;
+        if m_config.debug_mode or nc_english_trace then
+            m_raw_input_debug := '[english state=first chosen=1]';
+        Exit;
+    end;
+    evidence := nc_english_evidence(raw);
+    capital := raw <> key;
+    learned := (m_dictionary <> nil) and
+        SameText(m_dictionary.get_raw_input_choice(key), raw);
+    // One pinyin syllable, complete or still being typed (he, long; to, we).
+    one_syllable := nc_is_pinyin_syllable_prefix(key);
+    // Something has to say that these letters may be wanted as typed.
+    gate := evidence.listed or learned or capital or
+        (evidence.spelled and not evidence.pinyin_like);
+    // Ordinary pinyin stops here: nothing speaks for the letters, and they
+    // are pinyin in progress or the candidates as built already hold a
+    // reading of the whole input.
+    built_reading := evidence.in_progress;
+    if not built_reading then
+        for candidate in m_candidates do
+            if (Trim(candidate.comment) = '') and (candidate.source <> cs_quick_input) and
+                (Trim(candidate.text) <> '') and (Ord(Trim(candidate.text)[1]) > $7F) then
+            begin
+                built_reading := True;
+                Break;
+            end;
+    if built_reading and not (gate or nc_english_trace) then Exit;
+
+    // The Chinese readings of the whole input, best first: what the page
+    // shows, since Space would commit its first. The candidates as built are
+    // not in that order yet (the LM stages of the page assembly come after),
+    // and a phrase of three to five syllables is only written there.
+    if m_page_index = 0 then page := get_candidates else page := m_candidates;
+    reading_is_user := False;
+    for candidate in page do
+        if (Trim(candidate.comment) = '') and (candidate.source <> cs_quick_input) and
+            (Trim(candidate.text) <> '') and (Ord(Trim(candidate.text)[1]) > $7F) then
+        begin
+            if Length(readings) = 0 then reading_is_user := candidate.source = cs_user;
+            readings := readings + [Trim(candidate.text)];
+            if Length(readings) >= c_max_readings then Break;
+        end;
+    if (Length(readings) = 0) and (m_dictionary <> nil) and
+        m_dictionary.lookup_mixed_abbreviation_words(key, words) and (Length(words) > 0) then
+        readings := [Trim(words[0].text)];
+
+    complete := evidence.complete;
+    // Two initials are how most two-syllable words are abbreviated, and
+    // nearly every such pair is also an abbreviation somewhere in the corpora.
+    two_initials := (Length(key) = 2) and CharInSet(key[1], c_initials) and
+        CharInSet(key[2], c_initials);
+    state := 'none';
+    scored := False;
+    lm_margin := 0;
+    margin := 0;
+    shown_reading := '';
+    if Length(readings) > 0 then shown_reading := readings[0];
+    decided := True;
+    if Length(readings) = 0 then
+    begin
+        // The page converts only a part of the input.
+        if capital or learned then
+            offer(True)
+        else if not evidence.in_progress then
+        begin
+            // Not pinyin either. Letters with something to say for them go
+            // first, and stay first while the user types on; anything else
+            // is shown, so that it can be picked.
+            if gate or typed_on then
+                offer(True)
+            else
+                offer(False);
+        end
+        // Pinyin the user may still be typing (the page has no whole reading
+        // before the last syllable is finished, or for two syllables that
+        // are no word): a frequent word or one of the English dictionary
+        // goes first (ok, data, cake), an abbreviation that is merely counted
+        // somewhere does not (daa on the way to "daan"), a single syllable
+        // never.
+        else if evidence.listed and ((evidence.band <= 1) or evidence.dictionary) and
+            not one_syllable then
+            offer(True);
+    end
+    else if not gate then
+        // Pinyin.
+    else if capital then
+        // Typed with Shift: nobody writes pinyin that way.
+        offer(True)
+    else if reading_is_user and not learned then
+        // The user's own word for this input.
+    else if learned and not complete then
+        // The last choice for these letters, which are no complete pinyin.
+        offer(True)
+    else if one_syllable and not learned then
+        // A syllable typed as such.
+    else if two_initials and (evidence.band > 0) and not learned then
+        // An abbreviated word, unless the pair is among the most frequent.
+    else if evidence.listed and (evidence.band >= 2) and (not evidence.dictionary) and
+        not learned then
+        // Letters that are merely counted somewhere in the corpora (jis, tad)
+        // do not challenge a Chinese reading.
+    else
+        decided := False;
+
+    if ((not decided) or nc_english_trace) and (Length(readings) > 0) and
+        (m_char_lm <> nil) and m_char_lm_short_enabled and m_char_lm.char_lm_ready then
+    begin
+        if m_segment_left_context <> '' then context := m_segment_left_context
+        else if m_external_left_context <> '' then context := m_external_left_context
+        else context := m_left_context;
+        texts := [raw] + readings;
+        if m_raw_input_arbitration_key = string.Join(#0, texts) + #0 + context then
+        begin
+            lm_margin := m_raw_input_arbitration_margin;
+            scored := True;
+        end
+        else
+        begin
+            try
+                scored := (m_char_lm.score_texts(context, texts, Length(texts), 96,
+                    scores) = Length(texts)) and (Length(scores) = Length(texts));
+            except
+                scored := False;
+            end;
+            if scored then
+            begin
+                best := scores[1];
+                for index := 2 to High(scores) do
+                    if scores[index] > best then best := scores[index];
+                lm_margin := scores[0] - best;
+                m_raw_input_arbitration_key := string.Join(#0, texts) + #0 + context;
+                m_raw_input_arbitration_margin := lm_margin;
+            end;
+        end;
+    end;
+
+    if not decided then
+    begin
+        margin := lm_margin;
+        if learned then margin := margin + c_learned_bonus;
+        if scored and (margin >= c_select_margin) then offer(True)
+        else if learned or (scored and (margin >= c_show_margin)) then offer(False);
+    end;
+    if m_raw_input_selected then m_raw_input_sticky := key;
+
+    if m_config.debug_mode or nc_english_trace then
+        m_raw_input_debug := Format(
+            '[english state=%s gate=%d listed=%d band=%d spelled=%d pinyin=%d progress=%d ' +
+            'syllable=%d complete=%d initials=%d learned=%d capital=%d readings=%d user=%d ' +
+            'scored=%d lm=%.3f margin=%.3f dictionary=%d whole=%s]',
+            [state, Ord(gate), Ord(evidence.listed), evidence.band, Ord(evidence.spelled),
+            Ord(evidence.pinyin_like), Ord(evidence.in_progress), Ord(one_syllable),
+            Ord(complete), Ord(two_initials),
+            Ord(learned), Ord(capital), Length(readings), Ord(reading_is_user), Ord(scored),
+            lm_margin, margin, Ord(evidence.dictionary), shown_reading]);
+end;
+
+procedure TncEngine.note_raw_input_choice;
+var raw: string; ch: Char;
+begin
+    // The letters as the latest choice of this input; with a part of the
+    // input already chosen there is no such single input.
+    if (m_dictionary = nil) or (m_confirmed_text <> '') or
+        (not m_config.auto_english) or is_shuangpin_input or
+        (m_quick_input.kind <> qik_none) then Exit;
+    raw := get_composition_text;
+    if (Length(raw) < 2) or (Length(raw) > 32) then Exit;
+    for ch in raw do
+        if not CharInSet(ch, ['a'..'z', 'A'..'Z']) then Exit;
+    m_dictionary.record_raw_input_choice(LowerCase(raw), raw);
+end;
+
+procedure TncEngine.set_raw_input_selected_by_user(const selected: Boolean);
+begin
+    // What the user does to the slot is what the next key finds: letters
+    // selected by hand stay selected, and letters the user moved off (to a
+    // Chinese candidate, another page) are not put back by what was typed
+    // before; the rules decide again.
+    m_raw_input_selected := selected;
+    m_raw_input_chosen := selected;
+    if selected then m_raw_input_sticky := LowerCase(get_composition_text)
+    else m_raw_input_sticky := '';
 end;
 
 function TncEngine.activate_raw_input_candidate: Boolean;
@@ -8708,7 +8942,7 @@ begin
     if not Result then Exit;
     m_page_index := 0;
     m_selected_index := 0;
-    m_raw_input_selected := True;
+    set_raw_input_selected_by_user(True);
     m_candidate_navigation_started := True;
 end;
 
@@ -8722,7 +8956,13 @@ var
 begin
     m_raw_input_candidate := '';
     m_raw_input_selected := False;
-    if build_quick_input_candidates then Exit;
+    m_raw_input_debug := '';
+    if build_quick_input_candidates then
+    begin
+        // No slot here, and nothing to remember for the next key.
+        set_raw_input_selected_by_user(False);
+        Exit;
+    end;
     build_started_at := GetTickCount64;
     // A fresh page may promote a different reading; let Tab follow it again.
     m_visible_completion_key := '';
@@ -154126,6 +154366,7 @@ begin
                 begin
                     if m_raw_input_selected then
                     begin
+                        note_raw_input_choice;
                         set_pending_commit(get_raw_composition_commit_text + punct_text,
                             '', False, '', False, '', False, False, '', True);
                         Exit(True);
@@ -154268,6 +154509,7 @@ begin
                 begin
                     if m_raw_input_selected then
                     begin
+                        note_raw_input_choice;
                         set_pending_commit(get_raw_composition_commit_text,
                             '', False, '', False, '', False, False, '', True);
                         Exit(True);
@@ -154291,6 +154533,7 @@ begin
                 if m_composition_text <> '' then
                 begin
                     // Enter should commit raw input text instead of selecting candidate.
+                    note_raw_input_choice;
                     set_pending_commit(get_raw_composition_commit_text);
                     Result := True;
                 end
@@ -154345,7 +154588,7 @@ begin
                     if (m_page_index = 0) and (m_selected_index = 0) and
                         (m_raw_input_candidate <> '') then
                     begin
-                        m_raw_input_selected := True;
+                        set_raw_input_selected_by_user(True);
                         m_candidate_navigation_started := True;
                         Exit(True);
                     end;
@@ -154395,7 +154638,7 @@ begin
                     if m_raw_input_selected then
                     begin
                         if index = 0 then Exit(True);
-                        m_raw_input_selected := False;
+                        set_raw_input_selected_by_user(False);
                         m_selected_index := 0;
                         m_candidate_navigation_started := True;
                         Exit(True);
@@ -154426,7 +154669,7 @@ begin
                         (index < get_current_page_candidate_count(page_size)) then
                     begin
                         m_selected_index := index;
-                        m_raw_input_selected := False;
+                        set_raw_input_selected_by_user(False);
                         if get_selected_candidate(candidate, True) then
                         begin
                             Result := apply_candidate_selection(candidate, index,
@@ -185306,7 +185549,7 @@ begin
         cache_visible_candidate_page(page, sources, page_size);
     end;
     m_selected_index := selected_index;
-    m_raw_input_selected := False;
+    set_raw_input_selected_by_user(False);
     m_candidate_navigation_started := True;
     Result := True;
 end;
@@ -185365,7 +185608,7 @@ begin
         long_visible_candidate_pool_cache_is_current(get_candidate_page_size));
     m_candidate_navigation_started := True;
     m_page_index := target_page;
-    m_raw_input_selected := False;
+    set_raw_input_selected_by_user(False);
     if preserve_selection then
         normalize_page_and_selection
     else
@@ -185569,6 +185812,10 @@ begin
         if m_short_phrase_debug <> '' then
         begin
             debug_parts.Add(m_short_phrase_debug);
+        end;
+        if m_raw_input_debug <> '' then
+        begin
+            debug_parts.Add(m_raw_input_debug);
         end;
         if m_last_lookup_timing_info <> '' then
         begin

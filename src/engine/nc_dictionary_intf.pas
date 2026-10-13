@@ -103,6 +103,11 @@ type
         procedure record_commit(const pinyin: string; const text: string;
             const explicit_choice: Boolean = False); virtual;
         procedure record_selected_short_phrase(const pinyin, text: string); virtual;
+        { The raw letters the user committed for an input (English in Chinese
+          mode). Kept as the latest choice of that input only: no user word,
+          no heat. A Chinese choice for the same input replaces it. }
+        procedure record_raw_input_choice(const input_key, text: string); virtual;
+        function get_raw_input_choice(const input_key: string): string; virtual;
         procedure record_context_pair(const left_text: string; const committed_text: string); virtual;
         procedure record_context_trigram(const prev_prev_text: string; const prev_text: string;
             const committed_text: string); virtual;
@@ -503,6 +508,15 @@ begin
 end;
 
 function TncDictionaryProvider.get_query_latest_choice_text(const query_key: string): string;
+begin
+    Result := '';
+end;
+
+procedure TncDictionaryProvider.record_raw_input_choice(const input_key, text: string);
+begin
+end;
+
+function TncDictionaryProvider.get_raw_input_choice(const input_key: string): string;
 begin
     Result := '';
 end;

@@ -75,8 +75,7 @@ This file lists third-party software/data used by Cassotis IME and the related l
 
 - Component: a filtered subset of Alan Beale's 12Dicts `2of12full.txt`,
   packaged by Kevin Atkinson; public-domain word-list data.
-- Used for: conservative English-word recognition, without network access
-  or neural inference.
+- Used for: English-word recognition in Chinese mode, without network access.
 - Source: https://github.com/en-wl/wordlist/tree/b22230cc5250887737fdefe9ca4c9d9d01230eaa/alt12dicts
 - The source README states that all files in that directory are in the
   public domain. The generated `src/engine/nc_english_words.inc` retains the
@@ -85,6 +84,12 @@ This file lists third-party software/data used by Cassotis IME and the related l
   computing terms. Compact letter-pair and letter-triple tables derived from
   these spellings also support conservative recognition of unlisted names;
   each sequence must occur in at least two different words.
+- The same generated file lists the spellings of Latin-letter words that
+  occur inside Chinese text (`app`, `ppt`), each with a frequency band. They
+  were counted by this project in the corpora the character language model
+  (item above) was trained on: a word is listed when it occurs 30 times or
+  more in at least two of the corpora. The file holds the spellings and
+  bands only; it does not contain or redistribute any text of the corpora.
 
 ## GPL-3.0 Notice
 
