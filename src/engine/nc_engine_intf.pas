@@ -35298,6 +35298,10 @@ var
             Exit;
         end;
 
+        // These flags belong to this invocation. Reading an old stack value
+        // skips preparation and changes ranking between identical queries.
+        lightweight_query_prepared := False;
+        exact_complete_texts_prepared := False;
         has_exact_complete_phrase_candidate := False;
         latest_query_choice_text := '';
         latest_query_choice_prepared := False;
@@ -125068,6 +125072,12 @@ var
                 begin
                     ensure_fast_prefix_single_char_partials_visible(m_candidates, 0);
                     ensure_multi_char_partial_precedes_single_char_partial(m_candidates);
+                    // Five-syllable input now reaches this exact-chain fast
+                    // path. Retain the attested 2+2 prefix and its segment
+                    // identity just as the ordinary prefix path does.
+                    ensure_supported_short_four_two_prefix_partial_visible_local(
+                        get_effective_compact_pinyin_syllables(lookup_text),
+                        m_candidates);
                 end;
                 note_debug_helper_elapsed('tplsingle', phase_start_tick);
                 phase_start_tick := GetTickCount64;
