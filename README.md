@@ -36,6 +36,7 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 - **Pinyin schemes.** Full Pinyin and six selectable Double Pinyin schemes (Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia) share the same candidate ranking and user-learning data. Fuzzy Pinyin is configurable for common initial and final pairs, and initial-letter abbreviations are supported (for example `jt` → `今天`).
 - **Dictionaries.** Separate simplified and traditional base databases and a user database.
 - **Quick input.** Use `ufh` for symbols, `uxh` for numbered markers, `usx` for mathematical symbols, and `urq` for the current date. `i123.45` or `v123.45` offers Chinese numbers and uppercase currency amounts; digits keep entering the number, so select with the displayed `a/b/c/d` keys, arrow keys and Space, or the mouse. Double Pinyin requires Shift+U/I/V to enter these modes. See the [quick-input guide (Chinese)](QUICK_INPUT.md).
+- **Chinese punctuation.** With Chinese punctuation and half-width input, the symbols that stay as typed can be edited in General settings, or set to the Markdown preset or to standard Chinese punctuation with one click. The default Markdown preset keeps ``-#*+_=`~[]<>|@``; commas, full stops, question and exclamation marks, parentheses and quotation marks stay Chinese, and the backslash gives the enumeration comma `、`.
 - **Application context.** Surrounding text and key state are synchronized with the application.
 - **Local by design.** No network and no GPU. While the language model is loading or unavailable, candidates are ranked without it.
 
@@ -145,6 +146,7 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 | Version | Top1 | Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|
+| `v2.1.0` | 13381/16300 (82.09%) | 14270/16300 (87.55%) | 75.28 | 78 | 125 | 343 |
 | `v2.0.0` | 13380/16300 (82.09%) | 14268/16300 (87.53%) | 74.79 | 78 | 125 | 344 |
 | `v1.31.0` | 12940/16300 (79.39%) | 13534/16300 (83.03%) | 61.29 | 62 | 94 | 282 |
 | `v1.30.0` | 12828/16300 (78.70%) | 13514/16300 (82.91%) | 55.25 | 47 | 94 | 266 |
@@ -197,7 +199,7 @@ See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case c
 
 | Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `v2.0.0` | 63363/65000 (97.48%) | 64291/65000 (98.91%) | 10533/11728 (89.81%) | 11244/11728 (95.87%) | 4.637 | 2.205 | 12.621 | 40.883 |
+| `v2.1.0`<br/>`v2.0.0` | 63363/65000 (97.48%) | 64291/65000 (98.91%) | 10533/11728 (89.81%) | 11244/11728 (95.87%) | 4.637 | 2.205 | 12.621 | 40.883 |
 | `v1.31.0` | 63036/65000 (96.98%) | 64104/65000 (98.62%) | 10491/11728 (89.45%) | 11196/11728 (95.46%) | 4.582 | 3.262 | 10.352 | 22.327 |
 | `v1.30.0` | 62926/65000 (96.81%) | 64073/65000 (98.57%) | 10449/11728 (89.09%) | 11169/11728 (95.23%) | 3.525 | 3.192 | 7.660 | 21.122 |
 | `v1.29.0` | 61971/65000 (95.34%) | 63568/65000 (97.80%) | 9675/11728 (82.49%) | 10776/11728 (91.88%) | 2.999 | 2.198 | 7.316 | 27.596 |
@@ -230,7 +232,7 @@ Public results retain five columns: `Completion Hit`, `Avg Keys Saved`, `Stabili
 
 | Version | Completion Hit | Avg Keys Saved | Stability | Keystroke P95 (ms) | Final P95 (ms) |
 | --- | --- | --- | --- | --- | --- |
-| `v2.0.0` | 10440/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.521 | 20.445 |
+| `v2.1.0`<br/>`v2.0.0` | 10440/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.521 | 20.445 |
 | `v1.31.0` | 10336/12831 (80.55%) | 2.638 | 2123/2185 (97.16%) | 1.238 | 11.881 |
 | `v1.30.0`<br/>`v1.29.0` | 9420/12831 (73.42%) | 2.548 | 1691/1749 (96.68%) | 0.968 | 0.968 |
 | `v1.18.0` - `v1.28.0` | 9419/12831 (73.41%) | 2.549 | 1691/1749 (96.68%) | 2.026 | 2.026 |
@@ -245,6 +247,7 @@ This benchmark leaves the final four complete Pinyin syllables untyped and evalu
 
 | Version | Local Completion Hit | Predictive Prompt Coverage | Total Keys Saved | P95 (ms) |
 | --- | --- | --- | --- | --- |
+| `v2.1.0` | 3758/16300 (23.06%) | 16123/16300 (98.91%) | 9272 | 141.519 |
 | `v2.0.0` | 3755/16300 (23.04%) | 16123/16300 (98.91%) | 9265 | 133.001 |
 | `v1.31.0` | 3513/16300 (21.55%) | 15815/16300 (97.02%) | 7478 | 116.682 |
 | `v1.30.0` | 855/16300 (5.25%) | 7203/16300 (44.19%) | 1822 | 77.819 |
@@ -280,6 +283,8 @@ Important options include:
 - simplified/traditional variant switching (`variant`)
 - full-width / punctuation mode
 - whether a full stop typed after consecutive digits becomes a decimal point (`decimal_period_after_digit`)
+- symbols kept half-width in Chinese punctuation (`ascii_symbols` in `[punctuation]`, the Markdown preset by default)
+- English recognition in Chinese mode (`auto_english` in `[input]`, on by default)
 - debug logging and log path
 
 Runtime dictionary paths are fixed under `%LOCALAPPDATA%\CassotisIme\data\` and are no longer configured through the INI file.
@@ -348,6 +353,8 @@ Cassotis v1.30.0 adds a shared character-level autoregressive language model tra
 Cassotis v1.31.0 upgrades the shared character language model and trains dedicated Tab selection policies on real engine candidates from independent corpora, comparing ways to finish the current word and continue with subsequent phrases. Short-input Tab candidates are reranked with preceding context in the background, while Pinyin syllable boundaries and user completion preferences remain protected.
 
 Cassotis v2.0.0 replaces the model stack of v1.x with a single character-level language model. One ONNX model takes over from eleven and seven compact units from 43. The model is quantized with fixed ranges and computes attention with an operator of its own, so its scores no longer depend on how a call is batched, and what one keystroke computed is reused by the next. The four remaining decision policies are refit on the new model's scores. Phrases of three to five syllables outside the dictionary are now composed by the language model and corrected against the typed Pinyin, in place of the rules that joined fixed head characters to words. The benchmark corpus stays separate from all training data.
+
+Cassotis v2.1.0 recognizes English in Chinese mode: English words and names, input typed with a capital, and letters committed as letters before can appear before the numbered candidates, and where the input also has a Chinese reading, the language model weighs the letters against it with the preceding text. Choosing the letters is remembered without adding a user word. Chinese punctuation gets an editable set of symbols kept half-width; the default Markdown preset keeps `#`, `*`, `-` and similar symbols as ASCII, while commas, full stops, parentheses and quotation marks stay Chinese. Partial commitment is steadier: after a typo-corrected prefix is selected, the rest keeps the original keystrokes and Backspace restores the exact input, and where an n/ng boundary can be cut two ways (`jiangei` as jian'gei or jiang'ei), the single-character prefixes of both cuts can be selected while whole-input decoding stays the same. The base dictionaries gain 389 everyday colloquial phrases, such as 在等, 再开, 请我, 来啊 and 在路上. When Setup is started from File Explorer for an upgrade, the taskbar and context menus no longer stay unresponsive after Windows Explorer restarts; a copy, move or delete in progress is still never cut short.
 
 ## License
 This project is licensed under GPL-3.0. See `LICENSE` for the full license text.

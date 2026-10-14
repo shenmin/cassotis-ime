@@ -42,10 +42,10 @@ Notes:
 
 > **Note:** Candidate count, candidate appearance, and shortcuts can be changed in Settings. Shortcut values are stored in `[shortcuts]`.
 
-In Settings > General, edit **保持半角的符号** (symbols to keep in ASCII), or select **Markdown 预设** (Markdown preset) or **标准中文标点** (standard Chinese punctuation). The default preset keeps these symbols in ASCII while commas, periods, question marks, exclamation marks, parentheses and quotation marks retain their Chinese forms:
+In Settings > General, edit **保持半角的符号** (symbols to keep in ASCII), or select **Markdown 预设** (Markdown preset) or **标准中文标点** (standard Chinese punctuation). The default preset keeps these symbols in ASCII while commas, periods, question marks, exclamation marks, parentheses and quotation marks retain their Chinese forms, and the backslash gives the enumeration comma `、`:
 
 ```text
--#*+_=`~[]<>|\@
+-#*+_=`~[]<>|@
 ```
 
 The list is inactive and cannot be edited in English punctuation or full-width input mode, but its saved value is preserved. Candidate paging, completion and Pinyin separator shortcuts still take precedence during composition.
@@ -64,6 +64,14 @@ Double Pinyin follows these rules:
 | Key | Meaning | Allowed values | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `ascii_symbols` | Symbols to keep in ASCII | ASCII punctuation list; may be empty | Markdown preset | `ascii_symbols=-#*` | Applies only with Chinese punctuation and half-width input. Clear the list for standard Chinese punctuation, or remove individual symbols: removing `#` restores `＃`. Older configurations without this key also use the Markdown preset. |
+
+---
+
+## `[input]`
+
+| Key | Meaning | Allowed values | Default | Example | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `auto_english` | English recognition in Chinese mode | `true` / `false` | `true` | `auto_english=false` | Applies only in Chinese mode with Full Pinyin and half-width input. English words and names, input typed with a capital, and letters committed as letters before can appear before the numbered candidates, and Space commits them as typed; when the input also has a Chinese reading, the language model weighs the two with the preceding text. When off, this candidate is not shown. It can also be cleared in Settings > General > 输入 (input) as **识别英文单词，空格直接上屏** (recognize English words, Space commits them). Double Pinyin is not affected. |
 
 ---
 
@@ -146,7 +154,10 @@ decimal_period_after_digit=true
 debug=0
 
 [punctuation]
-ascii_symbols=-#*+_=`~[]<>|\@
+ascii_symbols=-#*+_=`~[]<>|@
+
+[input]
+auto_english=true
 
 [pinyin]
 fuzzy_enabled=false
