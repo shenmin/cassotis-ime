@@ -19,6 +19,7 @@ uses
     Winapi.GDIPAPI,
     Winapi.GDIPOBJ,
     nc_types,
+    nc_custom_phrases,
     nc_shortcut,
     nc_dpi_scale,
     nc_version_info,
@@ -1578,6 +1579,9 @@ begin
         completion_width := (m_list_padding * 2) + completion_key_width +
             completion_gap + completion_text_width +
             brand_gap + brand_width;
+        if m_one_key_completion_source = okcs_custom_phrase then
+            completion_width := Min(completion_width,
+                nc_scale_for_dpi(600, m_current_dpi));
     end;
     if completion_width > max_width then
     begin
@@ -2045,6 +2049,8 @@ begin
     m_active_page_index := page_index;
     m_debug_mode := debug_mode;
     m_one_key_completion_text := Trim(one_key_completion.text);
+    if one_key_completion.source = okcs_custom_phrase then
+        m_one_key_completion_text := nc_custom_phrase_preview(one_key_completion.text);
     m_one_key_completion_source := one_key_completion.source;
     m_one_key_completion_key := nc_normalize_one_key_completion_key(
         one_key_completion_key);

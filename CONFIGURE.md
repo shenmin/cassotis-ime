@@ -75,6 +75,20 @@ Double Pinyin follows these rules:
 
 ---
 
+## `[custom_phrases]`
+
+Manage shortcut codes and phrase text in **Settings > 自定义短语** (Custom phrases), immediately before the Advanced page. Add, edit, delete, reorder, or import/export a JSON file. Imports append to the existing list rather than replacing it.
+
+An exact shortcut match takes priority in the **one-key completion area**, using the normal text color. Press the completion key (Tab by default) to insert the literal phrase. Numbered candidates, Space, and number-key selection are unchanged. Typing beyond the shortcut ends the match; automatic completion resumes when no custom phrase matches.
+
+Codes contain 1–32 ASCII letters and are case-insensitive. Full Pinyin and Double Pinyin both match the actual typed letters, without fuzzy matching. Duplicate codes are allowed, but Settings warns that only the first listed phrase appears; use Move up/Move down to change that priority. Up to 1,024 phrases are supported, each up to 4,096 characters. These manually defined phrases are separate from learned user words and do not train ordinary word ranking. Long previews are shortened without truncating the inserted text.
+
+| Key | Meaning | Default | Example |
+| --- | --- | --- | --- |
+| `items` | Ordered JSON array of `[shortcut, phrase text]` pairs | `[]` | `items=[["cx","春眠不觉晓，处处闻啼鸟"]]` |
+
+---
+
 ## `[pinyin]`
 
 | Key | Meaning | Allowed values | Default | Notes |
@@ -106,7 +120,7 @@ Double Pinyin follows these rules:
 | `full_width_toggle` | Full-width mode toggle | Shortcut text | `Shift+Space` | Toggles half-width and full-width ASCII output. |
 | `open_settings` | Open Settings | Shortcut text | `Ctrl+Shift+F10` | Opens the Settings window. |
 | `candidate_page_keys` | Candidate paging key scheme | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | Represents `-/=`, `[/]`, `,/.`, or `Shift+Tab/Tab`. |
-| `one_key_completion_key` | One-key completion trigger | `tab` / `backtick` | `tab` | After at least two complete syllables, accepts the single completion shown at the bottom of the candidate window. Sources are checked in order: user lexicon, base lexicon, then the offline-generated strong-transition index; the language model then reranks the completion in the background and may replace it, and in a long sentence it supplies the continuation. Transition completions use the theme accent and are not learned as ordinary user words. `backtick` means the `` ` `` key. |
+| `one_key_completion_key` | One-key completion trigger | `tab` / `backtick` | `tab` | Accepts the single result in the one-key completion area. An exact custom-phrase match takes priority over automatic completion and has no syllable-count requirement. Otherwise, the existing predictive completion applies. `backtick` means the `` ` `` key. |
 
 When `one_key_completion_key=tab`, `candidate_page_keys=shift-tab` conflicts with completion. Settings therefore hides that paging option, and an INI file containing both values is normalized to `minus-plus`.
 
@@ -129,6 +143,8 @@ Runtime dictionary files are stored at a fixed runtime location and are not conf
 ---
 
 ## `[log]`
+
+Logging options are in **Settings > 高级** (Advanced), below Debug and above Configuration tools.
 
 | Key | Meaning | Allowed values | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -158,6 +174,9 @@ ascii_symbols=-#*+_=`~[]<>|@
 
 [input]
 auto_english=true
+
+[custom_phrases]
+items=[]
 
 [pinyin]
 fuzzy_enabled=false

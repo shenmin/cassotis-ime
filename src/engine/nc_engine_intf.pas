@@ -11,6 +11,7 @@ uses
     System.Generics.Defaults,
     Winapi.Windows,
     nc_types,
+    nc_custom_phrases,
     nc_quick_input,
     nc_english_input,
     nc_candidate_presentation,
@@ -641,6 +642,8 @@ type
         m_long_neural_completion_prefix_locked: Boolean;
         m_completion_feedback_origin_prefix: string;
         m_allow_one_key_completion_lookup: Boolean;
+        m_custom_phrases: TDictionary<string, string>;
+        m_custom_phrase_config: TncCustomPhraseList;
         m_visible_candidates_cache: TncCandidateList;
         m_visible_candidate_source_indices_cache: TArray<Integer>;
         m_visible_candidates_cache_composition_text: string;
@@ -1137,6 +1140,8 @@ type
             out completion: TncOneKeyCompletion;
             out completion_score: Integer): Boolean;
         procedure refresh_one_key_completion;
+        procedure reload_custom_phrases;
+        function try_refresh_custom_phrase: Boolean;
         procedure refresh_exact_tail_completion;
         function accept_one_key_completion: Boolean;
         procedure apply_long_complete_candidate_pool(
@@ -1635,6 +1640,7 @@ constructor TncEngine.create(const config: TncEngineConfig;
 begin
     inherited create;
     m_config := config;
+    reload_custom_phrases;
     m_defer_optional_dictionary_models :=
         defer_optional_dictionary_models;
     m_allow_one_key_completion_lookup := allow_one_key_completion_lookup;
@@ -1870,6 +1876,7 @@ end;
 
 destructor TncEngine.Destroy;
 begin
+    m_custom_phrases.Free;
     m_long_local_repair := nil;
     if m_document_context_model <> nil then
     begin
@@ -5133,6 +5140,7 @@ var
     dictionary_changed: Boolean;
     input_scheme_changed: Boolean;
     fuzzy_pinyin_changed: Boolean;
+    custom_phrases_changed: Boolean;
     previous_page_size: Integer;
 begin
     previous_config := m_config;
@@ -5142,7 +5150,10 @@ begin
     fuzzy_pinyin_changed :=
         (m_config.fuzzy_pinyin_enabled <> config.fuzzy_pinyin_enabled) or
         (m_config.fuzzy_pinyin_rules <> config.fuzzy_pinyin_rules);
+    custom_phrases_changed := not nc_custom_phrases_equal(
+        m_custom_phrase_config, config.custom_phrases);
     m_config := config;
+    if custom_phrases_changed then reload_custom_phrases;
     nc_normalize_shortcut_config(m_config.shortcuts);
     m_config.one_key_completion_key :=
         nc_normalize_one_key_completion_key(
@@ -5194,6 +5205,14 @@ begin
         (previous_config.full_width_mode <> m_config.full_width_mode) or
         (previous_config.input_mode <> m_config.input_mode) then
         refresh_raw_input_candidate;
+    if custom_phrases_changed or
+        ((previous_config.input_mode <> m_config.input_mode) and
+        (Length(m_config.custom_phrases) > 0)) then
+    begin
+        clear_one_key_completion;
+        clear_one_key_completion_feedback_target;
+        refresh_one_key_completion;
+    end;
 end;
 
 procedure TncEngine.set_dictionary_provider(const dictionary: TncDictionaryProvider);
@@ -5968,6 +5987,49 @@ begin
     end;
 end;
 
+procedure TncEngine.reload_custom_phrases;
+var phrase: TncCustomPhrase; key: string;
+begin
+    // Config records may be shared by sessions; retain our own immutable list.
+    m_config.custom_phrases := Copy(m_config.custom_phrases);
+    m_custom_phrase_config := Copy(m_config.custom_phrases);
+    if m_custom_phrases = nil then
+        m_custom_phrases := TDictionary<string, string>.Create
+    else
+        m_custom_phrases.Clear;
+    for phrase in m_config.custom_phrases do
+    begin
+        key := nc_custom_phrase_key(phrase.shortcut);
+        if (key <> '') and nc_custom_phrase_text_valid(phrase.text) and
+            not m_custom_phrases.ContainsKey(key) then
+            m_custom_phrases.Add(key, phrase.text);
+    end;
+end;
+
+function TncEngine.try_refresh_custom_phrase: Boolean;
+var key, text: string;
+begin
+    Result := False;
+    if (m_custom_phrases = nil) or (m_custom_phrases.Count = 0) or
+        (m_config.input_mode <> im_chinese) or (m_confirmed_text <> '') or
+        m_has_pending_commit then Exit;
+    // Match the keys, not decoded double-pinyin, fuzzy or typo-corrected spelling.
+    key := LowerCase(m_composition_display_text);
+    if (key = '') or not m_custom_phrases.TryGetValue(key, text) then Exit;
+    if (m_one_key_completion.source <> okcs_custom_phrase) or
+        (m_one_key_completion.text <> text) or
+        (m_one_key_completion_query_prefix <> key) then
+    begin
+        clear_one_key_completion;
+        clear_one_key_completion_feedback_target;
+        m_one_key_completion.text := text;
+        m_one_key_completion.source := okcs_custom_phrase;
+        m_one_key_completion_query_prefix := key;
+        m_one_key_completion_score := MaxInt;
+    end;
+    Result := True;
+end;
+
 procedure TncEngine.clear_one_key_completion;
 begin
     m_repaired_completion_query_key := '';
@@ -6437,7 +6499,8 @@ begin
     if not has_validated_completion_prefix then Exit;
     // Lexical/user completion is a separate priority lane. A repaired sentence
     // only replaces the old long-continuation request, never lexical ranking.
-    if m_one_key_completion.source in [okcs_user_exact, okcs_base_exact, okcs_transition] then Exit;
+    if m_one_key_completion.source in [okcs_user_exact, okcs_base_exact,
+        okcs_transition, okcs_custom_phrase] then Exit;
     previous := m_one_key_completion;
     query_key := normalize_pinyin_text(m_composition_text);
     syllables := get_effective_compact_pinyin_syllables(m_composition_text, False);
@@ -7582,6 +7645,7 @@ begin
     previous_completion := m_one_key_completion;
     previous_query_prefix := m_one_key_completion_query_prefix;
     clear_one_key_completion;
+    if try_refresh_custom_phrase then Exit;
     if (not m_allow_one_key_completion_lookup) or (m_dictionary = nil) or
         (m_config.input_mode <> im_chinese) or
         (Trim(m_confirmed_text) <> '') or (Trim(m_composition_text) = '') or
@@ -8614,6 +8678,19 @@ var
     completion: TncOneKeyCompletion;
 begin
     completion := get_one_key_completion_for_commit;
+    if completion.source = okcs_custom_phrase then
+    begin
+        Result := completion.text <> '';
+        if not Result then Exit;
+        clear_one_key_completion_feedback_target;
+        set_pending_commit(completion.text, '', False, '', True, '', False,
+            False, '', True);
+        // Literal expansion uses the non-learning quick-text commit path,
+        // including preserving whitespace and clearing pinyin history.
+        m_quick_input.pending_commit := True;
+        clear_one_key_completion;
+        Exit;
+    end;
     completion_text := Trim(completion.text);
     completion_pinyin := normalize_pinyin_text(
         completion.full_pinyin);
@@ -9016,6 +9093,7 @@ begin
     begin
         // No slot here, and nothing to remember for the next key.
         set_raw_input_selected_by_user(False);
+        try_refresh_custom_phrase;
         Exit;
     end;
     build_started_at := GetTickCount64;
@@ -9057,6 +9135,8 @@ begin
         clear_one_key_completion;
         Exit;
     end;
+
+    if try_refresh_custom_phrase then Exit;
 
     // Candidate visibility is more important than the optional Tab hint during
     // real incremental typing. Direct whole-query evaluation uses fixed work so
@@ -137515,6 +137595,7 @@ function TncEngine.get_one_key_rerank_request(out request: TncOneKeyRerankReques
 begin
     request := Default(TncOneKeyRerankRequest);
     Result := m_has_one_key_rerank_request and
+        (m_one_key_completion.source <> okcs_custom_phrase) and
         (m_one_key_completion.text = m_one_key_rerank_request.incumbent_text) and
         (m_one_key_completion.full_pinyin = m_one_key_rerank_request.incumbent_pinyin) and
         (m_one_key_completion_query_prefix = m_one_key_rerank_request.query_prefix);
@@ -137526,7 +137607,8 @@ function TncEngine.apply_one_key_rerank(const request: TncOneKeyRerankRequest;
     const chosen: Integer): Boolean;
 begin
     Result := False;
-    if (not m_has_one_key_rerank_request) or (chosen < 0) or
+    if (m_one_key_completion.source = okcs_custom_phrase) or
+        (not m_has_one_key_rerank_request) or (chosen < 0) or
         (chosen > High(m_one_key_rerank_pool)) or (chosen = request.incumbent) or
         (request.query_prefix <> m_one_key_rerank_request.query_prefix) or
         (request.incumbent <> m_one_key_rerank_request.incumbent) or
@@ -185123,6 +185205,9 @@ end;
 
 function TncEngine.get_one_key_completion: TncOneKeyCompletion;
 begin
+    if try_refresh_custom_phrase then Exit(m_one_key_completion);
+    if m_one_key_completion.source = okcs_custom_phrase then
+        clear_one_key_completion;
     if m_quick_input.exclusive then Exit(Default(TncOneKeyCompletion));
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
     carry_validated_prefix_completion;

@@ -60,6 +60,8 @@ function nc_parse_fuzzy_pinyin_rules_text(
 
 implementation
 
+uses nc_custom_phrases;
+
 const
     c_config_version = 16;
     c_font_name_utf8_migration_version = 11;
@@ -901,6 +903,7 @@ begin
     Result.decimal_period_after_digit := True;
     Result.punctuation_ascii_symbols := c_markdown_punctuation_ascii_symbols;
     Result.auto_english := True;
+    Result.custom_phrases := nil;
     Result.enable_segment_candidates := True;
     Result.segment_head_only_multi_syllable := True;
     Result.candidate_font_name := c_default_candidate_font_name;
@@ -1135,6 +1138,8 @@ begin
             safe_ini_read_string(ini, 'punctuation', 'ascii_symbols',
                 c_markdown_punctuation_ascii_symbols));
         Result.auto_english := safe_ini_read_bool(ini, 'input', 'auto_english', True);
+        nc_parse_custom_phrases(safe_ini_read_string(ini, 'custom_phrases',
+            'items', ''), Result.custom_phrases);
         Result.enable_segment_candidates := True;
         Result.segment_head_only_multi_syllable := True;
         Result.candidate_font_name := Trim(safe_ini_read_string(ini, 'appearance', 'candidate_font_name',
@@ -1334,6 +1339,8 @@ begin
         ini.WriteString('punctuation', 'ascii_symbols',
             nc_normalize_punctuation_ascii_symbols(config.punctuation_ascii_symbols));
         ini.WriteBool('input', 'auto_english', config.auto_english);
+        ini.WriteString('custom_phrases', 'items',
+            nc_custom_phrases_to_json(config.custom_phrases));
         ini.WriteInteger('engine', 'debug', Ord(config.debug_mode));
         candidate_font_name := Trim(config.candidate_font_name);
         if candidate_font_name = '' then

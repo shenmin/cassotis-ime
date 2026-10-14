@@ -17,6 +17,7 @@ uses
     Vcl.Controls,
     Vcl.StdCtrls,
     Vcl.ComCtrls,
+    Vcl.Grids,
     Vcl.ExtCtrls,
     Vcl.Graphics,
     Vcl.Dialogs,
@@ -26,6 +27,7 @@ uses
     nc_dpi_scale,
     nc_version_info,
     nc_config,
+    nc_custom_phrases,
     nc_candidate_theme,
     nc_candidate_window,
     nc_log;
@@ -154,13 +156,13 @@ type
         m_tab_appearance: TTabSheet;
         m_tab_fuzzy_pinyin: TTabSheet;
         m_tab_shortcuts: TTabSheet;
-        m_tab_logging: TTabSheet;
+        m_tab_custom_phrases: TTabSheet;
         m_tab_advanced: TTabSheet;
         m_scroll_general: TScrollBox;
         m_scroll_appearance: TScrollBox;
         m_scroll_fuzzy_pinyin: TScrollBox;
         m_scroll_shortcuts: TScrollBox;
-        m_scroll_logging: TScrollBox;
+        m_scroll_custom_phrases: TScrollBox;
         m_scroll_advanced: TScrollBox;
         m_label_website: TLabel;
         m_btn_reset: TncModernButton;
@@ -198,6 +200,9 @@ type
         m_combo_one_key_completion_key: TComboBox;
         m_panel_candidate_page_previous_key: TPanel;
         m_panel_candidate_page_next_key: TPanel;
+        m_custom_phrase_grid: TStringGrid;
+        m_custom_phrase_notice: TLabel;
+        m_loading_custom_phrases: Boolean;
         m_chk_log_enabled: TncModernCheckBox;
         m_combo_log_level: TComboBox;
         m_edit_log_max_size_kb: TEdit;
@@ -224,13 +229,27 @@ type
         procedure configure_tabs;
         procedure configure_buttons;
         procedure update_website_link_layout;
+        procedure on_tabs_resize(Sender: TObject);
         procedure normalize_dialog_client_width_for_dpi(const dpi: Integer);
         procedure update_dialog_height_for_content;
         procedure add_general_controls;
         procedure add_appearance_controls;
         procedure add_fuzzy_pinyin_controls;
         procedure add_shortcut_controls;
-        procedure add_logging_controls;
+        procedure add_custom_phrase_controls;
+        procedure load_custom_phrase_controls(const phrases: TncCustomPhraseList);
+        function read_custom_phrase_controls(out phrases: TncCustomPhraseList;
+            out error_text: string): Boolean;
+        procedure update_custom_phrase_notice;
+        procedure on_custom_phrase_edit(Sender: TObject; ACol, ARow: Longint;
+            const Value: string);
+        procedure on_custom_phrase_resize(Sender: TObject);
+        procedure on_custom_phrase_add(Sender: TObject);
+        procedure on_custom_phrase_delete(Sender: TObject);
+        procedure on_custom_phrase_move(Sender: TObject);
+        procedure on_custom_phrase_import(Sender: TObject);
+        procedure on_custom_phrase_export(Sender: TObject);
+        function add_logging_controls(const start_top: Integer): Integer;
         procedure add_advanced_controls;
         procedure update_scaled_control_metrics;
         procedure mark_dirty(Sender: TObject);
@@ -321,6 +340,12 @@ implementation
 uses
     nc_status_widget_appearance;
 
+type
+    TncCustomPhraseGrid = class(TStringGrid)
+    published
+        property OnResize;
+    end;
+
 const
     c_dialog_width = 596;
     c_dialog_height = 452;
@@ -358,16 +383,25 @@ resourcestring
     STabAppearance = '外观';
     STabFuzzyPinyin = '模糊拼音';
     STabShortcuts = '快捷键';
-    STabLogging = '日志';
+    STabCustomPhrases = '自定义短语';
+    SCustomPhraseHint = '完整输入快捷码时，短语显示在一键补全区，按一键补全键上屏（默认 Tab）。普通候选和空格选词不变。快捷码为 1–32 个英文字母，不区分大小写。';
+    SCustomPhraseOrder = '快捷码重复时，一键补全区只显示列表中的第一条；可用“上移 / 下移”调整顺序。';
+    SCustomPhraseDuplicate = '快捷码“%s”重复：一键补全区只显示列表中的第一条。';
+    SCustomPhraseInvalidKey = '第 %d 行：快捷码只能使用 1–32 个英文字母。';
+    SCustomPhraseInvalidText = '第 %d 行：请填写短语内容，最多 4096 个字符，不能包含控制字符（换行和制表符除外）。';
+    SCustomPhraseTooMany = '最多可保存 1024 条自定义短语。';
+    SCustomPhraseInvalidFile = '无法读取自定义短语文件。请选择由本页导出的 JSON 文件，并检查快捷码和短语内容。';
+    SCustomPhraseFileFilter = '自定义短语 (*.json)|*.json';
     STabAdvanced = '高级';
+    SWebsiteLinkShort = '官网';
     SButtonBrowse = '浏览';
     SButtonDefaults = '恢复默认';
     SButtonApply = '应用';
     SButtonOK = '确定';
     SButtonCancel = '取消';
     SGroupDefaultBehavior = '输入';
-    SGroupLogging = '记录策略';
-    SGroupLogFiles = '文件位置';
+    SGroupLogging = '日志记录';
+    SGroupLogFiles = '日志文件位置';
     SGroupDebug = '调试';
     SGroupDictionaryPaths = '词库路径';
     SGroupConfigTools = '配置工具';
@@ -1412,13 +1446,19 @@ begin
     add_appearance_controls;
     add_fuzzy_pinyin_controls;
     add_shortcut_controls;
-    add_logging_controls;
+    add_custom_phrase_controls;
     add_advanced_controls;
     load_from_config;
 end;
 
 destructor TncSettingsForm.Destroy;
 begin
+    m_loading_custom_phrases := True;
+    if m_custom_phrase_grid <> nil then
+    begin
+        m_custom_phrase_grid.OnSetEditText := nil;
+        TncCustomPhraseGrid(m_custom_phrase_grid).OnResize := nil;
+    end;
     FreeAndNil(m_candidate_preview_window);
     inherited Destroy;
 end;
@@ -1747,6 +1787,11 @@ begin
         update_check_box_metrics(m_chk_shortcut_enabled[action]);
     update_check_box_metrics(m_chk_log_enabled);
     update_check_box_metrics(m_chk_debug_mode);
+    if m_custom_phrase_grid <> nil then
+    begin
+        m_custom_phrase_grid.DefaultRowHeight := scale_ui_for_dpi(26, dpi);
+        on_custom_phrase_resize(nil);
+    end;
     if m_candidate_preview <> nil then
     begin
         m_candidate_preview.Height := scale_ui_for_dpi(
@@ -1816,9 +1861,9 @@ begin
     m_tab_shortcuts.PageControl := m_page_control;
     m_tab_shortcuts.Caption := STabShortcuts;
 
-    m_tab_logging := TTabSheet.Create(m_page_control);
-    m_tab_logging.PageControl := m_page_control;
-    m_tab_logging.Caption := STabLogging;
+    m_tab_custom_phrases := TTabSheet.Create(m_page_control);
+    m_tab_custom_phrases.PageControl := m_page_control;
+    m_tab_custom_phrases.Caption := STabCustomPhrases;
 
     m_tab_advanced := TTabSheet.Create(m_page_control);
     m_tab_advanced.PageControl := m_page_control;
@@ -1828,10 +1873,11 @@ begin
     m_scroll_appearance := create_page_scroll_box(Self, m_tab_appearance);
     m_scroll_fuzzy_pinyin := create_page_scroll_box(Self, m_tab_fuzzy_pinyin);
     m_scroll_shortcuts := create_page_scroll_box(Self, m_tab_shortcuts);
-    m_scroll_logging := create_page_scroll_box(Self, m_tab_logging);
+    m_scroll_custom_phrases := create_page_scroll_box(Self, m_tab_custom_phrases);
     m_scroll_advanced := create_page_scroll_box(Self, m_tab_advanced);
 
     m_label_website := TLabel.Create(Self);
+    m_label_website.Name := 'SettingsWebsiteLink';
     m_label_website.Parent := m_page_control;
     m_label_website.Caption := c_official_website_url;
     m_label_website.Font.Color := RGB(50, 118, 255);
@@ -1841,30 +1887,41 @@ begin
     m_label_website.ShowHint := True;
     m_label_website.OnClick := on_website_link_click;
     m_label_website.Anchors := [akTop, akRight];
+    m_page_control.OnResize := on_tabs_resize;
     update_website_link_layout;
 end;
 
 procedure TncSettingsForm.update_website_link_layout;
 var
-    dpi: Integer;
-    tab_strip_height: Integer;
+    gap, left_edge, right_edge, available_width, tab_strip_height: Integer;
 begin
-    if (m_page_control = nil) or (m_label_website = nil) then
+    if (csDestroying in ComponentState) or (m_label_website = nil) or
+        (m_page_control = nil) then
     begin
         Exit;
     end;
 
     m_page_control.HandleNeeded;
-    dpi := get_window_dpi(Handle);
-    if dpi <= 0 then
-    begin
-        dpi := c_nc_base_dpi;
-    end;
-
+    gap := scale_ui_for_dpi(8, CurrentPPI);
+    left_edge := gap;
+    if m_page_control.PageCount > 0 then
+        left_edge := m_page_control.TabRect(m_page_control.PageCount - 1).Right + gap;
+    right_edge := m_page_control.ClientWidth - scale_ui_for_dpi(12, CurrentPPI);
+    available_width := right_edge - left_edge;
+    m_label_website.Caption := c_official_website_url;
+    // Keep the link available even when the work area limits the dialog width.
+    if m_label_website.Width > available_width then
+        m_label_website.Caption := SWebsiteLinkShort;
+    m_label_website.Left := right_edge - m_label_website.Width;
     tab_strip_height := m_page_control.DisplayRect.Top;
-    m_label_website.Left := m_page_control.ClientWidth - m_label_website.Width - scale_ui_for_dpi(12, dpi);
     m_label_website.Top := Max(0, (tab_strip_height - m_label_website.Height) div 2);
+    m_label_website.Visible := True;
     m_label_website.BringToFront;
+end;
+
+procedure TncSettingsForm.on_tabs_resize(Sender: TObject);
+begin
+    update_website_link_layout;
 end;
 
 procedure TncSettingsForm.configure_buttons;
@@ -1931,6 +1988,7 @@ begin
     m_btn_cancel.Cancel := True;
     m_btn_cancel.OnClick := on_cancel_click;
     m_btn_cancel.VisualKind := mbkSecondary;
+
 end;
 
 procedure TncSettingsForm.add_general_controls;
@@ -2731,22 +2789,299 @@ begin
     end;
 end;
 
-procedure TncSettingsForm.add_logging_controls;
+procedure TncSettingsForm.add_custom_phrase_controls;
+var panel: TPanel; hint: TLabel; top, idx: Integer;
+    button: TncModernButton;
+const captions: array[0..5] of string = ('新增', '删除', '上移', '下移', '导入', '导出');
+begin
+    panel := create_section_group(Self, m_scroll_custom_phrases, '',
+        scale_ui(c_section_gap), 340);
+    hint := create_hint_label(Self, panel, SCustomPhraseHint,
+        scale_ui(c_label_left), scale_ui(14), panel.Width - scale_ui(36));
+    hint.Anchors := [akLeft, akTop, akRight];
+    top := hint.Top + hint.Height + scale_ui(10);
+    m_custom_phrase_grid := TncCustomPhraseGrid.Create(Self);
+    m_custom_phrase_grid.Name := 'CustomPhraseGrid';
+    m_custom_phrase_grid.Parent := panel;
+    m_custom_phrase_grid.SetBounds(scale_ui(c_label_left), top,
+        panel.Width - scale_ui(36), scale_ui(170));
+    m_custom_phrase_grid.Anchors := [akLeft, akTop, akRight];
+    m_custom_phrase_grid.ColCount := 2;
+    m_custom_phrase_grid.RowCount := 2;
+    m_custom_phrase_grid.FixedCols := 0;
+    m_custom_phrase_grid.FixedRows := 1;
+    m_custom_phrase_grid.DefaultRowHeight := scale_ui(26);
+    m_custom_phrase_grid.Options := [goFixedVertLine, goFixedHorzLine,
+        goVertLine, goHorzLine, goEditing, goAlwaysShowEditor, goTabs, goThumbTracking];
+    m_custom_phrase_grid.Cells[0, 0] := '快捷码';
+    m_custom_phrase_grid.Cells[1, 0] := '短语内容';
+    m_custom_phrase_grid.OnSetEditText := on_custom_phrase_edit;
+    TncCustomPhraseGrid(m_custom_phrase_grid).OnResize := on_custom_phrase_resize;
+    on_custom_phrase_resize(nil);
+    top := top + m_custom_phrase_grid.Height + scale_ui(10);
+    for idx := 0 to High(captions) do
+    begin
+        button := TncModernButton.Create(Self);
+        button.Name := 'CustomPhraseAction' + IntToStr(idx);
+        button.Parent := panel;
+        button.SetBounds(scale_ui(c_label_left + idx * 78), top,
+            scale_ui(68), scale_ui(c_button_height));
+        button.Caption := captions[idx];
+        button.Tag := idx;
+        case idx of
+            0: button.OnClick := on_custom_phrase_add;
+            1: button.OnClick := on_custom_phrase_delete;
+            2, 3: button.OnClick := on_custom_phrase_move;
+            4: button.OnClick := on_custom_phrase_import;
+            5: button.OnClick := on_custom_phrase_export;
+        end;
+    end;
+    m_custom_phrase_notice := create_hint_label(Self, panel,
+        SCustomPhraseOrder, scale_ui(c_label_left),
+        top + scale_ui(c_button_height + 12), panel.Width - scale_ui(36));
+    m_custom_phrase_notice.Name := 'CustomPhraseNotice';
+    m_custom_phrase_notice.Anchors := [akLeft, akTop, akRight];
+    m_custom_phrase_notice.Height := scale_ui(48);
+    panel.Height := m_custom_phrase_notice.Top + m_custom_phrase_notice.Height + scale_ui(12);
+end;
+
+procedure TncSettingsForm.on_custom_phrase_resize(Sender: TObject);
+var dpi: Integer;
+begin
+    if m_custom_phrase_grid = nil then Exit;
+    dpi := m_custom_phrase_grid.CurrentPPI;
+    m_custom_phrase_grid.ColWidths[0] := scale_ui_for_dpi(100, dpi);
+    m_custom_phrase_grid.ColWidths[1] := Max(scale_ui_for_dpi(100, dpi),
+        m_custom_phrase_grid.ClientWidth - m_custom_phrase_grid.ColWidths[0] -
+        scale_ui_for_dpi(24, dpi));
+end;
+
+procedure TncSettingsForm.load_custom_phrase_controls(const phrases: TncCustomPhraseList);
+var idx: Integer;
+begin
+    m_loading_custom_phrases := True;
+    try
+        m_custom_phrase_grid.RowCount := Max(2, Length(phrases) + 1);
+        for idx := 1 to m_custom_phrase_grid.RowCount - 1 do
+        begin
+            m_custom_phrase_grid.Cells[0, idx] := '';
+            m_custom_phrase_grid.Cells[1, idx] := '';
+        end;
+        for idx := 0 to High(phrases) do
+        begin
+            m_custom_phrase_grid.Cells[0, idx + 1] := phrases[idx].shortcut;
+            m_custom_phrase_grid.Cells[1, idx + 1] := phrases[idx].text;
+        end;
+    finally
+        m_loading_custom_phrases := False;
+    end;
+    update_custom_phrase_notice;
+end;
+
+function TncSettingsForm.read_custom_phrase_controls(out phrases: TncCustomPhraseList;
+    out error_text: string): Boolean;
+var idx, count: Integer; key, text: string;
+begin
+    phrases := nil;
+    error_text := '';
+    count := 0;
+    SetLength(phrases, m_custom_phrase_grid.RowCount - 1);
+    for idx := 1 to m_custom_phrase_grid.RowCount - 1 do
+    begin
+        key := Trim(m_custom_phrase_grid.Cells[0, idx]);
+        text := m_custom_phrase_grid.Cells[1, idx];
+        if (key = '') and (Trim(text) = '') then Continue;
+        key := nc_custom_phrase_key(key);
+        if key = '' then
+            error_text := Format(SCustomPhraseInvalidKey, [idx])
+        else if not nc_custom_phrase_text_valid(text) then
+            error_text := Format(SCustomPhraseInvalidText, [idx])
+        else if count >= c_custom_phrase_max_count then
+            error_text := SCustomPhraseTooMany;
+        if error_text <> '' then Exit(False);
+        phrases[count].shortcut := key;
+        phrases[count].text := text;
+        Inc(count);
+    end;
+    SetLength(phrases, count);
+    Result := True;
+end;
+
+procedure TncSettingsForm.update_custom_phrase_notice;
+var seen: TStringList; idx: Integer; key: string;
+begin
+    if m_custom_phrase_notice = nil then Exit;
+    m_custom_phrase_notice.Caption := SCustomPhraseOrder;
+    m_custom_phrase_notice.Font.Color := clGrayText;
+    seen := TStringList.Create;
+    try
+        seen.Sorted := True;
+        for idx := 1 to m_custom_phrase_grid.RowCount - 1 do
+        begin
+            key := nc_custom_phrase_key(m_custom_phrase_grid.Cells[0, idx]);
+            if key = '' then Continue;
+            if seen.IndexOf(key) >= 0 then
+            begin
+                m_custom_phrase_notice.Caption := Format(SCustomPhraseDuplicate, [key]);
+                m_custom_phrase_notice.Font.Color := RGB(160, 90, 0);
+                Exit;
+            end;
+            seen.Add(key);
+        end;
+    finally
+        seen.Free;
+    end;
+end;
+
+procedure TncSettingsForm.on_custom_phrase_edit(Sender: TObject; ACol, ARow: Longint;
+    const Value: string);
+begin
+    if m_loading_custom_phrases then Exit;
+    update_custom_phrase_notice;
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.on_custom_phrase_add(Sender: TObject);
+var row: Integer;
+begin
+    row := m_custom_phrase_grid.RowCount - 1;
+    if (m_custom_phrase_grid.Cells[0, row] <> '') or
+        (m_custom_phrase_grid.Cells[1, row] <> '') then
+    begin
+        if row >= c_custom_phrase_max_count then
+        begin
+            Application.MessageBox(PChar(SCustomPhraseTooMany), PChar(STabCustomPhrases), MB_OK);
+            Exit;
+        end;
+        m_custom_phrase_grid.RowCount := m_custom_phrase_grid.RowCount + 1;
+        Inc(row);
+    end;
+    m_custom_phrase_grid.Row := row;
+    m_custom_phrase_grid.Col := 0;
+    if m_custom_phrase_grid.CanFocus then m_custom_phrase_grid.SetFocus;
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.on_custom_phrase_delete(Sender: TObject);
+var idx, row: Integer;
+begin
+    row := m_custom_phrase_grid.Row;
+    if row < 1 then Exit;
+    for idx := row to m_custom_phrase_grid.RowCount - 2 do
+        m_custom_phrase_grid.Rows[idx].Assign(m_custom_phrase_grid.Rows[idx + 1]);
+    if m_custom_phrase_grid.RowCount > 2 then
+        m_custom_phrase_grid.RowCount := m_custom_phrase_grid.RowCount - 1
+    else
+    begin
+        m_custom_phrase_grid.Cells[0, 1] := '';
+        m_custom_phrase_grid.Cells[1, 1] := '';
+    end;
+    update_custom_phrase_notice;
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.on_custom_phrase_move(Sender: TObject);
+var row, target, col: Integer; value: string;
+begin
+    row := m_custom_phrase_grid.Row;
+    target := row - 1;
+    if TComponent(Sender).Tag = 3 then target := row + 1;
+    if (row < 1) or (target < 1) or (target >= m_custom_phrase_grid.RowCount) then Exit;
+    for col := 0 to 1 do
+    begin
+        value := m_custom_phrase_grid.Cells[col, row];
+        m_custom_phrase_grid.Cells[col, row] := m_custom_phrase_grid.Cells[col, target];
+        m_custom_phrase_grid.Cells[col, target] := value;
+    end;
+    m_custom_phrase_grid.Row := target;
+    update_custom_phrase_notice;
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.on_custom_phrase_import(Sender: TObject);
+var dialog: TOpenDialog; imported, current: TncCustomPhraseList; error_text: string;
+    stream: TFileStream; reader: TStreamReader;
+begin
+    if not read_custom_phrase_controls(current, error_text) then
+    begin
+        Application.MessageBox(PChar(error_text), PChar(STabCustomPhrases), MB_OK or MB_ICONWARNING);
+        Exit;
+    end;
+    dialog := TOpenDialog.Create(Self);
+    try
+        dialog.Filter := SCustomPhraseFileFilter;
+        dialog.Options := [ofFileMustExist, ofPathMustExist, ofEnableSizing];
+        if not dialog.Execute then Exit;
+        try
+            stream := TFileStream.Create(dialog.FileName, fmOpenRead or fmShareDenyWrite);
+            try
+                if stream.Size > 16 * 1024 * 1024 then
+                    raise EConvertError.Create(SCustomPhraseInvalidFile);
+                reader := TStreamReader.Create(stream, TEncoding.UTF8, True);
+                try
+                    if not nc_parse_custom_phrases(reader.ReadToEnd, imported) then
+                        raise EConvertError.Create(SCustomPhraseInvalidFile);
+                finally reader.Free; end;
+            finally stream.Free; end;
+            if Length(current) + Length(imported) > c_custom_phrase_max_count then
+                raise EConvertError.Create(SCustomPhraseTooMany);
+            load_custom_phrase_controls(current + imported);
+            mark_dirty(Sender);
+        except
+            on E: Exception do
+                Application.MessageBox(PChar(E.Message), PChar(STabCustomPhrases), MB_OK or MB_ICONWARNING);
+        end;
+    finally
+        dialog.Free;
+    end;
+end;
+
+procedure TncSettingsForm.on_custom_phrase_export(Sender: TObject);
+var dialog: TSaveDialog; phrases: TncCustomPhraseList; error_text: string;
+begin
+    if not read_custom_phrase_controls(phrases, error_text) then
+    begin
+        Application.MessageBox(PChar(error_text), PChar(STabCustomPhrases), MB_OK or MB_ICONWARNING);
+        Exit;
+    end;
+    dialog := TSaveDialog.Create(Self);
+    try
+        dialog.Filter := SCustomPhraseFileFilter;
+        dialog.DefaultExt := 'json';
+        dialog.FileName := 'cassotis_custom_phrases.json';
+        dialog.Options := [ofOverwritePrompt, ofPathMustExist, ofEnableSizing];
+        if dialog.Execute then
+        try
+            TFile.WriteAllText(dialog.FileName, nc_custom_phrases_to_json(phrases), TEncoding.UTF8);
+        except
+            on E: Exception do
+                Application.MessageBox(PChar(E.Message), PChar(STabCustomPhrases), MB_OK or MB_ICONWARNING);
+        end;
+    finally
+        dialog.Free;
+    end;
+end;
+
+function TncSettingsForm.add_logging_controls(const start_top: Integer): Integer;
 var
     top: Integer;
     section_top: Integer;
     logging_group: TPanel;
     files_group: TPanel;
 begin
-    section_top := scale_ui(18);
-    logging_group := create_section_group(Self, m_scroll_logging, SGroupLogging, section_top, 152);
+    section_top := start_top;
+    logging_group := create_section_group(Self, m_scroll_advanced, SGroupLogging, section_top, 152);
+    logging_group.Name := 'SettingsLoggingGroup';
+    logging_group.Caption := '';
 
     top := scale_ui(c_section_inner_top);
     m_chk_log_enabled := create_check_box(Self, logging_group, top, SCheckEnableLogging, mark_dirty);
+    m_chk_log_enabled.Name := 'SettingsLoggingEnabled';
 
     Inc(top, scale_ui(c_row_height + c_row_gap));
     create_label(Self, logging_group, SLabelLogLevel, top);
     m_combo_log_level := TComboBox.Create(Self);
+    m_combo_log_level.Name := 'SettingsLogLevel';
     m_combo_log_level.Parent := logging_group;
     m_combo_log_level.Left := scale_ui(c_control_left);
     m_combo_log_level.Top := top;
@@ -2761,6 +3096,7 @@ begin
     Inc(top, scale_ui(c_row_height + c_row_gap));
     create_label(Self, logging_group, SLabelMaxLogSize, top);
     m_edit_log_max_size_kb := TEdit.Create(Self);
+    m_edit_log_max_size_kb.Name := 'SettingsLogMaxSize';
     m_edit_log_max_size_kb.Parent := logging_group;
     m_edit_log_max_size_kb.Left := scale_ui(c_control_left);
     m_edit_log_max_size_kb.Top := top;
@@ -2769,11 +3105,14 @@ begin
     m_edit_log_max_size_kb.OnChange := mark_dirty;
 
     section_top := logging_group.Top + logging_group.Height + scale_ui(c_section_gap);
-    files_group := create_section_group(Self, m_scroll_logging, SGroupLogFiles, section_top, 108);
+    files_group := create_section_group(Self, m_scroll_advanced, SGroupLogFiles, section_top, 108);
+    files_group.Name := 'SettingsLogFilesGroup';
+    files_group.Caption := '';
 
     top := scale_ui(c_section_inner_top);
     create_label(Self, files_group, SLabelLogPath, top);
     m_edit_log_path := TEdit.Create(Self);
+    m_edit_log_path.Name := 'SettingsLogPath';
     m_edit_log_path.Parent := files_group;
     m_edit_log_path.Left := scale_ui(c_control_left);
     m_edit_log_path.Top := top;
@@ -2787,7 +3126,7 @@ begin
         SButtonOpenLogFolder, on_open_log_folder);
     m_btn_log_defaults := create_action_button(Self, files_group, scale_ui(c_control_left + c_action_button_width + 12), top,
         SButtonUseDefaultLogging, on_log_defaults_click);
-
+    Result := files_group.Top + files_group.Height + scale_ui(c_section_gap);
 end;
 
 procedure TncSettingsForm.add_advanced_controls;
@@ -2800,9 +3139,12 @@ var
 begin
     section_top := scale_ui(18);
     debug_group := create_section_group(Self, m_scroll_advanced, SGroupDebug, section_top, 154);
+    debug_group.Name := 'SettingsDebugGroup';
+    debug_group.Caption := '';
 
     top := scale_ui(c_section_inner_top);
     m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
+    m_chk_debug_mode.Name := 'SettingsDebugMode';
     debug_hint := create_hint_label(Self, debug_group, SHintDebugMode, scale_ui(c_label_left),
         top + scale_ui(c_row_height + 4), scale_ui(c_hint_width));
     top := debug_hint.Top + debug_hint.Height + scale_ui(8);
@@ -2812,7 +3154,10 @@ begin
         m_btn_clear_user_dictionary.Top + m_btn_clear_user_dictionary.Height + scale_ui(14));
 
     section_top := debug_group.Top + debug_group.Height + scale_ui(c_section_gap);
+    section_top := add_logging_controls(section_top);
     tools_group := create_section_group(Self, m_scroll_advanced, SGroupConfigTools, section_top, 134);
+    tools_group.Name := 'SettingsConfigToolsGroup';
+    tools_group.Caption := '';
 
     top := scale_ui(c_section_inner_top);
     m_btn_open_config_folder := create_action_button(Self, tools_group, scale_ui(c_label_left), top,
@@ -2862,6 +3207,8 @@ end;
 
 procedure TncSettingsForm.on_page_change(Sender: TObject);
 begin
+    if m_btn_reset <> nil then
+        m_btn_reset.Enabled := m_page_control.ActivePage <> m_tab_custom_phrases;
     preview_status_widget;
 end;
 
@@ -3035,8 +3382,14 @@ begin
         set_candidate_page_key_scheme_combo(
             default_engine_config.candidate_page_key_scheme);
     end
-    else if m_page_control.ActivePage = m_tab_logging then
+    else if m_page_control.ActivePage = m_tab_custom_phrases then
     begin
+        // Manual phrases are user content, not disposable learned preferences.
+        Exit;
+    end
+    else if m_page_control.ActivePage = m_tab_advanced then
+    begin
+        m_chk_debug_mode.Checked := default_engine_config.debug_mode;
         m_chk_log_enabled.Checked := default_log_config.enabled;
         case default_log_config.level of
             ll_debug:
@@ -3050,10 +3403,6 @@ begin
         end;
         m_edit_log_max_size_kb.Text := IntToStr(default_log_config.max_size_kb);
         m_edit_log_path.Text := default_log_config.log_path;
-    end
-    else if m_page_control.ActivePage = m_tab_advanced then
-    begin
-        m_chk_debug_mode.Checked := default_engine_config.debug_mode;
     end
     else
     begin
@@ -3592,6 +3941,7 @@ begin
         m_edit_punctuation_ascii_symbols.Text := m_engine_config.punctuation_ascii_symbols;
     if m_chk_auto_english <> nil then
         m_chk_auto_english.Checked := m_engine_config.auto_english;
+    load_custom_phrase_controls(m_engine_config.custom_phrases);
     if m_chk_show_status_widget <> nil then
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
@@ -3711,6 +4061,11 @@ begin
     error_text := '';
 
     next_config.max_candidates := 9;
+    if not read_custom_phrase_controls(next_config.custom_phrases, error_text) then
+    begin
+        m_page_control.ActivePage := m_tab_custom_phrases;
+        Exit(False);
+    end;
 
     if not read_integer_setting(m_edit_log_max_size_kb, m_log_config.max_size_kb, 64, 1024 * 1024,
         SSettingMaxLogSize, log_max_size_kb, error_text) then
@@ -3987,6 +4342,7 @@ begin
         m_apply_proc(m_engine_config, m_log_config, m_status_widget_visible, m_status_widget_transparency);
     end;
     m_edit_punctuation_ascii_symbols.Text := m_engine_config.punctuation_ascii_symbols;
+    load_custom_phrase_controls(m_engine_config.custom_phrases);
     m_dirty := False;
     m_applied := True;
     update_apply_button;

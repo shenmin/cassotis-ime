@@ -65,7 +65,8 @@ type
         okcs_long_transition,
         okcs_long_neural,
         okcs_document_copy,
-        okcs_exact_tail_fallback
+        okcs_exact_tail_fallback,
+        okcs_custom_phrase
     );
 
     TncOneKeyCompletion = record
@@ -206,6 +207,12 @@ type
         open_settings: TncShortcut;
     end;
 
+    TncCustomPhrase = record
+        shortcut: string;
+        text: string;
+    end;
+    TncCustomPhraseList = TArray<TncCustomPhrase>;
+
     TncEngineConfig = record
         input_mode: TncInputMode;
         pinyin_input_scheme: TncPinyinInputScheme;
@@ -220,6 +227,7 @@ type
         decimal_period_after_digit: Boolean;
         punctuation_ascii_symbols: string;
         auto_english: Boolean;
+        custom_phrases: TncCustomPhraseList;
         enable_segment_candidates: Boolean;
         segment_head_only_multi_syllable: Boolean;
         candidate_font_name: string;
