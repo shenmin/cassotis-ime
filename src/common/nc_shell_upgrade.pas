@@ -229,6 +229,9 @@ begin
         end;
         detail := Format('Explorer graceful shutdown=%d restart=%d desktop_verified=%d',
             [stopped, restarted, recovered]);
+        // Restart Manager's results beside the watcher's lines: the recovery
+        // log is the file users send, and Setup's log has them elsewhere.
+        nc_shell_recovery_note(backend.RecoveryLogPath, detail);
         Result := (stopped = ERROR_SUCCESS) and (recovered = ERROR_SUCCESS);
     finally
         if backend.RecoveryLogPath <> '' then

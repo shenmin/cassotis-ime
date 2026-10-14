@@ -183492,20 +183492,33 @@ var
                 if is_shuangpin_input or (Length(syllables) < 2) or
                     (Pos('''', m_composition_text) > 0) then Exit;
                 first_key := normalize_pinyin_text(syllables[0].text);
-                if (Length(first_key) < 3) or
-                    (Copy(first_key, Length(first_key) - 1, 2) <> 'ng') or
+                if (first_key = '') or
                     (Copy(normalized_pinyin, 1, Length(first_key)) <> first_key) then Exit;
-                head_key := Copy(first_key, 1, Length(first_key) - 1);
+                if (Length(first_key) >= 3) and
+                    (Copy(first_key, Length(first_key) - 1, 2) = 'ng') then
+                    head_key := Copy(first_key, 1, Length(first_key) - 1)
+                else
+                begin
+                    // A greedy split may leave a nasal final on the next
+                    // syllable: tia/na and xin/ga also permit tian/a and xing/a.
+                    // Recover selectable prefixes without changing the decode.
+                    if (Length(normalized_pinyin) <= Length(first_key) + 1) or
+                        not CharInSet(normalized_pinyin[Length(first_key) + 1], ['n', 'g']) or
+                        not CharInSet(normalized_pinyin[Length(first_key) + 2], ['a', 'e', 'o']) then Exit;
+                    head_key := Copy(normalized_pinyin, 1, Length(first_key) + 1);
+                end;
                 if not nc_is_canonical_pinyin_syllable(head_key) then Exit;
                 tail_key := Copy(normalized_pinyin, Length(head_key) + 1, MaxInt);
                 tail_parts := get_effective_compact_pinyin_syllables(tail_key);
-                if (Length(tail_parts) = 0) or (Length(tail_parts[0].text) < 2) or
-                    (tail_parts[0].text[1] <> 'g') then Exit;
+                if Length(tail_parts) = 0 then Exit;
+                if (Length(head_key) < Length(first_key)) and
+                    ((Length(tail_parts[0].text) < 2) or
+                    (tail_parts[0].text[1] <> 'g')) then Exit;
                 for idx := 0 to High(tail_parts) do
                     if not nc_is_canonical_pinyin_syllable(tail_parts[idx].text) then Exit;
                 if not lookup_display_exact_cached(head_key, singles) then Exit;
 
-                // Keep the preferred ng parse. Alternative n/g characters are
+                // Keep the preferred parse. Alternative nasal-boundary characters are
                 // selectable prefixes, not new paths or learned compounds.
                 first_added := -1;
                 for idx := 0 to High(singles) do
@@ -183523,7 +183536,7 @@ var
                 end;
                 if first_added < 0 then Exit;
 
-                // One alternative before the long tail of ng homophones; all
+                // One alternative before the long tail of primary homophones; all
                 // remaining characters stay pageable. Never displace Top1/2
                 // or move a single character ahead of word/exact candidates.
                 insert_at := 0;

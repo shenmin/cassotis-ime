@@ -16,7 +16,7 @@ type
     end;
 
 const
-    c_fixed_top: array[0..31] of TFixedTopEntry = (
+    c_fixed_top: array[0..34] of TFixedTopEntry = (
         (pinyin:'en'; simplified:#$55EF; traditional:#$55EF),
         (pinyin:'ba'; simplified:#$5427; traditional:#$5427),
         (pinyin:'e'; simplified:#$5443; traditional:#$5443),
@@ -48,7 +48,10 @@ const
         (pinyin:'yu'; simplified:#$4E0E; traditional:#$8207),
         (pinyin:'hui'; simplified:#$4F1A; traditional:#$6703),
         (pinyin:'hao'; simplified:#$597D; traditional:#$597D),
-        (pinyin:'xing'; simplified:#$884C; traditional:#$884C));
+        (pinyin:'xing'; simplified:#$884C; traditional:#$884C),
+        (pinyin:'ying'; simplified:#$5E94; traditional:#$61C9),
+        (pinyin:'jiu'; simplified:#$5C31; traditional:#$5C31),
+        (pinyin:'bu'; simplified:#$4E0D; traditional:#$4E0D));
 
 function nc_fixed_top_text(const normalized_query: string;
     const syllable_count: Integer; const variant: TncDictionaryVariant): string;

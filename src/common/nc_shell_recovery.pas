@@ -37,10 +37,22 @@ type
 
 function nc_desktop_state(const caller: TncShellIdentity;
     out shell: TncShellIdentity): TncDesktopState;
+// The same, and which check decided (for the recovery log).
+function nc_desktop_state_detail(const caller: TncShellIdentity;
+    out shell: TncShellIdentity; out detail: string): TncDesktopState;
+// A window of an abandoned Explorer that keeps it from being stopped.
+function nc_shell_window_withholds_stop(const class_name: string): Boolean;
+// The visible top-level windows of a process: how many, whether one of them
+// withholds a stop, and the first class names (for the recovery log). False
+// when the windows could not be listed.
+function nc_visible_process_windows(const pid: DWORD; out count: Integer;
+    out file_operation: Boolean; out classes: string): Boolean;
 function nc_abandoned_shell_stop_allowed(const original, current, caller: TncShellIdentity;
     const windows_dir: string; const desktop: TncDesktopState;
-    const handoff_finished, has_visible_windows: Boolean): Boolean;
+    const handoff_finished, has_file_operation: Boolean): Boolean;
 function nc_shell_watcher_status(const watcher: THandle): string;
+// A line of the caller in a recovery log ('' is no log).
+procedure nc_shell_recovery_note(const log_path, text: string);
 function nc_monitor_shell_recovery(const monitor: IncShellRecoveryMonitor;
     out detail: string): DWORD;
 function nc_run_shell_recovery(const parent_pid, shell_pid: DWORD;
@@ -71,7 +83,9 @@ type
     PncVisibleWindowQuery = ^TncVisibleWindowQuery;
     TncVisibleWindowQuery = record
         pid: DWORD;
-        found: Boolean;
+        count: Integer;
+        file_operation: Boolean;
+        classes: string;
     end;
 
 function nc_create_process_with_token(token: THandle; logon_flags: DWORD;
@@ -93,8 +107,21 @@ begin
     end;
 end;
 
+procedure nc_shell_recovery_note(const log_path, text: string);
+begin
+    trace(log_path, text);
+end;
+
 function nc_desktop_state(const caller: TncShellIdentity;
     out shell: TncShellIdentity): TncDesktopState;
+var
+    detail: string;
+begin
+    Result := nc_desktop_state_detail(caller, shell, detail);
+end;
+
+function nc_desktop_state_detail(const caller: TncShellIdentity;
+    out shell: TncShellIdentity; out detail: string): TncDesktopState;
 var
     desktop, tray: HWND;
     desktop_pid, tray_pid: DWORD;
@@ -107,33 +134,54 @@ begin
     shell := Default(TncShellIdentity);
     desktop := GetShellWindow;
     tray := FindWindow('Shell_TrayWnd', nil);
+    detail := Format('shell_window=%d taskbar=%d', [Ord(desktop <> 0), Ord(tray <> 0)]);
     if (desktop = 0) and (tray = 0) then
         Exit(ds_missing);
     if (desktop = 0) or (tray = 0) then
         Exit;
     if not IsWindowVisible(tray) then
+    begin
+        detail := detail + '; taskbar hidden';
         Exit;
+    end;
     GetWindowThreadProcessId(desktop, @desktop_pid);
     GetWindowThreadProcessId(tray, @tray_pid);
+    detail := detail + Format('; shell_window_pid=%d taskbar_pid=%d', [desktop_pid, tray_pid]);
     if (desktop_pid = 0) or (desktop_pid <> tray_pid) then
         Exit;
     process := OpenProcess($1000 or SYNCHRONIZE, False, desktop_pid);
     if process = 0 then
+    begin
+        detail := detail + Format('; cannot open the process, error=%d', [GetLastError]);
         Exit;
+    end;
     try
         if not nc_read_shell_identity(process, shell) or
             (WaitForSingleObject(process, 0) <> WAIT_TIMEOUT) then
+        begin
+            detail := detail + '; process exited or identity unavailable';
             Exit;
+        end;
         count := GetWindowsDirectory(@windows_dir[0], Length(windows_dir));
         if (count = 0) or (count >= UINT(Length(windows_dir))) or
             (nc_shell_kind(shell.image_path, string(windows_dir)) <> sk_explorer) or
             (shell.owner_sid <> caller.owner_sid) or
             (shell.session_id <> caller.session_id) or shell.elevated then
+        begin
+            detail := detail + Format('; not the user''s Explorer: image=%s same_user=%d ' +
+                'same_session=%d elevated=%d', [shell.image_path,
+                Ord(shell.owner_sid = caller.owner_sid),
+                Ord(shell.session_id = caller.session_id), Ord(shell.elevated)]);
             Exit;
+        end;
         // Process existence (including Explorer folder servers) is not a desktop.
         if SendMessageTimeout(tray, WM_NULL, 0, 0, SMTO_ABORTIFHUNG or SMTO_BLOCK,
             100, @response) = 0 then
+        begin
+            detail := detail + '; taskbar does not answer';
             Exit;
+        end;
+        detail := detail + '; ready';
         Result := ds_ready;
     finally
         CloseHandle(process);
@@ -211,10 +259,11 @@ begin
                 stopped_at := now_ms;
                 original_exited := monitor.OriginalExited;
             end;
-            // An original that stays (a folder window or a dialog is still
-            // open, or the stop was refused) must not keep the desktop away:
-            // without a shell window a new Explorer becomes the shell, and
-            // the old process keeps what it shows.
+            // An original that stays (a file operation runs in it, or the
+            // stop was refused) must not keep the desktop away for good: a
+            // new Explorer is started beside it. That is the last resort,
+            // not the rule: beside an Explorer that used to be the shell the
+            // new one may come up without a working taskbar.
             beside_original := not original_exited and finished and (stop_attempts > 0);
             if beside_original then
             begin
@@ -274,11 +323,24 @@ begin
         (WaitForSingleObject(done, 0) = WAIT_OBJECT_0);
 end;
 
+function nc_shell_window_withholds_stop(const class_name: string): Boolean;
+begin
+    // The progress of a file copy, move or delete: work that a stop would cut
+    // short. A folder window holds nothing a restart loses, and the abandoned
+    // Explorer shows one whenever Setup was started from File Explorer.
+    Result := SameText(class_name, 'OperationStatusWindow');
+end;
+
 function nc_abandoned_shell_stop_allowed(const original, current, caller: TncShellIdentity;
     const windows_dir: string; const desktop: TncDesktopState;
-    const handoff_finished, has_visible_windows: Boolean): Boolean;
+    const handoff_finished, has_file_operation: Boolean): Boolean;
 begin
-    Result := handoff_finished and (desktop = ds_missing) and not has_visible_windows and
+    // An Explorer that gave up the desktop and outlived Restart Manager's
+    // wait does not take the desktop back, and a second Explorer beside it
+    // does not become a working shell (taskbar and context menus stayed dead
+    // on a user's machine): it is stopped, whatever windows it still shows,
+    // unless a file operation is running in it.
+    Result := handoff_finished and (desktop = ds_missing) and not has_file_operation and
         nc_same_shell_instance(original, current) and
         (nc_shell_kind(current.image_path, windows_dir) = sk_explorer) and
         (current.pid <> 0) and (current.pid <> caller.pid) and
@@ -292,21 +354,49 @@ function find_visible_process_window(window: HWND; parameter: LPARAM): BOOL; std
 var
     query: PncVisibleWindowQuery;
     pid: DWORD;
+    buffer: array[0..255] of Char;
+    class_name: string;
 begin
     query := PncVisibleWindowQuery(parameter);
     pid := 0;
     GetWindowThreadProcessId(window, @pid);
     if (pid = query.pid) and IsWindowVisible(window) then
-        query.found := True;
-    Result := not query.found;
+    begin
+        SetString(class_name, PChar(@buffer[0]), GetClassName(window, @buffer[0], Length(buffer)));
+        Inc(query.count);
+        if nc_shell_window_withholds_stop(class_name) then
+            query.file_operation := True;
+        if query.count <= 8 then
+        begin
+            if query.classes <> '' then
+                query.classes := query.classes + ' ';
+            query.classes := query.classes + class_name;
+        end;
+    end;
+    Result := True;
+end;
+
+function nc_visible_process_windows(const pid: DWORD; out count: Integer;
+    out file_operation: Boolean; out classes: string): Boolean;
+var
+    query: TncVisibleWindowQuery;
+begin
+    query := Default(TncVisibleWindowQuery);
+    query.pid := pid;
+    Result := (pid <> 0) and EnumWindows(@find_visible_process_window, LPARAM(@query));
+    count := query.count;
+    file_operation := query.file_operation;
+    classes := query.classes;
 end;
 
 function TncNativeRecoveryMonitor.StopAbandonedExplorer: DWORD;
 var
     current: TncShellIdentity;
-    query: TncVisibleWindowQuery;
     windows_dir: array[0..MAX_PATH] of Char;
     count: UINT;
+    window_count: Integer;
+    file_operation: Boolean;
+    classes: string;
 begin
     Result := ERROR_NOT_READY;
     try
@@ -317,21 +407,22 @@ begin
         count := GetWindowsDirectory(@windows_dir[0], Length(windows_dir));
         if (count = 0) or (count >= UINT(Length(windows_dir))) then
             Exit;
-        query := Default(TncVisibleWindowQuery);
-        query.pid := current.pid;
-        // Do not kill Explorer folders or file-operation dialogs left open.
-        if not EnumWindows(@find_visible_process_window, LPARAM(@query)) and not query.found then
+        // Without the window list a file operation cannot be ruled out.
+        if not nc_visible_process_windows(current.pid, window_count, file_operation, classes) then
             Exit;
         if not nc_abandoned_shell_stop_allowed(original_shell, current, caller,
-            string(windows_dir), DesktopState, Finished, query.found) then
+            string(windows_dir), DesktopState, Finished, file_operation) then
         begin
-            trace(log_path, Format('Abandoned stop withheld; same_instance=%d visible_windows=%d ' +
-                'desktop=%d handoff_finished=%d', [Ord(nc_same_shell_instance(original_shell, current)),
-                Ord(query.found), Ord(DesktopState), Ord(Finished)]));
+            trace(log_path, Format('Abandoned stop withheld; same_instance=%d file_operation=%d ' +
+                'desktop=%d handoff_finished=%d windows=%d [%s]',
+                [Ord(nc_same_shell_instance(original_shell, current)), Ord(file_operation),
+                Ord(DesktopState), Ord(Finished), window_count, classes]));
             Exit;
         end;
         if OriginalExited then
             Exit(ERROR_SUCCESS);
+        trace(log_path, Format('Stopping the abandoned original Explorer; windows=%d [%s]',
+            [window_count, classes]));
         // This retained handle identifies the verified original, not a new
         // Explorer that might have reused its PID or already restored the shell.
         if not TerminateProcess(shell, 0) then
@@ -382,8 +473,8 @@ begin
         CloseHandle(process.hProcess);
         Result := ERROR_SUCCESS;
     end;
-    trace(log_path, Format('Fallback Explorer launch=%d (original user token) beside_original=%d',
-        [Result, Ord(not OriginalExited)]));
+    trace(log_path, Format('Fallback Explorer launch=%d pid=%d (original user token) beside_original=%d',
+        [Result, process.dwProcessId, Ord(not OriginalExited)]));
 end;
 
 procedure TncNativeRecoveryMonitor.Pause(const milliseconds: DWORD);
@@ -484,6 +575,12 @@ begin
             Exit(GetLastError);
         Result := nc_monitor_shell_recovery(monitor, detail);
         trace(log_path, detail);
+        if Result <> ERROR_SUCCESS then
+        begin
+            // Which check a desktop that is neither there nor missing fails.
+            nc_desktop_state_detail(caller, shell_identity, detail);
+            trace(log_path, 'Desktop check: ' + detail);
+        end;
     finally
         monitor := nil;
         if primary <> 0 then CloseHandle(primary);
@@ -553,6 +650,7 @@ function TncExplorerRecovery.Verify: DWORD;
 var
     shell: TncShellIdentity;
     started: UInt64;
+    detail: string;
 begin
     // Both RM calls have returned. The watcher may now recover a verified
     // original that lost its desktop windows without finishing process exit.
@@ -571,8 +669,9 @@ begin
         end;
         Sleep(200);
     until GetTickCount64 - started >= 30000;
+    nc_desktop_state_detail(m_caller, shell, detail);
     trace(m_log_path, 'Desktop verification timed out; recovery watcher ' +
-        nc_shell_watcher_status(m_watcher));
+        nc_shell_watcher_status(m_watcher) + '; ' + detail);
     Result := ERROR_TIMEOUT;
 end;
 
