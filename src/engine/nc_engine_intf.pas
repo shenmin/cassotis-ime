@@ -4850,6 +4850,15 @@ function TncEngine.search_budget_should_stop(const start_tick: UInt64;
 var
     elapsed_ms: UInt64;
 begin
+    // Deterministic quality runs must never fall back to elapsed-time gates.
+    // Some nested short-window searches bypass the production policy, but
+    // their work limits still provide a stable bound in deterministic mode.
+    if m_search_budget_mode = sbm_deterministic then
+    begin
+        Exit(nc_search_budget_should_stop(m_search_budget_mode, 0,
+            work_count, work_limit, timed_budget_ms,
+            emergency_budget_ms, m_search_budget_scale_percent));
+    end;
     if not apply_configured_policy then
     begin
         if (start_tick = 0) or (timed_budget_ms = 0) then
@@ -4870,12 +4879,6 @@ begin
         (not m_composition_built_incrementally) then
     begin
         Exit(nc_search_budget_should_stop(sbm_deterministic, 0,
-            work_count, work_limit, timed_budget_ms,
-            emergency_budget_ms, m_search_budget_scale_percent));
-    end;
-    if m_search_budget_mode = sbm_deterministic then
-    begin
-        Exit(nc_search_budget_should_stop(m_search_budget_mode, 0,
             work_count, work_limit, timed_budget_ms,
             emergency_budget_ms, m_search_budget_scale_percent));
     end;
@@ -6020,6 +6023,7 @@ function TncEngine.try_refresh_document_copy_completion(
 const
     c_raw_candidate_limit = 24;
     c_max_exact_segments = 3;
+    c_max_anchor_units = 8;
     c_max_suffix_units = 8;
     c_min_evidence = 700;
     c_min_winner_margin = 88;
@@ -6040,11 +6044,13 @@ var
     by_text: TDictionary<string, Integer>;
     raw_values: TncDocumentContinuationList;
     resolved: TncExactTextPath;
+    anchor_resolved: TncExactTextPath;
     item: TncDocumentScoredCompletion;
     existing: TncDocumentScoredCompletion;
     candidate: TncCandidate;
     base_text: string;
     base_path: string;
+    anchor_full_pinyin: string;
     full_text: string;
     feedback_score: Integer;
     path_score: Integer;
@@ -6081,6 +6087,22 @@ var
         if base_path = '' then
         begin
             base_path := base_text;
+        end;
+        anchor_full_pinyin := compact_query;
+        anchor_resolved := Default(TncExactTextPath);
+        if (get_candidate_text_unit_count(base_text) <=
+            c_max_anchor_units) and
+            m_dictionary.resolve_exact_text_prefix(base_text,
+            c_max_exact_segments, c_max_anchor_units, anchor_resolved) and
+            SameText(anchor_resolved.text, base_text) and
+            normalize_pinyin_text(anchor_resolved.full_pinyin).StartsWith(
+            compact_query, True) then
+        begin
+            // The typed query can end in a partial syllable. Keep the full
+            // anchor spelling so continuing that syllable is not learned as
+            // a rejection of the document-local completion.
+            anchor_full_pinyin := normalize_pinyin_text(
+                anchor_resolved.full_pinyin);
         end;
 
         for raw_idx := 0 to High(raw_values) do
@@ -6119,7 +6141,7 @@ var
             item.context_width := raw_values[raw_idx].context_width;
             item.occurrence_count := raw_values[raw_idx].occurrence_count;
             item.value.text := full_text;
-            item.value.full_pinyin := compact_query +
+            item.value.full_pinyin := anchor_full_pinyin +
                 resolved.full_pinyin;
             item.value.path_text := base_path + #3 + resolved.path_text;
             item.value.weight := resolved.weight;
@@ -7524,6 +7546,38 @@ var
         end;
     end;
 
+    // A key that lengthens or rewrites the last syllable ("jid" -> "jidu",
+    // "xia" -> "xian") changes the anchor a long completion continued, and
+    // its spelling was the typed keys plus the suffix. The user has rejected
+    // nothing yet: only a key that starts a new syllable after the unchanged
+    // syllables before it can leave the completion.
+    function continues_last_syllable: Boolean;
+    var
+        previous_syllables: TncPinyinParseResult;
+        syllable_idx: Integer;
+    begin
+        previous_syllables := get_effective_compact_pinyin_syllables(
+            previous_query_prefix, False);
+        if Length(previous_syllables) = 0 then
+        begin
+            Exit(False);
+        end;
+        if Length(syllables) <= Length(previous_syllables) then
+        begin
+            Exit(True);
+        end;
+        for syllable_idx := 0 to High(previous_syllables) do
+        begin
+            if not SameText(
+                normalize_pinyin_text(previous_syllables[syllable_idx].text),
+                normalize_pinyin_text(syllables[syllable_idx].text)) then
+            begin
+                Exit(True);
+            end;
+        end;
+        Result := False;
+    end;
+
 begin
     previous_completion := m_one_key_completion;
     previous_query_prefix := m_one_key_completion_query_prefix;
@@ -7568,7 +7622,8 @@ begin
         (Length(compact_query) > Length(previous_query_prefix)) and
         (not previous_completion.full_pinyin.StartsWith(compact_query,
         True)) and (previous_completion.anchor_path <> '') and
-        (previous_completion.suffix_text <> '') then
+        (previous_completion.suffix_text <> '') and
+        (not continues_last_syllable) then
     begin
         m_dictionary.record_long_one_key_completion_reject(
             previous_completion.anchor_path,
@@ -68887,6 +68942,8 @@ var
         end;
 
     begin
+        { Fast search also reads this flag, before the fallback lattice starts. }
+        runtime_exact_edge_probe_collection_local := False;
         if (Length(candidates) = 0) or
             (input_syllable_count < c_long_sentence_exact_min_syllables) or
             (not is_full_pinyin_key(lookup_text)) or
@@ -69094,7 +69151,6 @@ var
         standalone_chunk_budget_remaining := 12;
         use_direct_chunk_lattice_only := True;
         suppress_subspan_oracle_local := syllable_count_local <= 8;
-        runtime_exact_edge_probe_collection_local := False;
         if suppress_subspan_oracle_local then
         begin
             Inc(m_disable_subspan_standalone_oracle);
@@ -130320,6 +130376,9 @@ begin
         clear_short_exact_pair_tail_handoff;
     end;
     reset_debug_target_recall_metrics;
+    { Nested prefix/chain helpers may consult this cache on an early exit path. }
+    exact_subspan_cache_prepared := False;
+    head_only_multi_syllable := False;
     subspan_oracle_states := nil;
     subspan_oracle_texts := nil;
     subspan_oracle_scores := nil;
