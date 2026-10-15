@@ -232,6 +232,7 @@ type
         procedure on_tabs_resize(Sender: TObject);
         procedure normalize_dialog_client_width_for_dpi(const dpi: Integer);
         procedure update_dialog_height_for_content;
+        procedure fit_section_groups_to_pages;
         procedure add_general_controls;
         procedure add_appearance_controls;
         procedure add_fuzzy_pinyin_controls;
@@ -361,6 +362,7 @@ const
     c_row_height = 30;
     c_row_gap = 10;
     c_edit_width = 120;
+    c_log_size_edit_width = 80;
     c_combo_width = 172;
     c_path_edit_width = 248;
     c_browse_button_gap = 8;
@@ -400,8 +402,7 @@ resourcestring
     SButtonOK = '确定';
     SButtonCancel = '取消';
     SGroupDefaultBehavior = '输入';
-    SGroupLogging = '日志记录';
-    SGroupLogFiles = '日志文件位置';
+    SGroupLogging = '日志';
     SGroupDebug = '调试';
     SGroupDictionaryPaths = '词库路径';
     SGroupConfigTools = '配置工具';
@@ -474,7 +475,7 @@ resourcestring
     SOptionLogInfo = '信息';
     SOptionLogWarn = '警告';
     SOptionLogError = '错误';
-    SLabelMaxLogSize = '日志大小上限（KB）';
+    SLabelMaxLogSize = '大小上限（KB）';
     SLabelLogPath = '日志路径';
     SButtonOpenLogFolder = '打开日志目录';
     SButtonUseDefaultLogging = '恢复默认日志';
@@ -1448,6 +1449,7 @@ begin
     add_shortcut_controls;
     add_custom_phrase_controls;
     add_advanced_controls;
+    fit_section_groups_to_pages;
     load_from_config;
 end;
 
@@ -1669,6 +1671,38 @@ begin
         SetBounds(target_left, target_top, Width, Height);
     end;
     update_website_link_layout;
+end;
+
+procedure TncSettingsForm.fit_section_groups_to_pages;
+var
+    tab_sheet: TTabSheet;
+    content_parent: TScrollBox;
+    control: TControl;
+    tab_index: Integer;
+    control_index: Integer;
+begin
+    // The group that makes a page's scroll bar appear keeps the width it got
+    // without the bar while the groups above it shrink with the page, and
+    // came out wider than them once the dialog had grown and the bar was
+    // gone. Equal widths from here on follow the page alike.
+    for tab_index := 0 to m_page_control.PageCount - 1 do
+    begin
+        tab_sheet := m_page_control.Pages[tab_index];
+        if (tab_sheet = nil) or (tab_sheet.ControlCount <> 1) or
+            (not (tab_sheet.Controls[0] is TScrollBox)) then
+        begin
+            Continue;
+        end;
+        content_parent := TScrollBox(tab_sheet.Controls[0]);
+        for control_index := 0 to content_parent.ControlCount - 1 do
+        begin
+            control := content_parent.Controls[control_index];
+            if (control is TPanel) and (content_parent.ClientWidth > control.Left * 2) then
+            begin
+                control.Width := content_parent.ClientWidth - (control.Left * 2);
+            end;
+        end;
+    end;
 end;
 
 procedure TncSettingsForm.normalize_dialog_client_width_for_dpi(const dpi: Integer);
@@ -3065,12 +3099,10 @@ end;
 function TncSettingsForm.add_logging_controls(const start_top: Integer): Integer;
 var
     top: Integer;
-    section_top: Integer;
     logging_group: TPanel;
-    files_group: TPanel;
+    size_label: TLabel;
 begin
-    section_top := start_top;
-    logging_group := create_section_group(Self, m_scroll_advanced, SGroupLogging, section_top, 152);
+    logging_group := create_section_group(Self, m_scroll_advanced, SGroupLogging, start_top, 180);
     logging_group.Name := 'SettingsLoggingGroup';
     logging_group.Caption := '';
 
@@ -3078,14 +3110,29 @@ begin
     m_chk_log_enabled := create_check_box(Self, logging_group, top, SCheckEnableLogging, mark_dirty);
     m_chk_log_enabled.Name := 'SettingsLoggingEnabled';
 
-    Inc(top, scale_ui(c_row_height + c_row_gap));
+    // Level and size share a row, the size ending under the browse button,
+    // so that the Advanced page is no taller than the others.
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
     create_label(Self, logging_group, SLabelLogLevel, top);
+    m_edit_log_max_size_kb := TEdit.Create(Self);
+    m_edit_log_max_size_kb.Name := 'SettingsLogMaxSize';
+    m_edit_log_max_size_kb.Parent := logging_group;
+    m_edit_log_max_size_kb.Width := scale_ui(c_log_size_edit_width);
+    m_edit_log_max_size_kb.Left := scale_ui(c_control_left + c_path_edit_width + c_browse_button_gap +
+        c_browse_button_width) - m_edit_log_max_size_kb.Width;
+    m_edit_log_max_size_kb.Top := top;
+    configure_numeric_edit(m_edit_log_max_size_kb, '64..1048576');
+    m_edit_log_max_size_kb.OnChange := mark_dirty;
+    size_label := create_label(Self, logging_group, SLabelMaxLogSize, top);
+    size_label.Left := m_edit_log_max_size_kb.Left - scale_ui(8) - size_label.Width;
+
     m_combo_log_level := TComboBox.Create(Self);
     m_combo_log_level.Name := 'SettingsLogLevel';
     m_combo_log_level.Parent := logging_group;
     m_combo_log_level.Left := scale_ui(c_control_left);
     m_combo_log_level.Top := top;
-    m_combo_log_level.Width := scale_ui(c_combo_width);
+    m_combo_log_level.Width := Min(scale_ui(c_combo_width),
+        size_label.Left - scale_ui(16) - m_combo_log_level.Left);
     m_combo_log_level.Style := csDropDownList;
     m_combo_log_level.Items.Add(SOptionLogDebug);
     m_combo_log_level.Items.Add(SOptionLogInfo);
@@ -3093,40 +3140,25 @@ begin
     m_combo_log_level.Items.Add(SOptionLogError);
     m_combo_log_level.OnChange := mark_dirty;
 
-    Inc(top, scale_ui(c_row_height + c_row_gap));
-    create_label(Self, logging_group, SLabelMaxLogSize, top);
-    m_edit_log_max_size_kb := TEdit.Create(Self);
-    m_edit_log_max_size_kb.Name := 'SettingsLogMaxSize';
-    m_edit_log_max_size_kb.Parent := logging_group;
-    m_edit_log_max_size_kb.Left := scale_ui(c_control_left);
-    m_edit_log_max_size_kb.Top := top;
-    m_edit_log_max_size_kb.Width := scale_ui(c_edit_width);
-    configure_numeric_edit(m_edit_log_max_size_kb, '64..1048576');
-    m_edit_log_max_size_kb.OnChange := mark_dirty;
-
-    section_top := logging_group.Top + logging_group.Height + scale_ui(c_section_gap);
-    files_group := create_section_group(Self, m_scroll_advanced, SGroupLogFiles, section_top, 108);
-    files_group.Name := 'SettingsLogFilesGroup';
-    files_group.Caption := '';
-
-    top := scale_ui(c_section_inner_top);
-    create_label(Self, files_group, SLabelLogPath, top);
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    create_label(Self, logging_group, SLabelLogPath, top);
     m_edit_log_path := TEdit.Create(Self);
     m_edit_log_path.Name := 'SettingsLogPath';
-    m_edit_log_path.Parent := files_group;
+    m_edit_log_path.Parent := logging_group;
     m_edit_log_path.Left := scale_ui(c_control_left);
     m_edit_log_path.Top := top;
     m_edit_log_path.Width := scale_ui(c_path_edit_width);
     configure_path_edit(m_edit_log_path, get_default_log_path);
     m_edit_log_path.OnChange := mark_dirty;
-    m_btn_log_path := create_browse_button(Self, files_group, top, on_browse_log_path);
+    m_btn_log_path := create_browse_button(Self, logging_group, top, on_browse_log_path);
 
     Inc(top, scale_ui(c_row_height + 2));
-    m_btn_open_log_folder := create_action_button(Self, files_group, scale_ui(c_control_left), top,
+    m_btn_open_log_folder := create_action_button(Self, logging_group, scale_ui(c_control_left), top,
         SButtonOpenLogFolder, on_open_log_folder);
-    m_btn_log_defaults := create_action_button(Self, files_group, scale_ui(c_control_left + c_action_button_width + 12), top,
+    m_btn_log_defaults := create_action_button(Self, logging_group, scale_ui(c_control_left + c_action_button_width + 12), top,
         SButtonUseDefaultLogging, on_log_defaults_click);
-    Result := files_group.Top + files_group.Height + scale_ui(c_section_gap);
+    logging_group.Height := m_btn_log_defaults.Top + m_btn_log_defaults.Height + scale_ui(12);
+    Result := logging_group.Top + logging_group.Height + scale_ui(c_section_gap);
 end;
 
 procedure TncSettingsForm.add_advanced_controls;
@@ -3138,7 +3170,7 @@ var
     debug_hint: TLabel;
 begin
     section_top := scale_ui(18);
-    debug_group := create_section_group(Self, m_scroll_advanced, SGroupDebug, section_top, 154);
+    debug_group := create_section_group(Self, m_scroll_advanced, SGroupDebug, section_top, 135);
     debug_group.Name := 'SettingsDebugGroup';
     debug_group.Caption := '';
 
@@ -3150,12 +3182,11 @@ begin
     top := debug_hint.Top + debug_hint.Height + scale_ui(8);
     m_btn_clear_user_dictionary := create_action_button(Self, debug_group, scale_ui(c_label_left), top,
         SButtonClearUserDictionary, on_clear_user_dictionary_click);
-    debug_group.Height := Max(debug_group.Height,
-        m_btn_clear_user_dictionary.Top + m_btn_clear_user_dictionary.Height + scale_ui(14));
+    debug_group.Height := m_btn_clear_user_dictionary.Top + m_btn_clear_user_dictionary.Height + scale_ui(12);
 
     section_top := debug_group.Top + debug_group.Height + scale_ui(c_section_gap);
     section_top := add_logging_controls(section_top);
-    tools_group := create_section_group(Self, m_scroll_advanced, SGroupConfigTools, section_top, 134);
+    tools_group := create_section_group(Self, m_scroll_advanced, SGroupConfigTools, section_top, 104);
     tools_group.Name := 'SettingsConfigToolsGroup';
     tools_group.Caption := '';
 
@@ -3166,6 +3197,7 @@ begin
         SButtonOpenConfigFile, on_open_config_file);
 
     m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, scale_ui(c_label_left), top + scale_ui(c_row_height + 8), scale_ui(c_hint_width));
+    tools_group.Height := m_hint_advanced.Top + m_hint_advanced.Height + scale_ui(12);
 end;
 
 procedure TncSettingsForm.on_clear_user_dictionary_click(Sender: TObject);
