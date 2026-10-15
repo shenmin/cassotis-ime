@@ -137908,10 +137908,25 @@ const
     // those between 2 and 3 nats 4 in 107.
     c_shown_phrases = 3;
     c_shown_margin = 2.0;
+    // With nothing before the input (no context, or one that ended with the
+    // sentence before it) the shared LM reads a draft as the beginning of a
+    // text, where it likes literary readings: "she zhi zhong" as 射之中
+    // ("shot it and hit") 3 nats above 设置中 ("being set up"). Such drafts
+    // are scored as a clause after a comma instead, and each character of
+    // a word of the dictionary's highest weight (1000; about 6,000 words of
+    // two characters or more) adds c_strong_word_bonus. On the development
+    // part of the clauses and on clauses of chat messages the LM's draft
+    // was the clause 33 and 7 times more often (3,606 and 5,935 inputs);
+    // the bonus alone changed that by 0 and +2, from 0.5 to 0.9 nats alike,
+    // and cost from 1.0 on. With a context it cost more than it gave.
+    c_strong_word_weight = 1000;
+    c_strong_word_bonus = 0.8;
 var
     corrector: IncShortPhraseCorrector;
     keys, drafts, shown, shown_paths: TArray<string>;
     words: TArray<TArray<TArray<string>>>;
+    word_weights: TArray<TArray<TArray<Integer>>>;
+    strong_chars: TArray<Integer>;
     looked_up: TArray<TArray<Boolean>>;
     items: TncCandidateList;
     scores: TArray<Single>;
@@ -137921,9 +137936,9 @@ var
     gain, lead, corrected_gap, behind: Single;
     alternatives: string;
     ended: TArray<string>;
-    units, index, other, swap, rc, complete_limit, scored: Integer;
+    units, index, other, swap, rc, complete_limit, scored, strong: Integer;
     cuts: TArray<TArray<Integer>>;
-    top_complete: Boolean;
+    top_complete, context_free: Boolean;
 
     function span_key(const start, count: Integer): string;
     var k: Integer;
@@ -137954,6 +137969,7 @@ var
                         (get_candidate_text_unit_count(Trim(items[k].text)) = count) then
                     begin
                         words[start][count] := words[start][count] + [Trim(items[k].text)];
+                        word_weights[start][count] := word_weights[start][count] + [items[k].score];
                         if Length(words[start][count]) >= word_limit(count) then Break;
                     end;
         end;
@@ -137961,17 +137977,24 @@ var
         else Result := '';
     end;
 
-    procedure add_draft(const text: string);
+    // A draft with the characters of its words of the highest weight (the
+    // most such words when cuts give the same text).
+    procedure add_draft(const text: string; const strong_count: Integer);
     var k: Integer;
     begin
         if (Length(text) <> units) or (Length(drafts) >= c_max_drafts) then Exit;
         for k := 0 to High(drafts) do
-            if drafts[k] = text then Exit;
+            if drafts[k] = text then
+            begin
+                strong_chars[k] := Max(strong_chars[k], strong_count);
+                Exit;
+            end;
         // A word stored under a flattened key can read differently from the
         // syllables typed ("jia" "nan" against a word spelled "jian" "an").
         for k := 0 to units - 1 do
             if not m_dictionary.single_char_matches_pinyin(keys[k], text[k + 1]) then Exit;
         drafts := drafts + [text];
+        strong_chars := strong_chars + [strong_count];
     end;
 
     // Every way of cutting the input into dictionary words, longest word
@@ -137992,13 +138015,14 @@ var
 
     // A cut's text from its words' heaviest entries; the first two words
     // at the given ranks ('' when such an entry does not exist).
-    function cut_text(const parts: TArray<Integer>; const first_rank: Integer = 0;
-        const second_rank: Integer = 0): string;
+    function cut_text(const parts: TArray<Integer>; out strong_count: Integer;
+        const first_rank: Integer = 0; const second_rank: Integer = 0): string;
     var
         k, position, rank: Integer;
         word: string;
     begin
         Result := '';
+        strong_count := 0;
         position := 0;
         for k := 0 to High(parts) do
         begin
@@ -138008,6 +138032,8 @@ var
             word := nth_word(position, parts[k], rank);
             if word = '' then Exit('');
             Result := Result + word;
+            if (parts[k] > 1) and (word_weights[position][parts[k]][rank] >= c_strong_word_weight) then
+                Inc(strong_count, parts[k]);
             Inc(position, parts[k]);
         end;
     end;
@@ -138135,22 +138161,31 @@ begin
         // word in front of the page follows the keys typed before and is left
         // out, so that typing an input and giving it at once come to the same.
         SetLength(words, units);
+        SetLength(word_weights, units);
         SetLength(looked_up, units);
         for index := 0 to units - 1 do
         begin
             SetLength(words[index], c_longest_word + 1);
+            SetLength(word_weights[index], c_longest_word + 1);
             SetLength(looked_up[index], c_longest_word + 1);
         end;
-        if top_complete then add_draft(top_text);
+        if top_complete then add_draft(top_text, 0);
         collect_cuts(0, nil);
-        for index := 0 to High(cuts) do add_draft(cut_text(cuts[index]));
+        for index := 0 to High(cuts) do
+        begin
+            draft := cut_text(cuts[index], strong);
+            add_draft(draft, strong);
+        end;
         // A two-word cut also with the next entries of its words, the
         // heavier pairs first: where most phrases that are no entry come from.
         for swap := 1 to c_pair_rank_sum do
             for index := 0 to High(cuts) do
                 if Length(cuts[index]) = 2 then
                     for other := 0 to swap do
-                        add_draft(cut_text(cuts[index], other, swap - other));
+                    begin
+                        draft := cut_text(cuts[index], strong, other, swap - other);
+                        add_draft(draft, strong);
+                    end;
         if Length(drafts) = 0 then
         begin
             if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=draft]';
@@ -138176,6 +138211,8 @@ begin
             if m_segment_left_context <> '' then lm_context := m_segment_left_context
             else if m_external_left_context <> '' then lm_context := m_external_left_context
             else lm_context := m_left_context;
+            context_free := lm_context = '';
+            if context_free then lm_context := c_clause_end;
             SetLength(ended, Length(drafts));
             for index := 0 to High(drafts) do ended[index] := drafts[index] + c_clause_end;
             try
@@ -138186,6 +138223,9 @@ begin
             end;
             if (scored = Length(drafts)) and (Length(scores) = Length(drafts)) then
             begin
+                if context_free then
+                    for index := 0 to High(drafts) do
+                        scores[index] := scores[index] + c_strong_word_bonus * strong_chars[index];
                 for index := 0 to High(order) - 1 do
                     for other := index + 1 to High(order) do
                         if scores[order[other]] > scores[order[index]] then
