@@ -6061,9 +6061,21 @@ procedure TncEngine.record_one_key_completion_feedback_target(
 var
     target_pinyin: string;
     target_text: string;
+    chinese: Boolean;
+    ch: Char;
 begin
     target_pinyin := normalize_pinyin_text(full_pinyin);
     target_text := Trim(text);
+    // A completion is Chinese text: letters committed as typed after a
+    // completion was taken are no answer to it.
+    chinese := False;
+    for ch in target_text do
+        if Ord(ch) >= $80 then
+        begin
+            chinese := True;
+            Break;
+        end;
+    if not chinese then target_text := '';
     if (m_dictionary <> nil) and
         (m_completion_feedback_origin_prefix <> '') and
         (target_pinyin <> '') and (target_text <> '') and
@@ -137921,13 +137933,23 @@ const
     // and cost from 1.0 on. With a context it cost more than it gave.
     c_strong_word_weight = 1000;
     c_strong_word_bonus = 0.8;
+    // The parser keeps one reading of the letters; where they also read as
+    // the same number of syllables another way ("henganjing": heng an jing,
+    // and hen gan jing for 很干净), the drafts of that reading join the
+    // same call.
+    c_max_readings = 4;
 var
     corrector: IncShortPhraseCorrector;
     keys, drafts, shown, shown_paths: TArray<string>;
     words: TArray<TArray<TArray<string>>>;
     word_weights: TArray<TArray<TArray<Integer>>>;
-    strong_chars: TArray<Integer>;
+    strong_chars, draft_readings: TArray<Integer>;
     looked_up: TArray<TArray<Boolean>>;
+    readings: TArray<TArray<string>>;
+    reading_words: TArray<TArray<TArray<TArray<string>>>>;
+    reading_weights: TArray<TArray<TArray<TArray<Integer>>>>;
+    reading_looked_up: TArray<TArray<TArray<Boolean>>>;
+    reading_cuts: TArray<TArray<TArray<Integer>>>;
     items: TncCandidateList;
     scores: TArray<Single>;
     order: TArray<Integer>;
@@ -137937,6 +137959,7 @@ var
     alternatives: string;
     ended: TArray<string>;
     units, index, other, swap, rc, complete_limit, scored, strong: Integer;
+    reading, chosen_reading, cut_index: Integer;
     cuts: TArray<TArray<Integer>>;
     top_complete, context_free: Boolean;
 
@@ -137995,6 +138018,65 @@ var
             if not m_dictionary.single_char_matches_pinyin(keys[k], text[k + 1]) then Exit;
         drafts := drafts + [text];
         strong_chars := strong_chars + [strong_count];
+        draft_readings := draft_readings + [reading];
+    end;
+
+    // The other ways of reading the input as the same number of syllables, in
+    // reading order, longer syllables first ('r' is no syllable of its own
+    // here: it only ends an erhua syllable).
+    procedure collect_readings(const position: Integer; const parts: TArray<string>);
+    var
+        size, k: Integer;
+        syllable: string;
+    begin
+        if Length(readings) >= c_max_readings then Exit;
+        if position = Length(query) then
+        begin
+            if Length(parts) <> units then Exit;
+            for k := 0 to High(readings) do
+                if String.Join('''', readings[k]) = String.Join('''', parts) then Exit;
+            readings := readings + [parts];
+            Exit;
+        end;
+        if Length(parts) >= units then Exit;
+        for size := Min(6, Length(query) - position) downto 1 do
+        begin
+            syllable := Copy(query, position + 1, size);
+            if (syllable <> 'r') and nc_is_canonical_pinyin_syllable(syllable) then
+                collect_readings(position + size, parts + [syllable]);
+        end;
+    end;
+
+    // Makes a reading the one the words, cuts and drafts are taken from.
+    procedure use_reading(const value: Integer);
+    var k: Integer;
+    begin
+        if Length(reading_words[value]) = 0 then
+        begin
+            SetLength(reading_words[value], units);
+            SetLength(reading_weights[value], units);
+            SetLength(reading_looked_up[value], units);
+            for k := 0 to units - 1 do
+            begin
+                SetLength(reading_words[value][k], c_longest_word + 1);
+                SetLength(reading_weights[value][k], c_longest_word + 1);
+                SetLength(reading_looked_up[value][k], c_longest_word + 1);
+            end;
+        end;
+        reading := value;
+        keys := readings[value];
+        words := reading_words[value];
+        word_weights := reading_weights[value];
+        looked_up := reading_looked_up[value];
+        cuts := reading_cuts[value];
+    end;
+
+    // The syllables a draft's characters spell, as the path check takes
+    // them: the correction's alignment for the reading it was asked about.
+    function reading_pinyin(const value: Integer): string;
+    begin
+        if value = chosen_reading then Result := aligned
+        else Result := String.Join(#3, readings[value]);
     end;
 
     // Every way of cutting the input into dictionary words, longest word
@@ -138038,13 +138120,13 @@ var
         end;
     end;
 
-    procedure show(const text: string);
+    procedure show(const text, pinyin: string);
     var k: Integer;
     begin
         if (text = '') or (Length(shown) >= c_shown_phrases) then Exit;
         for k := 0 to High(shown) do
             if shown[k] = text then Exit;
-        validated := build_repair_path(m_dictionary, text, aligned);
+        validated := build_repair_path(m_dictionary, text, pinyin);
         if not validated.exact_path then Exit;
         shown := shown + [text];
         shown_paths := shown_paths + [validated.segment_path];
@@ -138160,32 +138242,41 @@ begin
         // dictionary's heaviest words for every way of cutting the input. A
         // word in front of the page follows the keys typed before and is left
         // out, so that typing an input and giving it at once come to the same.
-        SetLength(words, units);
-        SetLength(word_weights, units);
-        SetLength(looked_up, units);
-        for index := 0 to units - 1 do
+        // The parser's reading first, then the others of full pinyin (double
+        // pinyin spells every syllable with its own two keys).
+        readings := [keys];
+        if m_config.pinyin_input_scheme = pis_full_pinyin then collect_readings(0, nil);
+        SetLength(reading_words, Length(readings));
+        SetLength(reading_weights, Length(readings));
+        SetLength(reading_looked_up, Length(readings));
+        SetLength(reading_cuts, Length(readings));
+        chosen_reading := 0;
+        for index := 0 to High(readings) do
         begin
-            SetLength(words[index], c_longest_word + 1);
-            SetLength(word_weights[index], c_longest_word + 1);
-            SetLength(looked_up[index], c_longest_word + 1);
-        end;
-        if top_complete then add_draft(top_text, 0);
-        collect_cuts(0, nil);
-        for index := 0 to High(cuts) do
-        begin
-            draft := cut_text(cuts[index], strong);
-            add_draft(draft, strong);
+            use_reading(index);
+            if top_complete then add_draft(top_text, 0);
+            collect_cuts(0, nil);
+            reading_cuts[reading] := cuts;
+            for cut_index := 0 to High(cuts) do
+            begin
+                draft := cut_text(cuts[cut_index], strong);
+                add_draft(draft, strong);
+            end;
         end;
         // A two-word cut also with the next entries of its words, the
         // heavier pairs first: where most phrases that are no entry come from.
         for swap := 1 to c_pair_rank_sum do
-            for index := 0 to High(cuts) do
-                if Length(cuts[index]) = 2 then
-                    for other := 0 to swap do
-                    begin
-                        draft := cut_text(cuts[index], strong, other, swap - other);
-                        add_draft(draft, strong);
-                    end;
+            for index := 0 to High(readings) do
+            begin
+                use_reading(index);
+                for cut_index := 0 to High(cuts) do
+                    if Length(cuts[cut_index]) = 2 then
+                        for other := 0 to swap do
+                        begin
+                            draft := cut_text(cuts[cut_index], strong, other, swap - other);
+                            add_draft(draft, strong);
+                        end;
+            end;
         if Length(drafts) = 0 then
         begin
             if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=draft]';
@@ -138239,13 +138330,14 @@ begin
                 scored := 0;
         end;
         draft := drafts[order[0]];
-        // The syllables as the model's table spells them, with their
-        // boundaries: the same for full and double pinyin.
+        chosen_reading := draft_readings[order[0]];
+        // The syllables of the draft's reading as the model's table spells
+        // them, with their boundaries: the same for full and double pinyin.
         spelled := '';
         for index := 0 to units - 1 do
         begin
             if index > 0 then spelled := spelled + '''';
-            spelled := spelled + nc_normalize_umlaut_spelling(keys[index]);
+            spelled := spelled + nc_normalize_umlaut_spelling(readings[chosen_reading][index]);
         end;
         try
             rc := corrector.correct_short_phrase(spelled, draft, context,
@@ -138273,9 +138365,9 @@ begin
                     alternatives := alternatives + Format('%s:%.2f,',
                         [drafts[order[index]], scores[order[0]] - scores[order[index]]]);
             m_short_phrase_debug := Format(
-                '[sphrase rc=%d gain=%.2f n=%d lm=%d top=%d lead=%.2f cgap=%.2f alts=%s draft=%s text=%s]',
+                '[sphrase rc=%d gain=%.2f n=%d lm=%d top=%d lead=%.2f cgap=%.2f alts=%s draft=%s text=%s reading=%d/%d]',
                 [rc, gain, Length(drafts), scored, Ord(top_complete), lead, corrected_gap,
-                alternatives, draft, corrected]);
+                alternatives, draft, corrected, chosen_reading, Length(readings)]);
         end;
         // Without the model's answer nothing is written into the page.
         if rc < 0 then Exit;
@@ -138291,21 +138383,21 @@ begin
         if (rc = 1) and (Length(corrected) = units) and (gain >= c_min_gain) and
             ((corrected_gap < 0) or (gain > corrected_gap)) then
         begin
-            show(corrected);
+            show(corrected, aligned);
             behind := gain - Max(0, corrected_gap);
-            if behind <= c_shown_margin then show(draft);
+            if behind <= c_shown_margin then show(draft, aligned);
         end
         else
         begin
-            show(draft);
+            show(draft, aligned);
             behind := 0;
             if (rc = 1) and (Length(corrected) = units) and
-                (Max(0, corrected_gap) - gain <= c_shown_margin) then show(corrected);
+                (Max(0, corrected_gap) - gain <= c_shown_margin) then show(corrected, aligned);
         end;
         if scored > 0 then
             for index := 1 to High(order) do
                 if behind + scores[order[0]] - scores[order[index]] <= c_shown_margin then
-                    show(drafts[order[index]]);
+                    show(drafts[order[index]], reading_pinyin(draft_readings[order[index]]));
         if Length(shown) = 0 then Exit;
         m_short_phrase_key := key;
         m_short_phrase_texts := shown;
@@ -153133,6 +153225,7 @@ var
     candidate: TncCandidate;
     remaining_pinyin: string;
     selected_segment_path: string;
+    raw_evidence: TncEnglishEvidence;
 
     procedure demote_weak_user_single_chain_before_selection;
     const
@@ -154724,7 +154817,14 @@ begin
                 if m_composition_text <> '' then
                 begin
                     // Enter should commit raw input text instead of selecting candidate.
-                    note_raw_input_choice;
+                    // The letters become this input's choice when the user chose
+                    // the slot or they are no plain pinyin: complete pinyin that
+                    // spells no English word is pinyin quoted as such
+                    // ("zhengquede"), and learned it came back beside 正确地.
+                    raw_evidence := nc_english_evidence(get_composition_text);
+                    if m_raw_input_selected or (not raw_evidence.complete) or
+                        raw_evidence.listed then
+                        note_raw_input_choice;
                     set_pending_commit(get_raw_composition_commit_text);
                     Result := True;
                 end
