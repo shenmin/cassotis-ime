@@ -6574,6 +6574,9 @@ const
     c_feedback_reject_step = 88;
     c_hysteresis_bonus = 72;
     c_min_winner_margin = 18;
+    // A whole input read as one entry continues only by rows of its own; no
+    // word-transition anchor has this many characters.
+    c_min_whole_entry_units = 5;
 type
     TncLongCompletionPathAnalysis = record
         valid: Boolean;
@@ -6616,6 +6619,7 @@ var
     document_context_bonus: Integer;
     context_value: string;
     top1_uncontested: Boolean;
+    whole_entry: Boolean;
     request_phonetic_only: Boolean;
     context_lm_ok: Boolean;
     anchor_segment_count: Integer;
@@ -6937,6 +6941,23 @@ var
         Result := common_prefix_count >= required_prefix_count;
     end;
 
+    // One dictionary entry covering the whole input has no words before it
+    // to anchor a continuation on (and its candidate may come with a path of
+    // several words). A line of verse continues by the static rows of its
+    // own, the next line of the poem, which the generic continuation does
+    // not find (春眠不觉晓 went on with 时).
+    function whole_entry_continues: Boolean;
+    var
+        results: TncLongOneKeyCompletionList;
+        entry_text: string;
+    begin
+        entry_text := Trim(completion_candidates[top_index].text);
+        Result := (get_candidate_text_unit_count(entry_text) >= c_min_whole_entry_units) and
+            m_dictionary.is_base_entry(compact_query, entry_text) and
+            m_dictionary.lookup_long_one_key_completions(entry_text, results) and
+            (Length(results) > 0);
+    end;
+
     procedure append_anchor(const path_text, anchor_text: string;
         const segment_count: Integer);
     var
@@ -7070,15 +7091,28 @@ begin
             Break;
         end;
     end;
+    whole_entry := whole_entry_continues;
     if not analyze_candidate_path(top_index, top_analysis) then
     begin
-        Exit;
+        if not whole_entry then
+        begin
+            Exit;
+        end;
+        // The entry's candidate carries no path of words: it is one segment.
+        top_analysis := Default(TncLongCompletionPathAnalysis);
+        top_analysis.segments := [Trim(completion_candidates[top_index].text)];
+        top_analysis.exact_segments := [True];
+        top_analysis.valid := True;
     end;
-    if Length(top_analysis.segments) < 2 then
+    if (Length(top_analysis.segments) < 2) and (not whole_entry) then
     begin
         Exit;
     end;
     top_path := Trim(completion_path(top_index));
+    if (top_path = '') and whole_entry then
+    begin
+        top_path := Trim(completion_candidates[top_index].text);
+    end;
     if top_path = '' then
     begin
         Exit;
@@ -7144,7 +7178,8 @@ begin
     // The generic continuation model has not been calibrated on these recovered
     // paths. Keep multi-source indexed continuations, but do not invent a suffix
     // from the rejected draft or from unvalidated neural style transfer.
-    if (top1_anchor_path <> '') and (query_syllable_text <> '') then
+    // The line's own continuation is the answer: no generic one to challenge it.
+    if (top1_anchor_path <> '') and (query_syllable_text <> '') and (not whole_entry) then
     begin
         context_value := m_left_context;
         if m_segment_left_context <> '' then
@@ -7191,9 +7226,14 @@ begin
     end;
 
     SetLength(anchors, 0);
+    if whole_entry then
+        append_anchor(Trim(completion_candidates[top_index].text),
+            Trim(completion_candidates[top_index].text), 1);
     for anchor_segment_count := Min(c_max_anchor_segments,
         Length(top_analysis.segments)) downto 1 do
     begin
+        if whole_entry then
+            Break;
         if not exact_suffix_path(top_analysis, anchor_segment_count,
             anchor.path_text) then
         begin

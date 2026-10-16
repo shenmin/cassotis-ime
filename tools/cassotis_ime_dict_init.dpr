@@ -985,6 +985,8 @@ var
     document_score: Integer;
     source_count: Integer;
     long_completion_visible: Boolean;
+    suffix_units: Integer;
+    suffix_mark_length: Integer;
     vertical_penalty: Integer;
     layer_kind: Integer;
     path_score: Integer;
@@ -1434,16 +1436,24 @@ begin
                 anchor_text := get_query_path_plain_text(anchor_path);
                 suffix_path := normalize_query_path_text(suffix_path);
                 suffix_pinyin := normalize_pinyin_key(suffix_pinyin);
+                // A continuation that starts with a mark is the next line of
+                // a line of verse (manifests/classical_poetry_next_lines.tsv
+                // of the lexicon): up to eleven syllables after the mark. A
+                // continuation of words has six at most.
+                suffix_mark_length := 0;
+                if (suffix_text <> '') and
+                    (Pos(suffix_text[1], #$FF0C#$3002#$FF1F#$FF01#$FF1B#$FF1A#$3001) > 0) then
+                    suffix_mark_length := 1;
+                suffix_units := Length(completion_parser.parse(suffix_pinyin));
                 if (anchor_text = '') or
                     (get_query_path_segment_count(anchor_path) < 1) or
                     (get_query_path_segment_count(anchor_path) > 3) or
                     (get_query_path_segment_count(suffix_path) < 1) or
                     (get_query_path_segment_count(suffix_path) > 3) or
                     (get_query_path_plain_text(suffix_path) <> suffix_text) or
-                    (Length(completion_parser.parse(suffix_pinyin)) > 6) or
-                    (Length(completion_parser.parse(suffix_pinyin)) < 1) or
-                    (Length(completion_parser.parse(suffix_pinyin)) <>
-                    Length(suffix_text)) then
+                    ((suffix_mark_length = 0) and (suffix_units > 6)) or
+                    (suffix_units > 11) or (suffix_units < 1) or
+                    (suffix_units <> Length(suffix_text) - suffix_mark_length) then
                 begin
                     Continue;
                 end;

@@ -566,8 +566,17 @@ begin
 end;
 
 function normalize_compare_path(const value: string): string;
+var
+    buffer: array[0..1023] of Char;
+    count: DWORD;
+    path: string;
 begin
-    Result := nc_normalize_runtime_executable_path(value);
+    // regsvr32 registers the DLL by its 8.3 spelling (C:\PROGRA~1\...).
+    path := Trim(value).Trim(['"']);
+    count := GetLongPathName(PChar(path), @buffer[0], Length(buffer));
+    if (count > 0) and (count < DWORD(Length(buffer))) then
+        SetString(path, PChar(@buffer[0]), count);
+    Result := nc_normalize_runtime_executable_path(path);
 end;
 
 function is_com_registered_for_target(const clsid_text: string; const target_path: string;
@@ -1494,7 +1503,7 @@ end;
 
 function run_list_stale_tsf_holders_action: Boolean;
 var
-    incoming_dir, output_path, pid_text, path: string;
+    incoming_dir, output_path, pid_text, path, runtime_root: string;
     candidates: TArray<TncProcessInfo>;
     paths: TArray<string>;
     seen, excluded: TDictionary<Cardinal, Boolean>;
@@ -1513,6 +1522,8 @@ begin
     get_param_value('new_runtime_dir', incoming_dir);
     get_param_value('output_path', output_path);
     get_param_value('pid', pid_text);
+    runtime_root := '';
+    get_param_value('runtime_root', runtime_root);
     if (incoming_dir = '') or (output_path = '') then
         Exit;
     only_pid := 0;
@@ -1527,7 +1538,7 @@ begin
     complete := True;
     try
         try
-            inspector := TncTsfUpgradeInspector.Create(incoming_dir);
+            inspector := TncTsfUpgradeInspector.Create(incoming_dir, runtime_root);
             // Setup runs this elevated. Without the debug privilege, SYSTEM-owned
             // processes in the user's session (dwm, winlogon, vendor utilities)
             // deny module reads and leave the scan incomplete.
@@ -1541,7 +1552,7 @@ begin
                     ((only_pid <> 0) and (info.pid <> only_pid)) then
                     Continue;
                 seen.Add(info.pid, True);
-                scanned := nc_process_tsf_module_paths(info.pid, paths, error_code);
+                scanned := nc_process_tsf_module_paths(info.pid, paths, error_code, runtime_root);
                 if only_pid <> 0 then
                     Writeln(Format('Inspect PID %d: %d modules, error=%d',
                         [info.pid, Length(paths), error_code]));
@@ -1647,7 +1658,7 @@ end;
 
 function run_stale_shell_holders_action(const restart: Boolean): Boolean;
 var
-    incoming_dir, output_path, pid_text, windows_dir, path, detail: string;
+    incoming_dir, output_path, pid_text, windows_dir, path, detail, runtime_root: string;
     buffer: array[0..MAX_PATH] of Char;
     candidates: TArray<TncProcessInfo>;
     paths: TArray<string>;
@@ -1665,6 +1676,8 @@ begin
     get_param_value('new_runtime_dir', incoming_dir);
     get_param_value('output_path', output_path);
     get_param_value('pid', pid_text);
+    runtime_root := '';
+    get_param_value('runtime_root', runtime_root);
     if (incoming_dir = '') or (output_path = '') then
         Exit;
     only_pid := 0;
@@ -1677,7 +1690,7 @@ begin
     attempted_explorer := False;
     try
         try
-            inspector := TncTsfUpgradeInspector.Create(incoming_dir);
+            inspector := TncTsfUpgradeInspector.Create(incoming_dir, runtime_root);
             count := GetWindowsDirectory(@buffer[0], Length(buffer));
             if (count = 0) or (count >= DWORD(Length(buffer))) then
                 raise EInOutError.Create('Cannot resolve the Windows directory');
@@ -1726,7 +1739,8 @@ begin
                             Ord(identity.session_id = caller.session_id), Ord(identity.elevated)]));
                         Continue;
                     end;
-                    scanned := nc_process_tsf_module_paths(identity.pid, paths, error_code);
+                    scanned := nc_process_tsf_module_paths(identity.pid, paths, error_code,
+                        runtime_root);
                     changed := False;
                     for path in paths do
                     begin

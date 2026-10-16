@@ -13,8 +13,11 @@ type
     private
         m_incoming_hashes: TDictionary<string, string>;
         m_comparisons: TDictionary<string, TncTsfModuleComparison>;
+        m_runtime_root: string;
     public
-        constructor Create(const incoming_dir: string);
+        // runtime_root: the input method's install folder, where a module
+        // whose file is gone was an earlier runtime's (nc_retired_runtime_module).
+        constructor Create(const incoming_dir: string; const runtime_root: string = '');
         destructor Destroy; override;
         function CompareModule(const loaded_path: string): TncTsfModuleComparison;
     end;
@@ -23,7 +26,16 @@ function nc_is_tsf_module_name(const name: string): Boolean;
 function nc_resolve_tsf_module_path(const loaded_path: string;
     out canonical_path: string; out error_code: DWORD): Boolean;
 function nc_process_tsf_module_paths(const process_id: DWORD;
-    out paths: TArray<string>; out error_code: DWORD): Boolean;
+    out paths: TArray<string>; out error_code: DWORD;
+    const runtime_root: string = ''): Boolean;
+// A module loaded from a runtime an earlier install moved away or deleted:
+// its file is gone and the nearest folder that still exists on its path lies
+// in runtime_root, the input method's install folder. COM loads the TSF DLL
+// by an 8.3 spelling (C:\PROGRA~1\CASSOT~1\...\CASSOT~1.DLL) that no
+// longer resolves then, so neither its name nor its bytes can be checked; but
+// nothing else of that folder is loaded by applications, and the files of a
+// current runtime are never moved.
+function nc_retired_runtime_module(const loaded_path, runtime_root: string): Boolean;
 // True only for protected processes whose code-integrity policy admits
 // Windows/antimalware-signed images alone; they can never load the TSF DLL.
 // Unknown or unqueryable processes return False and remain unverified.
@@ -92,6 +104,44 @@ begin
         canonical_path := path;
 end;
 
+function long_path_of(const path: string): string;
+var
+    buffer: TArray<Char>;
+    count: DWORD;
+begin
+    Result := '';
+    count := GetLongPathName(PChar(path), nil, 0);
+    if (count = 0) or (count > 32768) then
+        Exit;
+    SetLength(buffer, count);
+    count := GetLongPathName(PChar(path), @buffer[0], Length(buffer));
+    if (count > 0) and (count < DWORD(Length(buffer))) then
+        SetString(Result, PChar(@buffer[0]), count);
+end;
+
+function nc_retired_runtime_module(const loaded_path, runtime_root: string): Boolean;
+var
+    folder, root: string;
+begin
+    Result := False;
+    if (Trim(runtime_root) = '') or (Trim(loaded_path) = '') or
+        (not SameText(ExtractFileExt(loaded_path), '.dll')) or FileExists(loaded_path) then
+        Exit;
+    root := ExcludeTrailingPathDelimiter(long_path_of(runtime_root));
+    if root = '' then
+        Exit;
+    folder := ExtractFileDir(loaded_path);
+    while (folder <> '') and not DirectoryExists(folder) do
+    begin
+        if ExtractFileDir(folder) = folder then
+            Exit;
+        folder := ExtractFileDir(folder);
+    end;
+    folder := ExcludeTrailingPathDelimiter(long_path_of(folder));
+    Result := (folder <> '') and (SameText(folder, root) or
+        folder.StartsWith(IncludeTrailingPathDelimiter(root), True));
+end;
+
 function try_file_hash(const path: string; out hash: string): Boolean;
 begin
     hash := '';
@@ -103,11 +153,13 @@ begin
     Result := hash <> '';
 end;
 
-constructor TncTsfUpgradeInspector.Create(const incoming_dir: string);
+constructor TncTsfUpgradeInspector.Create(const incoming_dir: string;
+    const runtime_root: string);
 var
     name, hash: string;
 begin
     inherited Create;
+    m_runtime_root := runtime_root;
     m_incoming_hashes := TDictionary<string, string>.Create;
     m_comparisons := TDictionary<string, TncTsfModuleComparison>.Create;
     for name in ['cassotis_ime_svr.dll', 'cassotis_ime_svr32.dll'] do
@@ -131,6 +183,8 @@ var
     error_code: DWORD;
 begin
     Result := tmc_unknown;
+    if nc_retired_runtime_module(loaded_path, m_runtime_root) then
+        Exit(tmc_changed);
     if not nc_resolve_tsf_module_path(loaded_path, canonical_path, error_code) then
         Exit;
     key := LowerCase(canonical_path);
@@ -150,7 +204,8 @@ begin
 end;
 
 function nc_process_tsf_module_paths(const process_id: DWORD;
-    out paths: TArray<string>; out error_code: DWORD): Boolean;
+    out paths: TArray<string>; out error_code: DWORD;
+    const runtime_root: string): Boolean;
 const
     c_snap_module32 = $00000010;
 var
@@ -188,6 +243,8 @@ begin
                 if nc_resolve_tsf_module_path(string(entry.szExePath),
                     canonical_path, path_error) then
                     found.Add(canonical_path)
+                else if nc_retired_runtime_module(string(entry.szExePath), runtime_root) then
+                    found.Add(string(entry.szExePath))
                 else if (path_error <> ERROR_SUCCESS) and
                     (unresolved_error = ERROR_SUCCESS) then
                     unresolved_error := path_error;

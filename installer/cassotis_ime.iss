@@ -287,6 +287,7 @@ begin
         DeleteFile(ReportPath);
         if Exec(ProfileRegPath,
             'list_stale_tsf_holders -new_runtime_dir "' + ExpandConstant('{tmp}') +
+            '" -runtime_root "' + ExpandConstant('{app}') +
             '" -output_path "' + ReportPath + '" -exclude_pid "' +
             GetCurrentProcessIdText('') + '"', '', SW_HIDE, ewWaitUntilTerminated,
             ResultCode) and (ResultCode = 0) then
@@ -316,6 +317,7 @@ begin
         { Plan as the desktop owner, not the elevated installer account. }
         if ExecAsOriginalUser(GetInstallerProfileRegPath,
             'list_stale_shell_holders -new_runtime_dir "' + ExpandConstant('{tmp}') +
+            '" -runtime_root "' + ExpandConstant('{app}') +
             '" -output_path "' + PlanPath + '"', '', SW_HIDE, ewWaitUntilTerminated,
             ResultCode) and (ResultCode = 0) then
         begin
@@ -459,6 +461,7 @@ begin
           The helper revalidates registration and live process identities. }
         if ExecAsOriginalUser(AddBackslash(RuntimeDir) + 'cassotis_ime_profile_reg.exe',
             'restart_stale_shell_holders -new_runtime_dir "' + RuntimeDir +
+            '" -runtime_root "' + ExpandConstant('{app}') +
             '" -output_path "' + ReportPath + '"', '', SW_HIDE, ewWaitUntilTerminated,
             ResultCode) and (ResultCode = 0) then
         begin
@@ -857,10 +860,28 @@ const
     c_dev_dictionary_marker = 'development_dictionaries.txt';
     c_profile_list_key = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList';
 
+{ The long spelling of a path whose last folders may be gone: COM registers
+  the runtime by an 8.3 spelling (C:\PROGRA~1\CASSOT~1\runtime\20459D~1.0_9),
+  and pruning has removed that folder by the time it is compared. }
+function ResolvedPathOf(const Path: string): string;
+var
+    Folder, Rest: string;
+begin
+    Folder := RemoveBackslashUnlessRoot(Path);
+    Rest := '';
+    while (Folder <> '') and (not DirExists(Folder)) and (not FileExists(Folder)) and
+        (ExtractFileDir(Folder) <> Folder) do
+    begin
+        Rest := '\' + ExtractFileName(Folder) + Rest;
+        Folder := ExtractFileDir(Folder);
+    end;
+    Result := LongPathOf(Folder) + Rest;
+end;
+
 function IsWithinDir(const Path, Dir: string): Boolean;
 begin
-    Result := Pos(Lowercase(AddBackslash(LongPathOf(Dir))),
-        Lowercase(AddBackslash(LongPathOf(Path)))) = 1;
+    Result := Pos(Lowercase(AddBackslash(ResolvedPathOf(Dir))),
+        Lowercase(AddBackslash(ResolvedPathOf(Path)))) = 1;
 end;
 
 procedure RemoveProfileDictionaryCopiesIn(const DataDir: string);
