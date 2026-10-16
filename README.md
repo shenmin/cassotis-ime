@@ -30,6 +30,7 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 - **Candidate window.** Paging, selection and text commitment, with an optional expanded view showing up to three rows when paging. Number keys select from the active row; the Tab completion area is unchanged.
 - **English recognition.** In Chinese full-Pinyin, half-width mode, letters that are an English word or name (`pro`, `markdown`, `Effie`), that are typed with a capital, or that were committed as letters before appear before the numbered candidates. When the input has no Chinese reading as a whole they are selected and Space commits them as typed; when it has one (`bug`, `mac`), the language model weighs the letters against it with the preceding text and selects them, shows them unselected, or leaves the candidates alone. Chinese selection numbers stay unchanged. Enabled by default and optional in General settings; Double Pinyin keeps its normal behavior.
 - **One-key completion**, original to Cassotis. Exactly one trusted continuation is shown and accepted with the configured key. Exact completions from the user and base dictionaries and offline-vetted strong-transition completions appear at once; the language model then reranks them in the background, using the text before the cursor when there is any. In a long sentence it finishes the current word or continues with the next phrase, and shows nothing when its confidence is insufficient.
+- **Custom phrases.** Save phrases under letter shortcuts in Settings > Custom Phrases. Typing a shortcut in full shows its phrase in the one-key completion area, and the completion key commits it exactly as written, line breaks included; numbered candidates and Space are unchanged. The list keeps its order and can be imported and exported as JSON.
 - **Long sentences.** Lexicon-constrained path search builds complete candidates (for example `womenjintian` → `我们今天`) while keeping prefix candidates for partial commitment. The language model chooses among the complete candidates and then corrects small homophone errors in the chosen sentence against the typed Pinyin and the text before the input.
 - **Short words.** The language model resolves competing exact candidates, using the text already committed before the cursor when there is any.
 - **Short phrases.** An input of three to five syllables that the dictionary does not contain (for example `jiuguize` → `旧规则`) gets whole phrases put together from dictionary words. The language model picks one, using the text before the cursor when there is any, and corrects its homophones against the typed Pinyin; when the choice is close, up to two more whole phrases follow the first.
@@ -146,7 +147,8 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 | Version | Top1 | Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| `v2.2.0`<br/>`v2.1.0` | 13381/16300 (82.09%) | 14270/16300 (87.55%) | 75.28 | 78 | 125 | 343 |
+| `v2.2.0` | 13388/16300 (82.13%) | 14274/16300 (87.57%) | 76.03 | 78 | 125 | 344 |
+| `v2.1.0` | 13381/16300 (82.09%) | 14270/16300 (87.55%) | 75.28 | 78 | 125 | 343 |
 | `v2.0.0` | 13380/16300 (82.09%) | 14268/16300 (87.53%) | 74.79 | 78 | 125 | 344 |
 | `v1.31.0` | 12940/16300 (79.39%) | 13534/16300 (83.03%) | 61.29 | 62 | 94 | 282 |
 | `v1.30.0` | 12828/16300 (78.70%) | 13514/16300 (82.91%) | 55.25 | 47 | 94 | 266 |
@@ -199,7 +201,7 @@ See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case c
 
 | Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `v2.2.0` | 63365/65000 (97.48%) | 64292/65000 (98.91%) | 10533/11728 (89.81%) | 11244/11728 (95.87%) | 4.798 | 2.332 | 13.092 | 45.441 |
+| `v2.2.0` | 63365/65000 (97.48%) | 64292/65000 (98.91%) | 10533/11728 (89.81%) | 11244/11728 (95.87%) | 4.676 | 2.253 | 12.700 | 47.299 |
 | `v2.1.0`<br/>`v2.0.0` | 63363/65000 (97.48%) | 64291/65000 (98.91%) | 10533/11728 (89.81%) | 11244/11728 (95.87%) | 4.637 | 2.205 | 12.621 | 40.883 |
 | `v1.31.0` | 63036/65000 (96.98%) | 64104/65000 (98.62%) | 10491/11728 (89.45%) | 11196/11728 (95.46%) | 4.582 | 3.262 | 10.352 | 22.327 |
 | `v1.30.0` | 62926/65000 (96.81%) | 64073/65000 (98.57%) | 10449/11728 (89.09%) | 11169/11728 (95.23%) | 3.525 | 3.192 | 7.660 | 21.122 |
@@ -233,7 +235,7 @@ Public results retain five columns: `Completion Hit`, `Avg Keys Saved`, `Stabili
 
 | Version | Completion Hit | Avg Keys Saved | Stability | Keystroke P95 (ms) | Final P95 (ms) |
 | --- | --- | --- | --- | --- | --- |
-| `v2.2.0` | 10441/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.830 | 21.937 |
+| `v2.2.0` | 10441/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.527 | 20.647 |
 | `v2.1.0`<br/>`v2.0.0` | 10440/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.521 | 20.445 |
 | `v1.31.0` | 10336/12831 (80.55%) | 2.638 | 2123/2185 (97.16%) | 1.238 | 11.881 |
 | `v1.30.0`<br/>`v1.29.0` | 9420/12831 (73.42%) | 2.548 | 1691/1749 (96.68%) | 0.968 | 0.968 |
@@ -249,7 +251,7 @@ This benchmark leaves the final four complete Pinyin syllables untyped and evalu
 
 | Version | Local Completion Hit | Predictive Prompt Coverage | Total Keys Saved | P95 (ms) |
 | --- | --- | --- | --- | --- |
-| `v2.2.0` | 3759/16300 (23.06%) | 16119/16300 (98.89%) | 9258 | 135.326 |
+| `v2.2.0` | 3767/16300 (23.11%) | 16118/16300 (98.88%) | 9275 | 134.064 |
 | `v2.1.0` | 3758/16300 (23.06%) | 16123/16300 (98.91%) | 9272 | 141.519 |
 | `v2.0.0` | 3755/16300 (23.04%) | 16123/16300 (98.91%) | 9265 | 133.001 |
 | `v1.31.0` | 3513/16300 (21.55%) | 15815/16300 (97.02%) | 7478 | 116.682 |
@@ -358,6 +360,8 @@ Cassotis v1.31.0 upgrades the shared character language model and trains dedicat
 Cassotis v2.0.0 replaces the model stack of v1.x with a single character-level language model. One ONNX model takes over from eleven and seven compact units from 43. The model is quantized with fixed ranges and computes attention with an operator of its own, so its scores no longer depend on how a call is batched, and what one keystroke computed is reused by the next. The four remaining decision policies are refit on the new model's scores. Phrases of three to five syllables outside the dictionary are now composed by the language model and corrected against the typed Pinyin, in place of the rules that joined fixed head characters to words. The benchmark corpus stays separate from all training data.
 
 Cassotis v2.1.0 recognizes English in Chinese mode: English words and names, input typed with a capital, and letters committed as letters before can appear before the numbered candidates, and where the input also has a Chinese reading, the language model weighs the letters against it with the preceding text. Choosing the letters is remembered without adding a user word. Chinese punctuation gets an editable set of symbols kept half-width; the default Markdown preset keeps `#`, `*`, `-` and similar symbols as ASCII, while commas, full stops, parentheses and quotation marks stay Chinese. Partial commitment is steadier: after a typo-corrected prefix is selected, the rest keeps the original keystrokes and Backspace restores the exact input, and where an n/ng boundary can be cut two ways (`jiangei` as jian'gei or jiang'ei), the single-character prefixes of both cuts can be selected while whole-input decoding stays the same. The base dictionaries gain 389 everyday colloquial phrases, such as 在等, 再开, 请我, 来啊 and 在路上. When Setup is started from File Explorer for an upgrade, the taskbar and context menus no longer stay unresponsive after Windows Explorer restarts; a copy, move or delete in progress is still never cut short.
+
+Cassotis v2.2.0 adds custom phrases: a phrase saved under a letter shortcut appears in the one-key completion area when the shortcut is typed in full and is committed as written, line breaks included; the list keeps its order, can be imported and exported as JSON, and stays out of user-word learning. The base dictionaries gain 8,176 lines of classical poetry from the school curriculum, *Three Hundred Tang Poems*, *Poems of a Thousand Masters* and *Three Hundred Song Ci*, offered when a line is typed in full (`chunmianbujuexiao` → 春眠不觉晓). One installation serves every Windows account: the base dictionaries are installed with the program and shared, where other accounts used to type without candidates.
 
 ## License
 This project is licensed under GPL-3.0. See `LICENSE` for the full license text.

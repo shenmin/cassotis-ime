@@ -1,9 +1,9 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <CassotisVersion>2.1.0</CassotisVersion>
-    <CassotisVersionQuad>2.1.0.0</CassotisVersionQuad>
+    <CassotisVersion>2.2.0</CassotisVersion>
+    <CassotisVersionQuad>2.2.0.0</CassotisVersionQuad>
     <CassotisVersionMajor>2</CassotisVersionMajor>
-    <CassotisVersionMinor>1</CassotisVersionMinor>
+    <CassotisVersionMinor>2</CassotisVersionMinor>
     <CassotisVersionRelease>0</CassotisVersionRelease>
     <CassotisVersionBuild>0</CassotisVersionBuild>
   </PropertyGroup>
