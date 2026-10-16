@@ -49,9 +49,9 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 ## Download and Install
 - **Download.** Get `cassotis_ime_setup_<version>.exe` from the [Releases](https://github.com/shenmin/cassotis-ime/releases) page. The installer is about 290 MB and includes the simplified and traditional base dictionaries and the language model.
 - **Requirements.** 64-bit Windows 10 or Windows 11; installing needs administrator rights. No network and no GPU are needed.
-- **Install.** Run the installer, then switch to "Cassotis 言泉拼音输入法" in the system's input method list (`Win + Space`).
-- **Upgrade.** Run the new installer over the installed version; there is no need to uninstall first, and Windows is never asked to restart. Applications that still have the previous text service loaded are listed: exit them first, or continue and restart them later. When necessary the installer restarts Windows Explorer, and the taskbar disappears for a moment. The user dictionary and the settings stay in `%LOCALAPPDATA%\CassotisIme`; an upgrade replaces only the base dictionaries.
-- **Uninstall.** Use Apps in Windows Settings. The uninstaller asks whether to remove the settings, dictionaries, user dictionary and logs under `%LOCALAPPDATA%\CassotisIme`; by default they are kept.
+- **Install.** Run the installer, then switch to "Cassotis 言泉拼音输入法" in the system's input method list (`Win + Space`). One installation serves every Windows account on the computer: the base dictionaries are installed with the program and shared by all accounts, and each account keeps its own user dictionary and settings.
+- **Upgrade.** Run the new installer over the installed version; there is no need to uninstall first, and Windows is never asked to restart. Applications that still have the previous text service loaded are listed: exit them first, or continue and restart them later. When necessary the installer restarts Windows Explorer, and the taskbar disappears for a moment. The user dictionary and the settings stay in each account's `%LOCALAPPDATA%\CassotisIme`; the base dictionaries come with the new version, and the copies earlier versions kept in an account's folder are removed.
+- **Uninstall.** Use Apps in Windows Settings. The uninstaller removes the program with its base dictionaries and asks whether to remove the settings, user dictionary and logs under `%LOCALAPPDATA%\CassotisIme`; by default they are kept.
 
 ## Architecture
 - `src/tsf`: TSF COM in-proc server (text service integration).
@@ -98,7 +98,7 @@ For full build details, see `BUILD.md`.
 The base dictionaries are built from the generated artifacts of the [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) project:
 - word lists: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt` (`pinyin<TAB>text<TAB>weight`)
 - corpus-trained tables from the same directory: word-transition priors, completion priors, and the short-word promotion table
-- runtime databases are rebuilt under `%LOCALAPPDATA%\CassotisIme\data\` (`dict_sc.db`, `dict_tc.db`), together with the initial-letter abbreviation index
+- runtime databases are rebuilt under `%LOCALAPPDATA%\CassotisIme\data\` (`dict_sc.db`, `dict_tc.db`), together with the initial-letter abbreviation index; a development build reads them there, and the installer packages them as the program's read-only base dictionaries
 - the user dictionary defaults to `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 
 Main rebuild entry:
@@ -290,7 +290,7 @@ Important options include:
 - English recognition in Chinese mode (`auto_english` in `[input]`, on by default)
 - debug logging and log path
 
-Runtime dictionary paths are fixed under `%LOCALAPPDATA%\CassotisIme\data\` and are no longer configured through the INI file.
+An installed version reads its base dictionaries from its program folder (`<install folder>\runtime\<version folder>\base_dict\`), read-only and shared by all Windows accounts; a development build reads them from `%LOCALAPPDATA%\CassotisIme\data\`. The user dictionary is `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` in each account. These paths are not configured through the INI file.
 
 ## Documentation
 - Simplified Chinese documentation: [README.zh-Hans.md](README.zh-Hans.md)

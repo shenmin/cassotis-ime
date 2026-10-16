@@ -190,7 +190,7 @@ If Inno Setup 6 is installed, you can build the installer from `out/` after `reb
 .\rebuild_installer.ps1
 ```
 
-The version comes from `version.props`. The script checks that both runtime dictionaries under `%LOCALAPPDATA%\CassotisIme\data\` carry the short-word promotion table, then packages them with the binaries and the language model in `out/`.
+The version comes from `version.props`. The script checks that both runtime dictionaries under `%LOCALAPPDATA%\CassotisIme\data\` carry the short-word promotion table and are in SQLite's rollback-journal mode with no journal or WAL file beside them, then packages them with the binaries and the language model in `out/`. The installed runtime reads them read-only from its own folder (`runtime\<version folder>\base_dict\`), shared by every Windows account; their hash is part of the runtime folder's name, so a dictionary-only change also installs into a new folder.
 
 Installer scripts:
 
@@ -199,6 +199,7 @@ Installer scripts:
 Behavior of the package:
 
 - An upgrade installs the new runtime beside the old one. When Windows Explorer still holds the old text service, Setup asks before restarting it and never asks to restart Windows.
+- One installation serves every Windows account. User dictionaries and settings stay in each account's `%LOCALAPPDATA%\CassotisIme`. Once the new runtime is registered, Setup removes the base dictionary copies that earlier versions left in the accounts' `%LOCALAPPDATA%\CassotisIme\data`, unless a development build (`out\`) was the registered input method or the folder holds `development_dictionaries.txt`, which `rebuild_dict.ps1` writes.
 - Uninstalling closes no application. Files that an application still has loaded are removed at the next restart, and only then does the uninstaller ask for one.
 
 ## Runtime Paths
@@ -206,8 +207,8 @@ Behavior of the package:
 Default runtime paths:
 
 - config file: `%LOCALAPPDATA%\CassotisIme\cassotis_ime.ini`
-- simplified base dictionary: `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db`
-- traditional base dictionary: `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db`
+- simplified base dictionary: `<runtime folder>\base_dict\dict_sc.db` when installed, `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` for a development build
+- traditional base dictionary: `<runtime folder>\base_dict\dict_tc.db` when installed, `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` for a development build
 - user dictionary: `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 - language model: `<host_exe_dir>\char_lm\`, with `cassotis_pinyin_transformer_ort.dll` and the ONNX Runtime DLLs beside the host executable
 

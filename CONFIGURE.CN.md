@@ -132,13 +132,15 @@
 | --- | --- | --- | --- | --- | --- |
 | `variant` | 词库变体（简/繁） | `simplified` / `traditional` / `tc` | `simplified` | `variant=simplified` | `traditional` 与 `tc` 等价。运行时可按 Ctrl+Shift+T 切换。 |
 
-运行时词库文件存储在固定运行时路径，不可在配置文件中修改：
+安装版的基础词库随程序版本提供，供所有 Windows 账户只读使用；用户词库仍按账户独立保存，不可在配置文件中修改路径：
 
 | 文件 | 路径 |
 | --- | --- |
-| 简体基础词库文件 | `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` |
-| 繁体基础词库文件 | `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` |
+| 简体基础词库文件 | `<当前安装版本目录>\base_dict\dict_sc.db` |
+| 繁体基础词库文件 | `<当前安装版本目录>\base_dict\dict_tc.db` |
 | 用户词库文件 | `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` |
+
+程序目录下没有 `base_dict` 的开发版，以及更早的安装版，使用 `%LOCALAPPDATA%\CassotisIme\data` 下的 `dict_sc.db` 和 `dict_tc.db`。安装新版本后，旧版本留在各账户该目录下的这两个基础词库副本会被删除（`out\rebuild_dict.ps1` 生成的开发词库除外）；用户词库和学习数据不会删除，也不在账户之间共享。
 
 ---
 

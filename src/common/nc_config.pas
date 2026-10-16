@@ -47,6 +47,8 @@ type
 function get_default_config_path: string;
 function get_default_config_path_read_only: string;
 function get_runtime_data_directory: string;
+function nc_select_base_dictionary_path(const module_directory,
+    user_data_directory, file_name: string): string;
 function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
 function get_default_user_dictionary_path: string;
@@ -1535,14 +1537,34 @@ begin
         'CassotisIme\cassotis_ime.ini';
 end;
 
+function nc_select_base_dictionary_path(const module_directory,
+    user_data_directory, file_name: string): string;
+var
+    installed_path: string;
+begin
+    // Base dictionaries belong to the installed runtime, not its installer.
+    // Prefer them even if an older host created an empty per-user database.
+    if module_directory <> '' then
+    begin
+        installed_path := TPath.Combine(TPath.Combine(module_directory,
+            'base_dict'), file_name);
+        if FileExists(installed_path) then
+            Exit(installed_path);
+    end;
+    // Development builds and older installations keep their existing layout.
+    Result := TPath.Combine(user_data_directory, file_name);
+end;
+
 function get_default_dictionary_path_simplified: string;
 begin
-    Result := IncludeTrailingPathDelimiter(get_runtime_data_directory) + 'dict_sc.db';
+    Result := nc_select_base_dictionary_path(get_module_directory,
+        get_runtime_data_directory, 'dict_sc.db');
 end;
 
 function get_default_dictionary_path_traditional: string;
 begin
-    Result := IncludeTrailingPathDelimiter(get_runtime_data_directory) + 'dict_tc.db';
+    Result := nc_select_base_dictionary_path(get_module_directory,
+        get_runtime_data_directory, 'dict_tc.db');
 end;
 
 function get_default_user_dictionary_path: string;

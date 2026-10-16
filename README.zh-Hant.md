@@ -49,9 +49,9 @@ Cassotis IME（言泉輸入法）是一款適用於 Windows 10/11 的實驗性�
 ## 下載與安裝
 - **下載**：在 [Releases](https://github.com/shenmin/cassotis-ime/releases) 頁面下載 `cassotis_ime_setup_<版本號>.exe`。安裝檔約 290 MB，已包含簡體、繁體基礎詞庫和語言模型。
 - **系統需求**：64 位元的 Windows 10 或 Windows 11；安裝需要系統管理員權限。不需要連網，也不需要 GPU。
-- **安裝**：執行安裝程式，完成後在系統的輸入法清單中切換到「Cassotis 言泉拼音输入法」（`Win + 空白鍵`）。
-- **升級**：直接執行新版安裝程式，不必先解除安裝，也不會要求重新啟動系統。安裝時仍載入著舊版輸入元件的應用程式會列出來，可以先結束它們，也可以選擇稍後再重新啟動這些應用程式；必要時安裝程式會重新啟動 Windows 檔案總管，工作列會短暫消失。使用者詞庫和設定保留在 `%LOCALAPPDATA%\CassotisIme` 中，升級只取代基礎詞庫。
-- **解除安裝**：在系統「應用程式」設定中解除安裝。解除安裝時會詢問是否一併刪除 `%LOCALAPPDATA%\CassotisIme` 下的設定、詞庫、使用者詞庫和記錄檔，預設保留。
+- **安裝**：執行安裝程式，完成後在系統的輸入法清單中切換到「Cassotis 言泉拼音输入法」（`Win + 空白鍵`）。一次安裝即可供本機所有 Windows 帳戶使用：基礎詞庫隨程式安裝、各帳戶共用，使用者詞庫和設定按帳戶分開保存。
+- **升級**：直接執行新版安裝程式，不必先解除安裝，也不會要求重新啟動系統。安裝時仍載入著舊版輸入元件的應用程式會列出來，可以先結束它們，也可以選擇稍後再重新啟動這些應用程式；必要時安裝程式會重新啟動 Windows 檔案總管，工作列會短暫消失。使用者詞庫和設定保留在各帳戶的 `%LOCALAPPDATA%\CassotisIme` 中；基礎詞庫隨新版本提供，舊版本留在帳戶目錄中的基礎詞庫副本會被刪除。
+- **解除安裝**：在系統「應用程式」設定中解除安裝。解除安裝時會移除程式及其基礎詞庫，並詢問是否一併刪除 `%LOCALAPPDATA%\CassotisIme` 下的設定、使用者詞庫和記錄檔，預設保留。
 
 ## 架構
 - `src/tsf`：TSF COM 處理程序內服務（文字服務介接層）。
@@ -98,7 +98,7 @@ Cassotis IME（言泉輸入法）是一款適用於 Windows 10/11 的實驗性�
 基礎詞庫由 [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) 專案產生的檔案建置：
 - 詞表：`dict_unihan_sc.txt`、`dict_unihan_tc.txt`、`dict_clean_sc.txt`、`dict_clean_tc.txt`（格式為 `pinyin<TAB>text<TAB>weight`）
 - 同一目錄下由語料訓練得到的各張表：詞間轉移先驗、補全先驗和短詞首選表
-- 執行階段資料庫會重建至 `%LOCALAPPDATA%\CassotisIme\data\`（`dict_sc.db`、`dict_tc.db`），同時產生首字母簡拼索引
+- 執行階段資料庫會重建至 `%LOCALAPPDATA%\CassotisIme\data\`（`dict_sc.db`、`dict_tc.db`），同時產生首字母簡拼索引；開發版直接讀取這裡，安裝檔將它們打包為程式自帶的唯讀基礎詞庫
 - 使用者詞庫預設位於 `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 
 詞庫重建入口：
@@ -290,7 +290,7 @@ v2.0.0 還修正了檔案總管網址列中不顯示候選視窗的問題，強�
 - 中文模式下辨識英文（`[input]` 段的 `auto_english`，預設開啟）
 - 除錯記錄與記錄檔路徑
 
-執行階段詞庫路徑固定在 `%LOCALAPPDATA%\CassotisIme\data\`，不再透過 INI 設定。
+安裝版從程式目錄讀取基礎詞庫（`<安裝目錄>\runtime\<版本目錄>\base_dict\`），唯讀、供本機所有 Windows 帳戶共用；開發版讀取 `%LOCALAPPDATA%\CassotisIme\data\`。使用者詞庫為各帳戶的 `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`。這些路徑不透過 INI 設定。
 
 ## 文件
 - 英文主文件：[README.md](README.md)

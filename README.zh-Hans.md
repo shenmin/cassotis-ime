@@ -49,9 +49,9 @@ Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中�
 ## 下载与安装
 - **下载**：在 [Releases](https://github.com/shenmin/cassotis-ime/releases) 页面下载 `cassotis_ime_setup_<版本号>.exe`。安装包约 290 MB，已包含简体、繁体基础词库和语言模型。
 - **系统要求**：64 位的 Windows 10 或 Windows 11；安装需要管理员权限。不需要联网，也不需要 GPU。
-- **安装**：运行安装程序，完成后在系统的输入法列表中切换到“Cassotis 言泉拼音输入法”（`Win + 空格`）。
-- **升级**：直接运行新版安装程序，不需要先卸载，也不会要求重启系统。安装时仍加载着旧版输入组件的应用会被列出，可以先退出它们，也可以选择稍后再重启这些应用；必要时安装程序会重启 Windows 资源管理器，任务栏会短暂消失。用户词库和配置保留在 `%LOCALAPPDATA%\CassotisIme` 中，升级只替换基础词库。
-- **卸载**：在系统“应用”设置中卸载。卸载时会询问是否一并删除 `%LOCALAPPDATA%\CassotisIme` 下的配置、词库、用户词库和日志，默认保留。
+- **安装**：运行安装程序，完成后在系统的输入法列表中切换到“Cassotis 言泉拼音输入法”（`Win + 空格`）。一次安装即可供本机所有 Windows 账户使用：基础词库随程序安装、各账户共用，用户词库和配置按账户分开保存。
+- **升级**：直接运行新版安装程序，不需要先卸载，也不会要求重启系统。安装时仍加载着旧版输入组件的应用会被列出，可以先退出它们，也可以选择稍后再重启这些应用；必要时安装程序会重启 Windows 资源管理器，任务栏会短暂消失。用户词库和配置保留在各账户的 `%LOCALAPPDATA%\CassotisIme` 中；基础词库随新版本提供，旧版本留在账户目录里的基础词库副本会被删除。
+- **卸载**：在系统“应用”设置中卸载。卸载时删除程序及其基础词库，并询问是否一并删除 `%LOCALAPPDATA%\CassotisIme` 下的配置、用户词库和日志，默认保留。
 
 ## 架构
 - `src/tsf`：TSF COM 进程内服务（文本服务接入层）。
@@ -98,7 +98,7 @@ Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中�
 基础词库由 [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) 项目的生成产物构建：
 - 词表：`dict_unihan_sc.txt`、`dict_unihan_tc.txt`、`dict_clean_sc.txt`、`dict_clean_tc.txt`（格式为 `pinyin<TAB>text<TAB>weight`）
 - 同一目录下由语料训练得到的各张表：词间转移先验、补全先验和短词首选表
-- 运行时数据库重建到 `%LOCALAPPDATA%\CassotisIme\data\`（`dict_sc.db`、`dict_tc.db`），同时生成首字母简拼索引
+- 运行时数据库重建到 `%LOCALAPPDATA%\CassotisIme\data\`（`dict_sc.db`、`dict_tc.db`），同时生成首字母简拼索引；开发版直接读取这里，安装包把它们打包为程序自带的只读基础词库
 - 用户词库默认位于 `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 
 词库重建入口：
@@ -290,7 +290,7 @@ v2.0.0 还修复了资源管理器地址栏中不显示候选窗口的问题，�
 - 中文模式下识别英文（`[input]` 段的 `auto_english`，默认开启）
 - 调试日志与日志路径
 
-运行时词库路径固定在 `%LOCALAPPDATA%\CassotisIme\data\` 下，不再通过 INI 配置。
+安装版从程序目录读取基础词库（`<安装目录>\runtime\<版本目录>\base_dict\`），只读、供本机所有 Windows 账户共用；开发版读取 `%LOCALAPPDATA%\CassotisIme\data\`。用户词库为各账户的 `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`。这些路径不通过 INI 配置。
 
 ## 文档
 - 英文主文档：[README.md](README.md)

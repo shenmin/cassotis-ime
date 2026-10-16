@@ -38,6 +38,7 @@ type
         m_ready: Boolean;
         m_base_ready: Boolean;
         m_base_connection_read_only: Boolean;
+        m_create_missing_base: Boolean;
         m_user_ready: Boolean;
         m_user_initialization_deferred: Boolean;
         m_defer_optional_model_loads: Boolean;
@@ -449,6 +450,12 @@ type
         property db_path: string read m_base_db_path;
         property user_db_path: string read m_user_db_path;
         property base_ready: Boolean read m_base_ready;
+        // A missing base database is created empty unless this is off. The
+        // engine turns it off: an empty base gives pages without candidates
+        // and no error, which is how a second Windows account looked when
+        // the base dictionaries lived in the installing user's profile.
+        property create_missing_base: Boolean read m_create_missing_base
+            write m_create_missing_base;
         property user_ready: Boolean read m_user_ready;
         property ready: Boolean read m_ready;
     end;
@@ -2597,6 +2604,7 @@ begin
     m_ready := False;
     m_base_ready := False;
     m_base_connection_read_only := False;
+    m_create_missing_base := True;
     m_user_ready := False;
     m_user_initialization_deferred := False;
     m_defer_optional_model_loads := False;
@@ -11171,7 +11179,8 @@ begin
 
         m_base_ready := m_base_connection.open(SQLITE_OPEN_READONLY);
         m_base_connection_read_only := m_base_ready;
-        if not m_base_ready then
+        if (not m_base_ready) and
+            (m_create_missing_base or FileExists(m_base_db_path)) then
         begin
             m_base_ready := m_base_connection.open(SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE);
             m_base_connection_read_only := False;

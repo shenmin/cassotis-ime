@@ -55,6 +55,8 @@ function get-shared-version {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir '..\tools\runtime_payload_fingerprint.ps1')
+. (Join-Path $scriptDir '..\tools\base_dictionary.ps1')
 $resolvedScriptPath = Resolve-Path -LiteralPath (Join-Path $scriptDir $ScriptPath)
 $resolvedSourceRoot = Resolve-Path -LiteralPath (Join-Path $scriptDir $SourceRoot)
 $versionPropsPath = Join-Path $resolvedSourceRoot 'version.props'
@@ -97,21 +99,6 @@ foreach ($relativePath in $requiredFiles) {
     require-path (Join-Path $resolvedSourceRoot $relativePath)
 }
 
-$runtimeFingerprintFiles = $runtimePayloadFiles
-$fingerprintSource = ($runtimeFingerprintFiles | ForEach-Object {
-    (Get-FileHash -LiteralPath (Join-Path $resolvedSourceRoot $_) -Algorithm SHA256).Hash
-}) -join "`n"
-$fingerprintHasher = [Security.Cryptography.SHA256]::Create()
-try {
-    $fingerprintBytes = [Text.Encoding]::UTF8.GetBytes($fingerprintSource)
-    $runtimeBuildId = ([BitConverter]::ToString(
-        $fingerprintHasher.ComputeHash($fingerprintBytes)
-    )).Replace('-', '').Substring(0, 12).ToLowerInvariant()
-}
-finally {
-    $fingerprintHasher.Dispose()
-}
-
 require-path (Join-Path $runtimeDataSourceDir 'dict_sc.db')
 require-path (Join-Path $runtimeDataSourceDir 'dict_tc.db')
 
@@ -125,6 +112,16 @@ foreach ($dictName in @('dict_sc.db', 'dict_tc.db')) {
         throw "$dictName has no short promotion table. Run rebuild_dict.ps1 first."
     }
 }
+
+# Every account reads the packaged copy read-only from the program folder.
+foreach ($dictName in @('dict_sc.db', 'dict_tc.db')) {
+    Assert-CassotisPackagedDictionary -Path (Join-Path $runtimeDataSourceDir $dictName)
+}
+
+# Dictionary-only updates need a new immutable directory too. Hash after the
+# dictionary validator, which can migrate a database before packaging it.
+$runtimeBuildId = Get-CassotisRuntimeBuildId -SourceRoot $resolvedSourceRoot `
+    -RuntimePayloadFiles $runtimePayloadFiles -RuntimeDataSourceDir $runtimeDataSourceDir
 
 Write-Host "[installer] runtime_build_id=$runtimeBuildId"
 & $iscc ("/DAppVersion=$Version") ("/DRuntimeBuildId=$runtimeBuildId") ("/DSourceRoot=$resolvedSourceRoot") ("/DRuntimeDataSourceDir=$runtimeDataSourceDir") $resolvedScriptPath

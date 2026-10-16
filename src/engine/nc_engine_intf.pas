@@ -1381,7 +1381,8 @@ uses
     nc_short_nocontext_residual_model,
 {$ENDIF}
     nc_tab_repair_projection,
-    nc_tab_exact_fallback;
+    nc_tab_exact_fallback,
+    nc_log;
 
 const
     c_suppress_nonlexicon_complete_long_candidates = True;
@@ -5532,6 +5533,17 @@ begin
     Result := create_dictionary_from_paths(base_path, user_path);
 end;
 
+procedure log_missing_base_dictionary(const path: string);
+begin
+    try
+        append_log_line_shared(get_default_log_path,
+            FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) +
+            ' [ERROR] dictionary base dictionary not found: ' + path + sLineBreak);
+    except
+        // Diagnostic I/O must not affect the engine.
+    end;
+end;
+
 function TncEngine.create_dictionary_from_paths(const base_path,
     user_path: string): TncDictionaryProvider;
 var
@@ -5541,6 +5553,13 @@ begin
     begin
         sqlite_dict := TncSqliteDictionary.create(base_path, user_path);
         sqlite_dict.set_user_dictionary_variant(m_config.dictionary_variant);
+        // A missing base dictionary is an installation fault: report it and
+        // run on the user dictionary alone. Creating an empty one instead
+        // gave a second Windows account pages without candidates and no
+        // error while the base dictionaries lived in the installer's profile.
+        sqlite_dict.create_missing_base := False;
+        if (base_path <> '') and (not FileExists(base_path)) then
+            log_missing_base_dictionary(base_path);
         if (m_defer_optional_dictionary_models and
             sqlite_dict.open_deferred) or
             ((not m_defer_optional_dictionary_models) and sqlite_dict.open) then
@@ -5673,7 +5692,8 @@ begin
     begin
         alt_variant := dv_simplified;
         alt_base_path := get_default_dictionary_path_simplified;
-        if (m_cached_dictionary_simplified <> nil) or (alt_base_path = '') then
+        if (m_cached_dictionary_simplified <> nil) or (alt_base_path = '') or
+            (not FileExists(alt_base_path)) then
         begin
             Exit;
         end;
@@ -5682,7 +5702,8 @@ begin
     begin
         alt_variant := dv_traditional;
         alt_base_path := get_default_dictionary_path_traditional;
-        if (m_cached_dictionary_traditional <> nil) or (alt_base_path = '') then
+        if (m_cached_dictionary_traditional <> nil) or (alt_base_path = '') or
+            (not FileExists(alt_base_path)) then
         begin
             Exit;
         end;
@@ -5692,6 +5713,7 @@ begin
     // prune while opening it, because simplified-only rows such as ci -> U+8BCD
     // look invalid against the traditional base dictionary, and vice versa.
     alt_dict := TncSqliteDictionary.Create(alt_base_path, get_default_user_dictionary_path, False);
+    alt_dict.create_missing_base := False;
     alt_dict.set_user_dictionary_variant(alt_variant);
     if alt_dict.open then
     begin

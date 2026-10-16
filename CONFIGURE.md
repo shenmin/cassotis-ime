@@ -132,13 +132,15 @@ When `one_key_completion_key=tab`, `candidate_page_keys=shift-tab` conflicts wit
 | --- | --- | --- | --- | --- | --- |
 | `variant` | Dictionary variant | `simplified` / `traditional` / `tc` | `simplified` | `variant=simplified` | `traditional` and `tc` are equivalent. Toggle at runtime with Ctrl+Shift+T. |
 
-Runtime dictionary files are stored at a fixed runtime location and are not configurable:
+Installed base dictionaries ship with each runtime version and are read-only for all Windows accounts. Learned words remain private to each account. These paths are not configurable:
 
 | File | Path |
 | --- | --- |
-| Simplified base dictionary file | `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db` |
-| Traditional base dictionary file | `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db` |
+| Simplified base dictionary file | `<current installed runtime>\base_dict\dict_sc.db` |
+| Traditional base dictionary file | `<current installed runtime>\base_dict\dict_tc.db` |
 | User dictionary file | `%LOCALAPPDATA%\CassotisIme\data\user_dict.db` |
+
+Development builds, which have no `base_dict` beside the program, and earlier installed versions use `dict_sc.db` and `dict_tc.db` under `%LOCALAPPDATA%\CassotisIme\data`. Once a new version is installed, the copies of these two base dictionaries that earlier versions left there in each account are removed (except development dictionaries built by `out\rebuild_dict.ps1`); user dictionaries and learned data are neither removed nor shared between accounts.
 
 ---
 

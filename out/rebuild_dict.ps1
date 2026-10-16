@@ -206,6 +206,7 @@ function resolve_lexicon_root {
 
 $script_dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script_dir
+. (Join-Path $script_dir '..\tools\base_dictionary.ps1')
 $repo_root = Split-Path -Parent $script_dir
 $local_app_data = $env:LOCALAPPDATA
 if ([string]::IsNullOrWhiteSpace($local_app_data)) {
@@ -495,6 +496,15 @@ try {
             $base_db_tc_path, $schema_path, '--require-short-promotion')
     }
 
+    # Setup keeps a development build where it removes the base dictionaries
+    # an earlier installer left in a profile.
+    Write-CassotisDevDictionaryMarker -DataDir $runtime_data_dir
+    $installed_base = Get-CassotisInstalledBaseDictionary -Name 'dict_sc.db'
+    if ($installed_base -ne '') {
+        Write-Warning ("The registered input method is an installed runtime and reads its own base " +
+            "dictionaries (" + (Split-Path -Parent $installed_base) + "). This rebuild changes " +
+            $runtime_data_dir + " only: the development layout, the benchmarks and the next installer.")
+    }
     Write-Host 'Rebuild completed.'
 }
 finally {

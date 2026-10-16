@@ -85,8 +85,10 @@ Source: "{#RuntimeDir}\char_lm\runtime_manifest.json"; DestDir: "{#InstallRuntim
 Source: "{#SourceRoot}\third_party\onnxruntime\LICENSE"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 Source: "{#SourceRoot}\third_party\onnxruntime\ThirdPartyNotices.txt"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 
-Source: "{#RuntimeDataSourceDir}\dict_sc.db"; DestDir: "{localappdata}\CassotisIme\data"; DestName: "dict_sc.db"; Flags: ignoreversion; BeforeInstall: BeforeDictionaryInstall
-Source: "{#RuntimeDataSourceDir}\dict_tc.db"; DestDir: "{localappdata}\CassotisIme\data"; DestName: "dict_tc.db"; Flags: ignoreversion; BeforeInstall: BeforeDictionaryInstall
+; Immutable base dictionaries are readable by every Windows account. Only
+; learned words and configuration belong in an individual user's profile.
+Source: "{#RuntimeDataSourceDir}\dict_sc.db"; DestDir: "{#InstallRuntimeDir}\base_dict"; Flags: ignoreversion onlyifdoesntexist; BeforeInstall: BeforeDictionaryInstall
+Source: "{#RuntimeDataSourceDir}\dict_tc.db"; DestDir: "{#InstallRuntimeDir}\base_dict"; Flags: ignoreversion onlyifdoesntexist; BeforeInstall: BeforeDictionaryInstall
 [Run]
 Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
     Parameters: "register_tsf -dll_path ""{#InstallRuntimeDir}\cassotis_ime_svr.dll"" -skip_profile"; \
@@ -135,13 +137,8 @@ Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
 chs.PreparingStopRuntime=正在停止旧版本输入法...
 chs.PreparingUnregisterRuntime=正在停用旧版本输入法组件...
 chs.PreparingForceCloseRuntime=正在关闭占用旧版本文件的程序...
-chs.PreparingWaitRuntime=正在等待旧版本文件释放...
-chs.RuntimeReleaseFailed=词库文件仍被占用，无法继续安装。请关闭占用文件的程序后重试。
-chs.RuntimeReleaseLockedFile=仍被占用的文件：
-chs.RuntimeReleaseProcesses=检测到的相关进程：
 chs.RuntimeGuardFailed=无法建立安装期间的后台启动保护，安装已停止。请关闭其他安装程序后重试。
 chs.RuntimePreparationFailed=安装准备失败，尚未开始复制文件。请重试；若问题仍然出现，请将安装日志提供给开发者。
-chs.RuntimeReleaseRetry=请关闭占用文件的程序后选择“重试”，或选择“取消”中止安装；不会跳过词库更新。
 chs.ForceCloseRuntimePrompt=为完成升级安装，安装程序将自动关闭以下正在占用旧版本文件的进程：
 chs.ForceCloseRuntimeContinue=点击“确定”继续，点击“取消”中止安装。
 chs.ForceCloseRuntimeCanceled=用户取消了升级安装。
@@ -160,13 +157,8 @@ chs.TsfDesktopRecovery=桌面或任务栏尚未确认恢复。可按 Ctrl+Shift+
 english.PreparingStopRuntime=Stopping existing Cassotis IME runtime...
 english.PreparingUnregisterRuntime=Disabling existing Cassotis IME components...
 english.PreparingForceCloseRuntime=Closing applications still using existing runtime files...
-english.PreparingWaitRuntime=Waiting for existing runtime files to be released...
-english.RuntimeReleaseFailed=Dictionary files are still in use. Close the application using them and try again.
-english.RuntimeReleaseLockedFile=File still in use:
-english.RuntimeReleaseProcesses=Related processes detected:
 english.RuntimeGuardFailed=Setup could not prevent the old runtime from restarting. Close other installers and try again.
 english.RuntimePreparationFailed=Setup preparation failed. No files have been installed. Retry, or send the Setup log to the developer if the problem persists.
-english.RuntimeReleaseRetry=Close the application using this file and choose Retry, or choose Cancel to abort Setup. Dictionary updates will not be skipped.
 english.ForceCloseRuntimePrompt=To continue the upgrade, Setup will automatically close the following processes that are still using existing runtime files:
 english.ForceCloseRuntimeContinue=Click OK to continue, or Cancel to abort Setup.
 english.ForceCloseRuntimeCanceled=Upgrade canceled by user.
@@ -188,8 +180,6 @@ english.TsfDesktopRecovery=The desktop or taskbar has not been verified as resto
 #include "tsf_upgrade_notice.iss"
 
 const
-    c_runtime_unlock_wait_attempts = 40;
-    c_runtime_unlock_wait_ms = 250;
     c_disable_ime_for_all_process_threads = $FFFFFFFF;
     c_tsf_inproc_registry_path = 'Software\Classes\CLSID\{38D40A05-DCDB-49FB-81A4-C8745882DC21}\InprocServer32';
 
@@ -198,8 +188,6 @@ var
     InstallerProfileRegPath: string;
     ForceStopTargetsPath: string;
     ForceStopApprovalGranted: Boolean;
-    PreparedRuntimeDir: string;
-    LastRuntimeFileError: Cardinal;
     TsfIncomingExtracted: Boolean;
     TsfUpgradeFinalized: Boolean;
     TsfShellRestartFailed: Boolean;
@@ -207,6 +195,9 @@ var
     TsfFinishedMemo: TNewMemo;
     TsfRecheckButton: TNewButton;
     TsfOriginalFinishedText: string;
+    { The runtime registered before this install: a development layout
+      (out\ of a source tree) reads the base dictionaries in a profile. }
+    PreviousRuntimeDir: string;
 
 function GetCurrentProcessId: DWORD;
 external 'GetCurrentProcessId@kernel32.dll stdcall';
@@ -257,8 +248,7 @@ begin
     InstallerProfileRegPath := '';
     ForceStopTargetsPath := ExpandConstant('{tmp}\cassotis_force_stop_targets.txt');
     ForceStopApprovalGranted := False;
-    PreparedRuntimeDir := '';
-    LastRuntimeFileError := 0;
+    PreviousRuntimeDir := '';
     TsfIncomingExtracted := False;
     TsfUpgradeFinalized := False;
     TsfUpgradeScanComplete := False;
@@ -638,13 +628,6 @@ begin
     RuntimePrepPage.Hide;
 end;
 
-function RuntimeFilesReleased(const RuntimeDir: string; out LockedFile: string): Boolean;
-begin
-    { Runtime binaries are installed side by side and are never overwritten.
-      Only the shared dictionary snapshots still require exclusive replacement. }
-    Result := RuntimeDictionariesReleased(GetRuntimeDataDir, LockedFile, LastRuntimeFileError);
-end;
-
 function NormalizeRegisteredDllPath(const Value: string): string;
 begin
     Result := Trim(Value);
@@ -732,6 +715,24 @@ begin
     end;
 end;
 
+{ This session's host was stopped before the install; a host still running
+  from an earlier runtime serves another signed-in account. Deleting around it
+  would take the files it has not opened yet, a base dictionary or the model
+  files among them, so such a runtime is kept whole for a later install. A
+  running executable cannot be deleted: trying is the test, and deleting it is
+  what pruning does anyway. }
+function RuntimeHostStillRunning(const Dir: string): Boolean;
+var
+    HostPath: string;
+begin
+    HostPath := AddBackslash(Dir) + 'cassotis_ime_host.exe';
+    Result := FileExists(HostPath) and not DeleteFile(HostPath);
+    if Result then
+    begin
+        Log('A host still runs from it, kept for a later install: ' + Dir);
+    end;
+end;
+
 procedure PruneRetiredRuntimes;
 var
     CurrentDir: string;
@@ -790,7 +791,8 @@ begin
                 if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
                     (FindRec.Name <> '.') and (FindRec.Name <> '..') and
                     (CompareText(LongPathOf(AddBackslash(RuntimeRoot) + FindRec.Name), CurrentDir) <> 0) and
-                    not IsReferencedRuntime(AddBackslash(RuntimeRoot) + FindRec.Name, Referenced) then
+                    not IsReferencedRuntime(AddBackslash(RuntimeRoot) + FindRec.Name, Referenced) and
+                    not RuntimeHostStillRunning(AddBackslash(RuntimeRoot) + FindRec.Name) then
                 begin
                     DeleteRetiredRuntime(AddBackslash(RuntimeRoot) + FindRec.Name);
                 end;
@@ -847,6 +849,109 @@ begin
             not DeleteFile(AddBackslash(AppDir) + Name) then
         begin
             RetireLockedFile(AddBackslash(AppDir) + Name);
+        end;
+    end;
+end;
+
+const
+    c_dev_dictionary_marker = 'development_dictionaries.txt';
+    c_profile_list_key = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList';
+
+function IsWithinDir(const Path, Dir: string): Boolean;
+begin
+    Result := Pos(Lowercase(AddBackslash(LongPathOf(Dir))),
+        Lowercase(AddBackslash(LongPathOf(Path)))) = 1;
+end;
+
+procedure RemoveProfileDictionaryCopiesIn(const DataDir: string);
+var
+    I, J: Integer;
+    Name: string;
+begin
+    if not DirExists(DataDir) then
+    begin
+        Exit;
+    end;
+    if FileExists(AddBackslash(DataDir) + c_dev_dictionary_marker) then
+    begin
+        Log('Development dictionaries kept: ' + DataDir);
+        Exit;
+    end;
+    for I := 0 to 1 do
+    begin
+        for J := 0 to 3 do
+        begin
+            if I = 0 then
+                Name := 'dict_sc.db'
+            else
+                Name := 'dict_tc.db';
+            case J of
+                1: Name := Name + '-journal';
+                2: Name := Name + '-wal';
+                3: Name := Name + '-shm';
+            end;
+            if FileExists(AddBackslash(DataDir) + Name) then
+            begin
+                if DeleteFile(AddBackslash(DataDir) + Name) then
+                begin
+                    Log('Removed a base dictionary copy of an earlier version: ' +
+                        AddBackslash(DataDir) + Name);
+                end
+                else
+                begin
+                    { An earlier host in another session still reads it. }
+                    DeleteAtRestart(AddBackslash(DataDir) + Name);
+                end;
+            end;
+        end;
+    end;
+end;
+
+{ Earlier versions copied the base dictionaries into the profile of whoever
+  ran Setup (an administrator's, when one elevated it), and their hosts created
+  empty ones in every other account's: that account then had no candidates.
+  The runtime reads its own read-only copy now, so once it is registered the
+  profile copies are over 400 MB of dead weight or, empty, a trap. User dictionaries
+  and settings stay. A development layout reads the profile copy: nothing is
+  removed while one was registered before this install, nor from a data
+  folder holding the marker of out\rebuild_dict.ps1. }
+procedure RemoveProfileDictionaryCopies;
+var
+    CurrentDir, ProfilePath: string;
+    Profiles: TArrayOfString;
+    I: Integer;
+begin
+    CurrentDir := LongPathOf(ExpandConstant('{#InstallRuntimeDir}'));
+    if (not FileExists(AddBackslash(CurrentDir) + 'base_dict\dict_sc.db')) or
+        (not FileExists(AddBackslash(CurrentDir) + 'base_dict\dict_tc.db')) or
+        (CompareText(RegisteredRuntimeDirIn(HKLM64), CurrentDir) <> 0) or
+        (CompareText(RegisteredRuntimeDirIn(HKLM32), CurrentDir) <> 0) then
+    begin
+        Log('The new runtime is not in use yet; profile dictionaries are kept.');
+        Exit;
+    end;
+    if (PreviousRuntimeDir <> '') and
+        not IsWithinDir(PreviousRuntimeDir, ExpandConstant('{app}')) then
+    begin
+        Log('A development layout was registered (' + PreviousRuntimeDir +
+            '); profile dictionaries are kept.');
+        Exit;
+    end;
+    RemoveProfileDictionaryCopiesIn(GetRuntimeDataDir);
+    if RegGetSubkeyNames(HKLM64, c_profile_list_key, Profiles) then
+    begin
+        for I := 0 to GetArrayLength(Profiles) - 1 do
+        begin
+            if RegQueryStringValue(HKLM64, c_profile_list_key + '\' + Profiles[I],
+                'ProfileImagePath', ProfilePath) then
+            begin
+                StringChangeEx(ProfilePath, '%SystemDrive%', GetEnv('SystemDrive'), True);
+                if (ProfilePath <> '') and (Pos('%', ProfilePath) = 0) then
+                begin
+                    RemoveProfileDictionaryCopiesIn(AddBackslash(ProfilePath) +
+                        'AppData\Local\CassotisIme\data');
+                end;
+            end;
         end;
     end;
 end;
@@ -1004,98 +1109,13 @@ begin
     end;
 end;
 
-function WaitForRuntimeRelease(const RuntimeDir: string; out LastLockedFile: string): Boolean;
-var
-    Attempt: Integer;
-    LockedFile: string;
-begin
-    Result := True;
-    LastLockedFile := '';
-
-    for Attempt := 1 to c_runtime_unlock_wait_attempts do
-    begin
-        if (Attempt = 1) or ((Attempt mod 4) = 0) then
-        begin
-            UpdatePreparingStatus(
-                ExpandConstant('{cm:PreparingWaitRuntime}'),
-                GetRuntimeDataDir + ' (' + IntToStr(Attempt) + '/' + IntToStr(c_runtime_unlock_wait_attempts) + ')',
-                Attempt,
-                c_runtime_unlock_wait_attempts
-            );
-        end;
-
-        if RuntimeFilesReleased(RuntimeDir, LockedFile) then
-        begin
-            if Attempt > 1 then
-            begin
-                Log(Format('Runtime files released after %d wait attempts: %s', [Attempt, RuntimeDir]));
-            end;
-            Result := True;
-            Exit;
-        end;
-        LastLockedFile := LockedFile;
-        if (Attempt = 1) or ((Attempt mod 4) = 0) then
-        begin
-            Log(Format('Waiting for locked file to be released: %s (error %d)', [LockedFile, LastRuntimeFileError]));
-        end;
-        Sleep(c_runtime_unlock_wait_ms);
-    end;
-
-    Log(Format('Runtime files still locked after waiting: %s (%s)', [RuntimeDir, LockedFile]));
-    Result := False;
-end;
-
-function RuntimeReleaseFailureText(const RuntimeDir, LockedFile: string): string;
-var
-    TargetsText: string;
-begin
-    Result := ExpandConstant('{cm:RuntimeReleaseFailed}');
-    if LockedFile <> '' then
-    begin
-        Result := Result + #13#10#13#10 +
-            ExpandConstant('{cm:RuntimeReleaseLockedFile}') + #13#10 + LockedFile + #13#10 +
-            Format('Windows error %d: %s', [LastRuntimeFileError, SysErrorMessage(LastRuntimeFileError)]);
-    end;
-    TargetsText := GetForceStopTargetsText(RuntimeDir, False);
-    if TargetsText <> '' then
-    begin
-        Result := Result + #13#10#13#10 +
-            ExpandConstant('{cm:RuntimeReleaseProcesses}') + #13#10 + TargetsText;
-    end;
-    Log('Runtime release failure details:' + #13#10 + Result);
-end;
-
 procedure BeforeDictionaryInstall;
-var
-    LockedFile: string;
-    FailureText: string;
 begin
     if not RuntimeUpgradeGuardsHeld then
     begin
         RaiseException(ExpandConstant('{cm:RuntimeGuardFailed}'));
     end;
-    Log('Rechecking dictionary replacement immediately before copying: ' + CurrentFileName);
-    try
-        while not WaitForRuntimeRelease(PreparedRuntimeDir, LockedFile) do
-        begin
-            HidePreparingStatus;
-            FailureText := RuntimeReleaseFailureText(PreparedRuntimeDir, LockedFile);
-            if WizardSilent then
-            begin
-                RaiseException(FailureText);
-            end;
-            { A newly arrived holder was not in the original approval dialog.
-              Do not silently terminate it or offer to skip either dictionary. }
-            if MsgBox(FailureText + #13#10#13#10 +
-                ExpandConstant('{cm:RuntimeReleaseRetry}'), mbError,
-                MB_RETRYCANCEL or MB_DEFBUTTON2) <> IDRETRY then
-            begin
-                RaiseException(FailureText);
-            end;
-        end;
-    finally
-        HidePreparingStatus;
-    end;
+    Log('Installing immutable base dictionary: ' + CurrentFileName);
 end;
 
 function PrepareRuntimeForInstall: String;
@@ -1104,7 +1124,6 @@ var
     LegacyRuntimeDir: string;
     ActiveRuntimeDir: string;
     RegisteredRuntimeDir: string;
-    LockedFile: string;
     SessionId: DWORD;
     ErrorCode: Cardinal;
 begin
@@ -1115,6 +1134,7 @@ begin
     LegacyRuntimeDir := ExpandConstant('{app}\out');
     ActiveRuntimeDir := '';
     RegisteredRuntimeDir := GetRegisteredRuntimeDir;
+    PreviousRuntimeDir := RegisteredRuntimeDir;
     if RuntimeDirHasManagedFiles(RegisteredRuntimeDir) then
     begin
         ActiveRuntimeDir := RegisteredRuntimeDir;
@@ -1128,7 +1148,6 @@ begin
         ActiveRuntimeDir := LegacyRuntimeDir;
     end;
 
-    PreparedRuntimeDir := ActiveRuntimeDir;
     SessionId := 0;
     if not ProcessIdToSessionId(GetCurrentProcessId, SessionId) then
     begin
@@ -1164,11 +1183,8 @@ begin
           Singleton guards prevent old hosts restarting, even with old DLLs. }
         TryForceStopProcessesUsingImeModules(ActiveRuntimeDir);
     end;
-    if not WaitForRuntimeRelease(ActiveRuntimeDir, LockedFile) then
-    begin
-        Result := RuntimeReleaseFailureText(ActiveRuntimeDir, LockedFile);
-        Exit;
-    end;
+    { Base dictionaries are versioned with the binaries, not overwritten in any
+      user's profile. Old dictionary readers need not close for this install. }
     if not ConfirmTsfApplicationRestart then
     begin
         Result := ExpandConstant('{cm:ForceCloseRuntimeCanceled}');
@@ -1185,6 +1201,7 @@ begin
     if CurStep = ssDone then
     begin
         PruneRetiredRuntimes;
+        RemoveProfileDictionaryCopies;
         { After the files moved into it, so Windows removes it once they are gone. }
         if (RetiredTrashDir <> '') and DirExists(RetiredTrashDir) then
         begin
@@ -1216,7 +1233,7 @@ begin
 
     if MsgBox(
         'Remove user data under "%LOCALAPPDATA%\CassotisIme"?' + #13#10 +
-        'This includes config, dictionaries, user dictionary, and logs.',
+        'This includes config, user dictionary, and logs.',
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
     begin
         DelTree(GetRuntimeRoot, True, True, True);
