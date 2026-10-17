@@ -115420,6 +115420,31 @@ var
         end;
     end;
 
+    // A phrase the short-phrase stage wrote for the previous input is a guess
+    // at that input as a whole, not the head of a longer one. Kept in front
+    // with the next letters as its comment, it went above the word being
+    // typed (有人有 + "y" above 游刃有余, 或破开 + "l" above 活泼开朗: 22 of
+    // the 3,797 keys before the last one, typing 400 words of three and four
+    // characters), so the previous key's candidates are reused without it.
+    function is_previous_short_phrase_local(const text: string): Boolean;
+    var
+        phrase_idx_local: Integer;
+    begin
+        Result := False;
+        if (previous_lookup_key = '') or
+            (Pos(#0 + previous_lookup_key + #0, m_short_phrase_key) <= 0) then
+        begin
+            Exit;
+        end;
+        for phrase_idx_local := 0 to High(m_short_phrase_texts) do
+        begin
+            if m_short_phrase_texts[phrase_idx_local] = text then
+            begin
+                Exit(True);
+            end;
+        end;
+    end;
+
     function try_reuse_incremental_partial_tail_candidates_local(
         out out_candidates: TncCandidateList;
         const allow_complete_exact_tail: Boolean;
@@ -115481,7 +115506,8 @@ var
                 previous_text_local);
             if (previous_text_local = '') or
                 (text_unit_count_local < min_text_unit_count) or
-                (text_unit_count_local >= Length(current_syllables_local)) then
+                (text_unit_count_local >= Length(current_syllables_local)) or
+                is_previous_short_phrase_local(previous_text_local) then
             begin
                 Continue;
             end;
@@ -115581,7 +115607,8 @@ var
             normalized_comment_local := normalize_pinyin_text(Trim(
                 candidate_local.comment));
             if (candidate_local.display_kind <> cdk_lm_compound) or
-                (get_candidate_text_unit_count(Trim(candidate_local.text)) <> 4)
+                (get_candidate_text_unit_count(Trim(candidate_local.text)) <> 4) or
+                is_previous_short_phrase_local(Trim(candidate_local.text))
             then
             begin
                 Exit;
@@ -115614,7 +115641,8 @@ var
             normalized_comment_local := normalize_pinyin_text(Trim(
                 candidate_local.comment));
             if (candidate_local.display_kind <> cdk_lm_compound) or
-                (get_candidate_text_unit_count(Trim(candidate_local.text)) <> 3)
+                (get_candidate_text_unit_count(Trim(candidate_local.text)) <> 3) or
+                is_previous_short_phrase_local(Trim(candidate_local.text))
             then
             begin
                 Exit;
@@ -138109,6 +138137,46 @@ var
         end;
     end;
 
+    // Whether a text of the input's length reads as the syllables typed in one
+    // of the readings; with still_typing, whether instead its last character
+    // reads a longer syllable that begins with the last one typed (秤 cheng
+    // for "chen", 觉 jue for "ju"): the input completed to a word.
+    function reads_as_typed(const text: string; const still_typing: Boolean): Boolean;
+    const
+        // What a syllable can grow by into another one, as the keys go on.
+        c_tails: array[0..31] of string = ('a', 'e', 'g', 'i', 'n', 'o', 'r', 'u',
+            'v', 'ai', 'an', 'ao', 'ei', 'en', 'ie', 'in', 'iu', 'ng', 'ou', 'ua',
+            'ui', 'un', 'uo', 've', 'ang', 'eng', 'ian', 'iao', 'ing', 'ong', 'uan',
+            'iang');
+    var r, k, t: Integer;
+        longer: string;
+    begin
+        for r := 0 to High(readings) do
+        begin
+            Result := True;
+            for k := 0 to units - 2 do
+                if not m_dictionary.single_char_matches_pinyin(readings[r][k], text[k + 1]) then
+                begin
+                    Result := False;
+                    Break;
+                end;
+            if not Result then Continue;
+            if not still_typing then
+            begin
+                if m_dictionary.single_char_matches_pinyin(readings[r][units - 1], text[units]) then
+                    Exit;
+                Continue;
+            end;
+            for t := 0 to High(c_tails) do
+            begin
+                longer := readings[r][units - 1] + c_tails[t];
+                if nc_is_canonical_pinyin_syllable(longer) and
+                    m_dictionary.single_char_matches_pinyin(longer, text[units]) then Exit;
+            end;
+        end;
+        Result := False;
+    end;
+
     // Makes a reading the one the words, cuts and drafts are taken from.
     procedure use_reading(const value: Integer);
     var k: Integer;
@@ -138292,6 +138360,26 @@ begin
         if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=top]';
         Exit;
     end;
+    // The parser's reading first, then the others of full pinyin (double
+    // pinyin spells every syllable with its own two keys).
+    readings := [keys];
+    if m_config.pinyin_input_scheme = pis_full_pinyin then collect_readings(0, nil);
+    // A word of the input's length that reads the last syllable as a longer
+    // one stays as well: the word the dictionary completes while the user is
+    // still typing it (体重秤 at "ti zhong chen", on the way to "cheng"; 我感觉 at
+    // "wo gan ju"). It cannot be a draft, and phrases pieced together from
+    // the syllables typed took its place: on 147 of the 3,797 keys before
+    // the last one, typing 400 words of three and four characters (the LM
+    // itself rates 体忠臣 3.5 nats above 体重秤, a rare character). Any other
+    // first candidate whose characters do not read as typed is still
+    // rewritten: leaving all of them in place cost four clauses of five
+    // characters in 5,000.
+    if top_complete and not reads_as_typed(top_text, False) and
+        reads_as_typed(top_text, True) then
+    begin
+        if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=completion]';
+        Exit;
+    end;
     key := m_composition_text + #0 + m_last_lookup_key + #0 + context;
     if (key = m_short_phrase_key) and (Length(m_short_phrase_texts) > 0) then
     begin
@@ -138304,10 +138392,7 @@ begin
         // dictionary's heaviest words for every way of cutting the input. A
         // word in front of the page follows the keys typed before and is left
         // out, so that typing an input and giving it at once come to the same.
-        // The parser's reading first, then the others of full pinyin (double
-        // pinyin spells every syllable with its own two keys).
-        readings := [keys];
-        if m_config.pinyin_input_scheme = pis_full_pinyin then collect_readings(0, nil);
+        // Every reading of the input gives drafts.
         SetLength(reading_words, Length(readings));
         SetLength(reading_weights, Length(readings));
         SetLength(reading_looked_up, Length(readings));
