@@ -1719,9 +1719,20 @@ begin
                 process := OpenProcess(access, False, info.pid);
                 if process = 0 then
                 begin
+                    error_code := GetLastError;
+                    // A process that has exited needs no restart: on Windows 10
+                    // Search goes with the Explorer restarted before it, and
+                    // OpenProcess then fails with ERROR_INVALID_PARAMETER. Counted
+                    // as a failure, it left the finished page with the generic
+                    // incomplete note after a clean upgrade (2026-10-17).
+                    if not SameText(get_process_name_by_pid(info.pid), info.name) then
+                    begin
+                        diagnostics.Add(Format('%s (PID %d): exited', [info.name, info.pid]));
+                        Continue;
+                    end;
                     complete := False;
                     diagnostics.Add(Format('%s (PID %d): OpenProcess error=%d',
-                        [info.name, info.pid, GetLastError]));
+                        [info.name, info.pid, error_code]));
                     Continue;
                 end;
                 try
