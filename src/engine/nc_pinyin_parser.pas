@@ -20,9 +20,15 @@ type
         function parse(const input_text: string): TncPinyinParseResult;
     end;
 
-function nc_is_pinyin_spelling_helper_compatible(const initial_value: string;
+{ True when the initial and the final spell a syllable that some character
+  reads. }
+function nc_is_pinyin_initial_final_compatible(const initial_value: string;
     const final_value: string): Boolean;
 function nc_is_canonical_pinyin_syllable(const value: string): Boolean;
+function nc_is_pinyin_initial(const value: string): Boolean;
+{ The canonical syllables that begin with prefix, all of them for ''
+  (the erhua "r" is none). }
+function nc_canonical_pinyin_syllables_starting_with(const prefix: string): TArray<string>;
 { True when compact pinyin parses into exactly `units` canonical syllables:
   the rest of a word after typed syllables that end at a syllable boundary. }
 function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
@@ -93,119 +99,78 @@ const
         'a', 'e', 'o', 'r'
     );
 
-function nc_is_pinyin_spelling_helper_compatible(const initial_value: string;
+const
+    // The initials each final takes in a syllable some character of the
+    // lexicon reads (with the colloquial kei, sei, tei, zhei, cei and chei),
+    // in the order of c_finals; y and w spell the medials, and "er" takes
+    // none. The two tables spell 181 more, and a spelling no character reads
+    // stole the keys of two syllables: "xinuaile" read as xi nuai le, not
+    // xi nu ai le (喜怒哀乐), "buduangengxin" as bu duang eng xin (不断更新),
+    // "dasuangei" as da suang ei (打算给); earlier "bue", "quangao",
+    // "zhineng", "dian+geng" and "yu+ai" the same way. Without them 22 of the
+    // 16,300 long cases and 4 of the 10,833 short inputs parse as typed, and
+    // none parses otherwise.
+    c_final_initials: array[Low(c_finals)..High(c_finals)] of string = (
+        ' n l j q x ',                                              // iang
+        ' j q x ',                                                  // iong
+        ' zh ch sh g k h ',                                         // uang
+        ' zh ch sh g k h ',                                         // uai
+        ' zh ch sh d t n l g k h j q x r z c s y ',                 // uan
+        ' b p m f d t n l j q x ',                                  // iao
+        ' b p m d t n l j q x ',                                    // ian
+        ' b p m d t n l j q x y ',                                  // ing
+        ' zh ch sh b p m f d t n l g k h r z c s y w ',             // ang
+        ' zh ch sh b p m f d t n l g k h r z c s w ',               // eng
+        ' zh ch d t n l g k h r z c s y ',                          // ong
+        ' zh ch sh b p m d t n l g k h z c s w ',                   // ai
+        ' zh ch sh b p m f d t n l g k h r z c s y w ',             // an
+        ' zh ch sh b p m d t n l g k h r z c s y ',                 // ao
+        ' zh ch sh b p m f d t n l g k h z c s w ',                 // ei
+        ' zh ch sh b p m f d n g k h r z c s w ',                   // en
+        '',                                                         // er
+        ' zh ch sh p m f d t n l g k h r z c s y ',                 // ou
+        ' d l j q x ',                                              // ia
+        ' b p m d t n l j q x ',                                    // ie
+        ' b p m n l j q x y ',                                      // in
+        ' m d n l j q x ',                                          // iu
+        ' zh ch sh g k h r ',                                       // ua
+        ' zh ch sh d t g k h r z c s ',                             // ui
+        ' zh ch sh d t n l g k h j q x r z c s y ',                 // un
+        ' zh ch sh d t n l g k h r z c s ',                         // uo
+        ' n l j q x ',                                              // ve
+        ' n l j q x ',                                              // van
+        ' n l j q x ',                                              // vn
+        ' n l j q x y ',                                            // ue
+        ' zh ch sh b p m f d t n l g k h z c s y w ',               // a
+        ' zh ch sh m d t n l g k h r z c s y ',                     // e
+        ' zh ch sh b p m d t n l j q x r z c s y ',                 // i
+        ' b p m f l y w ',                                          // o
+        ' zh ch sh b p m f d t n l g k h j q x r z c s y w ',       // u
+        ' n l j q x '                                               // v
+    );
+
+function nc_is_pinyin_initial_final_compatible(const initial_value: string;
     const final_value: string): Boolean;
+var
+    final_idx: Integer;
 begin
-    if initial_value = 'y' then
+    for final_idx := Low(c_finals) to High(c_finals) do
     begin
-        Exit((final_value = 'a') or (final_value = 'an') or
-            (final_value = 'ang') or (final_value = 'ao') or
-            (final_value = 'e') or (final_value = 'i') or
-            (final_value = 'in') or (final_value = 'ing') or
-            (final_value = 'o') or (final_value = 'ong') or
-            (final_value = 'ou') or (final_value = 'u') or
-            (final_value = 'ue') or (final_value = 'uan') or
-            (final_value = 'un'));
-    end;
-
-    if initial_value = 'w' then
-    begin
-        Exit((final_value = 'a') or (final_value = 'ai') or
-            (final_value = 'an') or (final_value = 'ang') or
-            (final_value = 'ei') or (final_value = 'en') or
-            (final_value = 'eng') or (final_value = 'o') or
-            (final_value = 'u'));
-    end;
-
-    Result := True;
-end;
-
-function is_initial_final_compatible_common(const initial_value: string;
-    const final_value: string): Boolean;
-begin
-    // "er" is a zero-initial syllable. Accepting synthetic initial+er
-    // syllables (ner/ger/...) makes compact streams such as "pingwener"
-    // prefer "ping+we+ner" over the intended "ping+wen+er".
-    if final_value = 'er' then
-    begin
-        Exit(False);
-    end;
-
-    // b/p/m/f/w can take bare "u" (bu/pu/mu/fu/wu), but not medial-u
-    // finals such as ue/uan/uai/uo. Without this, missing-apostrophe input
-    // like "bue" is greedily parsed as invalid "bue" instead of "bu"+"e".
-    if ((initial_value = 'b') or (initial_value = 'p') or
-        (initial_value = 'm') or (initial_value = 'f') or
-        (initial_value = 'w')) and (Length(final_value) > 1) and
-        (final_value[1] = 'u') then
-    begin
-        Exit(False);
-    end;
-
-    // y/w are spelling helpers in pinyin, so their legal combinations are
-    // much narrower than ordinary initials. Use allowlists here: accepting
-    // synthetic spellings such as yian, yuai, or wuan steals compact-input
-    // boundaries (for example, yu+ai becomes the invalid single unit yuai).
-    if not nc_is_pinyin_spelling_helper_compatible(initial_value,
-        final_value) then
-    begin
-        Exit(False);
-    end;
-
-    // j/q/x use u as the written form of ü only for u/ue/uan/un.
-    // Other u-medial finals are invalid and otherwise steal boundaries,
-    // e.g. "quangao" becomes invalid "quang"+"ao" instead of "quan"+"gao".
-    if (initial_value = 'j') or (initial_value = 'q') or
-        (initial_value = 'x') then
-    begin
-        if (final_value = 'ua') or (final_value = 'uai') or
-            (final_value = 'uang') or (final_value = 'ui') or
-            (final_value = 'uo') then
+        if c_finals[final_idx] = final_value then
         begin
-            Exit(False);
+            Exit(Pos(' ' + initial_value + ' ', c_final_initials[final_idx]) > 0);
         end;
     end;
-
-    // Restrict obviously invalid retroflex/alveolar combinations to avoid
-    // greedy wrong splits like "zhineng" -> "zhin + eng" (expected "zhi + neng").
-    if (initial_value = 'zh') or (initial_value = 'ch') or
-        (initial_value = 'sh') or (initial_value = 'r') or
-        (initial_value = 'z') or (initial_value = 'c') or
-        (initial_value = 's') then
-    begin
-        if (final_value = 'ia') or (final_value = 'in') or
-            (final_value = 'ing') or (final_value = 'iu') or
-            (final_value = 'ie') or (final_value = 'ian') or
-            (final_value = 'iang') or (final_value = 'iao') or
-            (final_value = 'iong') or (final_value = 'ue') or
-            (final_value = 've') or (final_value = 'van') or
-            (final_value = 'vn') then
-        begin
-            Exit(False);
-        end;
-    end;
-
-    // These initials do not form standard iang/iong syllables. Allowing
-    // synthetic forms like "diang" makes compact streams such as
-    // "dian+geng" tie with the wrong "diang+eng" parse.
-    if ((initial_value = 'b') or (initial_value = 'p') or
-        (initial_value = 'm') or (initial_value = 'f') or
-        (initial_value = 'd') or (initial_value = 't') or
-        (initial_value = 'g') or (initial_value = 'k') or
-        (initial_value = 'h')) and
-        ((final_value = 'iang') or (final_value = 'iong')) then
-    begin
-        Exit(False);
-    end;
-
-    Result := True;
+    Result := False;
 end;
 
 var
-    // Precomputed is_initial_final_compatible_common over the constant tables;
+    // Precomputed nc_is_pinyin_initial_final_compatible over the constant tables;
     // the parser's DP probes every pair at every input position.
     g_initial_final_compatible: array[Low(c_initials)..High(c_initials),
         Low(c_finals)..High(c_finals)] of Boolean;
+
+    g_canonical_syllables: TArray<string>;
 
 procedure build_initial_final_compatibility;
 var
@@ -217,10 +182,37 @@ begin
         for final_idx := Low(c_finals) to High(c_finals) do
         begin
             g_initial_final_compatible[initial_idx, final_idx] :=
-                is_initial_final_compatible_common(c_initials[initial_idx],
+                nc_is_pinyin_initial_final_compatible(c_initials[initial_idx],
                 c_finals[final_idx]);
+            if g_initial_final_compatible[initial_idx, final_idx] then
+                g_canonical_syllables := g_canonical_syllables +
+                    [c_initials[initial_idx] + c_finals[final_idx]];
         end;
     end;
+    for final_idx := Low(c_finals_no_initial) to High(c_finals_no_initial) do
+        if c_finals_no_initial[final_idx] <> 'r' then
+            g_canonical_syllables := g_canonical_syllables +
+                [c_finals_no_initial[final_idx]];
+end;
+
+function nc_is_pinyin_initial(const value: string): Boolean;
+var
+    initial_idx: Integer;
+begin
+    for initial_idx := Low(c_initials) to High(c_initials) do
+        if value = c_initials[initial_idx] then
+            Exit(True);
+    Result := False;
+end;
+
+function nc_canonical_pinyin_syllables_starting_with(const prefix: string): TArray<string>;
+var
+    syllable: string;
+begin
+    Result := nil;
+    for syllable in g_canonical_syllables do
+        if syllable.StartsWith(prefix) then
+            Result := Result + [syllable];
 end;
 
 function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
@@ -275,7 +267,7 @@ begin
         for final_idx := Low(c_finals) to High(c_finals) do
         begin
             if (final_value = c_finals[final_idx]) and
-                is_initial_final_compatible_common(initial_value,
+                nc_is_pinyin_initial_final_compatible(initial_value,
                 final_value) then
             begin
                 Exit(True);

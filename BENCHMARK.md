@@ -10,6 +10,8 @@ Benchmark-16300 fixes 16,300 eligible sentences, while Benchmark-65000 fixes 65,
 
 From `v2.2.0`, 43 case readings in which the generated Pinyin took the wrong reading of a polyphonic character are corrected: 38 long-sentence cases (for example 重新编译 had been typed as `zhongxin`, 似曾相识 as `shiceng`, 一模一样 as `yimo`) and 5 short-word cases, which the two completion benchmarks reuse. Earlier versions were measured on the uncorrected cases.
 
+After `v2.2.0`, a second correction reads every case word by its meaning in its context, against the lexicon's readings: 217 short-word cases (the adverbial 地 typed `di` is now `de`, as in 轻轻地 and 耐心地; 看似 had been typed as `kanshi`, 微调 as `weidiao`, 重置 as `zhongzhi`, 长的 in 相当长的 as `zhangde`) and 51 long-sentence cases (了解 as `lejie`, 重新 as `zhongxin`, 喜怒哀乐 as `xinuaiyue`, 出差 as `chucha`). `v2.2.0` and earlier versions were measured before it.
+
 ## Shared Accuracy Equivalence Rule
 
 The following rule applies to visible-candidate accuracy metrics in the long-sentence and short-word context suites, including `Top1`, `Top2`, other reported `TopN` values, and the short-word `Contested` metrics. Starting with `v1.30.0`, it also applies to the Long-sentence One-key Completion Benchmark-16300 hit, whole-sentence hit, and visible-prefix metrics:

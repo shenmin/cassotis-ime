@@ -92,6 +92,9 @@ type
         function record_literal_user_word(const full_pinyin: string;
             const text: string): Boolean; virtual;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; virtual;
+        { The syllables a single character reads (single_char_matches_pinyin
+          for every canonical syllable unless a provider knows them). }
+        function get_single_char_readings(const text_unit: string): TArray<string>; virtual;
         procedure begin_learning_batch; virtual;
         procedure commit_learning_batch; virtual;
         procedure rollback_learning_batch; virtual;
@@ -168,6 +171,9 @@ function nc_get_char_lm_span_scores(const dictionary: TncDictionaryProvider;
     const texts: TArray<string>; out scores: TArray<Integer>): Boolean;
 
 implementation
+
+uses
+    nc_pinyin_parser;
 
 function nc_get_char_lm_span_scores(const dictionary: TncDictionaryProvider;
     const texts: TArray<string>; out scores: TArray<Integer>): Boolean;
@@ -417,6 +423,16 @@ begin
             Exit(True);
         end;
     end;
+end;
+
+function TncDictionaryProvider.get_single_char_readings(const text_unit: string): TArray<string>;
+var
+    syllable: string;
+begin
+    Result := nil;
+    for syllable in nc_canonical_pinyin_syllables_starting_with('') do
+        if single_char_matches_pinyin(syllable, text_unit) then
+            Result := Result + [syllable];
 end;
 
 procedure TncDictionaryProvider.begin_learning_batch;

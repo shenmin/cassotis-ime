@@ -24,7 +24,8 @@ uses
     nc_local_completion_host,
     nc_one_key_rerank_host,
     nc_char_lm,
-    nc_char_lm_host;
+    nc_char_lm_host,
+    nc_char_lm_traditional;
 
 type
     TncEngineHost = class;
@@ -188,6 +189,7 @@ type
         procedure reload_config_if_needed;
         function get_or_create_session(const session_id: string): TncHostSession;
         procedure apply_global_engine_config_locked(const config: TncEngineConfig);
+        procedure apply_background_char_lm_variant;
         procedure sync_session_config_locked(const session: TncHostSession);
         procedure touch_session_activity(const session_id: string);
         procedure set_session_active(const session_id: string; const active: Boolean);
@@ -1595,22 +1597,18 @@ begin
         end);
     m_char_lm_host := TncCharLmHost.Create(ExtractFileDir(ParamStr(0)), True);
     m_char_lm := m_char_lm_host;
-    if m_local_completion_host <> nil then
-    begin
-        m_local_completion_host.set_char_lm(m_char_lm_host.background_view);
-    end;
     m_one_key_rerank_host := TncOneKeyRerankHost.create(
         procedure(const task: TncOneKeyRerankTask; const chosen: Integer)
         begin
             handle_one_key_rerank(task, chosen);
         end);
-    m_one_key_rerank_host.set_char_lm(m_char_lm_host.background_view);
     with TncConfigManager.create(m_config_path) do
     try
         m_config := load_engine_config;
     finally
         Free;
     end;
+    apply_background_char_lm_variant;
     // Always start a fresh TSF runtime in Chinese mode.
     m_config.input_mode := im_chinese;
     m_last_config_write := get_config_write_time;
@@ -1789,6 +1787,7 @@ begin
         begin
             session.update_config(m_config);
         end;
+        apply_background_char_lm_variant;
     finally
         m_lock.Release;
     end;
@@ -1815,6 +1814,21 @@ begin
     begin
         m_standby_session.update_config(config);
     end;
+end;
+
+// The Tab worker and the one-key reranker score with the LM as the engines
+// of the dictionary variant do (nc_char_lm_traditional).
+procedure TncEngineHost.apply_background_char_lm_variant;
+var
+    view: IncCharLm;
+begin
+    view := m_char_lm_host.background_view;
+    if m_config.dictionary_variant = dv_traditional then
+        view := nc_traditional_char_lm(view);
+    if m_local_completion_host <> nil then
+        m_local_completion_host.set_char_lm(view);
+    if m_one_key_rerank_host <> nil then
+        m_one_key_rerank_host.set_char_lm(view);
 end;
 
 procedure TncEngineHost.sync_session_config_locked(const session: TncHostSession);
@@ -3403,6 +3417,7 @@ begin
             if global_variant_changed then
             begin
                 m_config.dictionary_variant := dictionary_variant;
+                apply_background_char_lm_variant;
                 sync_start_tick := GetTickCount64;
                 // Keep the dictionary-variant shortcut responsive: only the current foreground
                 // session needs an eager dictionary provider switch. Other

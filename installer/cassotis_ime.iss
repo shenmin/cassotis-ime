@@ -84,6 +84,7 @@ Source: "{#RuntimeDir}\char_lm\pinyin_readings.json"; DestDir: "{#InstallRuntime
 Source: "{#RuntimeDir}\char_lm\runtime_manifest.json"; DestDir: "{#InstallRuntimeDir}\char_lm"; Flags: ignoreversion onlyifdoesntexist
 Source: "{#SourceRoot}\third_party\onnxruntime\LICENSE"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 Source: "{#SourceRoot}\third_party\onnxruntime\ThirdPartyNotices.txt"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
+Source: "{#SourceRoot}\third_party\opencc\LICENSE"; DestDir: "{app}\licenses\opencc"; Flags: ignoreversion
 
 ; Immutable base dictionaries are readable by every Windows account. Only
 ; learned words and configuration belong in an individual user's profile.

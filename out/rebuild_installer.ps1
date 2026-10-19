@@ -92,7 +92,8 @@ $requiredFiles = @(
     'version.props'
 ) + $runtimePayloadFiles + @(
     'third_party\onnxruntime\LICENSE',
-    'third_party\onnxruntime\ThirdPartyNotices.txt'
+    'third_party\onnxruntime\ThirdPartyNotices.txt',
+    'third_party\opencc\LICENSE'
 )
 
 foreach ($relativePath in $requiredFiles) {

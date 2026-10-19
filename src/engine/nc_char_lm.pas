@@ -80,6 +80,11 @@ type
         // The user's accept and reject records for this completion.
         feedback_count: Integer;
         feedback_reject_count: Integer;
+        // The lexicon layer of the word (0 general, 3 a specialist catalogue).
+        vertical_layer_kind: Integer;
+        // Its characters read the typed keys only by taking a complete
+        // syllable as the beginning of a longer one (螺线管 for "luoxia").
+        misreads_typed_keys: Boolean;
     end;
 
     { Engine evidence for a long-sentence pool candidate, filled by the final
@@ -229,7 +234,22 @@ function nc_char_lm_choose_completion(const model: IncCharLm; const context: str
     typed_units: Integer; out best_index: Integer): Boolean;
 
 { The user's records allow challenger to replace incumbent: accepted at least
-  as often and rejected no more often. }
+  as often and rejected no more often. Three kinds do not replace it whatever
+  the LM prefers, as the engine's own ranker holds with a context:
+  - a completion without dictionary popularity (a transition stitched from
+    two words) whose words do not end where the keys end (落|下的, 落|下来
+    for "luoxia", where the keys spell the word 落下) when the incumbent's
+    do and the dictionary knows it (是|一个 for "shiyi" is a word of its
+    own and may win), unless the user accepted it more often;
+  - a cold specialist phrase (layer 3, popularity under 300, accepted less
+    than twice) when the incumbent is a general completion with at least its
+    popularity and corpus evidence: its shorter text is what makes its LM
+    sum larger (落下灰 of 放射性落下灰 above 落霞与孤鹜齐飞);
+  - a text that reads the keys only by taking a complete syllable as the
+    beginning of a longer one (螺线管, luo xian guan, for "luoxia") when the
+    incumbent reads them as typed, unless the user accepted it more often:
+    the established ranker's pool holds no such reading, the rerank's extras
+    from the dictionary's key range do. }
 function nc_char_lm_completion_may_replace(const challenger,
     incumbent: TncCharLmCompletionCandidate): Boolean;
 
@@ -803,7 +823,16 @@ function nc_char_lm_completion_may_replace(const challenger,
     incumbent: TncCharLmCompletionCandidate): Boolean;
 begin
     Result := (challenger.feedback_count >= incumbent.feedback_count) and
-        (challenger.feedback_reject_count <= incumbent.feedback_reject_count);
+        (challenger.feedback_reject_count <= incumbent.feedback_reject_count) and
+        (challenger.prefix_anchored or (challenger.popularity_prior > 0) or
+        not incumbent.prefix_anchored or (incumbent.popularity_prior <= 0) or
+        (challenger.feedback_count > incumbent.feedback_count)) and
+        not ((challenger.vertical_layer_kind = 3) and (challenger.popularity_prior < 300) and
+        (challenger.feedback_count < 2) and (incumbent.vertical_layer_kind = 0) and
+        (incumbent.popularity_prior >= challenger.popularity_prior) and
+        (incumbent.corpus_score >= challenger.corpus_score)) and
+        (not challenger.misreads_typed_keys or incumbent.misreads_typed_keys or
+        (challenger.feedback_count > incumbent.feedback_count));
 end;
 
 function nc_char_lm_choose_short_top(const model: IncCharLm; const context: string;

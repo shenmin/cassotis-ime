@@ -176,6 +176,7 @@ type
         m_literal_user_words_available: Integer;
         m_exact_base_entry_cache: TDictionary<string, Boolean>;
         m_normalized_base_entry_cache: TDictionary<string, Boolean>;
+        m_single_char_readings_cache: TDictionary<string, TArray<string>>;
         m_explicit_user_entry_cache: TDictionary<string, Boolean>;
         m_literal_user_entry_cache: TDictionary<string, Boolean>;
         m_admin_place_longer_prefix_cache: TDictionary<string, TArray<string>>;
@@ -382,6 +383,7 @@ type
         function record_literal_user_word(const full_pinyin: string;
             const text: string): Boolean; override;
         function single_char_matches_pinyin(const pinyin: string; const text_unit: string): Boolean; override;
+        function get_single_char_readings(const text_unit: string): TArray<string>; override;
         function is_low_evidence_admin_place_alias_user_entry(const pinyin: string;
             const text: string; const latest_choice_text: string = '';
             const user_weight: Integer = -1; const commit_count: Integer = -1): Boolean; override;
@@ -2735,6 +2737,7 @@ begin
     m_literal_user_words_available := -1;
     m_exact_base_entry_cache := TDictionary<string, Boolean>.Create;
     m_normalized_base_entry_cache := TDictionary<string, Boolean>.Create;
+    m_single_char_readings_cache := TDictionary<string, TArray<string>>.Create;
     m_explicit_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_literal_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_admin_place_longer_prefix_cache :=
@@ -3026,6 +3029,11 @@ begin
     begin
         m_normalized_base_entry_cache.Free;
         m_normalized_base_entry_cache := nil;
+    end;
+    if m_single_char_readings_cache <> nil then
+    begin
+        m_single_char_readings_cache.Free;
+        m_single_char_readings_cache := nil;
     end;
     if m_explicit_user_entry_cache <> nil then
     begin
@@ -4289,6 +4297,26 @@ var
         trial_compact: string;
         trial_syllables: TArray<string>;
         trial_length: Integer;
+        parser: TncPinyinParser;
+        typed_syllables: TncPinyinParseResult;
+
+        // The trial prefix ends where a syllable of the whole input ends:
+        // "pia" reads pi + a, but "pian" is one syllable and no completion.
+        function ends_at_typed_boundary: Boolean;
+        var
+            syllable_idx: Integer;
+        begin
+            Result := Length(trial_syllables) <= Length(typed_syllables);
+            for syllable_idx := 0 to High(trial_syllables) do
+            begin
+                if not Result then
+                begin
+                    Break;
+                end;
+                Result := SameText(trial_syllables[syllable_idx],
+                    typed_syllables[syllable_idx].text);
+            end;
+        end;
     begin
         Result := False;
         prefix_syllables := split_full_pinyin_syllables(canonical_prefix);
@@ -4298,6 +4326,12 @@ var
             Exit(True);
         end;
 
+        parser := TncPinyinParser.create;
+        try
+            typed_syllables := parser.parse(LowerCase(Trim(canonical_prefix)));
+        finally
+            parser.Free;
+        end;
         // The offline lookup is indexed at completed syllable boundaries.
         // While the user types the next syllable, reuse the nearest completed
         // prefix and filter every returned row by the full raw key below.
@@ -4314,7 +4348,7 @@ var
                 Continue;
             end;
             trial_syllables := split_full_pinyin_syllables(trial_prefix);
-            if Length(trial_syllables) < 2 then
+            if (Length(trial_syllables) < 2) or (not ends_at_typed_boundary) then
             begin
                 Continue;
             end;
@@ -11834,6 +11868,10 @@ begin
     begin
         m_normalized_base_entry_cache.Clear;
     end;
+    if m_single_char_readings_cache <> nil then
+    begin
+        m_single_char_readings_cache.Clear;
+    end;
     if m_explicit_user_entry_cache <> nil then
     begin
         m_explicit_user_entry_cache.Clear;
@@ -15833,6 +15871,68 @@ begin
     // probe is too narrow and can wrongly purge valid learned selections such
     // as "ci -> 词" across host restarts.
     Result := normalized_base_entry_exists(pinyin_key, text_key);
+end;
+
+// The pinyin of the base rows of the character, as normalized_base_entry_exists
+// reads them (one query a character).
+function TncSqliteDictionary.get_single_char_readings(const text_unit: string): TArray<string>;
+const
+    select_sql = 'SELECT pinyin FROM dict_base WHERE text = ?1 LIMIT 64';
+var
+    stmt: Psqlite3_stmt;
+    step_result: Integer;
+    text_key: string;
+    reading: string;
+    known: string;
+    seen: Boolean;
+begin
+    Result := nil;
+    text_key := Trim(text_unit);
+    if (text_key = '') or (get_valid_cjk_codepoint_count(text_key) <> 1) or
+        (not m_base_ready) or (m_base_connection = nil) then
+    begin
+        Exit;
+    end;
+    if (m_single_char_readings_cache <> nil) and
+        m_single_char_readings_cache.TryGetValue(text_key, Result) then
+    begin
+        Exit;
+    end;
+
+    stmt := nil;
+    try
+        if m_base_connection.prepare(select_sql, stmt) and
+            m_base_connection.bind_text(stmt, 1, text_key) then
+        begin
+            step_result := m_base_connection.step(stmt);
+            while step_result = SQLITE_ROW do
+            begin
+                reading := normalize_compact_pinyin_key(m_base_connection.column_text(stmt, 0));
+                if (reading <> '') and is_full_pinyin_key(reading) then
+                begin
+                    seen := False;
+                    for known in Result do
+                        if known = reading then
+                        begin
+                            seen := True;
+                            Break;
+                        end;
+                    if not seen then
+                        Result := Result + [reading];
+                end;
+                step_result := m_base_connection.step(stmt);
+            end;
+        end;
+    finally
+        if stmt <> nil then
+        begin
+            m_base_connection.finalize(stmt);
+        end;
+    end;
+    if m_single_char_readings_cache <> nil then
+    begin
+        m_single_char_readings_cache.AddOrSetValue(text_key, Result);
+    end;
 end;
 
 procedure TncSqliteDictionary.prune_suspicious_user_entries;
