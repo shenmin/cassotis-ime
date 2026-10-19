@@ -930,6 +930,7 @@ type
         function is_predictive_longer_candidate(const candidate: TncCandidate;
             const query: string): Boolean;
         function misreads_typed_keys(const text, pinyin, query: string): Boolean;
+        function variant_char(const simplified, traditional: Word): string; inline;
         function create_dictionary_from_config: TncDictionaryProvider;
         function take_cached_dictionary_provider(const variant: TncDictionaryVariant;
             const base_path: string; const user_path: string): TncDictionaryProvider;
@@ -1764,6 +1765,19 @@ begin
         results[i].has_dict_weight := True;
         results[i].dict_weight := results[i].score;
     end;
+end;
+
+// A character of the engine's tables in the script of the variant: 这 in the
+// simplified one, 這 in the traditional one, whose dictionary, pages and
+// context write it so. Without it the traditional variant's function-word
+// rules never matched (對 is no 对) and its bridges wrote simplified text.
+// Before every use, so that it is inlined there.
+function TncEngine.variant_char(const simplified, traditional: Word): string;
+begin
+    if m_config.dictionary_variant = dv_traditional then
+        Result := string(Char(traditional))
+    else
+        Result := string(Char(simplified));
 end;
 
 constructor TncEngine.create(const config: TncEngineConfig;
@@ -2867,9 +2881,9 @@ var
         Result := ((last_pinyin = 'le') and
             SameText(units[3], string(Char($4E86)))) or
             ((last_pinyin = 'zhe') and
-            SameText(units[3], string(Char($7740)))) or
+            SameText(units[3], variant_char($7740, $8457))) or
             ((last_pinyin = 'guo') and
-            SameText(units[3], string(Char($8FC7))));
+            SameText(units[3], variant_char($8FC7, $904E)));
     end;
 
     procedure cache_evidence;
@@ -3076,13 +3090,13 @@ var
             ((normalized_particle = 'le') and
             SameText(text_value_local, string(Char($4E86)))) or
             ((normalized_particle = 'zhe') and
-            SameText(text_value_local, string(Char($7740)))) or
+            SameText(text_value_local, variant_char($7740, $8457))) or
             ((normalized_particle = 'la') and
             SameText(text_value_local, string(Char($5566)))) or
             ((normalized_particle = 'ba') and
             SameText(text_value_local, string(Char($5427)))) or
             ((normalized_particle = 'ma') and
-            SameText(text_value_local, string(Char($5417)))) or
+            SameText(text_value_local, variant_char($5417, $55CE))) or
             ((normalized_particle = 'a') and
             SameText(text_value_local, string(Char($554A))));
     end;
@@ -10449,7 +10463,7 @@ var
             end
             else if particle_key_local = 'zhe' then
             begin
-                particle_text_local := string(Char($7740));
+                particle_text_local := variant_char($7740, $8457);
             end
             else if particle_key_local = 'la' then
             begin
@@ -10461,7 +10475,7 @@ var
             end
             else if particle_key_local = 'ma' then
             begin
-                particle_text_local := string(Char($5417));
+                particle_text_local := variant_char($5417, $55CE);
             end
             else if particle_key_local = 'a' then
             begin
@@ -10626,22 +10640,22 @@ var
             Exit;
         end;
 
-        if SameText(text_value, string(Char($6709)) + string(Char($70B9))) or
+        if SameText(text_value, string(Char($6709)) + variant_char($70B9, $9EDE)) or
 
-            SameText(text_value, string(Char($4E00)) + string(Char($70B9))) or
+            SameText(text_value, string(Char($4E00)) + variant_char($70B9, $9EDE)) or
             SameText(text_value, string(Char($4E0D)) + string(Char($662F))) or
 
-            SameText(text_value, string(Char($4E0D)) + string(Char($4F1A))) or
+            SameText(text_value, string(Char($4E0D)) + variant_char($4F1A, $6703)) or
 
             SameText(text_value, string(Char($4E0D)) + string(Char($80FD))) or
 
             SameText(text_value, string(Char($4E0D)) + string(Char($8981))) or
 
-            SameText(text_value, string(Char($6CA1)) + string(Char($6709))) or
+            SameText(text_value, variant_char($6CA1, $6C92) + string(Char($6709))) or
 
             SameText(text_value, string(Char($53EF)) + string(Char($4EE5))) or
 
-            SameText(text_value, string(Char($5E94)) + string(Char($8BE5))) or
+            SameText(text_value, variant_char($5E94, $61C9) + variant_char($8BE5, $8A72)) or
 
             SameText(text_value, string(Char($9700)) + string(Char($8981))) then
         begin
@@ -10695,13 +10709,13 @@ var
                 ((pinyin_key_value = 'le') and
                 SameText(text_value, string(Char($4E86)))) or
                 ((pinyin_key_value = 'zhe') and
-                SameText(text_value, string(Char($7740)))) or
+                SameText(text_value, variant_char($7740, $8457))) or
                 ((pinyin_key_value = 'la') and
                 SameText(text_value, string(Char($5566)))) or
                 ((pinyin_key_value = 'ba') and
                 SameText(text_value, string(Char($5427)))) or
                 ((pinyin_key_value = 'ma') and
-                SameText(text_value, string(Char($5417)))) or
+                SameText(text_value, variant_char($5417, $55CE))) or
                 ((pinyin_key_value = 'a') and
                 SameText(text_value, string(Char($554A))));
         end;
@@ -11442,11 +11456,11 @@ var
 
                 (value = string(Char($5DF2))) or
 
-                (value = string(Char($5C06))) or
+                (value = variant_char($5C06, $5C07)) or
 
                 (value = string(Char($53EF))) or
 
-                (value = string(Char($4F1A))) or
+                (value = variant_char($4F1A, $6703)) or
 
                 (value = string(Char($80FD))) or
 
@@ -11454,9 +11468,9 @@ var
 
                 (value = string(Char($60F3))) or
 
-                (value = string(Char($6CA1))) or
+                (value = variant_char($6CA1, $6C92)) or
 
-                (value = string(Char($65E0))) or
+                (value = variant_char($65E0, $7121)) or
 
                 (value = string(Char($975E))) or
 
@@ -11466,7 +11480,7 @@ var
 
                 (value = string(Char($90FD))) or
 
-                (value = string(Char($8FD8))) or
+                (value = variant_char($8FD8, $9084)) or
 
                 (value = string(Char($624D))) or
 
@@ -11474,7 +11488,7 @@ var
 
                 (value = string(Char($53EA))) or
 
-                (value = string(Char($522B))) or
+                (value = variant_char($522B, $5225)) or
 
                 (value = string(Char($591A))) or
 
@@ -11488,35 +11502,35 @@ var
 
                 (value = string(Char($633A))) or
 
-                (value = string(Char($8F83))) or
+                (value = variant_char($8F83, $8F03)) or
 
-                (value = string(Char($9887))) or
+                (value = variant_char($9887, $9817)) or
 
-                (value = string(Char($6781))) or
+                (value = variant_char($6781, $6975)) or
 
                 (value = string(Char($628A))) or
 
                 (value = string(Char($88AB))) or
 
-                (value = string(Char($8BA9))) or
+                (value = variant_char($8BA9, $8B93)) or
 
-                (value = string(Char($7ED9))) or
+                (value = variant_char($7ED9, $7D66)) or
 
                 (value = string(Char($5411))) or
 
-                (value = string(Char($5BF9))) or
+                (value = variant_char($5BF9, $5C0D)) or
 
-                (value = string(Char($4ECE))) or
+                (value = variant_char($4ECE, $5F9E)) or
 
-                (value = string(Char($4E8E))) or
+                (value = variant_char($4E8E, $65BC)) or
 
                 (value = string(Char($548C))) or
 
-                (value = string(Char($4E0E))) or
+                (value = variant_char($4E0E, $8207)) or
 
                 (value = string(Char($4F46))) or
 
-                (value = string(Char($867D))) or
+                (value = variant_char($867D, $96D6)) or
 
                 (value = string(Char($800C))) or
 
@@ -14577,7 +14591,7 @@ var
                             (((key_value_local = 'er') or
                             (key_value_local = 'liang')) and
                             ((text_value_local = string(Char($4E8C))) or
-                            (text_value_local = string(Char($4E24))))) or
+                            (text_value_local = variant_char($4E24, $5169)))) or
                             ((key_value_local = 'san') and
                             (text_value_local = string(Char($4E09)))) or
                             ((key_value_local = 'si') and
@@ -14599,25 +14613,25 @@ var
                             ((key_value_local = 'zi') and
                             (text_value_local = string(Char($5B57)))) or
                             ((key_value_local = 'xiang') and
-                            (text_value_local = string(Char($9879)))) or
+                            (text_value_local = variant_char($9879, $9805))) or
                             ((key_value_local = 'ci') and
                             (text_value_local = string(Char($6B21)))) or
                             ((key_value_local = 'ge') and
-                            (text_value_local = string(Char($4E2A)))) or
+                            (text_value_local = variant_char($4E2A, $500B))) or
                             ((key_value_local = 'tiao') and
-                            (text_value_local = string(Char($6761)))) or
+                            (text_value_local = variant_char($6761, $689D))) or
                             ((key_value_local = 'zhang') and
-                            (text_value_local = string(Char($5F20)))) or
+                            (text_value_local = variant_char($5F20, $5F35))) or
                             ((key_value_local = 'dian') and
-                            (text_value_local = string(Char($70B9)))) or
+                            (text_value_local = variant_char($70B9, $9EDE))) or
                             ((key_value_local = 'bu') and
                             (text_value_local = string(Char($6B65)))) or
                             ((key_value_local = 'lun') and
-                            (text_value_local = string(Char($8F6E)))) or
+                            (text_value_local = variant_char($8F6E, $8F2A))) or
                             ((key_value_local = 'jie') and
-                            (text_value_local = string(Char($8282)))) or
+                            (text_value_local = variant_char($8282, $7BC0))) or
                             ((key_value_local = 'ye') and
-                            (text_value_local = string(Char($9875)))) or
+                            (text_value_local = variant_char($9875, $9801))) or
                             ((key_value_local = 'duan') and
                             (text_value_local = string(Char($6BB5)))) or
                             ((key_value_local = 'hang') and
@@ -14945,30 +14959,30 @@ var
                 end;
 
                 Result :=
-                    (suffix_head = string(Char($533A))) or
+                    (suffix_head = variant_char($533A, $5340)) or
                     (suffix_head = string(Char($5E02))) or
                     (suffix_head = string(Char($7701))) or
-                    (suffix_head = string(Char($53BF))) or
-                    (suffix_head = string(Char($9547))) or
-                    (suffix_head = string(Char($4E61))) or
+                    (suffix_head = variant_char($53BF, $7E23)) or
+                    (suffix_head = variant_char($9547, $93AE)) or
+                    (suffix_head = variant_char($4E61, $9109)) or
                     (suffix_head = string(Char($8DEF))) or
                     (suffix_head = string(Char($8857))) or
                     (suffix_head = string(Char($9053))) or
                     (suffix_head = string(Char($4E0B))) or
                     (suffix_head = string(Char($4E0A))) or
                     (suffix_head = string(Char($4E2D))) or
-                    (suffix_head = string(Char($5185))) or
+                    (suffix_head = variant_char($5185, $5167)) or
                     (suffix_head = string(Char($5916))) or
                     (suffix_head = string(Char($524D))) or
-                    (suffix_head = string(Char($540E))) or
-                    (suffix_head = string(Char($4E1C))) or
+                    (suffix_head = variant_char($540E, $5F8C)) or
+                    (suffix_head = variant_char($4E1C, $6771)) or
                     (suffix_head = string(Char($897F))) or
                     (suffix_head = string(Char($5357))) or
                     (suffix_head = string(Char($5317))) or
-                    (suffix_head = string(Char($8FB9))) or
+                    (suffix_head = variant_char($8FB9, $908A)) or
                     (suffix_head = string(Char($9762))) or
                     (suffix_head = string(Char($7248))) or
-                    (suffix_head = string(Char($53F7))) or
+                    (suffix_head = variant_char($53F7, $865F)) or
                     (suffix_head = string(Char($5E97)));
             end;
         begin
@@ -15118,7 +15132,7 @@ var
                 else if normalized_local = 'ye' then
                     out_text_local := string(Char($4E5F))
                 else if normalized_local = 'hai' then
-                    out_text_local := string(Char($8FD8))
+                    out_text_local := variant_char($8FD8, $9084)
                 else if normalized_local = 'dou' then
                     out_text_local := string(Char($90FD))
                 else if normalized_local = 'jiu' then
@@ -15126,23 +15140,23 @@ var
                 else if normalized_local = 'de' then
                     out_text_local := string(Char($7684))
                 else if normalized_local = 'dui' then
-                    out_text_local := string(Char($5BF9))
+                    out_text_local := variant_char($5BF9, $5C0D)
                 else if normalized_local = 'dao' then
                     out_text_local := string(Char($5230))
                 else if normalized_local = 'cong' then
-                    out_text_local := string(Char($4ECE))
+                    out_text_local := variant_char($4ECE, $5F9E)
                 else if normalized_local = 'he' then
                     out_text_local := string(Char($548C))
                 else if normalized_local = 'yu' then
-                    out_text_local := string(Char($4E0E))
+                    out_text_local := variant_char($4E0E, $8207)
                 else if normalized_local = 'ba' then
                     out_text_local := string(Char($628A))
                 else if normalized_local = 'bei' then
                     out_text_local := string(Char($88AB))
                 else if normalized_local = 'gei' then
-                    out_text_local := string(Char($7ED9))
+                    out_text_local := variant_char($7ED9, $7D66)
                 else if normalized_local = 'rang' then
-                    out_text_local := string(Char($8BA9))
+                    out_text_local := variant_char($8BA9, $8B93)
                 else if normalized_local = 'suo' then
                     out_text_local := string(Char($6240))
                 else if normalized_local = 'shi' then
@@ -15220,28 +15234,28 @@ var
                     Result := (unit_value_local = string(Char($5BB6))) or
                         (unit_value_local = string(Char($5E97))) or
                         (unit_value_local = string(Char($5C4B))) or
-                        (unit_value_local = string(Char($697C))) or
+                        (unit_value_local = variant_char($697C, $6A13)) or
                         (unit_value_local = string(Char($57CE))) or
                         (unit_value_local = string(Char($6751))) or
-                        (unit_value_local = string(Char($53BF))) or
+                        (unit_value_local = variant_char($53BF, $7E23)) or
                         (unit_value_local = string(Char($5E02))) or
                         (unit_value_local = string(Char($6821))) or
                         (unit_value_local = string(Char($9662))) or
-                        (unit_value_local = string(Char($5382))) or
-                        (unit_value_local = string(Char($9986))) or
+                        (unit_value_local = variant_char($5382, $5EE0)) or
+                        (unit_value_local = variant_char($9986, $9928)) or
                         (unit_value_local = string(Char($7AD9))) or
                         (unit_value_local = string(Char($5C40))) or
                         (unit_value_local = string(Char($6240))) or
-                        (unit_value_local = string(Char($56ED))) or
-                        (unit_value_local = string(Char($533A))) or
+                        (unit_value_local = variant_char($56ED, $5712)) or
+                        (unit_value_local = variant_char($533A, $5340)) or
                         (unit_value_local = string(Char($5708))) or
                         (unit_value_local = string(Char($8DEF))) or
                         (unit_value_local = string(Char($8857))) or
-                        (unit_value_local = string(Char($95E8))) or
+                        (unit_value_local = variant_char($95E8, $9580)) or
                         (unit_value_local = string(Char($5BA4))) or
                         (unit_value_local = string(Char($623F))) or
-                        (unit_value_local = string(Char($5385))) or
-                        (unit_value_local = string(Char($573A))) or
+                        (unit_value_local = variant_char($5385, $5EF3)) or
+                        (unit_value_local = variant_char($573A, $5834)) or
                         (unit_value_local = string(Char($53F8)));
                 end;
 
@@ -15606,28 +15620,28 @@ var
                 Result := (unit_value_local = string(Char($5BB6))) or
                     (unit_value_local = string(Char($5E97))) or
                     (unit_value_local = string(Char($5C4B))) or
-                    (unit_value_local = string(Char($697C))) or
+                    (unit_value_local = variant_char($697C, $6A13)) or
                     (unit_value_local = string(Char($57CE))) or
                     (unit_value_local = string(Char($6751))) or
-                    (unit_value_local = string(Char($53BF))) or
+                    (unit_value_local = variant_char($53BF, $7E23)) or
                     (unit_value_local = string(Char($5E02))) or
                     (unit_value_local = string(Char($6821))) or
                     (unit_value_local = string(Char($9662))) or
-                    (unit_value_local = string(Char($5382))) or
-                    (unit_value_local = string(Char($9986))) or
+                    (unit_value_local = variant_char($5382, $5EE0)) or
+                    (unit_value_local = variant_char($9986, $9928)) or
                     (unit_value_local = string(Char($7AD9))) or
                     (unit_value_local = string(Char($5C40))) or
                     (unit_value_local = string(Char($6240))) or
-                    (unit_value_local = string(Char($56ED))) or
-                    (unit_value_local = string(Char($533A))) or
+                    (unit_value_local = variant_char($56ED, $5712)) or
+                    (unit_value_local = variant_char($533A, $5340)) or
                     (unit_value_local = string(Char($5708))) or
                     (unit_value_local = string(Char($8DEF))) or
                     (unit_value_local = string(Char($8857))) or
-                    (unit_value_local = string(Char($95E8))) or
+                    (unit_value_local = variant_char($95E8, $9580)) or
                     (unit_value_local = string(Char($5BA4))) or
                     (unit_value_local = string(Char($623F))) or
-                    (unit_value_local = string(Char($5385))) or
-                    (unit_value_local = string(Char($573A))) or
+                    (unit_value_local = variant_char($5385, $5EF3)) or
+                    (unit_value_local = variant_char($573A, $5834)) or
                     (unit_value_local = string(Char($53F8)));
             end;
 
@@ -15697,14 +15711,14 @@ var
                 second_unit_local := units_local[1];
                 if not (SameText(first_unit_local, string(Char($5317))) or
                     SameText(first_unit_local, string(Char($5357))) or
-                    SameText(first_unit_local, string(Char($4E1C))) or
+                    SameText(first_unit_local, variant_char($4E1C, $6771)) or
                     SameText(first_unit_local, string(Char($897F))) or
                     SameText(first_unit_local, string(Char($524D))) or
-                    SameText(first_unit_local, string(Char($540E))) or
+                    SameText(first_unit_local, variant_char($540E, $5F8C)) or
                     SameText(first_unit_local, string(Char($4E0A))) or
                     SameText(first_unit_local, string(Char($4E0B))) or
-                    SameText(first_unit_local, string(Char($91CC))) or
-                    SameText(first_unit_local, string(Char($5185))) or
+                    SameText(first_unit_local, variant_char($91CC, $88E1)) or
+                    SameText(first_unit_local, variant_char($5185, $5167)) or
                     SameText(first_unit_local, string(Char($5916))) or
                     SameText(first_unit_local, string(Char($5DE6))) or
                     SameText(first_unit_local, string(Char($53F3)))) then
@@ -15713,8 +15727,8 @@ var
                 end;
 
                 Result := SameText(second_unit_local, string(Char($9762))) or
-                    SameText(second_unit_local, string(Char($8FB9))) or
-                    SameText(second_unit_local, string(Char($4FA7))) or
+                    SameText(second_unit_local, variant_char($8FB9, $908A)) or
+                    SameText(second_unit_local, variant_char($4FA7, $5074)) or
                     SameText(second_unit_local, string(Char($65B9))) or
                     SameText(second_unit_local, string(Char($90E8)));
             end;
@@ -17440,17 +17454,17 @@ var
                     Result := (((normalized_query_local = 'naer') or
                         (normalized_query_local = 'ner')) and
                         SameText(text_value, string(Char($54EA)) +
-                        string(Char($513F)))) or
+                        variant_char($513F, $5152))) or
                         (((normalized_query_local = 'qunaer') or
                         (normalized_query_local = 'qner')) and
                         SameText(text_value, string(Char($53BB)) +
-                        string(Char($54EA)) + string(Char($513F)))) or
+                        string(Char($54EA)) + variant_char($513F, $5152))) or
                         ((normalized_query_local = 'nli') and
                         SameText(text_value, string(Char($54EA)) +
-                        string(Char($91CC)))) or
+                        variant_char($91CC, $88E1))) or
                         ((normalized_query_local = 'qnli') and
                         SameText(text_value, string(Char($53BB)) +
-                        string(Char($54EA)) + string(Char($91CC))));
+                        string(Char($54EA)) + variant_char($91CC, $88E1)));
                 end;
 
             begin
@@ -21736,7 +21750,7 @@ var
         end
         else if normalized_syllable = 'sui' then
         begin
-            Result := string(Char($867D));
+            Result := variant_char($867D, $96D6);
         end
         else if normalized_syllable = 'wo' then
         begin
@@ -21772,7 +21786,7 @@ var
         end
         else if normalized_syllable = 'hui' then
         begin
-            Result := string(Char($4F1A));
+            Result := variant_char($4F1A, $6703);
         end
         else if normalized_syllable = 'ba' then
         begin
@@ -21788,15 +21802,15 @@ var
         end
         else if normalized_syllable = 'zhe' then
         begin
-            Result := string(Char($8FD9));
+            Result := variant_char($8FD9, $9019);
         end
         else if normalized_syllable = 'que' then
         begin
-            Result := string(Char($5374));
+            Result := variant_char($5374, $537B);
         end
         else if normalized_syllable = 'bing' then
         begin
-            Result := string(Char($5E76));
+            Result := variant_char($5E76, $4E26);
         end
         else if normalized_syllable = 'qie' then
         begin
@@ -24237,7 +24251,7 @@ var
             end
             else if local_key = 'shuo' then
             begin
-                Result := string(Char($8BF4));
+                Result := variant_char($8BF4, $8AAA);
             end
             else if local_key = 'de' then
             begin
@@ -24253,7 +24267,7 @@ var
             end
             else if local_key = 'yu' then
             begin
-                Result := string(Char($4E0E));
+                Result := variant_char($4E0E, $8207);
             end
             else if local_key = 'zai' then
             begin
@@ -24265,11 +24279,11 @@ var
             end
             else if local_key = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if local_key = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end;
         end;
 
@@ -24346,7 +24360,7 @@ var
             end
             else if tail_key_local = 'ma' then
             begin
-                Result := string(Char($5417));
+                Result := variant_char($5417, $55CE);
             end
             else if tail_key_local = 'ne' then
             begin
@@ -24783,7 +24797,7 @@ var
                 end;
                 if SameText(normalize_pinyin_text(
                     syllables_local[local_start_idx].text), 'yu') and
-                    (single_text = string(Char($4E0E))) then
+                    (single_text = variant_char($4E0E, $8207)) then
                 begin
                     Inc(single_score, 160);
                 end;
@@ -26565,7 +26579,7 @@ var
                     ((c_probe_limit - single_idx_local) * 32);
                 if has_preceding_local and
                     (has_following_exact_local or has_following_chain_local) and
-                    ((candidate_text_local = string(Char($4E0E))) or
+                    ((candidate_text_local = variant_char($4E0E, $8207)) or
                     (candidate_text_local = string(Char($548C)))) then
                 begin
                     Inc(ranked_weight_local, 260);
@@ -27246,15 +27260,15 @@ var
             end
             else if normalized_syllable_local = 'ge' then
             begin
-                Result := string(Char($4E2A));
+                Result := variant_char($4E2A, $500B);
             end
             else if normalized_syllable_local = 'tiao' then
             begin
-                Result := string(Char($6761));
+                Result := variant_char($6761, $689D);
             end
             else if normalized_syllable_local = 'zhang' then
             begin
-                Result := string(Char($5F20));
+                Result := variant_char($5F20, $5F35);
             end
             else if normalized_syllable_local = 'ben' then
             begin
@@ -27270,7 +27284,7 @@ var
             end
             else if normalized_syllable_local = 'lun' then
             begin
-                Result := string(Char($8F6E));
+                Result := variant_char($8F6E, $8F2A);
             end
             else if normalized_syllable_local = 'hui' then
             begin
@@ -28105,7 +28119,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'yi' then
             begin
@@ -28133,7 +28147,7 @@ var
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -28149,15 +28163,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -30744,22 +30758,22 @@ var
             end;
             head_unit_local := units_local[0];
             tail_unit_local := units_local[1];
-            Result := ((head_unit_local = string(Char($4E1C))) or
+            Result := ((head_unit_local = variant_char($4E1C, $6771)) or
                 (head_unit_local = string(Char($5357))) or
                 (head_unit_local = string(Char($897F))) or
                 (head_unit_local = string(Char($5317))) or
                 (head_unit_local = string(Char($4E0A))) or
                 (head_unit_local = string(Char($4E0B))) or
                 (head_unit_local = string(Char($524D))) or
-                (head_unit_local = string(Char($540E))) or
-                (head_unit_local = string(Char($91CC))) or
+                (head_unit_local = variant_char($540E, $5F8C)) or
+                (head_unit_local = variant_char($91CC, $88E1)) or
                 (head_unit_local = string(Char($5916))) or
                 (head_unit_local = string(Char($5DE6))) or
                 (head_unit_local = string(Char($53F3)))) and
                 ((tail_unit_local = string(Char($9762))) or
-                (tail_unit_local = string(Char($8FB9))) or
+                (tail_unit_local = variant_char($8FB9, $908A)) or
                 (tail_unit_local = string(Char($65B9))) or
-                (tail_unit_local = string(Char($4FA7))) or
+                (tail_unit_local = variant_char($4FA7, $5074)) or
                 (tail_unit_local = string(Char($90E8))));
         end;
     begin
@@ -31458,15 +31472,15 @@ var
         tail_unit_local: string;
         function is_direction_unit_local(const unit_value: string): Boolean;
         begin
-            Result := (unit_value = string(Char($4E1C))) or
+            Result := (unit_value = variant_char($4E1C, $6771)) or
                 (unit_value = string(Char($5357))) or
                 (unit_value = string(Char($897F))) or
                 (unit_value = string(Char($5317))) or
                 (unit_value = string(Char($4E0A))) or
                 (unit_value = string(Char($4E0B))) or
                 (unit_value = string(Char($524D))) or
-                (unit_value = string(Char($540E))) or
-                (unit_value = string(Char($91CC))) or
+                (unit_value = variant_char($540E, $5F8C)) or
+                (unit_value = variant_char($91CC, $88E1)) or
                 (unit_value = string(Char($5916))) or
                 (unit_value = string(Char($5DE6))) or
                 (unit_value = string(Char($53F3)));
@@ -31474,9 +31488,9 @@ var
         function is_locative_tail_unit_local(const unit_value: string): Boolean;
         begin
             Result := (unit_value = string(Char($9762))) or
-                (unit_value = string(Char($8FB9))) or
+                (unit_value = variant_char($8FB9, $908A)) or
                 (unit_value = string(Char($65B9))) or
-                (unit_value = string(Char($4FA7))) or
+                (unit_value = variant_char($4FA7, $5074)) or
                 (unit_value = string(Char($90E8)));
         end;
     begin
@@ -33132,7 +33146,7 @@ var
                 end
                 else if normalized_local = 'hui' then
                 begin
-                    Result := string(Char($4F1A));
+                    Result := variant_char($4F1A, $6703);
                 end
                 else if normalized_local = 'de' then
                 begin
@@ -33148,7 +33162,7 @@ var
                 end
                 else if normalized_local = 'liang' then
                 begin
-                    Result := string(Char($4E24));
+                    Result := variant_char($4E24, $5169);
                 end
                 else if normalized_local = 'nian' then
                 begin
@@ -33156,7 +33170,7 @@ var
                 end
                 else if normalized_local = 'suo' then
                 begin
-                    Result := string(Char($7F29));
+                    Result := variant_char($7F29, $7E2E);
                 end;
             end;
         begin
@@ -33194,7 +33208,7 @@ var
                         Inc(candidate_score, c_user_score_bonus);
                     end;
                     if SameText(normalize_pinyin_text(syllables_local[local_idx].text),
-                        'yu') and (candidate_text = string(Char($4E0E))) then
+                        'yu') and (candidate_text = variant_char($4E0E, $8207)) then
                     begin
                         Inc(candidate_score, 160);
                     end;
@@ -33283,7 +33297,7 @@ var
             end
             else if normalized_syllable_local = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable_local = 'qian' then
             begin
@@ -33291,7 +33305,7 @@ var
             end
             else if normalized_syllable_local = 'liang' then
             begin
-                Result := string(Char($4E24));
+                Result := variant_char($4E24, $5169);
             end
             else if normalized_syllable_local = 'nian' then
             begin
@@ -33299,11 +33313,11 @@ var
             end
             else if normalized_syllable_local = 'suo' then
             begin
-                Result := string(Char($7F29));
+                Result := variant_char($7F29, $7E2E);
             end
             else if normalized_syllable_local = 'ma' then
             begin
-                Result := string(Char($5417));
+                Result := variant_char($5417, $55CE);
             end
             else if normalized_syllable_local = 'ne' then
             begin
@@ -34281,7 +34295,7 @@ var
             end
             else if normalized_tail_key_local = 'zhe' then
             begin
-                Result := string(Char($7740));
+                Result := variant_char($7740, $8457);
             end
             else if normalized_tail_key_local = 'la' then
             begin
@@ -34293,7 +34307,7 @@ var
             end
             else if normalized_tail_key_local = 'ma' then
             begin
-                Result := string(Char($5417));
+                Result := variant_char($5417, $55CE);
             end
             else if normalized_tail_key_local = 'a' then
             begin
@@ -34598,7 +34612,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'yi' then
             begin
@@ -34642,11 +34656,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -34662,15 +34676,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -35272,7 +35286,7 @@ var
             end
             else if last_syllable_key = 'ma' then
             begin
-                expected_text := string(Char($5417));
+                expected_text := variant_char($5417, $55CE);
             end
             else if last_syllable_key = 'ne' then
             begin
@@ -38797,7 +38811,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'yi' then
             begin
@@ -38837,7 +38851,7 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'de' then
             begin
@@ -38857,11 +38871,11 @@ var
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'jiu' then
             begin
@@ -40554,7 +40568,7 @@ var
             end
             else if local_text_local = 'ma' then
             begin
-                expected_tail_text_local := string(Char($5417));
+                expected_tail_text_local := variant_char($5417, $55CE);
             end
             else if local_text_local = 'ne' then
             begin
@@ -42394,7 +42408,7 @@ var
                 end
                 else if query_key_local = 'yu' then
                 begin
-                    Result := string(Char($4E8E));
+                    Result := variant_char($4E8E, $65BC);
                 end
                 else if query_key_local = 'zai' then
                 begin
@@ -43042,7 +43056,7 @@ var
             end
             else if normalized_syllable = 'ma' then
             begin
-                Result := string(Char($5417));
+                Result := variant_char($5417, $55CE);
             end
             else if normalized_syllable = 'ne' then
             begin
@@ -44284,7 +44298,7 @@ var
             end
             else if normalized_syllable = 'xiang' then
             begin
-                Result := string(Char($9879));
+                Result := variant_char($9879, $9805);
             end
             else if normalized_syllable = 'ci' then
             begin
@@ -44292,19 +44306,19 @@ var
             end
             else if normalized_syllable = 'ge' then
             begin
-                Result := string(Char($4E2A));
+                Result := variant_char($4E2A, $500B);
             end
             else if normalized_syllable = 'tiao' then
             begin
-                Result := string(Char($6761));
+                Result := variant_char($6761, $689D);
             end
             else if normalized_syllable = 'zhang' then
             begin
-                Result := string(Char($5F20));
+                Result := variant_char($5F20, $5F35);
             end
             else if normalized_syllable = 'dian' then
             begin
-                Result := string(Char($70B9));
+                Result := variant_char($70B9, $9EDE);
             end
             else if normalized_syllable = 'bu' then
             begin
@@ -44312,15 +44326,15 @@ var
             end
             else if normalized_syllable = 'lun' then
             begin
-                Result := string(Char($8F6E));
+                Result := variant_char($8F6E, $8F2A);
             end
             else if normalized_syllable = 'jie' then
             begin
-                Result := string(Char($8282));
+                Result := variant_char($8282, $7BC0);
             end
             else if normalized_syllable = 'ye' then
             begin
-                Result := string(Char($9875));
+                Result := variant_char($9875, $9801);
             end
             else if normalized_syllable = 'duan' then
             begin
@@ -44817,10 +44831,10 @@ var
         function is_sentence_particle_unit_local(const unit_value: string): Boolean;
         begin
             Result := (unit_value = string(Char($4E86))) or
-                (unit_value = string(Char($7740))) or
+                (unit_value = variant_char($7740, $8457)) or
 
-                (unit_value = string(Char($8FC7))) or
-                (unit_value = string(Char($5417))) or
+                (unit_value = variant_char($8FC7, $904E)) or
+                (unit_value = variant_char($5417, $55CE)) or
                 (unit_value = string(Char($561B))) or
                 (unit_value = string(Char($5427))) or
                 (unit_value = string(Char($5462))) or
@@ -46594,11 +46608,11 @@ var
 
                     (value = string(Char($5DF2))) or
 
-                    (value = string(Char($5C06))) or
+                    (value = variant_char($5C06, $5C07)) or
 
                     (value = string(Char($53EF))) or
 
-                    (value = string(Char($4F1A))) or
+                    (value = variant_char($4F1A, $6703)) or
 
                     (value = string(Char($80FD))) or
 
@@ -46606,9 +46620,9 @@ var
 
                     (value = string(Char($60F3))) or
 
-                    (value = string(Char($6CA1))) or
+                    (value = variant_char($6CA1, $6C92)) or
 
-                    (value = string(Char($65E0))) or
+                    (value = variant_char($65E0, $7121)) or
 
                     (value = string(Char($975E))) or
 
@@ -46618,7 +46632,7 @@ var
 
                     (value = string(Char($90FD))) or
 
-                    (value = string(Char($8FD8))) or
+                    (value = variant_char($8FD8, $9084)) or
 
                     (value = string(Char($624D))) or
 
@@ -46626,7 +46640,7 @@ var
 
                     (value = string(Char($53EA))) or
 
-                    (value = string(Char($522B))) or
+                    (value = variant_char($522B, $5225)) or
 
                     (value = string(Char($591A))) or
 
@@ -46640,31 +46654,31 @@ var
 
                     (value = string(Char($633A))) or
 
-                    (value = string(Char($8F83))) or
+                    (value = variant_char($8F83, $8F03)) or
 
-                    (value = string(Char($9887))) or
+                    (value = variant_char($9887, $9817)) or
 
-                    (value = string(Char($6781))) or
+                    (value = variant_char($6781, $6975)) or
 
                     (value = string(Char($628A))) or
 
                     (value = string(Char($88AB))) or
 
-                    (value = string(Char($8BA9))) or
+                    (value = variant_char($8BA9, $8B93)) or
 
-                    (value = string(Char($7ED9))) or
+                    (value = variant_char($7ED9, $7D66)) or
 
                     (value = string(Char($5411))) or
 
-                    (value = string(Char($5BF9))) or
+                    (value = variant_char($5BF9, $5C0D)) or
 
-                    (value = string(Char($4ECE))) or
+                    (value = variant_char($4ECE, $5F9E)) or
 
-                    (value = string(Char($4E8E))) or
+                    (value = variant_char($4E8E, $65BC)) or
 
                     (value = string(Char($548C))) or
 
-                    (value = string(Char($4E0E))) or
+                    (value = variant_char($4E0E, $8207)) or
 
                     (value = string(Char($662F))) or
 
@@ -47338,23 +47352,23 @@ var
                 (value = string(Char($53C8))) or
                 (value = string(Char($4E5F))) or
                 (value = string(Char($5DF2))) or
-                (value = string(Char($5C06))) or
+                (value = variant_char($5C06, $5C07)) or
                 (value = string(Char($53EF))) or
-                (value = string(Char($4F1A))) or
+                (value = variant_char($4F1A, $6703)) or
                 (value = string(Char($80FD))) or
                 (value = string(Char($8981))) or
                 (value = string(Char($60F3))) or
-                (value = string(Char($6CA1))) or
-                (value = string(Char($65E0))) or
+                (value = variant_char($6CA1, $6C92)) or
+                (value = variant_char($65E0, $7121)) or
                 (value = string(Char($975E))) or
                 (value = string(Char($672A))) or
                 (value = string(Char($4ECD))) or
                 (value = string(Char($90FD))) or
-                (value = string(Char($8FD8))) or
+                (value = variant_char($8FD8, $9084)) or
                 (value = string(Char($624D))) or
                 (value = string(Char($5C31))) or
                 (value = string(Char($53EA))) or
-                (value = string(Char($522B))) or
+                (value = variant_char($522B, $5225)) or
                 (value = string(Char($591A))) or
                 (value = string(Char($5C11))) or
                 (value = string(Char($65B0))) or
@@ -47366,19 +47380,19 @@ var
                 (value = string(Char($771F))) or
                 (value = string(Char($597D))) or
                 (value = string(Char($633A))) or
-                (value = string(Char($8F83))) or
-                (value = string(Char($9887))) or
-                (value = string(Char($6781))) or
+                (value = variant_char($8F83, $8F03)) or
+                (value = variant_char($9887, $9817)) or
+                (value = variant_char($6781, $6975)) or
                 (value = string(Char($628A))) or
                 (value = string(Char($88AB))) or
-                (value = string(Char($8BA9))) or
-                (value = string(Char($7ED9))) or
+                (value = variant_char($8BA9, $8B93)) or
+                (value = variant_char($7ED9, $7D66)) or
                 (value = string(Char($5411))) or
-                (value = string(Char($5BF9))) or
-                (value = string(Char($4ECE))) or
-                (value = string(Char($4E8E))) or
+                (value = variant_char($5BF9, $5C0D)) or
+                (value = variant_char($4ECE, $5F9E)) or
+                (value = variant_char($4E8E, $65BC)) or
                 (value = string(Char($548C))) or
-                (value = string(Char($4E0E)));
+                (value = variant_char($4E0E, $8207));
         end;
 
         *)
@@ -47858,7 +47872,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -47894,11 +47908,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -47922,15 +47936,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -47938,15 +47952,15 @@ var
             end
             else if normalized_syllable = 'jiang' then
             begin
-                Result := string(Char($5C06));
+                Result := variant_char($5C06, $5C07);
             end
             else if normalized_syllable = 'rang' then
             begin
-                Result := string(Char($8BA9));
+                Result := variant_char($8BA9, $8B93);
             end
             else if normalized_syllable = 'dui' then
             begin
-                Result := string(Char($5BF9));
+                Result := variant_char($5BF9, $5C0D);
             end
             else if normalized_syllable = 'dao' then
             begin
@@ -47954,7 +47968,7 @@ var
             end
             else if normalized_syllable = 'cong' then
             begin
-                Result := string(Char($4ECE));
+                Result := variant_char($4ECE, $5F9E);
             end
             else if normalized_syllable = 'you' then
             begin
@@ -47966,11 +47980,11 @@ var
             end
             else if normalized_syllable = 'hai' then
             begin
-                Result := string(Char($8FD8));
+                Result := variant_char($8FD8, $9084);
             end
             else if normalized_syllable = 'mai' then
             begin
-                Result := string(Char($4E70));
+                Result := variant_char($4E70, $8CB7);
             end
             else if (normalized_syllable = 'le') or (normalized_syllable = 'liao') then
             begin
@@ -50334,7 +50348,7 @@ var
                 end
                 else if normalized_syllable = 'sui' then
                 begin
-                    Result := string(Char($867D));
+                    Result := variant_char($867D, $96D6);
                 end
                 else if normalized_syllable = 'er' then
                 begin
@@ -50370,7 +50384,7 @@ var
                 end
                 else if normalized_syllable = 'yu' then
                 begin
-                    Result := string(Char($4E8E));
+                    Result := variant_char($4E8E, $65BC);
                 end
                 else if normalized_syllable = 'de' then
                 begin
@@ -50390,11 +50404,11 @@ var
                 end
                 else if normalized_syllable = 'bing' then
                 begin
-                    Result := string(Char($5E76));
+                    Result := variant_char($5E76, $4E26);
                 end
                 else if normalized_syllable = 'que' then
                 begin
-                    Result := string(Char($5374));
+                    Result := variant_char($5374, $537B);
                 end
                 else if normalized_syllable = 'jiu' then
                 begin
@@ -52722,28 +52736,28 @@ var
                 Result := (unit_value_local = string(Char($5BB6))) or
                     (unit_value_local = string(Char($5E97))) or
                     (unit_value_local = string(Char($5C4B))) or
-                    (unit_value_local = string(Char($697C))) or
+                    (unit_value_local = variant_char($697C, $6A13)) or
                     (unit_value_local = string(Char($57CE))) or
                     (unit_value_local = string(Char($6751))) or
-                    (unit_value_local = string(Char($53BF))) or
+                    (unit_value_local = variant_char($53BF, $7E23)) or
                     (unit_value_local = string(Char($5E02))) or
                     (unit_value_local = string(Char($6821))) or
                     (unit_value_local = string(Char($9662))) or
-                    (unit_value_local = string(Char($5382))) or
-                    (unit_value_local = string(Char($9986))) or
+                    (unit_value_local = variant_char($5382, $5EE0)) or
+                    (unit_value_local = variant_char($9986, $9928)) or
                     (unit_value_local = string(Char($7AD9))) or
                     (unit_value_local = string(Char($5C40))) or
                     (unit_value_local = string(Char($6240))) or
-                    (unit_value_local = string(Char($56ED))) or
-                    (unit_value_local = string(Char($533A))) or
+                    (unit_value_local = variant_char($56ED, $5712)) or
+                    (unit_value_local = variant_char($533A, $5340)) or
                     (unit_value_local = string(Char($5708))) or
                     (unit_value_local = string(Char($8DEF))) or
                     (unit_value_local = string(Char($8857))) or
-                    (unit_value_local = string(Char($95E8))) or
+                    (unit_value_local = variant_char($95E8, $9580)) or
                     (unit_value_local = string(Char($5BA4))) or
                     (unit_value_local = string(Char($623F))) or
-                    (unit_value_local = string(Char($5385))) or
-                    (unit_value_local = string(Char($573A))) or
+                    (unit_value_local = variant_char($5385, $5EF3)) or
+                    (unit_value_local = variant_char($573A, $5834)) or
                     (unit_value_local = string(Char($53F8)));
             end;
 
@@ -52765,14 +52779,14 @@ var
                 second_unit_local := units_local[1];
                 if not (SameText(first_unit_local, string(Char($5317))) or
                     SameText(first_unit_local, string(Char($5357))) or
-                    SameText(first_unit_local, string(Char($4E1C))) or
+                    SameText(first_unit_local, variant_char($4E1C, $6771)) or
                     SameText(first_unit_local, string(Char($897F))) or
                     SameText(first_unit_local, string(Char($524D))) or
-                    SameText(first_unit_local, string(Char($540E))) or
+                    SameText(first_unit_local, variant_char($540E, $5F8C)) or
                     SameText(first_unit_local, string(Char($4E0A))) or
                     SameText(first_unit_local, string(Char($4E0B))) or
-                    SameText(first_unit_local, string(Char($91CC))) or
-                    SameText(first_unit_local, string(Char($5185))) or
+                    SameText(first_unit_local, variant_char($91CC, $88E1)) or
+                    SameText(first_unit_local, variant_char($5185, $5167)) or
                     SameText(first_unit_local, string(Char($5916))) or
                     SameText(first_unit_local, string(Char($5DE6))) or
                     SameText(first_unit_local, string(Char($53F3)))) then
@@ -52781,8 +52795,8 @@ var
                 end;
 
                 Result := SameText(second_unit_local, string(Char($9762))) or
-                    SameText(second_unit_local, string(Char($8FB9))) or
-                    SameText(second_unit_local, string(Char($4FA7))) or
+                    SameText(second_unit_local, variant_char($8FB9, $908A)) or
+                    SameText(second_unit_local, variant_char($4FA7, $5074)) or
                     SameText(second_unit_local, string(Char($65B9))) or
                     SameText(second_unit_local, string(Char($90E8)));
             end;
@@ -52856,15 +52870,15 @@ var
                 end
                 else if SameText(key_local, 'ge') then
                 begin
-                    Result := string(Char($4E2A));
+                    Result := variant_char($4E2A, $500B);
                 end
                 else if SameText(key_local, 'tiao') then
                 begin
-                    Result := string(Char($6761));
+                    Result := variant_char($6761, $689D);
                 end
                 else if SameText(key_local, 'zhang') then
                 begin
-                    Result := string(Char($5F20));
+                    Result := variant_char($5F20, $5F35);
                 end
                 else if SameText(key_local, 'ben') then
                 begin
@@ -52880,7 +52894,7 @@ var
                 end
                 else if SameText(key_local, 'lun') then
                 begin
-                    Result := string(Char($8F6E));
+                    Result := variant_char($8F6E, $8F2A);
                 end
                 else if SameText(key_local, 'hui') then
                 begin
@@ -53607,11 +53621,11 @@ var
             else if last_syllable_local = 'yi' then
             begin
                 if is_text_unit_code_context_local(last_unit_local, $4EE5) and
-                    ((suffix_first_unit_local = string(Char($4E3A))) or
+                    ((suffix_first_unit_local = variant_char($4E3A, $70BA)) or
                     (suffix_first_unit_local = string(Char($53CA))) or
-                    (suffix_first_unit_local = string(Char($540E))) or
+                    (suffix_first_unit_local = variant_char($540E, $5F8C)) or
                     (suffix_first_unit_local = string(Char($524D))) or
-                    (suffix_first_unit_local = string(Char($6765))) or
+                    (suffix_first_unit_local = variant_char($6765, $4F86)) or
                     (suffix_first_unit_local = string(Char($4E0A))) or
                     (suffix_first_unit_local = string(Char($4E0B))) or
                     is_yi_preposition_suffix_head_context_local(
@@ -53988,7 +54002,7 @@ var
                 if is_text_unit_code_context_local(particle_unit_local, $4E0E) and
                     is_text_unit_code_context_local(next_unit_local, $662F) then
                 begin
-                    replacement_text_local := string(Char($4E8E));
+                    replacement_text_local := variant_char($4E8E, $65BC);
                     out_adjustment_local := 52000;
                 end
                 else if is_bound_yu_preposition_left_unit_context_local(
@@ -53996,7 +54010,7 @@ var
                     (not is_text_unit_code_context_local(particle_unit_local,
                     $4E8E)) then
                 begin
-                    replacement_text_local := string(Char($4E8E));
+                    replacement_text_local := variant_char($4E8E, $65BC);
                     out_adjustment_local := 42000;
                 end
                 else if (not is_bound_yu_preposition_left_unit_context_local(
@@ -54006,7 +54020,7 @@ var
                     is_nominal_or_pronoun_head_unit_context_local(
                     next_unit_local) then
                 begin
-                    replacement_text_local := string(Char($4E0E));
+                    replacement_text_local := variant_char($4E0E, $8207);
                     out_adjustment_local := 16000;
                 end;
             end
@@ -54018,7 +54032,7 @@ var
                     is_de_adverbial_left_unit_context_local(next_unit_local) and
                     is_text_unit_code_context_local(particle_unit_local, $672A) then
                 begin
-                    replacement_text_local := string(Char($4E3A));
+                    replacement_text_local := variant_char($4E3A, $70BA);
                     out_adjustment_local := 36000;
                 end;
             end
@@ -54091,7 +54105,7 @@ var
             else if last_syllable_local = 'le' then
             begin
                 Result := (last_unit_local <> string(Char($4E86))) and
-                    (last_unit_local <> string(Char($4E50))) and
+                    (last_unit_local <> variant_char($4E50, $6A02)) and
                     (raw_weight_local < 900);
             end;
         end;
@@ -54289,33 +54303,33 @@ var
                 (prefix_text_local = string(Char($592A))) or
                 (prefix_text_local = string(Char($8981))) or
                 (prefix_text_local = string(Char($80FD))) or
-                (prefix_text_local = string(Char($6CA1))) or
-                (prefix_text_local = string(Char($65E0))) or
+                (prefix_text_local = variant_char($6CA1, $6C92)) or
+                (prefix_text_local = variant_char($65E0, $7121)) or
                 (prefix_text_local = string(Char($975E))) or
                 (prefix_text_local = string(Char($53EF))) or
-                (prefix_text_local = string(Char($4F1A))) or
-                (prefix_text_local = string(Char($5E94))) or
-                (prefix_text_local = string(Char($5C06))) or
+                (prefix_text_local = variant_char($4F1A, $6703)) or
+                (prefix_text_local = variant_char($5E94, $61C9)) or
+                (prefix_text_local = variant_char($5C06, $5C07)) or
                 (prefix_text_local = string(Char($672A))) or
                 (prefix_text_local = string(Char($5DF2))) or
                 (prefix_text_local = string(Char($6B63))) or
                 (prefix_text_local = string(Char($53C8))) or
                 (prefix_text_local = string(Char($4E5F))) or
-                (prefix_text_local = string(Char($8FD8))) or
+                (prefix_text_local = variant_char($8FD8, $9084)) or
                 (prefix_text_local = string(Char($90FD))) or
                 (prefix_text_local = string(Char($5C31))) or
-                (prefix_text_local = string(Char($522B))) or
+                (prefix_text_local = variant_char($522B, $5225)) or
                 (prefix_text_local = string(Char($6709))) or
-                (prefix_text_local = string(Char($5BF9))) or
+                (prefix_text_local = variant_char($5BF9, $5C0D)) or
                 (prefix_text_local = string(Char($5230))) or
-                (prefix_text_local = string(Char($4ECE))) or
+                (prefix_text_local = variant_char($4ECE, $5F9E)) or
                 (prefix_text_local = string(Char($548C))) or
-                (prefix_text_local = string(Char($4E0E))) or
-                (prefix_text_local = string(Char($4E8E))) or
+                (prefix_text_local = variant_char($4E0E, $8207)) or
+                (prefix_text_local = variant_char($4E8E, $65BC)) or
                 (prefix_text_local = string(Char($628A))) or
                 (prefix_text_local = string(Char($88AB))) or
-                (prefix_text_local = string(Char($7ED9))) or
-                (prefix_text_local = string(Char($8BA9))) or
+                (prefix_text_local = variant_char($7ED9, $7D66)) or
+                (prefix_text_local = variant_char($8BA9, $8B93)) or
                 (prefix_text_local = string(Char($5148))) or
                 (prefix_text_local = string(Char($800C))) or
                 (prefix_text_local = string(Char($5728))) or
@@ -54326,9 +54340,9 @@ var
                 (prefix_text_local = string(Char($662F))) or
                 (prefix_text_local = string(Char($53EA))) or
                 (prefix_text_local = string(Char($624D))) or
-                (prefix_text_local = string(Char($5E76))) or
+                (prefix_text_local = variant_char($5E76, $4E26)) or
                 (prefix_text_local = string(Char($4E14))) or
-                (prefix_text_local = string(Char($4E3A)));
+                (prefix_text_local = variant_char($4E3A, $70BA));
         end;
 
         function is_directional_location_phrase_text_local(
@@ -54349,23 +54363,23 @@ var
             second_unit_local := units_local[1];
 
             if SameText(text_local, string(Char($9644)) + string(Char($8FD1))) or
-                SameText(text_local, string(Char($5BF9)) + string(Char($9762))) or
-                SameText(text_local, string(Char($65C1)) + string(Char($8FB9))) or
-                SameText(text_local, string(Char($5468)) + string(Char($8FB9))) then
+                SameText(text_local, variant_char($5BF9, $5C0D) + string(Char($9762))) or
+                SameText(text_local, string(Char($65C1)) + variant_char($8FB9, $908A)) or
+                SameText(text_local, string(Char($5468)) + variant_char($8FB9, $908A)) then
             begin
                 Exit(True);
             end;
 
             if not (SameText(first_unit_local, string(Char($5317))) or
                 SameText(first_unit_local, string(Char($5357))) or
-                SameText(first_unit_local, string(Char($4E1C))) or
+                SameText(first_unit_local, variant_char($4E1C, $6771)) or
                 SameText(first_unit_local, string(Char($897F))) or
                 SameText(first_unit_local, string(Char($524D))) or
-                SameText(first_unit_local, string(Char($540E))) or
+                SameText(first_unit_local, variant_char($540E, $5F8C)) or
                 SameText(first_unit_local, string(Char($4E0A))) or
                 SameText(first_unit_local, string(Char($4E0B))) or
-                SameText(first_unit_local, string(Char($91CC))) or
-                SameText(first_unit_local, string(Char($5185))) or
+                SameText(first_unit_local, variant_char($91CC, $88E1)) or
+                SameText(first_unit_local, variant_char($5185, $5167)) or
                 SameText(first_unit_local, string(Char($5916))) or
                 SameText(first_unit_local, string(Char($5DE6))) or
                 SameText(first_unit_local, string(Char($53F3)))) then
@@ -54374,12 +54388,12 @@ var
             end;
 
             Result := SameText(second_unit_local, string(Char($9762))) or
-                SameText(second_unit_local, string(Char($8FB9))) or
-                SameText(second_unit_local, string(Char($4FA7))) or
+                SameText(second_unit_local, variant_char($8FB9, $908A)) or
+                SameText(second_unit_local, variant_char($4FA7, $5074)) or
                 SameText(second_unit_local, string(Char($65B9))) or
                 SameText(second_unit_local, string(Char($90E8))) or
                 SameText(second_unit_local, string(Char($7AEF))) or
-                SameText(second_unit_local, string(Char($5934)));
+                SameText(second_unit_local, variant_char($5934, $982D));
         end;
 
         function get_exact_chunk_semantic_bonus_local(
@@ -54415,34 +54429,34 @@ var
                 (prefix_text_local = string(Char($592A))) or
                 (prefix_text_local = string(Char($8981))) or
                 (prefix_text_local = string(Char($80FD))) or
-                (prefix_text_local = string(Char($6CA1))) or
-                (prefix_text_local = string(Char($65E0))) or
+                (prefix_text_local = variant_char($6CA1, $6C92)) or
+                (prefix_text_local = variant_char($65E0, $7121)) or
                 (prefix_text_local = string(Char($975E))) or
                 (prefix_text_local = string(Char($53EF))) or
-                (prefix_text_local = string(Char($4F1A))) or
-                (prefix_text_local = string(Char($5E94))) or
-                (prefix_text_local = string(Char($5C06))) or
+                (prefix_text_local = variant_char($4F1A, $6703)) or
+                (prefix_text_local = variant_char($5E94, $61C9)) or
+                (prefix_text_local = variant_char($5C06, $5C07)) or
                 (prefix_text_local = string(Char($672A))) or
                 (prefix_text_local = string(Char($5DF2))) or
                 (prefix_text_local = string(Char($6B63))) or
                 (prefix_text_local = string(Char($53C8))) or
                 (prefix_text_local = string(Char($4E5F))) or
-                (prefix_text_local = string(Char($8FD8))) or
+                (prefix_text_local = variant_char($8FD8, $9084)) or
                 (prefix_text_local = string(Char($90FD))) or
                 (prefix_text_local = string(Char($5C31))) or
-                (prefix_text_local = string(Char($522B))) or
+                (prefix_text_local = variant_char($522B, $5225)) or
                 (prefix_text_local = string(Char($6709))) or
                 (prefix_text_local = string(Char($5728))) or
                 (prefix_text_local = string(Char($6240))) or
-                (prefix_text_local = string(Char($5BF9))) or
-                (prefix_text_local = string(Char($4ECE))) or
-                (prefix_text_local = string(Char($4E8E))) or
-                (prefix_text_local = string(Char($4E0E))) or
+                (prefix_text_local = variant_char($5BF9, $5C0D)) or
+                (prefix_text_local = variant_char($4ECE, $5F9E)) or
+                (prefix_text_local = variant_char($4E8E, $65BC)) or
+                (prefix_text_local = variant_char($4E0E, $8207)) or
                 (prefix_text_local = string(Char($548C))) or
                 (prefix_text_local = string(Char($628A))) or
                 (prefix_text_local = string(Char($88AB))) or
-                (prefix_text_local = string(Char($7ED9))) or
-                (prefix_text_local = string(Char($8BA9))) or
+                (prefix_text_local = variant_char($7ED9, $7D66)) or
+                (prefix_text_local = variant_char($8BA9, $8B93)) or
                 (prefix_text_local = string(Char($800C))) or
                 (prefix_text_local = string(Char($7684)));
         end;
@@ -54491,7 +54505,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -54531,11 +54545,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -54559,15 +54573,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -54575,15 +54589,15 @@ var
             end
             else if normalized_syllable = 'jiang' then
             begin
-                Result := string(Char($5C06));
+                Result := variant_char($5C06, $5C07);
             end
             else if normalized_syllable = 'rang' then
             begin
-                Result := string(Char($8BA9));
+                Result := variant_char($8BA9, $8B93);
             end
             else if normalized_syllable = 'gei' then
             begin
-                Result := string(Char($7ED9));
+                Result := variant_char($7ED9, $7D66);
             end
             else if normalized_syllable = 'bei' then
             begin
@@ -54591,7 +54605,7 @@ var
             end
             else if normalized_syllable = 'dui' then
             begin
-                Result := string(Char($5BF9));
+                Result := variant_char($5BF9, $5C0D);
             end
             else if normalized_syllable = 'dao' then
             begin
@@ -54599,7 +54613,7 @@ var
             end
             else if normalized_syllable = 'cong' then
             begin
-                Result := string(Char($4ECE));
+                Result := variant_char($4ECE, $5F9E);
             end
             else if normalized_syllable = 'you' then
             begin
@@ -54611,7 +54625,7 @@ var
             end
             else if normalized_syllable = 'hai' then
             begin
-                Result := string(Char($8FD8));
+                Result := variant_char($8FD8, $9084);
             end
             else if normalized_syllable = 'suo' then
             begin
@@ -54619,11 +54633,11 @@ var
             end
             else if normalized_syllable = 'wei' then
             begin
-                Result := string(Char($4E3A));
+                Result := variant_char($4E3A, $70BA);
             end
             else if normalized_syllable = 'mai' then
             begin
-                Result := string(Char($4E70));
+                Result := variant_char($4E70, $8CB7);
             end
             else if (normalized_syllable = 'le') or (normalized_syllable = 'liao') then
             begin
@@ -54780,20 +54794,20 @@ var
                 SameText(first_unit_local, string(Char($8981))) or
                 SameText(first_unit_local, string(Char($80FD))) or
                 SameText(first_unit_local, string(Char($53EF))) or
-                SameText(first_unit_local, string(Char($4F1A))) or
-                SameText(first_unit_local, string(Char($5E94))) or
+                SameText(first_unit_local, variant_char($4F1A, $6703)) or
+                SameText(first_unit_local, variant_char($5E94, $61C9)) or
                 SameText(first_unit_local, string(Char($5DF2))) or
-                SameText(first_unit_local, string(Char($5C06))) or
+                SameText(first_unit_local, variant_char($5C06, $5C07)) or
                 SameText(first_unit_local, string(Char($6B63))) or
                 SameText(first_unit_local, string(Char($53C8))) or
                 SameText(first_unit_local, string(Char($4E5F))) or
-                SameText(first_unit_local, string(Char($8FD8))) or
+                SameText(first_unit_local, variant_char($8FD8, $9084)) or
                 SameText(first_unit_local, string(Char($90FD))) or
                 SameText(first_unit_local, string(Char($5C31))) or
-                SameText(first_unit_local, string(Char($522B))) or
+                SameText(first_unit_local, variant_char($522B, $5225)) or
                 SameText(first_unit_local, string(Char($975E))) or
-                SameText(first_unit_local, string(Char($6CA1))) or
-                SameText(first_unit_local, string(Char($65E0))) or
+                SameText(first_unit_local, variant_char($6CA1, $6C92)) or
+                SameText(first_unit_local, variant_char($65E0, $7121)) or
                 SameText(first_unit_local, string(Char($672A))) then
             begin
                 Result := 7200;
@@ -54802,16 +54816,16 @@ var
                 SameText(first_unit_local, string(Char($800C))) or
                 SameText(first_unit_local, string(Char($6709))) or
                 SameText(first_unit_local, string(Char($5728))) or
-                SameText(first_unit_local, string(Char($5BF9))) or
+                SameText(first_unit_local, variant_char($5BF9, $5C0D)) or
                 SameText(first_unit_local, string(Char($5230))) or
-                SameText(first_unit_local, string(Char($4ECE))) or
+                SameText(first_unit_local, variant_char($4ECE, $5F9E)) or
                 SameText(first_unit_local, string(Char($548C))) or
-                SameText(first_unit_local, string(Char($4E0E))) or
-                SameText(first_unit_local, string(Char($4E8E))) or
+                SameText(first_unit_local, variant_char($4E0E, $8207)) or
+                SameText(first_unit_local, variant_char($4E8E, $65BC)) or
                 SameText(first_unit_local, string(Char($628A))) or
                 SameText(first_unit_local, string(Char($88AB))) or
-                SameText(first_unit_local, string(Char($7ED9))) or
-                SameText(first_unit_local, string(Char($8BA9))) or
+                SameText(first_unit_local, variant_char($7ED9, $7D66)) or
+                SameText(first_unit_local, variant_char($8BA9, $8B93)) or
                 SameText(first_unit_local, string(Char($7684))) or
                 SameText(first_unit_local, string(Char($6240))) or
 
@@ -54873,11 +54887,11 @@ var
             end
             else if normalized_syllable = 'hui' then
             begin
-                out_text := string(Char($4F1A));
+                out_text := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ying' then
             begin
-                out_text := string(Char($5E94));
+                out_text := variant_char($5E94, $61C9);
             end
             else if normalized_syllable = 'yi' then
             begin
@@ -54885,7 +54899,7 @@ var
             end
             else if normalized_syllable = 'jiang' then
             begin
-                out_text := string(Char($5C06));
+                out_text := variant_char($5C06, $5C07);
             end
             else if normalized_syllable = 'zheng' then
             begin
@@ -54909,7 +54923,7 @@ var
             end
             else if normalized_syllable = 'hai' then
             begin
-                out_text := string(Char($8FD8));
+                out_text := variant_char($8FD8, $9084);
             end
             else if normalized_syllable = 'dou' then
             begin
@@ -54921,7 +54935,7 @@ var
             end
             else if normalized_syllable = 'bie' then
             begin
-                out_text := string(Char($522B));
+                out_text := variant_char($522B, $5225);
             end
             else if normalized_syllable = 'fei' then
             begin
@@ -54929,11 +54943,11 @@ var
             end
             else if normalized_syllable = 'mei' then
             begin
-                out_text := string(Char($6CA1));
+                out_text := variant_char($6CA1, $6C92);
             end
             else if normalized_syllable = 'wu' then
             begin
-                out_text := string(Char($65E0));
+                out_text := variant_char($65E0, $7121);
             end
             else if normalized_syllable = 'wei' then
             begin
@@ -54941,7 +54955,7 @@ var
             end
             else if normalized_syllable = 'dui' then
             begin
-                out_text := string(Char($5BF9));
+                out_text := variant_char($5BF9, $5C0D);
             end
             else if normalized_syllable = 'dao' then
             begin
@@ -54949,7 +54963,7 @@ var
             end
             else if normalized_syllable = 'cong' then
             begin
-                out_text := string(Char($4ECE));
+                out_text := variant_char($4ECE, $5F9E);
             end
             else if normalized_syllable = 'he' then
             begin
@@ -54957,7 +54971,7 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                out_text := string(Char($4E8E));
+                out_text := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -54969,11 +54983,11 @@ var
             end
             else if normalized_syllable = 'gei' then
             begin
-                out_text := string(Char($7ED9));
+                out_text := variant_char($7ED9, $7D66);
             end
             else if normalized_syllable = 'rang' then
             begin
-                out_text := string(Char($8BA9));
+                out_text := variant_char($8BA9, $8B93);
             end
             else if normalized_syllable = 'de' then
             begin
@@ -55001,7 +55015,7 @@ var
             end
             else if normalized_syllable = 'bing' then
             begin
-                out_text := string(Char($5E76));
+                out_text := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -57101,28 +57115,28 @@ var
                     Result := (unit_value = string(Char($5BB6))) or
                         (unit_value = string(Char($5E97))) or
                         (unit_value = string(Char($5C4B))) or
-                        (unit_value = string(Char($697C))) or
+                        (unit_value = variant_char($697C, $6A13)) or
                         (unit_value = string(Char($57CE))) or
                         (unit_value = string(Char($6751))) or
-                        (unit_value = string(Char($53BF))) or
+                        (unit_value = variant_char($53BF, $7E23)) or
                         (unit_value = string(Char($5E02))) or
                         (unit_value = string(Char($6821))) or
                         (unit_value = string(Char($9662))) or
-                        (unit_value = string(Char($5382))) or
-                        (unit_value = string(Char($9986))) or
+                        (unit_value = variant_char($5382, $5EE0)) or
+                        (unit_value = variant_char($9986, $9928)) or
                         (unit_value = string(Char($7AD9))) or
                         (unit_value = string(Char($5C40))) or
                         (unit_value = string(Char($6240))) or
-                        (unit_value = string(Char($56ED))) or
-                        (unit_value = string(Char($533A))) or
+                        (unit_value = variant_char($56ED, $5712)) or
+                        (unit_value = variant_char($533A, $5340)) or
                         (unit_value = string(Char($5708))) or
                         (unit_value = string(Char($8DEF))) or
                         (unit_value = string(Char($8857))) or
-                        (unit_value = string(Char($95E8))) or
+                        (unit_value = variant_char($95E8, $9580)) or
                         (unit_value = string(Char($5BA4))) or
                         (unit_value = string(Char($623F))) or
-                        (unit_value = string(Char($5385))) or
-                        (unit_value = string(Char($573A))) or
+                        (unit_value = variant_char($5385, $5EF3)) or
+                        (unit_value = variant_char($573A, $5834)) or
                         (unit_value = string(Char($53F8)));
                 end;
 
@@ -58006,7 +58020,7 @@ var
                 end
                 else if normalized_key_local = 'ma' then
                 begin
-                    out_text_local := string(Char($5417));
+                    out_text_local := variant_char($5417, $55CE);
                 end
                 else if normalized_key_local = 'ne' then
                 begin
@@ -58536,7 +58550,7 @@ var
                         (text_value_local = string(Char($7684))) or
                         (text_value_local = string(Char($4E86))) or
                         (text_value_local = string(Char($5427))) or
-                        (text_value_local = string(Char($5417)));
+                        (text_value_local = variant_char($5417, $55CE));
                 end;
 
                 function expand_unambiguous_function_tail_path_local(
@@ -59391,7 +59405,7 @@ var
                     (text_value_local = string(Char($7684))) or
                     (text_value_local = string(Char($4E86))) or
                     (text_value_local = string(Char($5427))) or
-                    (text_value_local = string(Char($5417)));
+                    (text_value_local = variant_char($5417, $55CE));
             end;
 
             function expand_function_tail_path_fast_local(
@@ -62322,28 +62336,28 @@ var
                     Result := (unit_value_inner = string(Char($5BB6))) or
                         (unit_value_inner = string(Char($5E97))) or
                         (unit_value_inner = string(Char($5C4B))) or
-                        (unit_value_inner = string(Char($697C))) or
+                        (unit_value_inner = variant_char($697C, $6A13)) or
                         (unit_value_inner = string(Char($57CE))) or
                         (unit_value_inner = string(Char($6751))) or
-                        (unit_value_inner = string(Char($53BF))) or
+                        (unit_value_inner = variant_char($53BF, $7E23)) or
                         (unit_value_inner = string(Char($5E02))) or
                         (unit_value_inner = string(Char($6821))) or
                         (unit_value_inner = string(Char($9662))) or
-                        (unit_value_inner = string(Char($5382))) or
-                        (unit_value_inner = string(Char($9986))) or
+                        (unit_value_inner = variant_char($5382, $5EE0)) or
+                        (unit_value_inner = variant_char($9986, $9928)) or
                         (unit_value_inner = string(Char($7AD9))) or
                         (unit_value_inner = string(Char($5C40))) or
                         (unit_value_inner = string(Char($6240))) or
-                        (unit_value_inner = string(Char($56ED))) or
-                        (unit_value_inner = string(Char($533A))) or
+                        (unit_value_inner = variant_char($56ED, $5712)) or
+                        (unit_value_inner = variant_char($533A, $5340)) or
                         (unit_value_inner = string(Char($5708))) or
                         (unit_value_inner = string(Char($8DEF))) or
                         (unit_value_inner = string(Char($8857))) or
-                        (unit_value_inner = string(Char($95E8))) or
+                        (unit_value_inner = variant_char($95E8, $9580)) or
                         (unit_value_inner = string(Char($5BA4))) or
                         (unit_value_inner = string(Char($623F))) or
-                        (unit_value_inner = string(Char($5385))) or
-                        (unit_value_inner = string(Char($573A))) or
+                        (unit_value_inner = variant_char($5385, $5EF3)) or
+                        (unit_value_inner = variant_char($573A, $5834)) or
                         (unit_value_inner = string(Char($53F8)));
                 end;
 
@@ -63072,16 +63086,16 @@ var
                                 add_fixed_single_option_inner(string(Char($672A)),
                                     1800);
                             end;
-                            if not SameText(text_inner, string(Char($4E3A))) then
+                            if not SameText(text_inner, variant_char($4E3A, $70BA)) then
                             begin
-                                add_fixed_single_option_inner(string(Char($4E3A)),
+                                add_fixed_single_option_inner(variant_char($4E3A, $70BA),
                                     2400);
                             end;
                         end
                         else if (normalized_single_key_inner = 'yu') and
-                            (not SameText(text_inner, string(Char($4E0E)))) then
+                            (not SameText(text_inner, variant_char($4E0E, $8207))) then
                         begin
-                            add_fixed_single_option_inner(string(Char($4E0E)),
+                            add_fixed_single_option_inner(variant_char($4E0E, $8207),
                                 2200);
                         end;
                         if use_exact_edge_ranker_expansion_local then
@@ -63099,16 +63113,16 @@ var
                             add_fixed_single_option_inner(string(Char($672A)),
                                 1800);
                         end;
-                        if not SameText(text_inner, string(Char($4E3A))) then
+                        if not SameText(text_inner, variant_char($4E3A, $70BA)) then
                         begin
-                            add_fixed_single_option_inner(string(Char($4E3A)),
+                            add_fixed_single_option_inner(variant_char($4E3A, $70BA),
                                 2400);
                         end;
                     end
                     else if (normalized_single_key_inner = 'yu') and
-                        (not SameText(text_inner, string(Char($4E0E)))) then
+                        (not SameText(text_inner, variant_char($4E0E, $8207))) then
                     begin
-                        add_fixed_single_option_inner(string(Char($4E0E)), 2200);
+                        add_fixed_single_option_inner(variant_char($4E0E, $8207), 2200);
                     end;
                     if use_exact_edge_ranker_expansion_local then
                     begin
@@ -64893,28 +64907,28 @@ var
                     Result := (unit_value = string(Char($5BB6))) or
                         (unit_value = string(Char($5E97))) or
                         (unit_value = string(Char($5C4B))) or
-                        (unit_value = string(Char($697C))) or
+                        (unit_value = variant_char($697C, $6A13)) or
                         (unit_value = string(Char($57CE))) or
                         (unit_value = string(Char($6751))) or
-                        (unit_value = string(Char($53BF))) or
+                        (unit_value = variant_char($53BF, $7E23)) or
                         (unit_value = string(Char($5E02))) or
                         (unit_value = string(Char($6821))) or
                         (unit_value = string(Char($9662))) or
-                        (unit_value = string(Char($5382))) or
-                        (unit_value = string(Char($9986))) or
+                        (unit_value = variant_char($5382, $5EE0)) or
+                        (unit_value = variant_char($9986, $9928)) or
                         (unit_value = string(Char($7AD9))) or
                         (unit_value = string(Char($5C40))) or
                         (unit_value = string(Char($6240))) or
-                        (unit_value = string(Char($56ED))) or
-                        (unit_value = string(Char($533A))) or
+                        (unit_value = variant_char($56ED, $5712)) or
+                        (unit_value = variant_char($533A, $5340)) or
                         (unit_value = string(Char($5708))) or
                         (unit_value = string(Char($8DEF))) or
                         (unit_value = string(Char($8857))) or
-                        (unit_value = string(Char($95E8))) or
+                        (unit_value = variant_char($95E8, $9580)) or
                         (unit_value = string(Char($5BA4))) or
                         (unit_value = string(Char($623F))) or
-                        (unit_value = string(Char($5385))) or
-                        (unit_value = string(Char($573A))) or
+                        (unit_value = variant_char($5385, $5EF3)) or
+                        (unit_value = variant_char($573A, $5834)) or
                         (unit_value = string(Char($53F8)));
                 end;
 
@@ -65029,20 +65043,20 @@ var
                     const text_value_local: string): Boolean;
                 begin
                     Result :=
-                        SameText(text_value_local, string(Char($65F6)) +
-                        string(Char($95F4))) or
-                        SameText(text_value_local, string(Char($65F6)) +
+                        SameText(text_value_local, variant_char($65F6, $6642) +
+                        variant_char($95F4, $9593)) or
+                        SameText(text_value_local, variant_char($65F6, $6642) +
                         string(Char($5019))) or
                         SameText(text_value_local, string(Char($671F)) +
-                        string(Char($95F4))) or
-                        SameText(text_value_local, string(Char($8FC7)) +
+                        variant_char($95F4, $9593)) or
+                        SameText(text_value_local, variant_char($8FC7, $904E) +
                         string(Char($7A0B))) or
-                        SameText(text_value_local, string(Char($9636)) +
+                        SameText(text_value_local, variant_char($9636, $968E) +
                         string(Char($6BB5))) or
-                        SameText(text_value_local, string(Char($65F6)) +
+                        SameText(text_value_local, variant_char($65F6, $6642) +
                         string(Char($523B))) or
                         SameText(text_value_local, string(Char($77AC)) +
-                        string(Char($95F4))) or
+                        variant_char($95F4, $9593)) or
                         SameText(text_value_local, string(Char($65E9)) +
                         string(Char($6668))) or
                         SameText(text_value_local, string(Char($591C)) +
@@ -65055,7 +65069,7 @@ var
                         string(Char($5348))) or
                         SameText(text_value_local, string(Char($5E74)) +
                         string(Char($4EE3))) or
-                        SameText(text_value_local, string(Char($65F6)) +
+                        SameText(text_value_local, variant_char($65F6, $6642) +
                         string(Char($4EE3)));
                 end;
 
@@ -65474,9 +65488,9 @@ var
                             SameText(unit_value_local, string(Char($7684))) or
                             SameText(unit_value_local, string(Char($5730))) or
                             SameText(unit_value_local, string(Char($5F97))) or
-                            SameText(unit_value_local, string(Char($5BF9))) or
+                            SameText(unit_value_local, variant_char($5BF9, $5C0D)) or
                             SameText(unit_value_local, string(Char($548C))) or
-                            SameText(unit_value_local, string(Char($4E0E))) or
+                            SameText(unit_value_local, variant_char($4E0E, $8207)) or
                             SameText(unit_value_local, string(Char($50CF)));
                     end;
 
@@ -65801,28 +65815,28 @@ var
                     Result := (unit_value_local = string(Char($5BB6))) or
                         (unit_value_local = string(Char($5E97))) or
                         (unit_value_local = string(Char($5C4B))) or
-                        (unit_value_local = string(Char($697C))) or
+                        (unit_value_local = variant_char($697C, $6A13)) or
                         (unit_value_local = string(Char($57CE))) or
                         (unit_value_local = string(Char($6751))) or
-                        (unit_value_local = string(Char($53BF))) or
+                        (unit_value_local = variant_char($53BF, $7E23)) or
                         (unit_value_local = string(Char($5E02))) or
                         (unit_value_local = string(Char($6821))) or
                         (unit_value_local = string(Char($9662))) or
-                        (unit_value_local = string(Char($5382))) or
-                        (unit_value_local = string(Char($9986))) or
+                        (unit_value_local = variant_char($5382, $5EE0)) or
+                        (unit_value_local = variant_char($9986, $9928)) or
                         (unit_value_local = string(Char($7AD9))) or
                         (unit_value_local = string(Char($5C40))) or
                         (unit_value_local = string(Char($6240))) or
-                        (unit_value_local = string(Char($56ED))) or
-                        (unit_value_local = string(Char($533A))) or
+                        (unit_value_local = variant_char($56ED, $5712)) or
+                        (unit_value_local = variant_char($533A, $5340)) or
                         (unit_value_local = string(Char($5708))) or
                         (unit_value_local = string(Char($8DEF))) or
                         (unit_value_local = string(Char($8857))) or
-                        (unit_value_local = string(Char($95E8))) or
+                        (unit_value_local = variant_char($95E8, $9580)) or
                         (unit_value_local = string(Char($5BA4))) or
                         (unit_value_local = string(Char($623F))) or
-                        (unit_value_local = string(Char($5385))) or
-                        (unit_value_local = string(Char($573A))) or
+                        (unit_value_local = variant_char($5385, $5EF3)) or
+                        (unit_value_local = variant_char($573A, $5834)) or
                         (unit_value_local = string(Char($53F8)));
                 end;
 
@@ -66167,15 +66181,15 @@ var
                 end
                 else if SameText(key_local, 'ge') then
                 begin
-                    Result := string(Char($4E2A));
+                    Result := variant_char($4E2A, $500B);
                 end
                 else if SameText(key_local, 'tiao') then
                 begin
-                    Result := string(Char($6761));
+                    Result := variant_char($6761, $689D);
                 end
                 else if SameText(key_local, 'zhang') then
                 begin
-                    Result := string(Char($5F20));
+                    Result := variant_char($5F20, $5F35);
                 end
                 else if SameText(key_local, 'ben') then
                 begin
@@ -66191,7 +66205,7 @@ var
                 end
                 else if SameText(key_local, 'lun') then
                 begin
-                    Result := string(Char($8F6E));
+                    Result := variant_char($8F6E, $8F2A);
                 end
                 else if SameText(key_local, 'hui') then
                 begin
@@ -66327,7 +66341,7 @@ var
                 end
                 else if SameText(key_local, 'dui') then
                 begin
-                    Result := string(Char($5BF9));
+                    Result := variant_char($5BF9, $5C0D);
                 end
                 else if SameText(key_local, 'qie') then
                 begin
@@ -66339,11 +66353,11 @@ var
                 end
                 else if SameText(key_local, 'bing') then
                 begin
-                    Result := string(Char($5E76));
+                    Result := variant_char($5E76, $4E26);
                 end
                 else if SameText(key_local, 'li') then
                 begin
-                    Result := string(Char($91CC));
+                    Result := variant_char($91CC, $88E1);
                 end
                 else if SameText(key_local, 'geng') then
                 begin
@@ -66363,7 +66377,7 @@ var
                 end
                 else if SameText(key_local, 'nei') then
                 begin
-                    Result := string(Char($5185));
+                    Result := variant_char($5185, $5167);
                 end
                 else if SameText(key_local, 'wai') then
                 begin
@@ -66375,7 +66389,7 @@ var
                 end
                 else if SameText(key_local, 'hou') then
                 begin
-                    Result := string(Char($540E));
+                    Result := variant_char($540E, $5F8C);
                 end
             end;
 
@@ -67063,9 +67077,9 @@ var
                     SameText(prefix_text_value_local, string(Char($7684))) or
                     SameText(prefix_text_value_local, string(Char($5730))) or
                     SameText(prefix_text_value_local, string(Char($5F97))) or
-                    SameText(prefix_text_value_local, string(Char($5BF9))) or
+                    SameText(prefix_text_value_local, variant_char($5BF9, $5C0D)) or
                     SameText(prefix_text_value_local, string(Char($548C))) or
-                    SameText(prefix_text_value_local, string(Char($4E0E))) or
+                    SameText(prefix_text_value_local, variant_char($4E0E, $8207)) or
                     SameText(prefix_text_value_local, string(Char($50CF)));
             end;
 
@@ -67169,7 +67183,7 @@ var
                     SameText(prefix_text_local, string(Char($5F97)));
                 prefix_is_connector_local :=
                     SameText(prefix_text_local, string(Char($548C))) or
-                    SameText(prefix_text_local, string(Char($4E0E)));
+                    SameText(prefix_text_local, variant_char($4E0E, $8207));
 
                 tail_key_local := build_query_key_local(
                     segment_query_offset_local + 1, 2);
@@ -69853,7 +69867,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -69889,11 +69903,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -69917,15 +69931,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -69946,11 +69960,11 @@ var
             end
             else if normalized_syllable = 'hou' then
             begin
-                Result := string(Char($540E));
+                Result := variant_char($540E, $5F8C);
             end
             else if normalized_syllable = 'li' then
             begin
-                Result := string(Char($91CC));
+                Result := variant_char($91CC, $88E1);
             end
             else if normalized_syllable = 'wai' then
             begin
@@ -69966,7 +69980,7 @@ var
             end
             else if normalized_syllable = 'dong' then
             begin
-                Result := string(Char($4E1C));
+                Result := variant_char($4E1C, $6771);
             end
             else if normalized_syllable = 'nan' then
             begin
@@ -70413,12 +70427,12 @@ var
         function is_directional_surface_modifier_local(const text: string): Boolean;
         begin
             Result := SameText(Trim(text), string(Char($524D)) + string(Char($9762))) or
-                SameText(Trim(text), string(Char($540E)) + string(Char($9762))) or
-                SameText(Trim(text), string(Char($91CC)) + string(Char($9762))) or
+                SameText(Trim(text), variant_char($540E, $5F8C) + string(Char($9762))) or
+                SameText(Trim(text), variant_char($91CC, $88E1) + string(Char($9762))) or
                 SameText(Trim(text), string(Char($5916)) + string(Char($9762))) or
                 SameText(Trim(text), string(Char($4E0A)) + string(Char($9762))) or
                 SameText(Trim(text), string(Char($4E0B)) + string(Char($9762))) or
-                SameText(Trim(text), string(Char($4E1C)) + string(Char($9762))) or
+                SameText(Trim(text), variant_char($4E1C, $6771) + string(Char($9762))) or
                 SameText(Trim(text), string(Char($5357)) + string(Char($9762))) or
                 SameText(Trim(text), string(Char($897F)) + string(Char($9762))) or
                 SameText(Trim(text), string(Char($5317)) + string(Char($9762)));
@@ -70427,12 +70441,12 @@ var
         function is_directional_single_unit_local(const text: string): Boolean;
         begin
             Result := SameText(Trim(text), string(Char($524D))) or
-                SameText(Trim(text), string(Char($540E))) or
-                SameText(Trim(text), string(Char($91CC))) or
+                SameText(Trim(text), variant_char($540E, $5F8C)) or
+                SameText(Trim(text), variant_char($91CC, $88E1)) or
                 SameText(Trim(text), string(Char($5916))) or
                 SameText(Trim(text), string(Char($4E0A))) or
                 SameText(Trim(text), string(Char($4E0B))) or
-                SameText(Trim(text), string(Char($4E1C))) or
+                SameText(Trim(text), variant_char($4E1C, $6771)) or
                 SameText(Trim(text), string(Char($5357))) or
                 SameText(Trim(text), string(Char($897F))) or
                 SameText(Trim(text), string(Char($5317)));
@@ -71236,7 +71250,7 @@ var
             end
             else if normalized_syllable = 'shuo' then
             begin
-                Result := string(Char($8BF4));
+                Result := variant_char($8BF4, $8AAA);
             end
             else if normalized_syllable = 'de' then
             begin
@@ -71248,7 +71262,7 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'yi' then
             begin
@@ -71694,7 +71708,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -71730,11 +71744,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -71750,15 +71764,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -71766,7 +71780,7 @@ var
             end
             else if normalized_syllable = 'qing' then
             begin
-                Result := string(Char($8BF7));
+                Result := variant_char($8BF7, $8ACB);
             end;
         end;
 
@@ -72848,7 +72862,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -72884,11 +72898,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -72904,15 +72918,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -72920,15 +72934,15 @@ var
             end
             else if normalized_syllable = 'jiang' then
             begin
-                Result := string(Char($5C06));
+                Result := variant_char($5C06, $5C07);
             end
             else if normalized_syllable = 'rang' then
             begin
-                Result := string(Char($8BA9));
+                Result := variant_char($8BA9, $8B93);
             end
             else if normalized_syllable = 'dui' then
             begin
-                Result := string(Char($5BF9));
+                Result := variant_char($5BF9, $5C0D);
             end
             else if normalized_syllable = 'dao' then
             begin
@@ -72936,7 +72950,7 @@ var
             end
             else if normalized_syllable = 'cong' then
             begin
-                Result := string(Char($4ECE));
+                Result := variant_char($4ECE, $5F9E);
             end
             else if normalized_syllable = 'you' then
             begin
@@ -77668,7 +77682,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -77704,11 +77718,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -77724,15 +77738,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -77740,7 +77754,7 @@ var
             end
             else if normalized_syllable = 'qing' then
             begin
-                Result := string(Char($8BF7));
+                Result := variant_char($8BF7, $8ACB);
             end;
         end;
 
@@ -78306,7 +78320,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -78342,11 +78356,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -78362,15 +78376,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -78378,7 +78392,7 @@ var
             end
             else if normalized_syllable = 'qing' then
             begin
-                Result := string(Char($8BF7));
+                Result := variant_char($8BF7, $8ACB);
             end;
         end;
     begin
@@ -78675,13 +78689,13 @@ var
                 text_value_local) or
                 matches_particle_suffix_rule_local('la', string(Char($5566)),
                 text_value_local) or
-                matches_particle_suffix_rule_local('ma', string(Char($5417)),
+                matches_particle_suffix_rule_local('ma', variant_char($5417, $55CE),
                 text_value_local) or
                 matches_particle_suffix_rule_local('ba', string(Char($5427)),
                 text_value_local) or
                 ((normalized_query_local = 'dema') and
                 SameText(text_value_local, string(Char($7684)) +
-                string(Char($5417)))) or
+                variant_char($5417, $55CE))) or
                 ((normalized_query_local = 'deba') and
                 SameText(text_value_local, string(Char($7684)) +
                 string(Char($5427)))) or
@@ -78693,7 +78707,7 @@ var
                 string(Char($5427)))) or
                 ((normalized_query_local = 'lema') and
                 SameText(text_value_local, string(Char($4E86)) +
-                string(Char($5417))));
+                variant_char($5417, $55CE)));
         end;
 
         function should_drop_short_complete_local(
@@ -82282,7 +82296,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -82318,11 +82332,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'de' then
             begin
@@ -82330,7 +82344,7 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'ya' then
             begin
@@ -82487,7 +82501,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -82519,11 +82533,11 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'de' then
             begin
@@ -82531,7 +82545,7 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'ya' then
             begin
@@ -83244,7 +83258,7 @@ var
             end
             else if normalized_key = 'ma' then
             begin
-                expected_text := string(Char($5417));
+                expected_text := variant_char($5417, $55CE);
             end
             else if normalized_key = 'ne' then
             begin
@@ -86905,7 +86919,7 @@ var
             end
             else if normalized_syllable = 'sui' then
             begin
-                Result := string(Char($867D));
+                Result := variant_char($867D, $96D6);
             end
             else if normalized_syllable = 'er' then
             begin
@@ -86937,7 +86951,7 @@ var
             end
             else if normalized_syllable = 'yu' then
             begin
-                Result := string(Char($4E8E));
+                Result := variant_char($4E8E, $65BC);
             end
             else if normalized_syllable = 'de' then
             begin
@@ -86957,11 +86971,11 @@ var
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end;
         end;
 
@@ -88711,30 +88725,30 @@ var
             end;
 
             Result :=
-                (suffix_head = string(Char($533A))) or
+                (suffix_head = variant_char($533A, $5340)) or
                 (suffix_head = string(Char($5E02))) or
                 (suffix_head = string(Char($7701))) or
-                (suffix_head = string(Char($53BF))) or
-                (suffix_head = string(Char($9547))) or
-                (suffix_head = string(Char($4E61))) or
+                (suffix_head = variant_char($53BF, $7E23)) or
+                (suffix_head = variant_char($9547, $93AE)) or
+                (suffix_head = variant_char($4E61, $9109)) or
                 (suffix_head = string(Char($8DEF))) or
                 (suffix_head = string(Char($8857))) or
                 (suffix_head = string(Char($9053))) or
                 (suffix_head = string(Char($4E0B))) or
                 (suffix_head = string(Char($4E0A))) or
                 (suffix_head = string(Char($4E2D))) or
-                (suffix_head = string(Char($5185))) or
+                (suffix_head = variant_char($5185, $5167)) or
                 (suffix_head = string(Char($5916))) or
                 (suffix_head = string(Char($524D))) or
-                (suffix_head = string(Char($540E))) or
-                (suffix_head = string(Char($4E1C))) or
+                (suffix_head = variant_char($540E, $5F8C)) or
+                (suffix_head = variant_char($4E1C, $6771)) or
                 (suffix_head = string(Char($897F))) or
                 (suffix_head = string(Char($5357))) or
                 (suffix_head = string(Char($5317))) or
-                (suffix_head = string(Char($8FB9))) or
+                (suffix_head = variant_char($8FB9, $908A)) or
                 (suffix_head = string(Char($9762))) or
                 (suffix_head = string(Char($7248))) or
-                (suffix_head = string(Char($53F7))) or
+                (suffix_head = variant_char($53F7, $865F)) or
                 (suffix_head = string(Char($5E97)));
         end;
 
@@ -91009,7 +91023,7 @@ var
         end
         else if tail_key = 'ma' then
         begin
-            tail_text := string(Char($5417));
+            tail_text := variant_char($5417, $55CE);
         end
         else if tail_key = 'ne' then
         begin
@@ -91176,7 +91190,7 @@ var
         end
         else if tail_key = 'ma' then
         begin
-            expected_tail_text := string(Char($5417));
+            expected_tail_text := variant_char($5417, $55CE);
         end
         else if tail_key = 'ne' then
         begin
@@ -92006,7 +92020,7 @@ var
         end
         else if tail_key = 'ma' then
         begin
-            expected_text := string(Char($5417));
+            expected_text := variant_char($5417, $55CE);
         end
         else if tail_key = 'ne' then
         begin
@@ -92217,27 +92231,27 @@ var
         begin
             Result :=
                 SameText(unit_text, string(Char($6B21))) or
-                SameText(unit_text, string(Char($4E2A))) or
+                SameText(unit_text, variant_char($4E2A, $500B)) or
                 SameText(unit_text, string(Char($5929))) or
                 SameText(unit_text, string(Char($65E5))) or
-                SameText(unit_text, string(Char($8F6E))) or
+                SameText(unit_text, variant_char($8F6E, $8F2A)) or
                 SameText(unit_text, string(Char($6B65))) or
-                SameText(unit_text, string(Char($6761))) or
+                SameText(unit_text, variant_char($6761, $689D)) or
                 SameText(unit_text, string(Char($6839))) or
                 SameText(unit_text, string(Char($6279))) or
                 SameText(unit_text, string(Char($5339))) or
-                SameText(unit_text, string(Char($53F0))) or
+                SameText(unit_text, variant_char($53F0, $81FA)) or
                 SameText(unit_text, string(Char($628A))) or
                 SameText(unit_text, string(Char($526F))) or
-                SameText(unit_text, string(Char($5BF9))) or
-                SameText(unit_text, string(Char($53CC))) or
+                SameText(unit_text, variant_char($5BF9, $5C0D)) or
+                SameText(unit_text, variant_char($53CC, $96D9)) or
                 SameText(unit_text, string(Char($74F6))) or
                 SameText(unit_text, string(Char($6876))) or
-                SameText(unit_text, string(Char($680B))) or
+                SameText(unit_text, variant_char($680B, $68DF)) or
                 SameText(unit_text, string(Char($5E62))) or
                 SameText(unit_text, string(Char($7247))) or
-                SameText(unit_text, string(Char($76D8))) or
-                SameText(unit_text, string(Char($53EA)));
+                SameText(unit_text, variant_char($76D8, $76E4)) or
+                SameText(unit_text, variant_char($53EA, $96BB));
         end;
 
         function candidate_ends_with_units_local(const units: TArray<string>;
@@ -92438,7 +92452,7 @@ var
         end
         else if tail_key = 'ma' then
         begin
-            expected_text := string(Char($5417));
+            expected_text := variant_char($5417, $55CE);
         end
         else if tail_key = 'ne' then
         begin
@@ -96741,7 +96755,7 @@ var
             end;
             if SameText(normalize_pinyin_text(syllables_local[0].text), 'zhe') then
             begin
-                head_text := string(Char($8FD9));
+                head_text := variant_char($8FD9, $9019);
             end
             else if SameText(normalize_pinyin_text(syllables_local[0].text), 'na') or
                 SameText(normalize_pinyin_text(syllables_local[0].text), 'nei') then
@@ -97177,7 +97191,7 @@ var
         out_text := '';
         if SameText(syllable_text, 'zhe') then
         begin
-            out_text := string(Char($8FD9));
+            out_text := variant_char($8FD9, $9019);
         end
         else if SameText(syllable_text, 'na') or SameText(syllable_text, 'nei') then
         begin
@@ -97189,11 +97203,11 @@ var
         end
         else if SameText(syllable_text, 'liang') then
         begin
-            out_text := string(Char($4E24));
+            out_text := variant_char($4E24, $5169);
         end
         else if SameText(syllable_text, 'ji') then
         begin
-            out_text := string(Char($51E0));
+            out_text := variant_char($51E0, $5E7E);
         end
         else if SameText(syllable_text, 'mei') then
         begin
@@ -97210,11 +97224,11 @@ var
             out_text := '';
             if SameText(syllable_text, 'li') then
             begin
-                out_text := string(Char($91CC));
+                out_text := variant_char($91CC, $88E1);
             end
             else if SameText(syllable_text, 'er') then
             begin
-                out_text := string(Char($513F));
+                out_text := variant_char($513F, $5152);
             end;
             Result := out_text <> '';
         end;
@@ -97244,7 +97258,7 @@ var
         end;
 
         if (units[1] = string(Char($5427))) or
-            (units[1] = string(Char($5417))) or
+            (units[1] = variant_char($5417, $55CE)) or
             (units[1] = string(Char($5462))) then
         begin
             Result := True;
@@ -97768,36 +97782,36 @@ var
                 (value = string(Char($4ED6))) or
                 (value = string(Char($5979))) or
                 (value = string(Char($5B83))) or
-                (value = string(Char($4EEC))) or
+                (value = variant_char($4EEC, $5011)) or
                 (value = string(Char($548C))) or
                 (value = string(Char($53BB))) or
-                (value = string(Char($6765))) or
+                (value = variant_char($6765, $4F86)) or
                 (value = string(Char($5728))) or
                 (value = string(Char($662F))) or
                 (value = string(Char($6709))) or
                 (value = string(Char($8981))) or
                 (value = string(Char($60F3))) or
-                (value = string(Char($4F1A))) or
+                (value = variant_char($4F1A, $6703)) or
                 (value = string(Char($80FD))) or
                 (value = string(Char($53EA))) or
                 (value = string(Char($628A))) or
                 (value = string(Char($88AB))) or
-                (value = string(Char($8BA9))) or
-                (value = string(Char($7ED9))) or
+                (value = variant_char($8BA9, $8B93)) or
+                (value = variant_char($7ED9, $7D66)) or
                 (value = string(Char($5411))) or
-                (value = string(Char($5BF9))) or
-                (value = string(Char($4E8E))) or
-                (value = string(Char($4E3A))) or
+                (value = variant_char($5BF9, $5C0D)) or
+                (value = variant_char($4E8E, $65BC)) or
+                (value = variant_char($4E3A, $70BA)) or
                 (value = string(Char($8DDF))) or
                 (value = string(Char($540C))) or
-                (value = string(Char($4ECE))) or
-                (value = string(Char($4E0E))) or
+                (value = variant_char($4ECE, $5F9E)) or
+                (value = variant_char($4E0E, $8207)) or
                 (value = string(Char($800C))) or
-                (value = string(Char($5E76))) or
+                (value = variant_char($5E76, $4E26)) or
                 (value = string(Char($5C31))) or
                 (value = string(Char($4E5F))) or
                 (value = string(Char($90FD))) or
-                (value = string(Char($8FD8))) or
+                (value = variant_char($8FD8, $9084)) or
                 (value = string(Char($53C8))) or
                 (value = string(Char($518D))) or
                 (value = string(Char($4E0D))) or
@@ -97807,7 +97821,7 @@ var
                 (value = string(Char($5F97))) or
                 (value = string(Char($7684))) or
                 (value = string(Char($4EBA))) or
-                (value = string(Char($4E2A))) or
+                (value = variant_char($4E2A, $500B)) or
                 (value = string(Char($4E00))) or
                 (value = string(Char($4EE5))) or
                 (value = string(Char($5176))) or
@@ -97817,15 +97831,15 @@ var
                 (value = string(Char($4E0A))) or
                 (value = string(Char($4E0B))) or
                 (value = string(Char($524D))) or
-                (value = string(Char($540E))) or
-                (value = string(Char($5185))) or
+                (value = variant_char($540E, $5F8C)) or
+                (value = variant_char($5185, $5167)) or
                 (value = string(Char($5916))) or
-                (value = string(Char($91CC))) or
-                (value = string(Char($8BE5))) or
+                (value = variant_char($91CC, $88E1)) or
+                (value = variant_char($8BE5, $8A72)) or
                 (value = string(Char($6B64))) or
                 (value = string(Char($6BCF))) or
-                (value = string(Char($7740))) or
-                (value = string(Char($8FD9)));
+                (value = variant_char($7740, $8457)) or
+                (value = variant_char($8FD9, $9019));
         end;
         function is_long_sentence_allowed_single_char_text_codepoint_local(
             const value: string): Boolean;
@@ -97909,7 +97923,7 @@ var
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -97925,15 +97939,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -102830,7 +102844,7 @@ var
             end
             else if syllable_equals(syllable_text, 'ma') then
             begin
-                out_text := string(Char($5417));
+                out_text := variant_char($5417, $55CE);
             end
             else if syllable_equals(syllable_text, 'ne') then
             begin
@@ -102930,78 +102944,78 @@ var
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(variant_char($8FD9, $9019), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and
                 ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'ge')) then
             begin
-                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($90A3)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E00)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($4E00)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'liang') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E24)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(variant_char($4E24, $5169), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'ji') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($51E0)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(variant_char($51E0, $5E7E), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'mei') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($6BCF)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($6BCF)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'san') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E09)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($4E09)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'si') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($56DB)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($56DB)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'wu') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E94)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($4E94)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'liu') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($516D)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($516D)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'qi') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E03)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($4E03)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'ba') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($516B)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($516B)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'jiu') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E5D)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($4E5D)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'shi') and
                 syllable_equals(syllables[1].text, 'ge') then
             begin
-                out_units := TArray<string>.Create(string(Char($5341)), string(Char($4E2A)));
+                out_units := TArray<string>.Create(string(Char($5341)), variant_char($4E2A, $500B));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'xie') then
             begin
-                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E9B)));
+                out_units := TArray<string>.Create(variant_char($8FD9, $9019), string(Char($4E9B)));
             end
             else if (Length(syllables) = 2) and
                 ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
@@ -103017,7 +103031,7 @@ var
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
                 syllable_equals(syllables[1].text, 'dian') then
             begin
-                out_units := TArray<string>.Create(string(Char($4E00)), string(Char($70B9)));
+                out_units := TArray<string>.Create(string(Char($4E00)), variant_char($70B9, $9EDE));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
                 syllable_equals(syllables[1].text, 'xia') then
@@ -103027,72 +103041,72 @@ var
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'yang') then
             begin
-                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($6837)));
+                out_units := TArray<string>.Create(variant_char($8FD9, $9019), variant_char($6837, $6A23));
             end
             else if (Length(syllables) = 2) and
                 ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'yang')) then
             begin
-                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($6837)));
+                out_units := TArray<string>.Create(string(Char($90A3)), variant_char($6837, $6A23));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'me') then
             begin
-                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($4E48)));
+                out_units := TArray<string>.Create(variant_char($8FD9, $9019), variant_char($4E48, $9EBC));
             end
             else if (Length(syllables) = 2) and
                 ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'me')) then
             begin
-                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($4E48)));
+                out_units := TArray<string>.Create(string(Char($90A3)), variant_char($4E48, $9EBC));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zen') and
                 syllable_equals(syllables[1].text, 'me') then
             begin
-                out_units := TArray<string>.Create(string(Char($600E)), string(Char($4E48)));
+                out_units := TArray<string>.Create(string(Char($600E)), variant_char($4E48, $9EBC));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'you') and
                 syllable_equals(syllables[1].text, 'dian') then
             begin
-                out_units := TArray<string>.Create(string(Char($6709)), string(Char($70B9)));
+                out_units := TArray<string>.Create(string(Char($6709)), variant_char($70B9, $9EDE));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'shen') and
                 syllable_equals(syllables[1].text, 'me') then
             begin
-                out_units := TArray<string>.Create(string(Char($4EC0)), string(Char($4E48)));
+                out_units := TArray<string>.Create(string(Char($4EC0)), variant_char($4E48, $9EBC));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'zhong') then
             begin
-                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($79CD)));
+                out_units := TArray<string>.Create(variant_char($8FD9, $9019), variant_char($79CD, $7A2E));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'zhe') and
                 syllable_equals(syllables[1].text, 'li') then
             begin
-                out_units := TArray<string>.Create(string(Char($8FD9)), string(Char($91CC)));
+                out_units := TArray<string>.Create(variant_char($8FD9, $9019), variant_char($91CC, $88E1));
             end
             else if (Length(syllables) = 2) and syllable_equals(syllables[0].text, 'yi') and
                 syllable_equals(syllables[1].text, 'hou') then
             begin
-                out_units := TArray<string>.Create(string(Char($4EE5)), string(Char($540E)));
+                out_units := TArray<string>.Create(string(Char($4EE5)), variant_char($540E, $5F8C));
             end
             else if (Length(syllables) = 2) and
                 ((syllable_equals(syllables[0].text, 'na') or syllable_equals(syllables[0].text, 'nei')) and
                 syllable_equals(syllables[1].text, 'zhong')) then
             begin
-                out_units := TArray<string>.Create(string(Char($90A3)), string(Char($79CD)));
+                out_units := TArray<string>.Create(string(Char($90A3)), variant_char($79CD, $7A2E));
             end
             else if (Length(syllables) = 3) and syllable_equals(syllables[0].text, 'wei') and
                 syllable_equals(syllables[1].text, 'shen') and syllable_equals(syllables[2].text, 'me') then
             begin
                 out_units := TArray<string>.Create(
-                    string(Char($4E3A)), string(Char($4EC0)), string(Char($4E48)));
+                    variant_char($4E3A, $70BA), string(Char($4EC0)), variant_char($4E48, $9EBC));
             end
             else if (Length(syllables) = 3) and syllable_equals(syllables[0].text, 'zen') and
                 syllable_equals(syllables[1].text, 'me') and syllable_equals(syllables[2].text, 'yang') then
             begin
                 out_units := TArray<string>.Create(
-                    string(Char($600E)), string(Char($4E48)), string(Char($6837)));
+                    string(Char($600E)), variant_char($4E48, $9EBC), variant_char($6837, $6A23));
             end
             else
             begin
@@ -103224,35 +103238,35 @@ var
         if normalized_query = 'ner' then
         begin
             expected_syllables := TArray<string>.Create('na', 'er');
-            expected_units := TArray<string>.Create(string(Char($54EA)), string(Char($513F)));
+            expected_units := TArray<string>.Create(string(Char($54EA)), variant_char($513F, $5152));
         end
         else if normalized_query = 'naer' then
         begin
             expected_syllables := TArray<string>.Create('na', 'er');
-            expected_units := TArray<string>.Create(string(Char($54EA)), string(Char($513F)));
+            expected_units := TArray<string>.Create(string(Char($54EA)), variant_char($513F, $5152));
         end
         else if normalized_query = 'qner' then
         begin
             expected_syllables := TArray<string>.Create('qu', 'na', 'er');
             expected_units := TArray<string>.Create(
-                string(Char($53BB)), string(Char($54EA)), string(Char($513F)));
+                string(Char($53BB)), string(Char($54EA)), variant_char($513F, $5152));
         end
         else if normalized_query = 'qunaer' then
         begin
             expected_syllables := TArray<string>.Create('qu', 'na', 'er');
             expected_units := TArray<string>.Create(
-                string(Char($53BB)), string(Char($54EA)), string(Char($513F)));
+                string(Char($53BB)), string(Char($54EA)), variant_char($513F, $5152));
         end
         else if normalized_query = 'nli' then
         begin
             expected_syllables := TArray<string>.Create('na', 'li');
-            expected_units := TArray<string>.Create(string(Char($54EA)), string(Char($91CC)));
+            expected_units := TArray<string>.Create(string(Char($54EA)), variant_char($91CC, $88E1));
         end
         else if normalized_query = 'qnli' then
         begin
             expected_syllables := TArray<string>.Create('qu', 'na', 'li');
             expected_units := TArray<string>.Create(
-                string(Char($53BB)), string(Char($54EA)), string(Char($91CC)));
+                string(Char($53BB)), string(Char($54EA)), variant_char($91CC, $88E1));
         end
         else
         begin
@@ -103540,7 +103554,7 @@ var
         out_text := '';
         if SameText(syllable_text, 'zhe') then
         begin
-            out_text := string(Char($8FD9));
+            out_text := variant_char($8FD9, $9019);
         end
         else if SameText(syllable_text, 'na') or SameText(syllable_text, 'nei') then
         begin
@@ -103562,7 +103576,7 @@ var
         out_text := '';
         if SameText(syllable_text, 'ge') then
         begin
-            out_text := string(Char($4E2A));
+            out_text := variant_char($4E2A, $500B);
         end
         else if SameText(syllable_text, 'xie') then
         begin
@@ -103570,19 +103584,19 @@ var
         end
         else if SameText(syllable_text, 'zhong') then
         begin
-            out_text := string(Char($79CD));
+            out_text := variant_char($79CD, $7A2E);
         end
         else if SameText(syllable_text, 'li') then
         begin
-            out_text := string(Char($91CC));
+            out_text := variant_char($91CC, $88E1);
         end
         else if SameText(syllable_text, 'yang') then
         begin
-            out_text := string(Char($6837));
+            out_text := variant_char($6837, $6A23);
         end
         else if SameText(syllable_text, 'me') then
         begin
-            out_text := string(Char($4E48));
+            out_text := variant_char($4E48, $9EBC);
         end
         else if SameText(syllable_text, 'ci') then
         begin
@@ -103594,15 +103608,15 @@ var
         end
         else if SameText(syllable_text, 'lun') then
         begin
-            out_text := string(Char($8F6E));
+            out_text := variant_char($8F6E, $8F2A);
         end
         else if SameText(syllable_text, 'lei') then
         begin
-            out_text := string(Char($7C7B));
+            out_text := variant_char($7C7B, $985E);
         end
         else if SameText(syllable_text, 'bian') then
         begin
-            out_text := string(Char($8FB9));
+            out_text := variant_char($8FB9, $908A);
         end
         else if SameText(syllable_text, 'mian') then
         begin
@@ -103630,11 +103644,11 @@ var
         end
         else if SameText(syllable_text, 'sheng') then
         begin
-            out_text := string(Char($58F0));
+            out_text := variant_char($58F0, $8072);
         end
         else if SameText(syllable_text, 'dian') then
         begin
-            out_text := string(Char($70B9));
+            out_text := variant_char($70B9, $9EDE);
         end
         else if SameText(syllable_text, 'wei') then
         begin
@@ -104781,23 +104795,23 @@ var
         end;
 
         Result :=
-            (normalized_text_value = string(Char($4E2A))) or
+            (normalized_text_value = variant_char($4E2A, $500B)) or
             (normalized_text_value = string(Char($4F4D))) or
             (normalized_text_value = string(Char($6B21))) or
-            (normalized_text_value = string(Char($70B9))) or
+            (normalized_text_value = variant_char($70B9, $9EDE)) or
             (normalized_text_value = string(Char($4E9B))) or
-            (normalized_text_value = string(Char($79CD))) or
+            (normalized_text_value = variant_char($79CD, $7A2E)) or
             (normalized_text_value = string(Char($5929))) or
             (normalized_text_value = string(Char($5E74))) or
             (normalized_text_value = string(Char($6708))) or
-            (normalized_text_value = string(Char($91CC))) or
+            (normalized_text_value = variant_char($91CC, $88E1)) or
             (normalized_text_value = string(Char($4E0B))) or
             (normalized_text_value = string(Char($56DE))) or
             (normalized_text_value = string(Char($904D))) or
-            (normalized_text_value = string(Char($58F0))) or
+            (normalized_text_value = variant_char($58F0, $8072)) or
             (normalized_text_value = string(Char($9762))) or
             (normalized_text_value = string(Char($773C))) or
-            (normalized_text_value = string(Char($8FB9)));
+            (normalized_text_value = variant_char($8FB9, $908A));
     end;
 
     function is_quantity_like_prefix_for_boundary_unit_partial(const text_value: string): Boolean;
@@ -104824,10 +104838,10 @@ var
             (normalized_text_value = string(Char($5341))) or
             (normalized_text_value = string(Char($767E))) or
             (normalized_text_value = string(Char($5343))) or
-            (normalized_text_value = string(Char($4E07))) or
-            (normalized_text_value = string(Char($4E24))) or
-            (normalized_text_value = string(Char($51E0))) or
-            (normalized_text_value = string(Char($8FD9))) or
+            (normalized_text_value = variant_char($4E07, $842C)) or
+            (normalized_text_value = variant_char($4E24, $5169)) or
+            (normalized_text_value = variant_char($51E0, $5E7E)) or
+            (normalized_text_value = variant_char($8FD9, $9019)) or
             (normalized_text_value = string(Char($90A3))) or
             (normalized_text_value = string(Char($54EA))) or
             (normalized_text_value = string(Char($6BCF))) or
@@ -104835,9 +104849,9 @@ var
             (normalized_text_value = string(Char($534A))) or
             (normalized_text_value = string(Char($591A))) or
             (normalized_text_value = string(Char($6574))) or
-            (normalized_text_value = string(Char($5355))) or
-            (normalized_text_value = string(Char($53CC))) or
-            (normalized_text_value = string(Char($4FE9))) or
+            (normalized_text_value = variant_char($5355, $55AE)) or
+            (normalized_text_value = variant_char($53CC, $96D9)) or
+            (normalized_text_value = variant_char($4FE9, $5006)) or
             (normalized_text_value = string(Char($4EE8)));
     end;
 
@@ -106312,7 +106326,7 @@ var
             end
             else if normalized_syllable = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable = 'ba' then
             begin
@@ -106328,15 +106342,15 @@ var
             end
             else if normalized_syllable = 'zhe' then
             begin
-                Result := string(Char($8FD9));
+                Result := variant_char($8FD9, $9019);
             end
             else if normalized_syllable = 'que' then
             begin
-                Result := string(Char($5374));
+                Result := variant_char($5374, $537B);
             end
             else if normalized_syllable = 'bing' then
             begin
-                Result := string(Char($5E76));
+                Result := variant_char($5E76, $4E26);
             end
             else if normalized_syllable = 'qie' then
             begin
@@ -106344,7 +106358,7 @@ var
             end
             else if normalized_syllable = 'qing' then
             begin
-                Result := string(Char($8BF7));
+                Result := variant_char($8BF7, $8ACB);
             end;
         end;
 
@@ -106695,7 +106709,7 @@ var
         end
         else if out_tail_key = 'ma' then
         begin
-            out_tail_text := string(Char($5417));
+            out_tail_text := variant_char($5417, $55CE);
         end
         else if out_tail_key = 'ne' then
         begin
@@ -107213,15 +107227,15 @@ var
             end
             else if normalized_syllable_local = 'mei' then
             begin
-                Result := string(Char($6CA1));
+                Result := variant_char($6CA1, $6C92);
             end
             else if normalized_syllable_local = 'ying' then
             begin
-                Result := string(Char($5E94));
+                Result := variant_char($5E94, $61C9);
             end
             else if normalized_syllable_local = 'jiang' then
             begin
-                Result := string(Char($5C06));
+                Result := variant_char($5C06, $5C07);
             end
             else if normalized_syllable_local = 'zheng' then
             begin
@@ -107233,7 +107247,7 @@ var
             end
             else if normalized_syllable_local = 'hai' then
             begin
-                Result := string(Char($8FD8));
+                Result := variant_char($8FD8, $9084);
             end
             else if normalized_syllable_local = 'dou' then
             begin
@@ -107245,7 +107259,7 @@ var
             end
             else if normalized_syllable_local = 'bie' then
             begin
-                Result := string(Char($522B));
+                Result := variant_char($522B, $5225);
             end
             else if normalized_syllable_local = 'le' then
             begin
@@ -108065,7 +108079,7 @@ var
             end
             else if normalized_syllable_local = 'hui' then
             begin
-                Result := string(Char($4F1A));
+                Result := variant_char($4F1A, $6703);
             end
             else if normalized_syllable_local = 'de' then
             begin
@@ -108081,7 +108095,7 @@ var
             end
             else if normalized_syllable_local = 'mei' then
             begin
-                Result := string(Char($6CA1));
+                Result := variant_char($6CA1, $6C92);
             end
             else if normalized_syllable_local = 'le' then
             begin
@@ -108126,7 +108140,7 @@ var
                 (text_value = string(Char($53BB))) or
                 (text_value = string(Char($662F))) or
                 (text_value = string(Char($628A))) or
-                (text_value = string(Char($4F1A))) or
+                (text_value = variant_char($4F1A, $6703)) or
                 (text_value = string(Char($4E0D))) or
                 (text_value = string(Char($5F88))) or
                 (text_value = string(Char($66F4))) or
@@ -108135,17 +108149,17 @@ var
                 (text_value = string(Char($8981))) or
                 (text_value = string(Char($80FD))) or
                 (text_value = string(Char($53EF))) or
-                (text_value = string(Char($5E94))) or
-                (text_value = string(Char($5C06))) or
+                (text_value = variant_char($5E94, $61C9)) or
+                (text_value = variant_char($5C06, $5C07)) or
                 (text_value = string(Char($6B63))) or
                 (text_value = string(Char($53C8))) or
-                (text_value = string(Char($8FD8))) or
+                (text_value = variant_char($8FD8, $9084)) or
                 (text_value = string(Char($90FD))) or
                 (text_value = string(Char($5C31))) or
-                (text_value = string(Char($522B))) or
+                (text_value = variant_char($522B, $5225)) or
                 (text_value = string(Char($4E5F))) or
                 (text_value = string(Char($5728))) or
-                (text_value = string(Char($6CA1))) or
+                (text_value = variant_char($6CA1, $6C92)) or
                 (text_value = string(Char($90FD))) or
                 (text_value = string(Char($5565))) or
                 (text_value = string(Char($7684))) or
@@ -108161,7 +108175,7 @@ var
             Result := (text_value = string(Char($662F))) or
                 (text_value = string(Char($7684))) or
                 (text_value = string(Char($628A))) or
-                (text_value = string(Char($4F1A)));
+                (text_value = variant_char($4F1A, $6703));
         end;
 
         function is_place_noun_unit_local(const unit_value: string): Boolean;
@@ -108169,28 +108183,28 @@ var
             Result := (unit_value = string(Char($5BB6))) or
                 (unit_value = string(Char($5E97))) or
                 (unit_value = string(Char($5C4B))) or
-                (unit_value = string(Char($697C))) or
+                (unit_value = variant_char($697C, $6A13)) or
                 (unit_value = string(Char($57CE))) or
                 (unit_value = string(Char($6751))) or
-                (unit_value = string(Char($53BF))) or
+                (unit_value = variant_char($53BF, $7E23)) or
                 (unit_value = string(Char($5E02))) or
                 (unit_value = string(Char($6821))) or
                 (unit_value = string(Char($9662))) or
-                (unit_value = string(Char($5382))) or
-                (unit_value = string(Char($9986))) or
+                (unit_value = variant_char($5382, $5EE0)) or
+                (unit_value = variant_char($9986, $9928)) or
                 (unit_value = string(Char($7AD9))) or
                 (unit_value = string(Char($5C40))) or
                 (unit_value = string(Char($6240))) or
-                (unit_value = string(Char($56ED))) or
-                (unit_value = string(Char($533A))) or
+                (unit_value = variant_char($56ED, $5712)) or
+                (unit_value = variant_char($533A, $5340)) or
                 (unit_value = string(Char($5708))) or
                 (unit_value = string(Char($8DEF))) or
                 (unit_value = string(Char($8857))) or
-                (unit_value = string(Char($95E8))) or
+                (unit_value = variant_char($95E8, $9580)) or
                 (unit_value = string(Char($5BA4))) or
                 (unit_value = string(Char($623F))) or
-                (unit_value = string(Char($5385))) or
-                (unit_value = string(Char($573A))) or
+                (unit_value = variant_char($5385, $5EF3)) or
+                (unit_value = variant_char($573A, $5834)) or
                 (unit_value = string(Char($53F8)));
         end;
 
@@ -108254,20 +108268,20 @@ var
             const text_value_local: string): Boolean;
         begin
             Result :=
-                SameText(text_value_local, string(Char($65F6)) +
-                string(Char($95F4))) or
-                SameText(text_value_local, string(Char($65F6)) +
+                SameText(text_value_local, variant_char($65F6, $6642) +
+                variant_char($95F4, $9593)) or
+                SameText(text_value_local, variant_char($65F6, $6642) +
                 string(Char($5019))) or
                 SameText(text_value_local, string(Char($671F)) +
-                string(Char($95F4))) or
-                SameText(text_value_local, string(Char($8FC7)) +
+                variant_char($95F4, $9593)) or
+                SameText(text_value_local, variant_char($8FC7, $904E) +
                 string(Char($7A0B))) or
-                SameText(text_value_local, string(Char($9636)) +
+                SameText(text_value_local, variant_char($9636, $968E) +
                 string(Char($6BB5))) or
-                SameText(text_value_local, string(Char($65F6)) +
+                SameText(text_value_local, variant_char($65F6, $6642) +
                 string(Char($523B))) or
                 SameText(text_value_local, string(Char($77AC)) +
-                string(Char($95F4))) or
+                variant_char($95F4, $9593)) or
                 SameText(text_value_local, string(Char($65E9)) +
                 string(Char($6668))) or
                 SameText(text_value_local, string(Char($591C)) +
@@ -108280,7 +108294,7 @@ var
                 string(Char($5348))) or
                 SameText(text_value_local, string(Char($5E74)) +
                 string(Char($4EE3))) or
-                SameText(text_value_local, string(Char($65F6)) +
+                SameText(text_value_local, variant_char($65F6, $6642) +
                 string(Char($4EE3)));
         end;
 
@@ -109142,7 +109156,7 @@ var
                 if (not Result) or (candidate_weight_local > out_weight) then
                 begin
                     Result := True;
-                    out_text := candidate_text_local + string(Char($91CC));
+                    out_text := candidate_text_local + variant_char($91CC, $88E1);
                     out_weight := candidate_weight_local;
                 end;
             end;
@@ -111765,7 +111779,7 @@ var
             begin
                 Result := is_pronoun_fixed_single_text_local(local_fixed_text) or
                     is_bridge_fixed_single_text_local(local_fixed_text) or
-                    (local_fixed_text = string(Char($6CA1))) or
+                    (local_fixed_text = variant_char($6CA1, $6C92)) or
                     (local_fixed_text = string(Char($4E00))) or
 
                     (local_fixed_text = string(Char($4E5F))) or
@@ -119066,21 +119080,21 @@ var
                 function is_extended_function_prefix_text_local(
                     const text_value_local: string): Boolean;
                 begin
-                    Result := (text_value_local = string(Char($5BF9))) or
-                        (text_value_local = string(Char($4ECE))) or
+                    Result := (text_value_local = variant_char($5BF9, $5C0D)) or
+                        (text_value_local = variant_char($4ECE, $5F9E)) or
                         (text_value_local = string(Char($5411))) or
-                        (text_value_local = string(Char($4E0E))) or
+                        (text_value_local = variant_char($4E0E, $8207)) or
                         (text_value_local = string(Char($90FD))) or
-                        (text_value_local = string(Char($8FD8))) or
+                        (text_value_local = variant_char($8FD8, $9084)) or
                         (text_value_local = string(Char($624D))) or
                         (text_value_local = string(Char($5C31))) or
                         (text_value_local = string(Char($53EA))) or
-                        (text_value_local = string(Char($522B))) or
+                        (text_value_local = variant_char($522B, $5225)) or
                         (text_value_local = string(Char($5DF2))) or
-                        (text_value_local = string(Char($5C06))) or
+                        (text_value_local = variant_char($5C06, $5C07)) or
                         (text_value_local = string(Char($53EF))) or
                         (text_value_local = string(Char($60F3))) or
-                        (text_value_local = string(Char($65E0))) or
+                        (text_value_local = variant_char($65E0, $7121)) or
                         (text_value_local = string(Char($975E))) or
                         (text_value_local = string(Char($672A))) or
                         (text_value_local = string(Char($4ECD))) or
@@ -119096,8 +119110,8 @@ var
                         (text_value_local = string(Char($597D))) or
                         (text_value_local = string(Char($5982))) or
                         (text_value_local = string(Char($633A))) or
-                        (text_value_local = string(Char($8F83))) or
-                        (text_value_local = string(Char($6781)));
+                        (text_value_local = variant_char($8F83, $8F03)) or
+                        (text_value_local = variant_char($6781, $6975));
                 end;
 
                 function is_function_prefix_text_local(
@@ -119107,7 +119121,7 @@ var
                         (text_value_local = string(Char($7684))) or
                         (text_value_local = string(Char($4E86))) or
                         (text_value_local = string(Char($5728))) or
-                        (text_value_local = string(Char($4E8E))) or
+                        (text_value_local = variant_char($4E8E, $65BC)) or
                         (text_value_local = string(Char($4E5F))) or
                         (text_value_local = string(Char($548C))) or
                         (text_value_local = string(Char($4E0D))) or
@@ -119118,14 +119132,14 @@ var
                         (text_value_local = string(Char($6700))) or
 
                         (text_value_local = string(Char($66F4))) or
-                        (text_value_local = string(Char($6CA1))) or
+                        (text_value_local = variant_char($6CA1, $6C92)) or
                         (text_value_local = string(Char($8981))) or
-                        (text_value_local = string(Char($4F1A))) or
+                        (text_value_local = variant_char($4F1A, $6703)) or
                         (text_value_local = string(Char($80FD))) or
                         (text_value_local = string(Char($628A))) or
                         (text_value_local = string(Char($88AB))) or
-                        (text_value_local = string(Char($8BA9))) or
-                        (text_value_local = string(Char($7ED9)));
+                        (text_value_local = variant_char($8BA9, $8B93)) or
+                        (text_value_local = variant_char($7ED9, $7D66));
                 end;
             begin
                 Result := False;
@@ -120602,7 +120616,7 @@ var
                     (text_value_local = string(Char($7684))) or
                     (text_value_local = string(Char($4E86))) or
                     (text_value_local = string(Char($5427))) or
-                    (text_value_local = string(Char($5417)));
+                    (text_value_local = variant_char($5417, $55CE));
             end;
 
             function expand_function_tail_path_local(
@@ -140915,12 +140929,12 @@ begin
         Exit;
     end;
 
-    Result := try_tail_local('zhe', string(Char($7740))) or
+    Result := try_tail_local('zhe', variant_char($7740, $8457)) or
         try_tail_local('de', string(Char($7684))) or
         try_tail_local('le', string(Char($4E86))) or
         try_tail_local('la', string(Char($5566))) or
         try_tail_local('ba', string(Char($5427))) or
-        try_tail_local('ma', string(Char($5417))) or
+        try_tail_local('ma', variant_char($5417, $55CE)) or
         try_tail_local('a', string(Char($554A)));
 end;
 
@@ -143731,10 +143745,10 @@ const
     function is_sentence_particle_unit_for_sort(const unit_value: string): Boolean;
     begin
         Result := (unit_value = string(Char($4E86))) or
-            (unit_value = string(Char($7740))) or
+            (unit_value = variant_char($7740, $8457)) or
 
-            (unit_value = string(Char($8FC7))) or
-            (unit_value = string(Char($5417))) or
+            (unit_value = variant_char($8FC7, $904E)) or
+            (unit_value = variant_char($5417, $55CE)) or
             (unit_value = string(Char($561B))) or
             (unit_value = string(Char($5427))) or
             (unit_value = string(Char($5462))) or
@@ -143795,7 +143809,7 @@ const
         end
         else if normalized_tail_key_local = 'zhe' then
         begin
-            Result := string(Char($7740));
+            Result := variant_char($7740, $8457);
         end
         else if normalized_tail_key_local = 'la' then
         begin
@@ -143807,7 +143821,7 @@ const
         end
         else if normalized_tail_key_local = 'ma' then
         begin
-            Result := string(Char($5417));
+            Result := variant_char($5417, $55CE);
         end
         else if normalized_tail_key_local = 'a' then
         begin
@@ -144209,11 +144223,11 @@ const
         end
         else if normalized_syllable = 'yu' then
         begin
-            Result := string(Char($4E0E));
+            Result := variant_char($4E0E, $8207);
         end
         else if normalized_syllable = 'hui' then
         begin
-            Result := string(Char($4F1A));
+            Result := variant_char($4F1A, $6703);
         end
         else if normalized_syllable = 'de' then
         begin
@@ -144221,11 +144235,11 @@ const
         end
         else if normalized_syllable = 'zhe' then
         begin
-            Result := string(Char($8FD9));
+            Result := variant_char($8FD9, $9019);
         end
         else if normalized_syllable = 'qing' then
         begin
-            Result := string(Char($8BF7));
+            Result := variant_char($8BF7, $8ACB);
         end;
     end;
     procedure prepare_weak_chain_query_cache;
@@ -144944,7 +144958,7 @@ const
         expected_head_text := '';
         if SameText(weak_chain_query_syllables[0].text, 'zhe') then
         begin
-            expected_head_text := string(Char($8FD9));
+            expected_head_text := variant_char($8FD9, $9019);
         end
         else if SameText(weak_chain_query_syllables[0].text, 'na') or
             SameText(weak_chain_query_syllables[0].text, 'nei') then
@@ -147441,23 +147455,23 @@ var
         end;
 
         Result :=
-            (normalized_text_value = string(Char($4E2A))) or
+            (normalized_text_value = variant_char($4E2A, $500B)) or
             (normalized_text_value = string(Char($4F4D))) or
             (normalized_text_value = string(Char($6B21))) or
-            (normalized_text_value = string(Char($70B9))) or
+            (normalized_text_value = variant_char($70B9, $9EDE)) or
             (normalized_text_value = string(Char($4E9B))) or
-            (normalized_text_value = string(Char($79CD))) or
+            (normalized_text_value = variant_char($79CD, $7A2E)) or
             (normalized_text_value = string(Char($5929))) or
             (normalized_text_value = string(Char($5E74))) or
             (normalized_text_value = string(Char($6708))) or
-            (normalized_text_value = string(Char($91CC))) or
+            (normalized_text_value = variant_char($91CC, $88E1)) or
             (normalized_text_value = string(Char($4E0B))) or
             (normalized_text_value = string(Char($56DE))) or
             (normalized_text_value = string(Char($904D))) or
-            (normalized_text_value = string(Char($58F0))) or
+            (normalized_text_value = variant_char($58F0, $8072)) or
             (normalized_text_value = string(Char($9762))) or
             (normalized_text_value = string(Char($773C))) or
-            (normalized_text_value = string(Char($8FB9)));
+            (normalized_text_value = variant_char($8FB9, $908A));
     end;
 
     function try_get_best_boundary_unit_single_char_for_pinyin_key_local(const pinyin_key: string;
@@ -147580,10 +147594,10 @@ var
             (normalized_text_value = string(Char($5341))) or
             (normalized_text_value = string(Char($767E))) or
             (normalized_text_value = string(Char($5343))) or
-            (normalized_text_value = string(Char($4E07))) or
-            (normalized_text_value = string(Char($4E24))) or
-            (normalized_text_value = string(Char($51E0))) or
-            (normalized_text_value = string(Char($8FD9))) or
+            (normalized_text_value = variant_char($4E07, $842C)) or
+            (normalized_text_value = variant_char($4E24, $5169)) or
+            (normalized_text_value = variant_char($51E0, $5E7E)) or
+            (normalized_text_value = variant_char($8FD9, $9019)) or
             (normalized_text_value = string(Char($90A3))) or
             (normalized_text_value = string(Char($54EA))) or
             (normalized_text_value = string(Char($6BCF))) or
@@ -147591,9 +147605,9 @@ var
             (normalized_text_value = string(Char($534A))) or
             (normalized_text_value = string(Char($591A))) or
             (normalized_text_value = string(Char($6574))) or
-            (normalized_text_value = string(Char($5355))) or
-            (normalized_text_value = string(Char($53CC))) or
-            (normalized_text_value = string(Char($4FE9))) or
+            (normalized_text_value = variant_char($5355, $55AE)) or
+            (normalized_text_value = variant_char($53CC, $96D9)) or
+            (normalized_text_value = variant_char($4FE9, $5006)) or
             (normalized_text_value = string(Char($4EE8)));
     end;
 
@@ -147830,20 +147844,20 @@ var
 
         if normalized_pinyin_key = 'zhe' then
         begin
-            Result := (normalized_text_value = string(Char($7740))) or
+            Result := (normalized_text_value = variant_char($7740, $8457)) or
                 (normalized_text_value = string(Char($8457)));
             Exit;
         end;
 
         if normalized_pinyin_key = 'guo' then
         begin
-            Result := normalized_text_value = string(Char($8FC7));
+            Result := normalized_text_value = variant_char($8FC7, $904E);
             Exit;
         end;
 
         if normalized_pinyin_key = 'ma' then
         begin
-            Result := (normalized_text_value = string(Char($5417))) or
+            Result := (normalized_text_value = variant_char($5417, $55CE)) or
                 (normalized_text_value = string(Char($561B)));
             Exit;
         end;
@@ -147857,7 +147871,7 @@ var
         if normalized_pinyin_key = 'ba' then
         begin
             Result := (normalized_text_value = string(Char($5427))) or
-                (normalized_text_value = string(Char($7F62)));
+                (normalized_text_value = variant_char($7F62, $7F77));
             Exit;
         end;
 
@@ -147956,20 +147970,20 @@ var
 
         if SameText(Trim(pinyin_key), 'zhe') then
         begin
-            consider_expected_text_local(string(Char($7740)));
+            consider_expected_text_local(variant_char($7740, $8457));
             consider_expected_text_local(string(Char($8457)));
             Exit;
         end;
 
         if SameText(Trim(pinyin_key), 'guo') then
         begin
-            consider_expected_text_local(string(Char($8FC7)));
+            consider_expected_text_local(variant_char($8FC7, $904E));
             Exit;
         end;
 
         if SameText(Trim(pinyin_key), 'ma') then
         begin
-            consider_expected_text_local(string(Char($5417)));
+            consider_expected_text_local(variant_char($5417, $55CE));
             consider_expected_text_local(string(Char($561B)));
             Exit;
         end;
@@ -147983,7 +147997,7 @@ var
         if SameText(Trim(pinyin_key), 'ba') then
         begin
             consider_expected_text_local(string(Char($5427)));
-            consider_expected_text_local(string(Char($7F62)));
+            consider_expected_text_local(variant_char($7F62, $7F77));
             Exit;
         end;
 
@@ -148253,23 +148267,23 @@ var
                 Exit;
             end;
             Result :=
-                (normalized_text_value = string(Char($4E2A))) or
+                (normalized_text_value = variant_char($4E2A, $500B)) or
                 (normalized_text_value = string(Char($4F4D))) or
                 (normalized_text_value = string(Char($6B21))) or
-                (normalized_text_value = string(Char($70B9))) or
+                (normalized_text_value = variant_char($70B9, $9EDE)) or
                 (normalized_text_value = string(Char($4E9B))) or
-                (normalized_text_value = string(Char($79CD))) or
+                (normalized_text_value = variant_char($79CD, $7A2E)) or
                 (normalized_text_value = string(Char($5929))) or
                 (normalized_text_value = string(Char($5E74))) or
                 (normalized_text_value = string(Char($6708))) or
-                (normalized_text_value = string(Char($91CC))) or
+                (normalized_text_value = variant_char($91CC, $88E1)) or
                 (normalized_text_value = string(Char($4E0B))) or
                 (normalized_text_value = string(Char($56DE))) or
                 (normalized_text_value = string(Char($904D))) or
-                (normalized_text_value = string(Char($58F0))) or
+                (normalized_text_value = variant_char($58F0, $8072)) or
                 (normalized_text_value = string(Char($9762))) or
                 (normalized_text_value = string(Char($773C))) or
-                (normalized_text_value = string(Char($8FB9)));
+                (normalized_text_value = variant_char($8FB9, $908A));
         end;
         function get_query_path_support_adjustment_local(const left_text: string;
             const right_text: string): Integer;
@@ -150445,32 +150459,32 @@ var
                     (value = string(Char($5B83))) or
                     (value = string(Char($548C))) or
                     (value = string(Char($53BB))) or
-                    (value = string(Char($6765))) or
+                    (value = variant_char($6765, $4F86)) or
                     (value = string(Char($5728))) or
                     (value = string(Char($662F))) or
                     (value = string(Char($6709))) or
                     (value = string(Char($8981))) or
                     (value = string(Char($60F3))) or
-                    (value = string(Char($4F1A))) or
+                    (value = variant_char($4F1A, $6703)) or
                     (value = string(Char($80FD))) or
                     (value = string(Char($53EA))) or
                     (value = string(Char($628A))) or
                     (value = string(Char($88AB))) or
-                    (value = string(Char($8BA9))) or
-                    (value = string(Char($7ED9))) or
+                    (value = variant_char($8BA9, $8B93)) or
+                    (value = variant_char($7ED9, $7D66)) or
                     (value = string(Char($5411))) or
-                    (value = string(Char($5BF9))) or
-                    (value = string(Char($4E8E))) or
+                    (value = variant_char($5BF9, $5C0D)) or
+                    (value = variant_char($4E8E, $65BC)) or
                     (value = string(Char($8DDF))) or
                     (value = string(Char($540C))) or
-                    (value = string(Char($4ECE))) or
-                    (value = string(Char($4E0E))) or
+                    (value = variant_char($4ECE, $5F9E)) or
+                    (value = variant_char($4E0E, $8207)) or
                     (value = string(Char($800C))) or
-                    (value = string(Char($5E76))) or
+                    (value = variant_char($5E76, $4E26)) or
                     (value = string(Char($5C31))) or
                     (value = string(Char($4E5F))) or
                     (value = string(Char($90FD))) or
-                    (value = string(Char($8FD8))) or
+                    (value = variant_char($8FD8, $9084)) or
                     (value = string(Char($53C8))) or
                     (value = string(Char($518D))) or
                     (value = string(Char($4E0D))) or
@@ -150478,13 +150492,13 @@ var
                     (value = string(Char($592A))) or
                     (value = string(Char($7684))) or
                     (value = string(Char($4EBA))) or
-                    (value = string(Char($4EEC))) or
+                    (value = variant_char($4EEC, $5011)) or
                     (value = string(Char($822C))) or
                     (value = string(Char($529B))) or
-                    (value = string(Char($65F6))) or
+                    (value = variant_char($65F6, $6642)) or
                     (value = string(Char($4F4D))) or
-                    (value = string(Char($7740))) or
-                    (value = string(Char($8FD9)));
+                    (value = variant_char($7740, $8457)) or
+                    (value = variant_char($8FD9, $9019));
             end;
             procedure append_exact_state(const position: Integer; const value: TncSegmentPathState);
             begin
@@ -150817,32 +150831,32 @@ var
                     (value = string(Char($5B83))) or
                     (value = string(Char($548C))) or
                     (value = string(Char($53BB))) or
-                    (value = string(Char($6765))) or
+                    (value = variant_char($6765, $4F86)) or
                     (value = string(Char($5728))) or
                     (value = string(Char($662F))) or
                     (value = string(Char($6709))) or
                     (value = string(Char($8981))) or
                     (value = string(Char($60F3))) or
-                    (value = string(Char($4F1A))) or
+                    (value = variant_char($4F1A, $6703)) or
                     (value = string(Char($80FD))) or
                     (value = string(Char($53EA))) or
                     (value = string(Char($628A))) or
                     (value = string(Char($88AB))) or
-                    (value = string(Char($8BA9))) or
-                    (value = string(Char($7ED9))) or
+                    (value = variant_char($8BA9, $8B93)) or
+                    (value = variant_char($7ED9, $7D66)) or
                     (value = string(Char($5411))) or
-                    (value = string(Char($5BF9))) or
-                    (value = string(Char($4E8E))) or
+                    (value = variant_char($5BF9, $5C0D)) or
+                    (value = variant_char($4E8E, $65BC)) or
                     (value = string(Char($8DDF))) or
                     (value = string(Char($540C))) or
-                    (value = string(Char($4ECE))) or
-                    (value = string(Char($4E0E))) or
+                    (value = variant_char($4ECE, $5F9E)) or
+                    (value = variant_char($4E0E, $8207)) or
                     (value = string(Char($800C))) or
-                    (value = string(Char($5E76))) or
+                    (value = variant_char($5E76, $4E26)) or
                     (value = string(Char($5C31))) or
                     (value = string(Char($4E5F))) or
                     (value = string(Char($90FD))) or
-                    (value = string(Char($8FD8))) or
+                    (value = variant_char($8FD8, $9084)) or
                     (value = string(Char($53C8))) or
                     (value = string(Char($518D))) or
                     (value = string(Char($4E0D))) or
@@ -150850,13 +150864,13 @@ var
                     (value = string(Char($592A))) or
                     (value = string(Char($7684))) or
                     (value = string(Char($4EBA))) or
-                    (value = string(Char($4EEC))) or
+                    (value = variant_char($4EEC, $5011)) or
                     (value = string(Char($822C))) or
                     (value = string(Char($529B))) or
-                    (value = string(Char($65F6))) or
+                    (value = variant_char($65F6, $6642)) or
                     (value = string(Char($4F4D))) or
-                    (value = string(Char($7740))) or
-                    (value = string(Char($8FD9)));
+                    (value = variant_char($7740, $8457)) or
+                    (value = variant_char($8FD9, $9019));
             end;
             function is_better_long_sentence_option(const left: TLongSentenceOption;
                 const right: TLongSentenceOption): Boolean;
@@ -156609,15 +156623,15 @@ var
             Exit;
         end;
 
-        Result := SameText(text_value, string(Char($6709)) + string(Char($70B9))) or
-            SameText(text_value, string(Char($4E00)) + string(Char($70B9))) or
+        Result := SameText(text_value, string(Char($6709)) + variant_char($70B9, $9EDE)) or
+            SameText(text_value, string(Char($4E00)) + variant_char($70B9, $9EDE)) or
             SameText(text_value, string(Char($4E0D)) + string(Char($662F))) or
-            SameText(text_value, string(Char($4E0D)) + string(Char($4F1A))) or
+            SameText(text_value, string(Char($4E0D)) + variant_char($4F1A, $6703)) or
             SameText(text_value, string(Char($4E0D)) + string(Char($80FD))) or
             SameText(text_value, string(Char($4E0D)) + string(Char($8981))) or
-            SameText(text_value, string(Char($6CA1)) + string(Char($6709))) or
+            SameText(text_value, variant_char($6CA1, $6C92) + string(Char($6709))) or
             SameText(text_value, string(Char($53EF)) + string(Char($4EE5))) or
-            SameText(text_value, string(Char($5E94)) + string(Char($8BE5))) or
+            SameText(text_value, variant_char($5E94, $61C9) + variant_char($8BE5, $8A72)) or
             SameText(text_value, string(Char($9700)) + string(Char($8981)));
     end;
 
@@ -156724,13 +156738,13 @@ var
                 ((pinyin_key_value = 'le') and
                 SameText(text_value, string(Char($4E86)))) or
                 ((pinyin_key_value = 'zhe') and
-                SameText(text_value, string(Char($7740)))) or
+                SameText(text_value, variant_char($7740, $8457))) or
                 ((pinyin_key_value = 'la') and
                 SameText(text_value, string(Char($5566)))) or
                 ((pinyin_key_value = 'ba') and
                 SameText(text_value, string(Char($5427)))) or
                 ((pinyin_key_value = 'ma') and
-                SameText(text_value, string(Char($5417)))) or
+                SameText(text_value, variant_char($5417, $55CE))) or
                 ((pinyin_key_value = 'a') and
                 SameText(text_value, string(Char($554A))));
         end;
@@ -158755,7 +158769,7 @@ var
             end
             else
             begin
-                ma_text := string(Char($5417));
+                ma_text := variant_char($5417, $55CE);
             end;
 
             candidate_text_local := '';
@@ -160678,7 +160692,7 @@ var
             end
             else if tail_key_local = 'ma' then
             begin
-                expected_tail_text_local := string(Char($5417));
+                expected_tail_text_local := variant_char($5417, $55CE);
             end
             else if tail_key_local = 'le' then
             begin
@@ -160686,7 +160700,7 @@ var
             end
             else if tail_key_local = 'zhe' then
             begin
-                expected_tail_text_local := string(Char($7740));
+                expected_tail_text_local := variant_char($7740, $8457);
             end
             else if tail_key_local = 'de' then
             begin
@@ -161931,7 +161945,7 @@ var
         end
         else if SameText(tail_key, 'zhe') then
         begin
-            tail_text := string(Char($7740));
+            tail_text := variant_char($7740, $8457);
         end
         else if SameText(tail_key, 'la') then
         begin
@@ -161943,7 +161957,7 @@ var
         end
         else if SameText(tail_key, 'ma') then
         begin
-            tail_text := string(Char($5417));
+            tail_text := variant_char($5417, $55CE);
         end
         else if SameText(tail_key, 'a') then
         begin
@@ -162333,27 +162347,27 @@ var
             const unit_text: string): Boolean;
         begin
             Result := SameText(unit_text, string(Char($4E0D))) or
-                SameText(unit_text, string(Char($5E76))) or
-                SameText(unit_text, string(Char($4F1A))) or
+                SameText(unit_text, variant_char($5E76, $4E26)) or
+                SameText(unit_text, variant_char($4F1A, $6703)) or
                 SameText(unit_text, string(Char($80FD))) or
                 SameText(unit_text, string(Char($60F3))) or
                 SameText(unit_text, string(Char($8981))) or
                 SameText(unit_text, string(Char($77E5))) or
-                SameText(unit_text, string(Char($89C9))) or
+                SameText(unit_text, variant_char($89C9, $89BA)) or
                 SameText(unit_text, string(Char($53EF))) or
-                SameText(unit_text, string(Char($5E94))) or
+                SameText(unit_text, variant_char($5E94, $61C9)) or
                 SameText(unit_text, string(Char($9700))) or
                 SameText(unit_text, string(Char($5DF2))) or
                 SameText(unit_text, string(Char($6B63))) or
                 SameText(unit_text, string(Char($518D))) or
-                SameText(unit_text, string(Char($8FD8))) or
+                SameText(unit_text, variant_char($8FD8, $9084)) or
                 SameText(unit_text, string(Char($90FD))) or
                 SameText(unit_text, string(Char($5C31))) or
                 SameText(unit_text, string(Char($53EA))) or
                 SameText(unit_text, string(Char($628A))) or
                 SameText(unit_text, string(Char($88AB))) or
-                SameText(unit_text, string(Char($7ED9))) or
-                SameText(unit_text, string(Char($8BA9))) or
+                SameText(unit_text, variant_char($7ED9, $7D66)) or
+                SameText(unit_text, variant_char($8BA9, $8B93)) or
                 SameText(unit_text, string(Char($5411))) or
                 is_likely_verbal_unit_local(unit_text);
         end;
@@ -162424,12 +162438,12 @@ var
 
                 if (segment_units_local = 1) and (next_units_local >= 2) then
                 begin
-                    if SameText(segment_last_unit_local, string(Char($5BF9))) or
+                    if SameText(segment_last_unit_local, variant_char($5BF9, $5C0D)) or
                         (is_path_pronoun_unit_local(segment_last_unit_local) and
                         is_path_predicate_or_modifier_head_local(
                         next_first_unit_local)) or
                         (SameText(segment_last_unit_local, string(Char($66F4))) and
-                        SameText(next_first_unit_local, string(Char($4E3A)))) then
+                        SameText(next_first_unit_local, variant_char($4E3A, $70BA))) then
                     begin
                         Exit(True);
                     end;
@@ -162443,7 +162457,7 @@ var
                     next_next_units_local := get_candidate_text_unit_count(
                         next_next_segment_text_local);
                     if (next_next_units_local >= 2) and
-                        SameText(segment_last_unit_local, string(Char($5E76))) and
+                        SameText(segment_last_unit_local, variant_char($5E76, $4E26)) and
                         SameText(next_first_unit_local, string(Char($4E0D))) then
                     begin
                         Exit(True);
@@ -162486,43 +162500,43 @@ var
             begin
                 Result := SameText(unit_text, string(Char($5317))) or
                     SameText(unit_text, string(Char($5357))) or
-                    SameText(unit_text, string(Char($4E1C))) or
+                    SameText(unit_text, variant_char($4E1C, $6771)) or
                     SameText(unit_text, string(Char($897F))) or
                     SameText(unit_text, string(Char($4E0A))) or
                     SameText(unit_text, string(Char($4E0B))) or
                     SameText(unit_text, string(Char($524D))) or
-                    SameText(unit_text, string(Char($540E))) or
+                    SameText(unit_text, variant_char($540E, $5F8C)) or
                     SameText(unit_text, string(Char($5DE6))) or
                     SameText(unit_text, string(Char($53F3))) or
-                    SameText(unit_text, string(Char($91CC))) or
+                    SameText(unit_text, variant_char($91CC, $88E1)) or
                     SameText(unit_text, string(Char($5916)));
             end;
 
             function is_place_like_tail_unit_local(const unit_text: string): Boolean;
             begin
-                Result := SameText(unit_text, string(Char($56ED))) or
-                    SameText(unit_text, string(Char($9986))) or
-                    SameText(unit_text, string(Char($573A))) or
+                Result := SameText(unit_text, variant_char($56ED, $5712)) or
+                    SameText(unit_text, variant_char($9986, $9928)) or
+                    SameText(unit_text, variant_char($573A, $5834)) or
                     SameText(unit_text, string(Char($5E97))) or
                     SameText(unit_text, string(Char($6821))) or
                     SameText(unit_text, string(Char($9662))) or
-                    SameText(unit_text, string(Char($697C))) or
+                    SameText(unit_text, variant_char($697C, $6A13)) or
                     SameText(unit_text, string(Char($7AD9))) or
                     SameText(unit_text, string(Char($57CE))) or
-                    SameText(unit_text, string(Char($533A))) or
+                    SameText(unit_text, variant_char($533A, $5340)) or
                     SameText(unit_text, string(Char($5E02))) or
                     SameText(unit_text, string(Char($6751))) or
-                    SameText(unit_text, string(Char($9547))) or
-                    SameText(unit_text, string(Char($53BF))) or
+                    SameText(unit_text, variant_char($9547, $93AE)) or
+                    SameText(unit_text, variant_char($53BF, $7E23)) or
                     SameText(unit_text, string(Char($8DEF))) or
                     SameText(unit_text, string(Char($8857))) or
-                    SameText(unit_text, string(Char($6865))) or
+                    SameText(unit_text, variant_char($6865, $6A4B)) or
                     SameText(unit_text, string(Char($6CB3))) or
                     SameText(unit_text, string(Char($6D77))) or
                     SameText(unit_text, string(Char($5C71))) or
-                    SameText(unit_text, string(Char($5C9B))) or
-                    SameText(unit_text, string(Char($95E8))) or
-                    SameText(unit_text, string(Char($5385))) or
+                    SameText(unit_text, variant_char($5C9B, $5CF6)) or
+                    SameText(unit_text, variant_char($95E8, $9580)) or
+                    SameText(unit_text, variant_char($5385, $5EF3)) or
                     SameText(unit_text, string(Char($5BA4))) or
                     SameText(unit_text, string(Char($623F))) or
                     SameText(unit_text, string(Char($5BB6))) or
@@ -162692,7 +162706,7 @@ var
                 begin
                     if (next_segment_text_local <> '') and (next_units_local >= 2) then
                     begin
-                        if SameText(segment_last_unit_local, string(Char($5BF9))) then
+                        if SameText(segment_last_unit_local, variant_char($5BF9, $5C0D)) then
                         begin
                             Inc(Result, 14000);
                         end
@@ -162702,7 +162716,7 @@ var
                             Inc(Result, 9000);
                         end
                         else if SameText(segment_last_unit_local, string(Char($66F4))) and
-                            SameText(next_first_unit_local, string(Char($4E3A))) then
+                            SameText(next_first_unit_local, variant_char($4E3A, $70BA)) then
                         begin
                             Inc(Result, 12000);
                         end
@@ -162715,7 +162729,7 @@ var
                     else if (next_units_local = 1) and
                         (next_next_segment_text_local <> '') and (next_next_units_local >= 2) then
                     begin
-                        if SameText(segment_last_unit_local, string(Char($5E76))) and
+                        if SameText(segment_last_unit_local, variant_char($5E76, $4E26)) and
                             SameText(next_first_unit_local, string(Char($4E0D))) then
                         begin
                             Inc(Result, 16000);
@@ -163842,9 +163856,9 @@ var
                 ((right_value = string(Char($5728))) or
                 (right_value = string(Char($518D))))) or
                 (((left_value = string(Char($662F))) or
-                (left_value = string(Char($65F6)))) and
+                (left_value = variant_char($65F6, $6642))) and
                 ((right_value = string(Char($662F))) or
-                (right_value = string(Char($65F6)))));
+                (right_value = variant_char($65F6, $6642))));
         end;
 
         function differs_only_in_common_function_units_local(
@@ -164398,7 +164412,7 @@ var
         end
         else if normalized_syllable_value = 'ma' then
         begin
-            Result := string(Char($5417));
+            Result := variant_char($5417, $55CE);
         end
         else if normalized_syllable_value = 'le' then
         begin
@@ -164431,15 +164445,15 @@ var
         end
         else if normalized_syllable_value = 'ge' then
         begin
-            Result := string(Char($4E2A));
+            Result := variant_char($4E2A, $500B);
         end
         else if normalized_syllable_value = 'tiao' then
         begin
-            Result := string(Char($6761));
+            Result := variant_char($6761, $689D);
         end
         else if normalized_syllable_value = 'zhang' then
         begin
-            Result := string(Char($5F20));
+            Result := variant_char($5F20, $5F35);
         end
         else if normalized_syllable_value = 'ben' then
         begin
@@ -164455,7 +164469,7 @@ var
         end
         else if normalized_syllable_value = 'lun' then
         begin
-            Result := string(Char($8F6E));
+            Result := variant_char($8F6E, $8F2A);
         end
         else if normalized_syllable_value = 'hui' then
         begin
@@ -164483,7 +164497,7 @@ var
         end
         else if normalized_syllable_value = 'liang' then
         begin
-            Result := string(Char($4E24));
+            Result := variant_char($4E24, $5169);
         end
         else if normalized_syllable_value = 'san' then
         begin
@@ -164532,7 +164546,7 @@ var
         end
         else if normalized_syllable_value = 'xiang' then
         begin
-            Result := string(Char($9879));
+            Result := variant_char($9879, $9805);
         end
         else if normalized_syllable_value = 'ci' then
         begin
@@ -164540,15 +164554,15 @@ var
         end
         else if normalized_syllable_value = 'ge' then
         begin
-            Result := string(Char($4E2A));
+            Result := variant_char($4E2A, $500B);
         end
         else if normalized_syllable_value = 'tiao' then
         begin
-            Result := string(Char($6761));
+            Result := variant_char($6761, $689D);
         end
         else if normalized_syllable_value = 'zhang' then
         begin
-            Result := string(Char($5F20));
+            Result := variant_char($5F20, $5F35);
         end
         else if normalized_syllable_value = 'ben' then
         begin
@@ -164560,7 +164574,7 @@ var
         end
         else if normalized_syllable_value = 'dian' then
         begin
-            Result := string(Char($70B9));
+            Result := variant_char($70B9, $9EDE);
         end
         else if normalized_syllable_value = 'bu' then
         begin
@@ -164568,15 +164582,15 @@ var
         end
         else if normalized_syllable_value = 'lun' then
         begin
-            Result := string(Char($8F6E));
+            Result := variant_char($8F6E, $8F2A);
         end
         else if normalized_syllable_value = 'jie' then
         begin
-            Result := string(Char($8282));
+            Result := variant_char($8282, $7BC0);
         end
         else if normalized_syllable_value = 'ye' then
         begin
-            Result := string(Char($9875));
+            Result := variant_char($9875, $9801);
         end
         else if normalized_syllable_value = 'duan' then
         begin
@@ -166188,15 +166202,15 @@ var
                 Exit;
             end;
 
-            if SameText(text_value, string(Char($6709)) + string(Char($70B9))) or
-                SameText(text_value, string(Char($4E00)) + string(Char($70B9))) or
+            if SameText(text_value, string(Char($6709)) + variant_char($70B9, $9EDE)) or
+                SameText(text_value, string(Char($4E00)) + variant_char($70B9, $9EDE)) or
                 SameText(text_value, string(Char($4E0D)) + string(Char($662F))) or
-                SameText(text_value, string(Char($4E0D)) + string(Char($4F1A))) or
+                SameText(text_value, string(Char($4E0D)) + variant_char($4F1A, $6703)) or
                 SameText(text_value, string(Char($4E0D)) + string(Char($80FD))) or
                 SameText(text_value, string(Char($4E0D)) + string(Char($8981))) or
-                SameText(text_value, string(Char($6CA1)) + string(Char($6709))) or
+                SameText(text_value, variant_char($6CA1, $6C92) + string(Char($6709))) or
                 SameText(text_value, string(Char($53EF)) + string(Char($4EE5))) or
-                SameText(text_value, string(Char($5E94)) + string(Char($8BE5))) or
+                SameText(text_value, variant_char($5E94, $61C9) + variant_char($8BE5, $8A72)) or
                 SameText(text_value, string(Char($9700)) + string(Char($8981))) then
             begin
                 Exit(True);
@@ -166980,7 +166994,7 @@ var
             Exit;
         end;
 
-        desired_head := string(Char($8FD9));
+        desired_head := variant_char($8FD9, $9019);
         tail_key := build_display_query_key(1, expected_units - 1);
         if tail_key = '' then
         begin
@@ -167042,27 +167056,27 @@ var
         begin
             expected_syllables_local := TArray<string>.Create('na', 'er');
             expected_units_local := TArray<string>.Create(
-                string(Char($54EA)), string(Char($513F)));
+                string(Char($54EA)), variant_char($513F, $5152));
         end
         else if SameText(normalized_pinyin, 'ner') then
         begin
             expected_syllables_local := TArray<string>.Create('na', 'er');
             expected_units_local := TArray<string>.Create(
-                string(Char($54EA)), string(Char($513F)));
+                string(Char($54EA)), variant_char($513F, $5152));
         end
         else if SameText(normalized_pinyin, 'qunaer') then
         begin
             expected_syllables_local := TArray<string>.Create('qu', 'na', 'er');
             expected_units_local := TArray<string>.Create(
                 string(Char($53BB)), string(Char($54EA)),
-                string(Char($513F)));
+                variant_char($513F, $5152));
         end
         else if SameText(normalized_pinyin, 'qner') then
         begin
             expected_syllables_local := TArray<string>.Create('qu', 'na', 'er');
             expected_units_local := TArray<string>.Create(
                 string(Char($53BB)), string(Char($54EA)),
-                string(Char($513F)));
+                variant_char($513F, $5152));
         end
         else
         begin
@@ -168090,15 +168104,15 @@ var
             end
             else if normalized_syllable_value = 'ge' then
             begin
-                Result := string(Char($4E2A));
+                Result := variant_char($4E2A, $500B);
             end
             else if normalized_syllable_value = 'tiao' then
             begin
-                Result := string(Char($6761));
+                Result := variant_char($6761, $689D);
             end
             else if normalized_syllable_value = 'zhang' then
             begin
-                Result := string(Char($5F20));
+                Result := variant_char($5F20, $5F35);
             end
             else if normalized_syllable_value = 'ben' then
             begin
@@ -168114,7 +168128,7 @@ var
             end
             else if normalized_syllable_value = 'lun' then
             begin
-                Result := string(Char($8F6E));
+                Result := variant_char($8F6E, $8F2A);
             end
             else if normalized_syllable_value = 'hui' then
             begin
@@ -170707,7 +170721,7 @@ var
             (not SameText(Trim(top_units_local[expected_units - 2]),
             string(Char($4E00)))) or
             (not SameText(Trim(top_units_local[expected_units - 1]),
-            string(Char($6837)))) then
+            variant_char($6837, $6A23))) then
         begin
             Exit;
         end;
@@ -170725,7 +170739,7 @@ var
                 (not SameText(Trim(candidate_units_local[expected_units - 2]),
                 string(Char($4E00)))) or
                 (not SameText(Trim(candidate_units_local[expected_units - 1]),
-                string(Char($6837)))) then
+                variant_char($6837, $6A23))) then
             begin
                 Continue;
             end;
@@ -170965,7 +170979,7 @@ var
                 ranked_weight_local := candidate_weight_local +
                     ((c_probe_limit - candidate_idx) * 32);
                 if between_phrases_local and
-                    ((candidate_text_local = string(Char($4E0E))) or
+                    ((candidate_text_local = variant_char($4E0E, $8207)) or
                     (candidate_text_local = string(Char($548C)))) then
                 begin
                     Inc(ranked_weight_local, 260);
@@ -171206,33 +171220,33 @@ var
                     (text_local = string(Char($592A))) or
                     (text_local = string(Char($8981))) or
                     (text_local = string(Char($80FD))) or
-                    (text_local = string(Char($6CA1))) or
-                    (text_local = string(Char($65E0))) or
+                    (text_local = variant_char($6CA1, $6C92)) or
+                    (text_local = variant_char($65E0, $7121)) or
                     (text_local = string(Char($975E))) or
                     (text_local = string(Char($53EF))) or
-                    (text_local = string(Char($4F1A))) or
-                    (text_local = string(Char($5E94))) or
-                    (text_local = string(Char($5C06))) or
+                    (text_local = variant_char($4F1A, $6703)) or
+                    (text_local = variant_char($5E94, $61C9)) or
+                    (text_local = variant_char($5C06, $5C07)) or
                     (text_local = string(Char($672A))) or
                     (text_local = string(Char($5DF2))) or
                     (text_local = string(Char($6B63))) or
                     (text_local = string(Char($53C8))) or
                     (text_local = string(Char($4E5F))) or
-                    (text_local = string(Char($8FD8))) or
+                    (text_local = variant_char($8FD8, $9084)) or
                     (text_local = string(Char($90FD))) or
                     (text_local = string(Char($5C31))) or
-                    (text_local = string(Char($522B))) or
+                    (text_local = variant_char($522B, $5225)) or
                     (text_local = string(Char($6709))) or
-                    (text_local = string(Char($5BF9))) or
+                    (text_local = variant_char($5BF9, $5C0D)) or
                     (text_local = string(Char($5230))) or
-                    (text_local = string(Char($4ECE))) or
+                    (text_local = variant_char($4ECE, $5F9E)) or
                     (text_local = string(Char($548C))) or
-                    (text_local = string(Char($4E0E))) or
-                    (text_local = string(Char($4E8E))) or
+                    (text_local = variant_char($4E0E, $8207)) or
+                    (text_local = variant_char($4E8E, $65BC)) or
                     (text_local = string(Char($628A))) or
                     (text_local = string(Char($88AB))) or
-                    (text_local = string(Char($7ED9))) or
-                    (text_local = string(Char($8BA9))) or
+                    (text_local = variant_char($7ED9, $7D66)) or
+                    (text_local = variant_char($8BA9, $8B93)) or
                     (text_local = string(Char($5728))) or
                     (text_local = string(Char($7684))) or
                     (text_local = string(Char($5730))) or
@@ -171241,9 +171255,9 @@ var
                     (text_local = string(Char($662F))) or
                     (text_local = string(Char($53EA))) or
                     (text_local = string(Char($624D))) or
-                    (text_local = string(Char($5E76))) or
+                    (text_local = variant_char($5E76, $4E26)) or
                     (text_local = string(Char($4E14))) or
-                    (text_local = string(Char($4E3A)));
+                    (text_local = variant_char($4E3A, $70BA));
             end;
         begin
             Result := Low(Integer) div 2;
@@ -171962,7 +171976,7 @@ var
 
             Result := (yu_idx >= 2) and
                 SameText(units_value[yu_idx - 2], string(Char($901A))) and
-                SameText(units_value[yu_idx - 1], string(Char($8FC7)));
+                SameText(units_value[yu_idx - 1], variant_char($8FC7, $904E));
         end;
 
         function build_replaced_text_local(const units_value: TArray<string>;
@@ -172010,12 +172024,12 @@ var
             for unit_idx := 1 to High(candidate_units_local) do
             begin
                 if (normalize_pinyin_text(syllables[unit_idx].text) = 'yu') and
-                    SameText(candidate_units_local[unit_idx], string(Char($4E8E))) and
+                    SameText(candidate_units_local[unit_idx], variant_char($4E8E, $65BC)) and
                     should_replace_display_yu_with_conjunction_local(
                     candidate_units_local, unit_idx) then
                 begin
                     replacement_text_local := build_replaced_text_local(
-                        candidate_units_local, unit_idx, string(Char($4E0E)));
+                        candidate_units_local, unit_idx, variant_char($4E0E, $8207));
                     candidate_rank_local := m_candidates[idx].score;
                     if (idx < Length(m_candidate_segment_paths)) and
                         (Trim(m_candidate_segment_paths[idx]) <> '') then
@@ -179267,18 +179281,18 @@ var
             display_short_complete_matches_particle_suffix_rule('le',
             string(Char($4E86)), text_value) or
             display_short_complete_matches_particle_suffix_rule('zhe',
-            string(Char($7740)), text_value) or
+            variant_char($7740, $8457), text_value) or
             display_short_complete_matches_particle_suffix_rule('la',
             string(Char($5566)), text_value) or
             display_short_complete_matches_particle_suffix_rule('ma',
-            string(Char($5417)), text_value) or
+            variant_char($5417, $55CE), text_value) or
             display_short_complete_matches_particle_suffix_rule('ba',
             string(Char($5427)), text_value) or
             display_short_complete_matches_particle_suffix_rule('a',
             string(Char($554A)), text_value) or
             display_short_complete_matches_dehao_rule_text(text_value) or
             ((normalized_pinyin = 'dema') and SameText(text_value,
-            string(Char($7684)) + string(Char($5417)))) or
+            string(Char($7684)) + variant_char($5417, $55CE))) or
             ((normalized_pinyin = 'deba') and SameText(text_value,
             string(Char($7684)) + string(Char($5427)))) or
             ((normalized_pinyin = 'dele') and SameText(text_value,
@@ -179288,19 +179302,19 @@ var
             ((normalized_pinyin = 'leba') and SameText(text_value,
             string(Char($4E86)) + string(Char($5427)))) or
             ((normalized_pinyin = 'lema') and SameText(text_value,
-            string(Char($4E86)) + string(Char($5417)))) or
+            string(Char($4E86)) + variant_char($5417, $55CE))) or
             (((normalized_pinyin = 'naer') or
             (normalized_pinyin = 'ner')) and SameText(text_value,
-            string(Char($54EA)) + string(Char($513F)))) or
+            string(Char($54EA)) + variant_char($513F, $5152))) or
             (((normalized_pinyin = 'qunaer') or
             (normalized_pinyin = 'qner')) and SameText(text_value,
             string(Char($53BB)) + string(Char($54EA)) +
-            string(Char($513F)))) or
+            variant_char($513F, $5152))) or
             ((normalized_pinyin = 'nli') and SameText(text_value,
-            string(Char($54EA)) + string(Char($91CC)))) or
+            string(Char($54EA)) + variant_char($91CC, $88E1))) or
             ((normalized_pinyin = 'qnli') and SameText(text_value,
             string(Char($53BB)) + string(Char($54EA)) +
-            string(Char($91CC))));
+            variant_char($91CC, $88E1)));
     end;
 
     function display_short_complete_matches_tail_phrase_rule(
@@ -179393,7 +179407,7 @@ var
         end;
 
         if display_short_complete_matches_tail_phrase_rule('dema',
-            string(Char($7684)) + string(Char($5417)), text_value) or
+            string(Char($7684)) + variant_char($5417, $55CE), text_value) or
             display_short_complete_matches_tail_phrase_rule('deba',
             string(Char($7684)) + string(Char($5427)), text_value) or
             display_short_complete_matches_tail_phrase_rule('dele',
@@ -179403,7 +179417,7 @@ var
             display_short_complete_matches_tail_phrase_rule('leba',
             string(Char($4E86)) + string(Char($5427)), text_value) or
             display_short_complete_matches_tail_phrase_rule('lema',
-            string(Char($4E86)) + string(Char($5417)), text_value) then
+            string(Char($4E86)) + variant_char($5417, $55CE), text_value) then
         begin
             Exit;
         end;
@@ -180521,7 +180535,7 @@ var
                 end
                 else if SameText(local_tail_key, 'zhe') then
                 begin
-                    local_tail_text := string(Char($7740));
+                    local_tail_text := variant_char($7740, $8457);
                 end
                 else
                 begin
@@ -181916,7 +181930,7 @@ var
                 end
                 else if tail_key_value = 'zhe' then
                 begin
-                    Result := string(Char($7740));
+                    Result := variant_char($7740, $8457);
                 end
                 else if tail_key_value = 'la' then
                 begin
@@ -181928,7 +181942,7 @@ var
                 end
                 else if tail_key_value = 'ma' then
                 begin
-                    Result := string(Char($5417));
+                    Result := variant_char($5417, $55CE);
                 end
                 else if tail_key_value = 'a' then
                 begin

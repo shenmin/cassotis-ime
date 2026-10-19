@@ -9,10 +9,13 @@ unit nc_char_lm_traditional;
   area's next characters and extensions) in traditional; one that
   traditional text writes as well beside other forms (后: 後 or 后) ends what
   the model writes there. The engine's own tables write simplified
-  characters too (对, 从, 让 for "dui", "cong", "rang"): nc_simplified_to_traditional
-  turns every character traditional text never writes into its traditional
-  form before a page or a commit leaves the engine. The tables are OpenCC's
-  (nc_traditional_chars.inc, tools/build_traditional_chars.py). }
+  characters too (对, 从, 让 for "dui", "cong", "rang"): in the traditional
+  variant they write the traditional form instead (TncEngine.variant_char),
+  and nc_simplified_to_traditional turns every character traditional text
+  never writes into its traditional form before a page or a commit leaves
+  the engine. The forms are Taiwan's, as the dictionary writes its function
+  words (為, 裡, 著); the tables are OpenCC's (nc_traditional_chars.inc,
+  tools/build_traditional_chars.py). }
 
 interface
 
@@ -73,12 +76,33 @@ begin
 end;
 
 function nc_traditional_to_simplified(const text: string): string;
+const
+    c_particle = #$8457;
 var
-    idx, found: Integer;
+    idx, found, word_idx, at: Integer;
+    kept: TArray<Boolean>;
 begin
     Result := text;
+    // 著 is the particle 着 except in the words where it reads zhu (著名).
+    if Pos(c_particle, text) > 0 then
+    begin
+        SetLength(kept, Length(text) + 1);
+        for word_idx := 0 to High(c_traditional_kept_words) do
+        begin
+            at := Pos(c_traditional_kept_words[word_idx], text);
+            while at > 0 do
+            begin
+                for idx := at to at + Length(c_traditional_kept_words[word_idx]) - 1 do
+                    if text[idx] = c_particle then
+                        kept[idx] := True;
+                at := Pos(c_traditional_kept_words[word_idx], text, at + 1);
+            end;
+        end;
+    end;
     for idx := 1 to Length(Result) do
     begin
+        if (kept <> nil) and kept[idx] then
+            Continue;
         found := find_code(c_traditional_chars, Word(Result[idx]));
         if found >= 0 then
             Result[idx] := Char(c_traditional_simplified[found]);
