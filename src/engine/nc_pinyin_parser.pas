@@ -33,6 +33,11 @@ function nc_canonical_pinyin_syllables_starting_with(const prefix: string): TArr
   the rest of a word after typed syllables that end at a syllable boundary. }
 function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
     const remainder: string; const units: Integer): Boolean;
+{ True when compact pinyin splits into `units` canonical syllables in one way
+  only. A word the dictionary stores under such a key reads those syllables,
+  whatever the rows of its single characters say (弄堂 under longtang, where
+  弄 has only nong); "jianan" also splits as jian an. }
+function nc_pinyin_splits_one_way(const value: string; const units: Integer): Boolean;
 function nc_normalize_umlaut_spelling(const value: string): string;
 { Split the original keys, not a corrected lookup key. Only a literal suffix
   or one verified adjacent transposition may supply the consumption boundary.
@@ -231,6 +236,36 @@ begin
         if not nc_is_canonical_pinyin_syllable(parsed[idx].text) then
             Exit;
     Result := True;
+end;
+
+function nc_pinyin_splits_one_way(const value: string; const units: Integer): Boolean;
+
+    // The splits of value from position on into count syllables, up to two.
+    function splits(const position, count: Integer): Integer;
+    var size: Integer;
+        syllable: string;
+    begin
+        if count = 0 then
+        begin
+            if position > Length(value) then Exit(1);
+            Exit(0);
+        end;
+        Result := 0;
+        for size := 1 to 6 do
+        begin
+            if position + size - 1 > Length(value) then Break;
+            syllable := Copy(value, position, size);
+            // The erhua "r" only ends a syllable.
+            if (syllable <> 'r') and nc_is_canonical_pinyin_syllable(syllable) then
+            begin
+                Inc(Result, splits(position + size, count - 1));
+                if Result > 1 then Exit;
+            end;
+        end;
+    end;
+
+begin
+    Result := (value <> '') and (units > 0) and (splits(1, units) = 1);
 end;
 
 function nc_is_canonical_pinyin_syllable(const value: string): Boolean;
