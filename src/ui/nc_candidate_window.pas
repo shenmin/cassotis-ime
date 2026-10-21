@@ -91,6 +91,12 @@ type
         m_one_key_completion_text: string;
         m_one_key_completion_source: TncOneKeyCompletionSource;
         m_one_key_completion_key: TncOneKeyCompletionKey;
+        // Debug mode: the text before the input that ranks the candidates
+        // (set by the host; the settings preview has none).
+        m_debug_context_set: Boolean;
+        m_debug_context_text: string;
+        m_debug_context_source: TncLeftContextSource;
+        m_debug_context_reported: Boolean;
         m_preedit_rect: TRect;
         m_page_rect: TRect;
         m_list_padding: Integer;
@@ -130,6 +136,7 @@ type
         function hit_test_remove_candidate_index(const point: TPoint): Integer;
         procedure recompute_remove_button_rects;
         procedure draw_remove_button(const bounds: TRect; const selected: Boolean);
+        procedure draw_debug_context(const bounds: TRect);
         procedure send_prepared_selection_key;
         function format_page_text(const page_index: Integer; const page_count: Integer): string;
         procedure update_size;
@@ -160,6 +167,10 @@ type
             const quick_input_active: Boolean = False;
             const selection_keys: string = '123456789';
             const raw_input_text: string = ''; const raw_input_selected: Boolean = False);
+        // Debug mode shows it in the completion row in place of the brand,
+        // within the row's width: the window keeps its size.
+        procedure set_debug_context(const text: string; const source: TncLeftContextSource;
+            const document_reported: Boolean);
         function candidate_selection_label(const candidate_index: Integer): string;
         procedure show_at(const x: Integer; const y: Integer;
             const prefer_above: Boolean = False; const clearance: Integer = 0);
@@ -202,6 +213,17 @@ const
     c_candidate_brand_icon_size = 18;
     c_candidate_brand_icon_gap = 6;
     c_candidate_brand_resource_name = 'YANQUAN_MARK_PNG';
+    // The debug display's labels: 文档 (the text before the caret that the
+    // application reports), 上屏 (text this session committed), 已选 (a prefix
+    // of this input already chosen), 上文为空 (the application reports nothing
+    // before the caret in this sentence), 未读到上文 (nothing reported).
+    c_debug_context_document = WideChar($6587) + WideChar($6863);
+    c_debug_context_session = WideChar($4E0A) + WideChar($5C4F);
+    c_debug_context_segment = WideChar($5DF2) + WideChar($9009);
+    c_debug_context_empty = WideChar($4E0A) + WideChar($6587) + WideChar($4E3A) + WideChar($7A7A);
+    c_debug_context_unread = WideChar($672A) + WideChar($8BFB) + WideChar($5230) +
+        WideChar($4E0A) + WideChar($6587);
+    c_debug_context_ellipsis = WideChar($2026);
 
 function font_family_available(const font_name: string): Boolean;
 begin
@@ -798,6 +820,78 @@ begin
         m_remove_button_rects[i] := Rect(button_left, button_top, button_left + m_remove_button_size,
             button_top + m_remove_button_size);
     end;
+end;
+
+procedure TncCandidateWindow.draw_debug_context(const bounds: TRect);
+var
+    label_text: string;
+    body: string;
+    shown: string;
+    available: Integer;
+    space_width: Integer;
+    start: Integer;
+    i: Integer;
+    text_rect: TRect;
+begin
+    case m_debug_context_source of
+        lcs_segment: label_text := c_debug_context_segment;
+        lcs_document: label_text := c_debug_context_document;
+        lcs_session: label_text := c_debug_context_session;
+    else
+        if m_debug_context_reported then
+            label_text := c_debug_context_empty
+        else
+            label_text := c_debug_context_unread;
+    end;
+    body := m_debug_context_text;
+    for i := 1 to Length(body) do
+        if body[i] < ' ' then
+            body[i] := ' ';
+    Canvas.Font.Assign(m_weight_font);
+    space_width := Canvas.TextWidth(' ');
+    available := bounds.Width - Canvas.TextWidth(label_text) - space_width;
+    if available < 0 then
+        Exit;
+    // The end of the text is next to the caret: what does not fit goes from
+    // its beginning.
+    shown := body;
+    start := 1;
+    while (shown <> '') and (Canvas.TextWidth(shown) > available) do
+    begin
+        Inc(start);
+        while (start <= Length(body)) and (Ord(body[start]) >= $DC00) and (Ord(body[start]) <= $DFFF) do
+            Inc(start);
+        if start > Length(body) then
+            shown := ''
+        else
+            shown := c_debug_context_ellipsis + Copy(body, start, MaxInt);
+    end;
+    text_rect := bounds;
+    if shown <> '' then
+    begin
+        Canvas.Font.Color := m_color_theme.weight_text_color;
+        draw_canvas_text(Canvas, shown, text_rect,
+            DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+        text_rect.Right := bounds.Right - Canvas.TextWidth(shown) - space_width;
+    end;
+    Canvas.Font.Color := m_color_theme.muted_text_color;
+    draw_canvas_text(Canvas, label_text, text_rect,
+        DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+end;
+
+procedure TncCandidateWindow.set_debug_context(const text: string;
+    const source: TncLeftContextSource; const document_reported: Boolean);
+begin
+    if m_debug_context_set and (m_debug_context_text = text) and
+        (m_debug_context_source = source) and
+        (m_debug_context_reported = document_reported) then
+        Exit;
+    m_debug_context_set := True;
+    m_debug_context_text := text;
+    m_debug_context_source := source;
+    m_debug_context_reported := document_reported;
+    if Visible and m_debug_mode then
+        Invalidate;
 end;
 
 procedure TncCandidateWindow.draw_remove_button(const bounds: TRect; const selected: Boolean);
@@ -1715,6 +1809,9 @@ var
     brand_icon_width: Integer;
     brand_icon_gap: Integer;
     brand_graphics: TGPGraphics;
+    show_debug_context: Boolean;
+    context_left: Integer;
+    context_rect: TRect;
 begin
     inherited;
     Canvas.Brush.Style := bsSolid;
@@ -1776,14 +1873,20 @@ begin
         brand_rect.Left := brand_rect.Right - brand_icon_width -
             brand_icon_gap - brand_text_width;
         brand_gap := nc_scale_for_dpi(12, m_current_dpi);
+        show_debug_context := m_debug_mode and m_debug_context_set;
+        context_left := completion_rect.Left + m_list_padding;
 
-        if m_one_key_completion_text <> '' then
+        if (m_one_key_completion_text <> '') or show_debug_context then
         begin
             Canvas.Pen.Color := m_border_color;
             Canvas.MoveTo(completion_rect.Left + m_list_padding,
                 completion_rect.Top);
             Canvas.LineTo(completion_rect.Right - m_list_padding,
                 completion_rect.Top);
+        end;
+
+        if m_one_key_completion_text <> '' then
+        begin
 
             completion_key_text := 'Tab';
             if m_one_key_completion_key = ock_backtick then
@@ -1811,43 +1914,58 @@ begin
                 completion_text_rect,
                 DT_LEFT or DT_VCENTER or DT_SINGLELINE or
                 DT_END_ELLIPSIS or DT_NOPREFIX);
+            context_left := completion_text_rect.Left + brand_gap +
+                Min(Canvas.TextWidth(m_one_key_completion_text), completion_text_rect.Width);
         end;
 
-        brand_text_rect := brand_rect;
-        if brand_icon_width > 0 then
+        if show_debug_context then
         begin
-            brand_icon_rect := brand_rect;
-            brand_icon_rect.Right := brand_icon_rect.Left + brand_icon_width;
-            brand_icon_rect.Top := completion_rect.Top +
-                ((completion_rect.Height - m_brand_icon_size) div 2);
-            brand_icon_rect.Bottom := brand_icon_rect.Top + m_brand_icon_size;
-            if m_brand_bitmap <> nil then
+            // The text before the input in place of the brand, right-aligned
+            // in the room the completion leaves; cut at its beginning, so
+            // that the end next to the caret stays.
+            context_rect := completion_rect;
+            context_rect.Left := context_left;
+            context_rect.Right := completion_rect.Right - m_list_padding - 1;
+            draw_debug_context(context_rect);
+        end
+        else
+        begin
+            brand_text_rect := brand_rect;
+            if brand_icon_width > 0 then
             begin
-                brand_graphics := TGPGraphics.Create(Canvas.Handle);
-                try
-                    brand_graphics.SetCompositingQuality(
-                        CompositingQualityHighQuality);
-                    brand_graphics.DrawImage(m_brand_bitmap,
-                        brand_icon_rect.Left, brand_icon_rect.Top);
-                finally
-                    brand_graphics.Free;
+                brand_icon_rect := brand_rect;
+                brand_icon_rect.Right := brand_icon_rect.Left + brand_icon_width;
+                brand_icon_rect.Top := completion_rect.Top +
+                    ((completion_rect.Height - m_brand_icon_size) div 2);
+                brand_icon_rect.Bottom := brand_icon_rect.Top + m_brand_icon_size;
+                if m_brand_bitmap <> nil then
+                begin
+                    brand_graphics := TGPGraphics.Create(Canvas.Handle);
+                    try
+                        brand_graphics.SetCompositingQuality(
+                            CompositingQualityHighQuality);
+                        brand_graphics.DrawImage(m_brand_bitmap,
+                            brand_icon_rect.Left, brand_icon_rect.Top);
+                    finally
+                        brand_graphics.Free;
+                    end;
+                end
+                else
+                begin
+                    DrawIconEx(Canvas.Handle, brand_icon_rect.Left,
+                        brand_icon_rect.Top, m_brand_icon.Handle,
+                        brand_icon_rect.Width, brand_icon_rect.Height, 0, 0,
+                        DI_NORMAL);
                 end;
-            end
-            else
-            begin
-                DrawIconEx(Canvas.Handle, brand_icon_rect.Left,
-                    brand_icon_rect.Top, m_brand_icon.Handle,
-                    brand_icon_rect.Width, brand_icon_rect.Height, 0, 0,
-                    DI_NORMAL);
+                brand_text_rect.Left := brand_icon_rect.Right + brand_icon_gap;
             end;
-            brand_text_rect.Left := brand_icon_rect.Right + brand_icon_gap;
-        end;
-        if m_brand_text <> '' then
-        begin
-            Canvas.Font.Assign(m_brand_font);
-            draw_outlined_canvas_text(Canvas, m_brand_text, brand_text_rect,
-                DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX,
-                candidate_brand_outline_color(Color), m_brand_font.Color);
+            if m_brand_text <> '' then
+            begin
+                Canvas.Font.Assign(m_brand_font);
+                draw_outlined_canvas_text(Canvas, m_brand_text, brand_text_rect,
+                    DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX,
+                    candidate_brand_outline_color(Color), m_brand_font.Color);
+            end;
         end;
     end;
 

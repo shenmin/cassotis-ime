@@ -57,6 +57,17 @@ type
 
     TncCandidateList = array of TncCandidate;
 
+    // Where the text before the input that ranks the candidates comes from
+    // (shown in debug mode): a prefix of this input already chosen, the text
+    // before the caret that the application reports, or text this session
+    // committed.
+    TncLeftContextSource = (
+        lcs_none,
+        lcs_segment,
+        lcs_document,
+        lcs_session
+    );
+
     TncOneKeyCompletionSource = (
         okcs_none,
         okcs_user_exact,

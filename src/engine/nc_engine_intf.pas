@@ -1268,6 +1268,11 @@ type
             const document_key: string = '';
             const document_snapshot: string = '');
         procedure set_punctuation_preceding_char(const value: Char);
+        // The text before the input that the shared LM ranks the candidates
+        // with, where it comes from, and whether the host reports the text
+        // before the caret (for the debug display of the candidate window).
+        function get_ranking_left_context(out source: TncLeftContextSource;
+            out document_reported: Boolean): string;
         function debug_query_one_key_completion(const query_text: string;
             const left_context: string): TncOneKeyCompletion;
         function debug_query_one_key_completion_candidates(
@@ -5942,6 +5947,33 @@ procedure TncEngine.set_punctuation_preceding_char(const value: Char);
 begin
     // Per-key hint from TSF, never inferred from document or committed text.
     m_punctuation_preceding_char := value;
+end;
+
+function TncEngine.get_ranking_left_context(out source: TncLeftContextSource;
+    out document_reported: Boolean): string;
+begin
+    // The order every LM call of the ranking takes its context in.
+    document_reported := m_external_context_reported;
+    if m_segment_left_context <> '' then
+    begin
+        source := lcs_segment;
+        Result := m_segment_left_context;
+    end
+    else if m_external_left_context <> '' then
+    begin
+        source := lcs_document;
+        Result := m_external_left_context;
+    end
+    else if m_left_context <> '' then
+    begin
+        source := lcs_session;
+        Result := m_left_context;
+    end
+    else
+    begin
+        source := lcs_none;
+        Result := '';
+    end;
 end;
 
 procedure TncEngine.set_external_left_context(const left_context: string;

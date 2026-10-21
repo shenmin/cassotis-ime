@@ -75,7 +75,12 @@ type
         m_last_candidate_score: Integer;
         m_last_candidate_apply_tick: DWORD;
         m_last_candidate_debug_mode: Boolean;
+        // The text before the input that ranked m_candidates (debug mode).
+        m_debug_context: string;
+        m_debug_context_source: TncLeftContextSource;
+        m_debug_context_reported: Boolean;
         procedure ensure_candidate_window;
+        procedure update_window_debug_context;
         procedure handle_remove_user_candidate(const candidate_index: Integer);
         function handle_prepare_candidate(const page_index, candidate_index: Integer;
             const generation: UInt64): TncCandidateClickResult;
@@ -842,6 +847,15 @@ begin
     end;
 end;
 
+procedure TncHostSession.update_window_debug_context;
+begin
+    // Debug mode shows the text before the input that ranked the candidates.
+    if (m_engine = nil) or (m_candidate_window = nil) or (not m_engine.config.debug_mode) then
+        Exit;
+    m_candidate_window.set_debug_context(m_debug_context, m_debug_context_source,
+        m_debug_context_reported);
+end;
+
 procedure TncHostSession.handle_remove_user_candidate(const candidate_index: Integer);
 begin
     if m_owner <> nil then
@@ -1062,6 +1076,10 @@ begin
     m_candidate_selection_keys := m_engine.candidate_selection_keys;
     m_raw_input_candidate := m_engine.raw_input_candidate;
     m_raw_input_selected := m_engine.raw_input_selected;
+    // The text before the input that ranked these candidates, for the debug
+    // display: taken here, with them, not from the engine on the UI thread.
+    m_debug_context := m_engine.get_ranking_left_context(m_debug_context_source,
+        m_debug_context_reported);
     refresh_candidate_pages(input_changed);
     // Expanding at the first row does not change the page or selected item.
     selection_changed := selection_changed or
@@ -1168,6 +1186,7 @@ begin
     end;
 
     ensure_candidate_window;
+    update_window_debug_context;
     if m_candidate_dirty or (m_last_candidate_debug_mode <> m_engine.config.debug_mode) then
     begin
         m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index,
@@ -1220,6 +1239,7 @@ begin
     begin
         m_candidate_window.prepare_for_anchor(caret);
     end;
+    update_window_debug_context;
     if m_candidate_dirty or (m_last_candidate_debug_mode <> m_engine.config.debug_mode) then
     begin
         m_candidate_window.update_candidates(m_candidates, m_page_index, m_page_count, m_selected_index,
