@@ -138413,8 +138413,8 @@ const
     c_swap_margin = 1.0;
     c_swap_deficit = 2.0;
     // A further phrase whose word of one character lies this far below the
-    // syllable's best character after the words before it (候选例: after 候选
-    // the LM writes 里 for li) is not shown.
+    // syllable's best character after the words before it (候选例: after
+    // 这个词没有出现在候选 the LM puts 例 3.6 nats below 理) is not shown.
     c_max_char_deficit = 3.0;
     // The texts of one call.
     c_max_texts = 256;
