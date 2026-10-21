@@ -32,6 +32,20 @@ type
             out next_logp: TArray<Single>): Integer;
     end;
 
+    { Optional: score_texts plus, for each index in next_texts, the
+      log-probabilities of asked characters after that text, wherever they
+      rank. query_chars holds query_count entries per index ('' for none);
+      query_logp gets one per entry, c_char_lm_no_logp where the model has no
+      answer (an empty entry, a character outside its vocabulary, a text that
+      was not scored). }
+    IncCharLmQuery = interface
+        ['{2C7E5A93-4D18-4B6F-8E3A-91F0B6D47C25}']
+        function score_texts_query(const context: string; const texts: TArray<string>;
+            const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+            const query_chars: TArray<string>; const query_count: Integer;
+            out logp: TArray<Single>; out query_logp: TArray<Single>): Integer;
+    end;
+
     { Optional: the greedy continuation of text after context, at most
       max_chars Han characters (one per element of chars), each with its
       log-probability under the full distribution. Returns how many characters
@@ -112,6 +126,8 @@ type
     end;
 
 const
+    // IncCharLmQuery's value where the model has no answer.
+    c_char_lm_no_logp = -1e30;
     { Long-sentence choice over the final pool. The pool limit and the node
       budget were widened from 20 and 110 when the second-slot stages that
       lifted deep candidates into the scored pool were deleted; the rank

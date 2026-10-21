@@ -138401,6 +138401,23 @@ const
     // those between 2 and 3 nats 4 in 107.
     c_shown_phrases = 3;
     c_shown_margin = 2.0;
+    // A further phrase that is a phrase shown before it with one character
+    // swapped for another of its syllable, where that character is a word of
+    // its own more than c_swap_deficit below the syllable's best character
+    // (基础涩 behind 基础色: 涩 2.9 nats below 色), is shown only this close
+    // behind it: without a context the LM tells such homophones apart poorly.
+    // A swap alone says nothing: on the development clauses one in four of
+    // the swaps beyond 1 nat was the clause (哪里的话 behind 那里的话, 品牌内裤
+    // behind 品牌内库), and with them the first three lost 1 clause in 100;
+    // of those with a deficit above 2 none was.
+    c_swap_margin = 1.0;
+    c_swap_deficit = 2.0;
+    // A further phrase whose word of one character lies this far below the
+    // syllable's best character after the words before it (候选例: after 候选
+    // the LM writes 里 for li) is not shown.
+    c_max_char_deficit = 3.0;
+    // The texts of one call.
+    c_max_texts = 256;
     // With nothing before the input (no context, or one that ended with the
     // sentence before it) the shared LM reads a draft as the beginning of a
     // text, where it likes literary readings: "she zhi zhong" as 射之中
@@ -138425,6 +138442,21 @@ var
     words: TArray<TArray<TArray<string>>>;
     word_weights: TArray<TArray<TArray<Integer>>>;
     strong_chars, draft_readings: TArray<Integer>;
+    draft_parts: TArray<TArray<Integer>>;
+    deficits: TArray<Single>;
+    // For the debug text: the character the LM preferred at a draft's weakest boundary.
+    deficit_chars: TArray<string>;
+    vouched: TArray<Boolean>;
+    part_texts: TArray<string>;
+    part_index: TDictionary<string, Integer>;
+    prefix: string;
+    evidence: TncPairPathEvidenceList;
+    query_model: IncCharLmQuery;
+    query_chars, asked: TArray<string>;
+    query_logp: TArray<Single>;
+    next_indices: TArray<Integer>;
+    next_base, slot, saved_reading: Integer;
+    boundary_key: string;
     looked_up: TArray<TArray<Boolean>>;
     readings: TArray<TArray<string>>;
     reading_words: TArray<TArray<TArray<TArray<string>>>>;
@@ -138484,8 +138516,9 @@ var
     end;
 
     // A draft with the characters of its words of the highest weight (the
-    // most such words when cuts give the same text).
-    procedure add_draft(const text: string; const strong_count: Integer);
+    // most such words when cuts give the same text), and the cut it came from.
+    procedure add_draft(const text: string; const strong_count: Integer;
+        const parts: TArray<Integer> = nil);
     var k: Integer;
     begin
         if (Length(text) <> units) or (Length(drafts) >= c_max_drafts) then Exit;
@@ -138493,6 +138526,8 @@ var
             if drafts[k] = text then
             begin
                 strong_chars[k] := Max(strong_chars[k], strong_count);
+                if (Length(draft_parts[k]) = 0) and (Length(parts) > 1) then
+                    draft_parts[k] := parts;
                 Exit;
             end;
         // A word stored under a flattened key can read differently from the
@@ -138502,6 +138537,8 @@ var
         drafts := drafts + [text];
         strong_chars := strong_chars + [strong_count];
         draft_readings := draft_readings + [reading];
+        if Length(parts) > 1 then draft_parts := draft_parts + [parts]
+        else draft_parts := draft_parts + [nil];
     end;
 
     // The other ways of reading the input as the same number of syllables, in
@@ -138666,6 +138703,107 @@ var
                 Inc(strong_count, parts[k]);
             Inc(position, parts[k]);
         end;
+    end;
+
+    // A draft's words by its cut (none when the cut is not known).
+    function draft_words(const index: Integer): TArray<string>;
+    var k, position: Integer;
+    begin
+        Result := nil;
+        position := 1;
+        for k := 0 to High(draft_parts[index]) do
+        begin
+            Result := Result + [Copy(drafts[index], position, draft_parts[index][k])];
+            Inc(position, draft_parts[index][k]);
+        end;
+    end;
+
+    // How far a draft's words of one character lie below what the LM would
+    // write for their syllables: at each boundary before such a word, the
+    // LM's best character of the syllable's words of one character after the
+    // words before, less the word's own; the largest such gap (0 for a draft
+    // without a known cut). 基础涩: after 基础, 色 is 2.9 nats before 涩.
+    function boundary_deficit(const index: Integer): Single;
+    var
+        words_local: TArray<string>;
+        k, r, at: Integer;
+        prefix_local, best_char: string;
+        own, best: Single;
+    begin
+        Result := 0;
+        if Length(query_logp) = 0 then Exit;
+        words_local := draft_words(index);
+        prefix_local := '';
+        for k := 0 to High(words_local) - 1 do
+        begin
+            prefix_local := prefix_local + words_local[k];
+            if (Length(words_local[k + 1]) <> 1) or
+                not part_index.TryGetValue(IntToStr(draft_readings[index]) + #1 + prefix_local, at) then
+                Continue;
+            own := c_char_lm_no_logp;
+            best := c_char_lm_no_logp;
+            for r := at * c_single_words to (at + 1) * c_single_words - 1 do
+            begin
+                if query_logp[r] <= c_char_lm_no_logp / 2 then Continue;
+                if query_chars[r] = words_local[k + 1] then own := query_logp[r];
+                if query_logp[r] > best then
+                begin
+                    best := query_logp[r];
+                    best_char := query_chars[r];
+                end;
+            end;
+            if (own > c_char_lm_no_logp / 2) and (best - own > Result) then
+            begin
+                Result := best - own;
+                deficit_chars[index] := best_char;
+            end;
+        end;
+    end;
+
+    // Whether a text is a phrase already shown with one character swapped.
+    function swaps_one_shown(const text: string): Boolean;
+    var k, i, differ: Integer;
+    begin
+        for k := 0 to High(shown) do
+            if Length(shown[k]) = Length(text) then
+            begin
+                differ := 0;
+                for i := 1 to Length(text) do
+                    if shown[k][i] <> text[i] then Inc(differ);
+                if differ = 1 then Exit(True);
+            end;
+        Result := False;
+    end;
+
+    // A draft one of whose words does not go with the words before it is no
+    // further phrase to show, unless the lexicon's corpus transitions hold
+    // its path for this input.
+    function implausible(const index: Integer): Boolean;
+    begin
+        Result := (scored > 0) and (index < Length(deficits)) and (not vouched[index]) and
+            (deficits[index] > c_max_char_deficit);
+    end;
+
+    // The deficit of a draft's text as implausible reads it (0 for a text
+    // that is no draft or whose path the transitions hold).
+    function text_deficit(const text: string): Single;
+    var k: Integer;
+    begin
+        Result := 0;
+        if scored > 0 then
+            for k := 0 to Min(High(drafts), High(deficits)) do
+                if (drafts[k] = text) and not vouched[k] then
+                    Exit(deficits[k]);
+    end;
+
+    // A further phrase within margin of the first: one that swaps a single
+    // character of a phrase shown before it for a doubtful word only within
+    // c_swap_margin.
+    function may_follow(const text: string; const margin: Single): Boolean;
+    begin
+        Result := (margin <= c_shown_margin) and
+            ((margin <= c_swap_margin) or (text_deficit(text) <= c_swap_deficit) or
+            not swaps_one_shown(text));
     end;
 
     procedure show(const text, pinyin: string);
@@ -138853,7 +138991,7 @@ begin
             for cut_index := 0 to High(cuts) do
             begin
                 draft := cut_text(cuts[cut_index], strong);
-                add_draft(draft, strong);
+                add_draft(draft, strong, cuts[cut_index]);
             end;
         end;
         // A two-word cut also with the next entries of its words, the
@@ -138867,7 +139005,7 @@ begin
                         for other := 0 to swap do
                         begin
                             draft := cut_text(cuts[cut_index], strong, other, swap - other);
-                            add_draft(draft, strong);
+                            add_draft(draft, strong, cuts[cut_index]);
                         end;
             end;
         if Length(drafts) = 0 then
@@ -138905,11 +139043,74 @@ begin
                 ended[index] := drafts[index] + c_clause_end;
                 ended[Length(drafts) + index] := drafts[index];
             end;
+            // And, where the model reads the next characters' scores, the
+            // words before each word of one character in a cut, with the
+            // syllable's characters: whether the word is what the LM would
+            // write for that syllable there.
+            if not Supports(m_char_lm, IncCharLmQuery, query_model) then query_model := nil;
+            part_index := TDictionary<string, Integer>.Create;
             try
-                scored := m_char_lm.score_texts(lm_context, ended, Length(ended),
-                    128, scores);
-            except
-                scored := 0;
+                saved_reading := reading;
+                next_base := Length(ended);
+                if query_model <> nil then
+                for index := 0 to High(drafts) do
+                begin
+                    part_texts := draft_words(index);
+                    if Length(part_texts) < 2 then Continue;
+                    use_reading(draft_readings[index]);
+                    prefix := '';
+                    for other := 0 to High(part_texts) - 1 do
+                    begin
+                        prefix := prefix + part_texts[other];
+                        boundary_key := IntToStr(reading) + #1 + prefix;
+                        if (Length(part_texts[other + 1]) <> 1) or
+                            part_index.ContainsKey(boundary_key) then Continue;
+                        slot := next_base;
+                        while (slot < Length(ended)) and (ended[slot] <> prefix) do Inc(slot);
+                        if slot = Length(ended) then
+                        begin
+                            if Length(ended) >= c_max_texts then Continue;
+                            ended := ended + [prefix];
+                        end;
+                        part_index.Add(boundary_key, Length(next_indices));
+                        next_indices := next_indices + [slot];
+                        asked := nil;
+                        for swap := 0 to c_single_words - 1 do
+                            asked := asked + [nth_word(Length(prefix), 1, swap)];
+                        query_chars := query_chars + asked;
+                    end;
+                end;
+                use_reading(saved_reading);
+                try
+                    if (Length(next_indices) > 0) and (query_model <> nil) then
+                        scored := query_model.score_texts_query(lm_context, ended, Length(ended), 128,
+                            next_indices, query_chars, c_single_words, scores, query_logp)
+                    else
+                    begin
+                        query_logp := nil;
+                        scored := m_char_lm.score_texts(lm_context, ended, Length(ended), 128, scores);
+                    end;
+                except
+                    scored := 0;
+                end;
+                SetLength(deficits, Length(drafts));
+                SetLength(deficit_chars, Length(drafts));
+                SetLength(vouched, Length(drafts));
+                if (scored = Length(ended)) and (Length(scores) = Length(ended)) then
+                begin
+                    for index := 0 to High(drafts) do
+                        deficits[index] := boundary_deficit(index);
+                    if m_dictionary.get_exact_pair_path_evidence(query, evidence) then
+                        for other := 0 to High(evidence) do
+                        begin
+                            prefix := StringReplace(StringReplace(evidence[other].encoded_path, #3, '',
+                                [rfReplaceAll]), '|', '', [rfReplaceAll]);
+                            for index := 0 to High(drafts) do
+                                if drafts[index] = prefix then vouched[index] := True;
+                        end;
+                end;
+            finally
+                FreeAndNil(part_index);
             end;
             if (scored = Length(ended)) and (Length(scores) = Length(ended)) then
             begin
@@ -138968,8 +139169,12 @@ begin
             alternatives := '';
             if scored > 0 then
                 for index := 1 to Min(5, High(order)) do
-                    alternatives := alternatives + Format('%s:%.2f,',
-                        [drafts[order[index]], scores[order[0]] - scores[order[index]]]);
+                    alternatives := alternatives + Format('%s:%.2f/%.2f%s,',
+                        [drafts[order[index]], scores[order[0]] - scores[order[index]],
+                        deficits[order[index]], deficit_chars[order[index]]]);
+            if scored > 0 then
+                alternatives := Format('%s/%.2f%s;', [drafts[order[0]], deficits[order[0]],
+                    deficit_chars[order[0]]]) + alternatives;
             m_short_phrase_debug := Format(
                 '[sphrase rc=%d gain=%.2f n=%d lm=%d top=%d lead=%.2f cgap=%.2f alts=%s draft=%s text=%s reading=%d/%d]',
                 [rc, gain, Length(drafts), scored, Ord(top_complete), lead, corrected_gap,
@@ -138991,18 +139196,19 @@ begin
         begin
             show(corrected, aligned);
             behind := gain - Max(0, corrected_gap);
-            if behind <= c_shown_margin then show(draft, aligned);
+            if may_follow(draft, behind) then show(draft, aligned);
         end
         else
         begin
             show(draft, aligned);
             behind := 0;
             if (rc = 1) and (Length(corrected) = units) and
-                (Max(0, corrected_gap) - gain <= c_shown_margin) then show(corrected, aligned);
+                may_follow(corrected, Max(0, corrected_gap) - gain) then show(corrected, aligned);
         end;
         if scored > 0 then
             for index := 1 to High(order) do
-                if behind + scores[order[0]] - scores[order[index]] <= c_shown_margin then
+                if may_follow(drafts[order[index]], behind + scores[order[0]] - scores[order[index]]) and
+                    not implausible(order[index]) then
                     show(drafts[order[index]], reading_pinyin(draft_readings[order[index]]));
         if Length(shown) = 0 then Exit;
         // A Tab continuation goes on from the input as the beginning of a

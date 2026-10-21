@@ -40,7 +40,8 @@ implementation
 {$I nc_traditional_chars.inc}
 
 type
-    TncTraditionalCharLm = class(TInterfacedObject, IncCharLm, IncCharLmNext, IncCharLmContinue)
+    TncTraditionalCharLm = class(TInterfacedObject, IncCharLm, IncCharLmNext, IncCharLmQuery,
+        IncCharLmContinue)
     private
         m_model: IncCharLm;
     public
@@ -52,6 +53,10 @@ type
             const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
             const top_k: Integer; out logp: TArray<Single>; out next_chars: TArray<string>;
             out next_logp: TArray<Single>): Integer;
+        function score_texts_query(const context: string; const texts: TArray<string>;
+            const min_count, max_nodes: Integer; const next_texts: TArray<Integer>;
+            const query_chars: TArray<string>; const query_count: Integer;
+            out logp: TArray<Single>; out query_logp: TArray<Single>): Integer;
         function continue_text(const context, text: string; const max_chars: Integer;
             out chars: TArray<string>; out logp: TArray<Single>): Integer;
     end;
@@ -197,6 +202,22 @@ begin
         next_logp);
     for idx := 0 to High(next_chars) do
         next_chars[idx] := written_to_traditional(next_chars[idx]);
+end;
+
+function TncTraditionalCharLm.score_texts_query(const context: string;
+    const texts: TArray<string>; const min_count, max_nodes: Integer;
+    const next_texts: TArray<Integer>; const query_chars: TArray<string>;
+    const query_count: Integer; out logp: TArray<Single>; out query_logp: TArray<Single>): Integer;
+var
+    query_model: IncCharLmQuery;
+begin
+    SetLength(logp, 0);
+    SetLength(query_logp, 0);
+    if not Supports(m_model, IncCharLmQuery, query_model) then
+        Exit(-1);
+    Result := query_model.score_texts_query(nc_traditional_to_simplified(context),
+        convert_texts(texts), min_count, max_nodes, next_texts, convert_texts(query_chars),
+        query_count, logp, query_logp);
 end;
 
 function TncTraditionalCharLm.continue_text(const context, text: string; const max_chars: Integer;
