@@ -915,9 +915,17 @@ type
         m_last_committed_text: string;
         m_last_committed_pinyin: string;
         m_confirmed_segments: TList<TncConfirmedSegment>;
-        // The fewest key groups the input reads as (is_predictive_longer_candidate).
+        // For is_predictive_longer_candidate, of m_longer_check_query and the
+        // dictionary of the time: the fewest key groups the input reads as,
+        // the groups that begin at each key (by length) and whether a
+        // character may read one as the beginning of a longer syllable, and
+        // the texts judged so far. The page assembly asks about every
+        // candidate two or three times.
         m_longer_check_query: string;
         m_longer_check_min_groups: Integer;
+        m_longer_check_groups: TArray<TArray<string>>;
+        m_longer_check_initials: TArray<TArray<Boolean>>;
+        m_longer_check_verdicts: TDictionary<string, Boolean>;
         procedure refresh_raw_input_candidate;
         procedure set_raw_input_selected_by_user(const selected: Boolean);
         procedure note_raw_input_choice;
@@ -2029,6 +2037,7 @@ end;
 destructor TncEngine.Destroy;
 begin
     m_custom_phrases.Free;
+    m_longer_check_verdicts.Free;
     m_long_local_repair := nil;
     m_long_local_repair_model := nil;
     if m_document_context_model <> nil then
@@ -5394,6 +5403,8 @@ begin
     end;
 
     m_dictionary := dictionary;
+    // The longer-word verdicts read the dictionary's character readings.
+    m_longer_check_query := '';
     if m_dictionary is TncSqliteDictionary then
         TncSqliteDictionary(m_dictionary).set_user_dictionary_variant(
             m_config.dictionary_variant);
@@ -137310,15 +137321,17 @@ function TncEngine.is_predictive_longer_candidate(const candidate: TncCandidate;
 const
     c_longest_group = 6;
 var
-    text: string;
-    units, letters, idx, start, stop: Integer;
+    text, group, reading: string;
+    units, letters, idx, start, stop, width: Integer;
     reach: TArray<TArray<Boolean>>;
+    readings: TArray<string>;
+    reachable, may_begin: Boolean;
 
     function is_group(const group: string; const last: Boolean): Boolean;
     begin
         Result := ((group <> 'r') and nc_is_canonical_pinyin_syllable(group)) or
             nc_is_pinyin_initial(group) or
-            (last and (Length(nc_canonical_pinyin_syllables_starting_with(group)) > 0));
+            (last and nc_canonical_pinyin_syllable_begins_with(group));
     end;
 
     function min_groups: Integer;
@@ -137338,19 +137351,6 @@ var
                     best[to_idx] := best[from_idx] + 1;
         end;
         Result := best[letters];
-    end;
-
-    function reads_group(const ch: Char; const group: string; const last: Boolean): Boolean;
-    var
-        reading: string;
-        may_begin: Boolean;
-    begin
-        may_begin := last or nc_is_pinyin_initial(group);
-        for reading in m_dictionary.get_single_char_readings(ch) do
-            if ((reading = group) and (group <> 'r')) or
-                (may_begin and (reading <> group) and reading.StartsWith(group)) then
-                Exit(True);
-        Result := False;
     end;
 begin
     Result := False;
@@ -137373,27 +137373,74 @@ begin
     begin
         m_longer_check_query := query;
         m_longer_check_min_groups := min_groups;
+        SetLength(m_longer_check_groups, letters);
+        SetLength(m_longer_check_initials, letters);
+        for start := 0 to letters - 1 do
+        begin
+            width := Min(c_longest_group, letters - start);
+            SetLength(m_longer_check_groups[start], width);
+            SetLength(m_longer_check_initials[start], width);
+            for stop := 1 to width do
+            begin
+                m_longer_check_groups[start][stop - 1] := Copy(query, start + 1, stop);
+                m_longer_check_initials[start][stop - 1] :=
+                    nc_is_pinyin_initial(m_longer_check_groups[start][stop - 1]);
+            end;
+        end;
+        if m_longer_check_verdicts = nil then
+            m_longer_check_verdicts := TDictionary<string, Boolean>.Create
+        else
+            m_longer_check_verdicts.Clear;
     end;
     // Its first units - 1 characters must be able to read the keys at all.
     if (m_longer_check_min_groups = MaxInt) or (units - 1 < m_longer_check_min_groups) then
         Exit;
+    if m_longer_check_verdicts.TryGetValue(text, Result) then
+        Exit;
 
+    // reach[idx][stop]: the first idx characters read the first stop keys,
+    // each character a group (as typed, or at the end or as an initial the
+    // beginning of a longer syllable it reads).
     SetLength(reach, units + 1, letters + 1);
     reach[0][0] := True;
     for idx := 0 to units - 1 do
+    begin
+        reachable := False;
+        for start := 0 to letters - 1 do
+            if reach[idx][start] then
+            begin
+                reachable := True;
+                Break;
+            end;
+        if not reachable then
+            Break;
+        readings := m_dictionary.get_single_char_readings(text[idx + 1]);
         for start := 0 to letters - 1 do
         begin
             if not reach[idx][start] then Continue;
             for stop := start + 1 to Min(letters, start + c_longest_group) do
-                if (not reach[idx + 1][stop]) and reads_group(text[idx + 1],
-                    Copy(query, start + 1, stop - start), stop = letters) then
-                    reach[idx + 1][stop] := True;
+            begin
+                if reach[idx + 1][stop] then Continue;
+                group := m_longer_check_groups[start][stop - start - 1];
+                may_begin := (stop = letters) or m_longer_check_initials[start][stop - start - 1];
+                for reading in readings do
+                    if ((reading = group) and (group <> 'r')) or
+                        (may_begin and (reading <> group) and reading.StartsWith(group)) then
+                    begin
+                        reach[idx + 1][stop] := True;
+                        Break;
+                    end;
+            end;
         end;
-    if reach[units][letters] then
-        Exit;
-    for idx := 1 to units - 1 do
-        if reach[idx][letters] then
-            Exit(True);
+    end;
+    if not reach[units][letters] then
+        for idx := 1 to units - 1 do
+            if reach[idx][letters] then
+            begin
+                Result := True;
+                Break;
+            end;
+    m_longer_check_verdicts.Add(text, Result);
 end;
 
 // A completion whose reading takes the keys only by taking a complete
@@ -185259,7 +185306,7 @@ var
         // it on the page (is_predictive_longer_candidate; paging already skips
         // them), and the first page is filled again from the candidates.
         procedure drop_visible_predictive_longer_candidates;
-        var idx, count: Integer; value: TncCandidate; key: string;
+        var idx, count, filled: Integer; value: TncCandidate; key: string;
             pooled, pool_has_longer: Boolean;
             pool: TncCandidateList; sources: TArray<Integer>;
         begin
@@ -185299,6 +185346,9 @@ var
                         emitted_visible_texts.AddOrSetValue(
                             nc_visible_candidate_key(pool[idx], pool[idx].comment), True);
                 end;
+                filled := Length(pool);
+                SetLength(pool, filled + Length(m_long_visible_candidate_pool_cache));
+                SetLength(sources, Length(pool));
                 for idx := 0 to High(m_long_visible_candidate_pool_cache) do
                 begin
                     value := m_long_visible_candidate_pool_cache[idx];
@@ -185306,10 +185356,12 @@ var
                     key := nc_visible_candidate_key(value, value.comment);
                     if emitted_visible_texts.ContainsKey(key) then Continue;
                     emitted_visible_texts.Add(key, True);
-                    pool := pool + [value];
-                    sources := sources +
-                        [m_long_visible_candidate_pool_source_indices_cache[idx]];
+                    pool[filled] := value;
+                    sources[filled] := m_long_visible_candidate_pool_source_indices_cache[idx];
+                    Inc(filled);
                 end;
+                SetLength(pool, filled);
+                SetLength(sources, filled);
                 m_long_visible_candidate_pool_cache := pool;
                 m_long_visible_candidate_pool_source_indices_cache := sources;
                 nc_copy_candidate_page(pool, sources, m_page_index * visible_page_size,

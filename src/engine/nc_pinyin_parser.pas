@@ -29,6 +29,9 @@ function nc_is_pinyin_initial(const value: string): Boolean;
 { The canonical syllables that begin with prefix, all of them for ''
   (the erhua "r" is none). }
 function nc_canonical_pinyin_syllables_starting_with(const prefix: string): TArray<string>;
+{ True when some canonical syllable (not the erhua "r") begins with prefix:
+  nc_canonical_pinyin_syllables_starting_with without the list. }
+function nc_canonical_pinyin_syllable_begins_with(const prefix: string): Boolean;
 { True when compact pinyin parses into exactly `units` canonical syllables:
   the rest of a word after typed syllables that end at a syllable boundary. }
 function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
@@ -176,11 +179,20 @@ var
         Low(c_finals)..High(c_finals)] of Boolean;
 
     g_canonical_syllables: TArray<string>;
+    // nc_is_canonical_pinyin_syllable as a set (with the toneless finals
+    // spelt without an initial, "r" among them), and every beginning of a
+    // canonical syllable: misreads_typed_keys asks about every way of cutting
+    // each one-key completion candidate, and the loops over the tables cost
+    // about 0.2 ms an input of two syllables (the official short set).
+    g_canonical_syllable_set: TDictionary<string, Boolean>;
+    g_canonical_syllable_prefix_set: TDictionary<string, Boolean>;
 
 procedure build_initial_final_compatibility;
 var
     initial_idx: Integer;
     final_idx: Integer;
+    syllable: string;
+    length_idx: Integer;
 begin
     for initial_idx := Low(c_initials) to High(c_initials) do
     begin
@@ -198,6 +210,16 @@ begin
         if c_finals_no_initial[final_idx] <> 'r' then
             g_canonical_syllables := g_canonical_syllables +
                 [c_finals_no_initial[final_idx]];
+    g_canonical_syllable_set := TDictionary<string, Boolean>.Create;
+    g_canonical_syllable_prefix_set := TDictionary<string, Boolean>.Create;
+    for final_idx := Low(c_finals_no_initial) to High(c_finals_no_initial) do
+        g_canonical_syllable_set.AddOrSetValue(c_finals_no_initial[final_idx], True);
+    for syllable in g_canonical_syllables do
+    begin
+        g_canonical_syllable_set.AddOrSetValue(syllable, True);
+        for length_idx := 0 to Length(syllable) do
+            g_canonical_syllable_prefix_set.AddOrSetValue(Copy(syllable, 1, length_idx), True);
+    end;
 end;
 
 function nc_is_pinyin_initial(const value: string): Boolean;
@@ -218,6 +240,11 @@ begin
     for syllable in g_canonical_syllables do
         if syllable.StartsWith(prefix) then
             Result := Result + [syllable];
+end;
+
+function nc_canonical_pinyin_syllable_begins_with(const prefix: string): Boolean;
+begin
+    Result := g_canonical_syllable_prefix_set.ContainsKey(prefix);
 end;
 
 function nc_word_completion_remainder_fits(const parser: TncPinyinParser;
@@ -270,47 +297,14 @@ end;
 
 function nc_is_canonical_pinyin_syllable(const value: string): Boolean;
 var
-    normalized: string;
-    initial_idx: Integer;
-    final_idx: Integer;
-    initial_value: string;
-    final_value: string;
+    idx: Integer;
 begin
-    normalized := LowerCase(Trim(value));
-    if normalized = '' then
-    begin
-        Exit(False);
-    end;
-
-    for final_idx := Low(c_finals_no_initial) to
-        High(c_finals_no_initial) do
-    begin
-        if normalized = c_finals_no_initial[final_idx] then
-        begin
-            Exit(True);
-        end;
-    end;
-
-    for initial_idx := Low(c_initials) to High(c_initials) do
-    begin
-        initial_value := c_initials[initial_idx];
-        if Copy(normalized, 1, Length(initial_value)) <> initial_value then
-        begin
-            Continue;
-        end;
-        final_value := Copy(normalized, Length(initial_value) + 1, MaxInt);
-        for final_idx := Low(c_finals) to High(c_finals) do
-        begin
-            if (final_value = c_finals[final_idx]) and
-                nc_is_pinyin_initial_final_compatible(initial_value,
-                final_value) then
-            begin
-                Exit(True);
-            end;
-        end;
-    end;
-
-    Result := False;
+    // A toneless final spelt without an initial ("r" among them), or an
+    // initial and a final some character reads.
+    for idx := 1 to Length(value) do
+        if not CharInSet(value[idx], ['a'..'z']) then
+            Exit(g_canonical_syllable_set.ContainsKey(LowerCase(Trim(value))));
+    Result := g_canonical_syllable_set.ContainsKey(value);
 end;
 
 function TncPinyinParser.parse(const input_text: string): TncPinyinParseResult; 
@@ -712,5 +706,9 @@ end;
 
 initialization
     build_initial_final_compatibility;
+
+finalization
+    g_canonical_syllable_set.Free;
+    g_canonical_syllable_prefix_set.Free;
 
 end.
