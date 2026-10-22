@@ -10,7 +10,7 @@ Benchmark-16300 fixes 16,300 eligible sentences, while Benchmark-65000 fixes 65,
 
 From `v2.2.0`, 43 case readings in which the generated Pinyin took the wrong reading of a polyphonic character are corrected: 38 long-sentence cases (for example 重新编译 had been typed as `zhongxin`, 似曾相识 as `shiceng`, 一模一样 as `yimo`) and 5 short-word cases, which the two completion benchmarks reuse. Earlier versions were measured on the uncorrected cases.
 
-After `v2.2.0`, a second correction reads every case word by its meaning in its context, against the lexicon's readings: 217 short-word cases (the adverbial 地 typed `di` is now `de`, as in 轻轻地 and 耐心地; 看似 had been typed as `kanshi`, 微调 as `weidiao`, 重置 as `zhongzhi`, 长的 in 相当长的 as `zhangde`) and 51 long-sentence cases (了解 as `lejie`, 重新 as `zhongxin`, 喜怒哀乐 as `xinuaiyue`, 出差 as `chucha`). `v2.2.0` and earlier versions were measured before it.
+After `v2.2.0`, a second correction reads every case word by its meaning in its context, against the lexicon's readings: 217 short-word cases (the adverbial 地 typed `di` is now `de`, as in 轻轻地 and 耐心地; 看似 had been typed as `kanshi`, 微调 as `weidiao`, 重置 as `zhongzhi`, 长的 in 相当长的 as `zhangde`) and 51 long-sentence cases (了解 as `lejie`, 重新 as `zhongxin`, 喜怒哀乐 as `xinuaiyue`, 出差 as `chucha`). `v2.2.0` and earlier versions were measured before it; the README tables give `v2.2.0` both ways, re-measured on the corrected cases (regular values) and as published (italic values).
 
 ## Shared Accuracy Equivalence Rule
 
@@ -89,7 +89,7 @@ The frozen set contains 55,712 cases with usable left context and 9,288 sentence
 
 - A case is a `Top1` pass when the first exact candidate matches the target unit under the shared scoring rule above.
 - A case is a `Top2` pass when either of the first two exact candidates matches the target unit under the shared scoring rule above.
-- `Contested` is the 11,728-case subset in which the same Pinyin query maps to at least two target words in the corpus. `Contested Top1` and `Contested Top2` isolate the cases where left context is most useful for disambiguation.
+- `Contested` is the 11,685-case subset (11,728 before the second correction) in which the same Pinyin query maps to at least two target words in the corpus. `Contested Top1` and `Contested Top2` isolate the cases where left context is most useful for disambiguation.
 - Short-word results use the context-enabled benchmark.
 
 ### Latency Protocol
