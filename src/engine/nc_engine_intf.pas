@@ -138477,9 +138477,14 @@ const
     // one a further phrase may lie in the two models' judgement (nats). On the
     // development set the further phrases shown without a limit were the
     // wanted one in 3 to 8% of the cases; within 2 nats in 14 to 20%, and of
-    // those between 2 and 3 nats 4 in 107.
+    // those between 2 and 3 nats 4 in 107. Within 1 nat (the user's choice
+    // of 2026-10-22: pieced phrases "不要出现", not only not first) about half
+    // of the further phrases that were not the clause go (given whole: 743 ->
+    // 377 on the validation clauses, 1,021 -> 503 on the chat clauses,
+    // without a context), and a third of those that were (249 -> 158, 215 ->
+    // 129).
     c_shown_phrases = 3;
-    c_shown_margin = 2.0;
+    c_shown_margin = 1.0;
     // A further phrase that is a phrase shown before it with one character
     // swapped for another of its syllable, where that character is a word of
     // its own more than c_swap_deficit below the syllable's best character
@@ -138518,6 +138523,15 @@ const
     // them the clause, and 31 off those of 5,000 chat clauses, 5 of them the
     // clause; at 3 nats 4 more chat clauses lost theirs.
     c_max_comma_lift = 4.0;
+    // The first draft too, where it lies this far behind the best draft
+    // without the comma: it reads as no beginning of anything, only as a
+    // clause of its own (经征集 for "jingzhengji", 6.5 nats behind 竞争激; 征集
+    // carries the bonus). It gives its place to the next draft by the comma
+    // that lies within this of the best one. Of the context-free stage runs
+    // on the validation and chat clauses, 22 had such a first draft and 1
+    // of them was the clause. A limit of 4 nats would have taken as many
+    // clauses as it gave (13 first drafts were the clause, 13 next ones).
+    c_max_plain_gap = 6.0;
     // The parser keeps one reading of the letters; where they also read as
     // the same number of syllables another way ("henganjing": heng an jing,
     // and hen gan jing for 很干净), the drafts of that reading join the
@@ -138552,7 +138566,8 @@ var
     reading_cuts: TArray<TArray<TArray<Integer>>>;
     items: TncCandidateList;
     scores, plain_scores, corrected_scores: TArray<Single>;
-    broken: Boolean;
+    judged: Boolean;
+    best_plain: Single;
     order: TArray<Integer>;
     context, lm_context, key, draft, corrected, aligned, spelled, top_text: string;
     longer_text, longer_reading: string;
@@ -138805,40 +138820,6 @@ var
             if (parts[k] > 1) and (word_weights[position][parts[k]][rank] >= c_strong_word_weight) then
                 Inc(strong_count, parts[k]);
             Inc(position, parts[k]);
-        end;
-    end;
-
-    // Whether a text of the draft's length changes a character inside a word
-    // of two characters or more of the draft's cut into what is no
-    // dictionary entry of that word's syllables (弄堂 -> 龙堂).
-    function breaks_word(const index: Integer; const text: string): Boolean;
-    var
-        k, i, position, size: Integer;
-        span, key_local: string;
-        found: Boolean;
-    begin
-        Result := False;
-        position := 0;
-        for k := 0 to High(draft_parts[index]) do
-        begin
-            size := draft_parts[index][k];
-            span := Copy(text, position + 1, size);
-            if (size > 1) and (span <> Copy(drafts[index], position + 1, size)) then
-            begin
-                key_local := '';
-                for i := position to position + size - 1 do
-                    key_local := key_local + readings[draft_readings[index]][i];
-                found := False;
-                if m_dictionary.lookup_isolated_exact_component(key_local, items) then
-                    for i := 0 to High(items) do
-                        if (Trim(items[i].comment) = '') and (Trim(items[i].text) = span) then
-                        begin
-                            found := True;
-                            Break;
-                        end;
-                if not found then Exit(True);
-            end;
-            Inc(position, size);
         end;
     end;
 
@@ -139303,6 +139284,23 @@ begin
                             order[index] := order[other];
                             order[other] := swap;
                         end;
+                // A first draft that stands only as a clause of its own
+                // gives its place (c_max_plain_gap).
+                if context_free then
+                begin
+                    best_plain := plain_scores[0];
+                    for index := 1 to High(drafts) do
+                        best_plain := Max(best_plain, plain_scores[index]);
+                    if best_plain - plain_scores[order[0]] > c_max_plain_gap then
+                        for index := 1 to High(order) do
+                            if best_plain - plain_scores[order[index]] <= c_max_plain_gap then
+                            begin
+                                swap := order[index];
+                                for other := index downto 1 do order[other] := order[other - 1];
+                                order[0] := swap;
+                                Break;
+                            end;
+                end;
             end
             else
                 scored := 0;
@@ -139330,17 +139328,19 @@ begin
             for index := 0 to High(drafts) do
                 if drafts[index] = corrected then
                     corrected_gap := scores[order[0]] - scores[index];
-        // A text of the correction that was no draft and turns a word of the
-        // draft into what is no word there (弄堂里 into 龙堂里: the correction
-        // rated it 3.5 nats above the draft, the shared LM 9.6 below) is
-        // weighed as a draft: the shared LM scores it in a call of its own.
-        // On the validation clauses typed key by key the first choices went
-        // +26 / -4 without a context and +23 / -1 with one, on 5,000 chat
-        // clauses +6 / -1 and +9 / -2. Never putting such a text first lost
-        // two clauses for each one it gained.
-        broken := (scored > 0) and (corrected_gap < 0) and (rc = 1) and
-            (Length(corrected) = units) and (corrected <> draft) and breaks_word(order[0], corrected);
-        if broken then
+        // A text of the correction that was no draft is weighed as a draft:
+        // the shared LM scores it in a call of its own. At first only a text
+        // that turned a word of the draft into what is no word there was
+        // (弄堂里 into 龙堂里: the correction rated it 3.5 nats above the
+        // draft, the shared LM 9.6 below; never putting such a text first lost
+        // two clauses for each one it gained). A character the correction
+        // writes for a word of one character needs the same: 降低嘛 into
+        // 降低码 for "jiangdima", 3.28 nats above the draft by the correction
+        // and 3.62 below by the LM. The call comes on 13 to 15% of the stage
+        // runs.
+        judged := (scored > 0) and (corrected_gap < 0) and (rc = 1) and
+            (Length(corrected) = units) and (corrected <> draft);
+        if judged then
         begin
             try
                 if m_char_lm.score_texts(lm_context, [corrected + c_clause_end], 1, 128,
@@ -139378,23 +139378,24 @@ begin
             for index := 0 to High(draft_parts[order[0]]) do
                 prefix := prefix + IntToStr(draft_parts[order[0]][index]);
             m_short_phrase_debug := Format(
-                '[sphrase rc=%d gain=%.2f n=%d lm=%d top=%d lead=%.2f cgap=%.2f alts=%s draft=%s text=%s reading=%d/%d cut=%s syl=%s broke=%d]',
+                '[sphrase rc=%d gain=%.2f n=%d lm=%d top=%d lead=%.2f cgap=%.2f alts=%s draft=%s text=%s reading=%d/%d cut=%s syl=%s judged=%d]',
                 [rc, gain, Length(drafts), scored, Ord(top_complete), lead, corrected_gap,
                 alternatives, draft, corrected, chosen_reading, Length(readings), prefix, spelled,
-                Ord(broken)]);
+                Ord(judged)]);
         end;
         // Without the model's answer nothing is written into the page.
         if rc < 0 then Exit;
         // The correction's text goes first when the model rates it above the
-        // draft. A text that was itself a draft the shared LM rated lower (or
-        // one that breaks a word of the draft, which the LM scored above) has
-        // both models' judgements: it goes first only when the correction's
-        // gain is larger than the LM's gap (the correction reads "jiu" at the
-        // start of a clause as the adverb whatever follows; the LM, which saw
-        // the whole phrase and its end, held the other reading 5 nats above).
-        // Behind the first phrase come the other one of the two and the LM's
-        // next drafts, each only while it lies within c_shown_margin of the
-        // first by the same sum of margins.
+        // draft. A text the shared LM rated lower (a draft, or one it scored
+        // above) has both models' judgements: it goes first only when the
+        // correction's gain is larger than the LM's gap (the correction reads
+        // "jiu" at the start of a clause as the adverb whatever follows; the
+        // LM, which saw the whole phrase and its end, held the other reading
+        // 5 nats above). Behind the first phrase come the other one of the two
+        // and the LM's next drafts, each only while it lies within
+        // c_shown_margin of the first by the same sum of margins; a text that
+        // was no draft and lost the judgement, only within the LM's own gap
+        // (降低码 lay 0.34 behind 降低嘛 by the sum).
         if (rc = 1) and (Length(corrected) = units) and (gain >= c_min_gain) and
             ((corrected_gap < 0) or (gain > corrected_gap)) then
         begin
@@ -139406,6 +139407,7 @@ begin
         begin
             show(draft, aligned);
             behind := 0;
+            if judged then gain := 0;
             if (rc = 1) and (Length(corrected) = units) and
                 may_follow(corrected, Max(0, corrected_gap) - gain) then show(corrected, aligned);
         end;
