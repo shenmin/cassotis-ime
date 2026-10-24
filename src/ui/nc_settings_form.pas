@@ -488,14 +488,21 @@ resourcestring
     SCheckEnableDebugMode = '启用调试模式';
     SHintDebugMode = '开启后，候选栏中的候选词和单字将显示权重信息，仅用于调试和问题排查。';
     SButtonClearUserDictionary = '清空用户词库';
-    SConfirmClearUserDictionary = '确定要清空用户词库吗？此操作将删除此前记住的本地用户词和相关学习记录，且无法撤销。';
+    SConfirmClearUserDictionary = '确定要清空用户词库吗？此操作将删除此前记住的本地用户词和相关学习记录' +
+        '（包括导入的输入频次），且无法撤销。';
     SClearUserDictionarySucceeded = '用户词库已清空，并已立即生效。';
     SClearUserDictionaryFailed = '清空用户词库失败，请稍后重试。';
     SButtonImportUserWords = '导入输入频次';
     SDialogSelectUserWordsFile = '选择词频文件';
     SFilterUserWordsFiles = '文本文件|*.txt;*.tsv|所有文件|*.*';
     SConfirmImportUserWords = '把文件里的词按使用次数记入用户词库，当作你自己的选词习惯，只影响本机。' +
-        '支持其他输入法导出的“序号. 词 — 次数 次 — 拼音”，或每行“词、拼音、次数”用 Tab 分隔。继续吗？';
+        '支持其他输入法导出的“序号. 词 — 次数 次 — 拼音”，或每行“词、拼音、次数”用 Tab 分隔。' + #13#10#13#10 +
+        '请注意，批量导入也可能带来负面效果：文件里的人名、昵称、打错的词或已经不再用的旧词，' +
+        '会按导出的次数排到同音的常用词前面。例如导入了常打的某个名字后，输入同样的拼音时，' +
+        '原本排第一的常用词可能被它挤到后面。' + #13#10#13#10 +
+        '导入的词保存在用户词库中，不能单独撤销：在设置中点击“清空用户词库”时，' +
+        '它们会和平时打字积累的学习记录一起被清除。' + #13#10#13#10 +
+        '继续吗？';
     SImportUserWordsSucceeded = '已导入 %d 个词（文件中共 %d 个），并已立即生效。';
     SImportUserWordsFailed = '导入失败：文件中没有可识别的词，或输入法服务暂时不可用。';
     SLabelSimplifiedDictionary = '简体词库';
@@ -3255,7 +3262,7 @@ begin
         if not dialog.Execute then
             Exit;
         if MessageBox(Handle, PChar(SConfirmImportUserWords), PChar(Caption),
-            MB_YESNO or MB_ICONQUESTION or MB_DEFBUTTON2) <> IDYES then
+            MB_YESNO or MB_ICONWARNING or MB_DEFBUTTON2) <> IDYES then
             Exit;
         Screen.Cursor := crHourGlass;
         try

@@ -19339,6 +19339,8 @@ begin
                 'DELETE FROM dict_user_context_query_choice;')) or
             (not m_user_connection.exec(
                 'DELETE FROM dict_user_completion_feedback;')) or
+            (not m_user_connection.exec(
+                'DELETE FROM dict_user_long_completion_feedback;')) or
             (not m_user_connection.exec('DELETE FROM dict_user_penalty;')) or
             (not m_user_connection.exec('DELETE FROM dict_user_bigram;')) or
             (not m_user_connection.exec('DELETE FROM dict_user_trigram;')) or
