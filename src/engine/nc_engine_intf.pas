@@ -138571,6 +138571,17 @@ const
     // of them was the clause. A limit of 4 nats would have taken as many
     // clauses as it gave (13 first drafts were the clause, 13 next ones).
     c_max_plain_gap = 6.0;
+    // With or without a context, a draft the LM prefers this much or more
+    // without the comma goes first when the comma's choice leads it by
+    // c_plain_first_margin at most: the input may as well go on as end
+    // there ("buyaodai" after 记得: 不要带 2.9 nats above 不要呆 without the
+    // comma, 0.3 below with it). Typed key by key, spans of about 3,600
+    // from inside sentences that go on after them gained 15 to 34 first
+    // choices; the clause sets, whose phrases end there, stayed level.
+    // Simulated on the stage's scores, 1 and 1 nats lost more clauses, and
+    // the comma at half weight 21 to 61 of about 5,000.
+    c_plain_first_lead = 2.0;
+    c_plain_first_margin = 1.0;
     // The parser keeps one reading of the letters; where they also read as
     // the same number of syllables another way ("henganjing": heng an jing,
     // and hen gan jing for 很干净), the drafts of that reading join the
@@ -138607,6 +138618,7 @@ var
     scores, plain_scores, corrected_scores: TArray<Single>;
     judged: Boolean;
     best_plain: Single;
+    best_index: Integer;
     order: TArray<Integer>;
     context, lm_context, key, draft, corrected, aligned, spelled, top_text: string;
     longer_text, longer_reading: string;
@@ -139339,6 +139351,20 @@ begin
                                 order[0] := swap;
                                 Break;
                             end;
+                end;
+                // A draft far ahead without the comma and close behind with
+                // it goes first (c_plain_first_lead).
+                best_index := 0;
+                for index := 1 to High(drafts) do
+                    if plain_scores[index] > plain_scores[best_index] then best_index := index;
+                if (best_index <> order[0]) and
+                    (plain_scores[best_index] - plain_scores[order[0]] >= c_plain_first_lead) and
+                    (scores[order[0]] - scores[best_index] <= c_plain_first_margin) then
+                begin
+                    index := 0;
+                    while order[index] <> best_index do Inc(index);
+                    for other := index downto 1 do order[other] := order[other - 1];
+                    order[0] := best_index;
                 end;
             end
             else
