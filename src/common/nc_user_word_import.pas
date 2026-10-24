@@ -4,9 +4,10 @@ unit nc_user_word_import;
   other input methods export it, for the user dictionary. Two forms:
   - "1. text <dash> 2392 <times> <dash> pinyin", one word a line, the dash
     U+2014 (an export of one's own typing statistics);
-  - tab-separated fields holding the text, its pinyin and optionally the
-    count, in any order (the pinyin is the field of Latin letters, the count
-    the field of digits).
+  - fields separated by tabs, or on a line without a tab by commas (ASCII or
+    full width, as a CSV file; a field may be in double quotes), holding the
+    text, its pinyin and optionally the count, in any order (the pinyin is
+    the field of Latin letters, the count the field of digits).
   Blank lines and lines starting with # are no entries; any other line that
   is not one counts as skipped. }
 
@@ -39,6 +40,7 @@ uses
 const
     c_dash = #$2014;
     c_times = #$6B21;
+    c_fullwidth_comma = #$FF0C;
 
 function normalize_pinyin(const value: string; out pinyin: string): Boolean;
 var
@@ -105,24 +107,28 @@ begin
         parse_count(parts[1], entry.count) and normalize_pinyin(parts[2], entry.pinyin);
 end;
 
-function parse_tabbed(const line: string; out entry: TncUserWordImportEntry): Boolean;
+function parse_separated(const line: string; const separators: array of Char;
+    out entry: TncUserWordImportEntry): Boolean;
 var
-    field, pinyin: string;
+    item, field, pinyin: string;
     count: Integer;
 begin
     Result := False;
     entry := Default(TncUserWordImportEntry);
     entry.count := 0;
-    for field in line.Split([#9]) do
+    for item in line.Split(separators) do
     begin
-        if Trim(field) = '' then
+        field := Trim(item);
+        if (Length(field) >= 2) and (field[1] = '"') and (field[Length(field)] = '"') then
+            field := Trim(Copy(field, 2, Length(field) - 2));
+        if field = '' then
             Continue;
         if (entry.count = 0) and parse_count(field, count) then
             entry.count := count
         else if (entry.pinyin = '') and has_latin_letter(field) and normalize_pinyin(field, pinyin) then
             entry.pinyin := pinyin
         else if (entry.text = '') and not has_latin_letter(field) then
-            entry.text := Trim(field)
+            entry.text := field
         else
             Exit;
     end;
@@ -150,7 +156,10 @@ begin
         if (trimmed = '') or (trimmed[1] = '#') then
             Continue;
         parsed := ((Pos(c_dash, trimmed) > 0) and parse_dashed(trimmed, entry)) or
-            ((Pos(#9, trimmed) > 0) and parse_tabbed(trimmed, entry));
+            ((Pos(#9, trimmed) > 0) and parse_separated(trimmed, [#9], entry)) or
+            ((Pos(#9, trimmed) = 0) and
+            ((Pos(',', trimmed) > 0) or (Pos(c_fullwidth_comma, trimmed) > 0)) and
+            parse_separated(trimmed, [',', c_fullwidth_comma], entry));
         if not parsed then
         begin
             Inc(skipped);
