@@ -207,6 +207,10 @@ type
             const expected_activity_tick: UInt64; const reason: string): Boolean;
         procedure remove_session_prewarm_locked(const session_id: string);
         procedure remove_user_candidate(const session_id: string; const candidate_index: Integer);
+        // Runs a change of the user dictionary on the session's engine, then
+        // refreshes every session: its pages were built from the old data.
+        function change_user_dictionary(const session_id: string;
+            const change: TFunc<TncEngine, Boolean>): Boolean;
         procedure queue_long_neural_completion(
             const session: TncHostSession);
         procedure handle_long_neural_completion(
@@ -240,6 +244,11 @@ type
         function release_session(const session_id: string): Boolean;
         function reload_config_now: Boolean;
         function clear_user_dictionary(const session_id: string): Boolean;
+        { Imports a file of the user's words with how often they typed them into
+          the user dictionary of the session's engine (shared by every session);
+          entries is how many words the file held, imported how many it took. }
+        function import_user_words(const session_id, path: string;
+            out entries, imported: Integer): Boolean;
         procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
             const line_height: Integer; const terminal_like_target: Boolean; const comless_target: Boolean;
             const source: TncCaretAnchorSource; const anchor_score: Integer);
@@ -3617,6 +3626,38 @@ begin
 end;
 
 function TncEngineHost.clear_user_dictionary(const session_id: string): Boolean;
+begin
+    Result := change_user_dictionary(session_id,
+        function(engine: TncEngine): Boolean
+        begin
+            Result := engine.clear_user_dictionary;
+        end);
+    if Result then
+        host_log('[INFO] user dictionary cleared');
+end;
+
+function TncEngineHost.import_user_words(const session_id, path: string;
+    out entries, imported: Integer): Boolean;
+var
+    file_path: string;
+    entry_count, imported_count: Integer;
+begin
+    file_path := path;
+    entry_count := 0;
+    imported_count := 0;
+    Result := change_user_dictionary(session_id,
+        function(engine: TncEngine): Boolean
+        begin
+            Result := engine.import_user_words(file_path, entry_count, imported_count);
+        end);
+    entries := entry_count;
+    imported := imported_count;
+    if Result then
+        host_log(Format('[INFO] user words imported: %d of %d', [imported, entries]));
+end;
+
+function TncEngineHost.change_user_dictionary(const session_id: string;
+    const change: TFunc<TncEngine, Boolean>): Boolean;
 var
     initiating_session: TncHostSession;
     current_session: TncHostSession;
@@ -3639,7 +3680,7 @@ begin
             Exit;
         end;
 
-        Result := initiating_session.engine.clear_user_dictionary;
+        Result := change(initiating_session.engine);
         if not Result then
         begin
             Exit;
@@ -3663,7 +3704,6 @@ begin
         m_lock.Release;
     end;
 
-    host_log('[INFO] user dictionary cleared');
     run_on_ui_thread(
         procedure
         var
@@ -4165,6 +4205,8 @@ var
     selection_window: HWND;
     selection_token: Cardinal;
     punctuation_preceding_char: Integer;
+    import_entries: Integer;
+    import_imported: Integer;
 begin
     Result := 'ERROR'#9'bad_request';
     try
@@ -4301,6 +4343,21 @@ begin
             if m_host.reload_config_now then
             begin
                 Result := 'OK';
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
+        if SameText(cmd, 'IMPORT_USER_WORDS') then
+        begin
+            if (Length(fields) >= 3) and
+                m_host.import_user_words(session_id, decode_ipc_text(fields[2]), import_entries,
+                import_imported) then
+            begin
+                Result := Format('OK'#9'%d'#9'%d', [import_entries, import_imported]);
             end
             else
             begin

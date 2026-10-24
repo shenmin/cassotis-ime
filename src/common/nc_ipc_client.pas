@@ -77,6 +77,8 @@ type
             const document_snapshot: string = ''): Boolean;
         function reload_config(const session_id: string): Boolean;
         function clear_user_dictionary(const session_id: string): Boolean;
+        function import_user_words(const session_id, path: string;
+            out entries, imported: Integer): Boolean;
         function reset_session(const session_id: string;
             const preserve_document_context: Boolean = False;
             const input_epoch: UInt64 = 0): Boolean;
@@ -1013,6 +1015,31 @@ begin
 
     fields := response_text.Split([#9], TStringSplitOptions.None);
     Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
+end;
+
+function TncIpcClient.import_user_words(const session_id, path: string;
+    out entries, imported: Integer): Boolean;
+var
+    response_text: string;
+    fields: TArray<string>;
+begin
+    entries := 0;
+    imported := 0;
+    Result := False;
+    if (session_id = '') or (path = '') then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Exit;
+    end;
+    if not call_pipe('IMPORT_USER_WORDS'#9 + session_id + #9 + encode_ipc_text(path), response_text) then
+        Exit;
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    Result := (Length(fields) >= 3) and SameText(fields[0], 'OK');
+    if Result then
+    begin
+        entries := StrToIntDef(fields[1], 0);
+        imported := StrToIntDef(fields[2], 0);
+    end;
 end;
 
 function TncIpcClient.reset_session(const session_id: string;

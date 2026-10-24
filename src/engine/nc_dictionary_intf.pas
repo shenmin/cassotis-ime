@@ -4,7 +4,8 @@ interface
 
 uses
     System.SysUtils,
-    nc_types;
+    nc_types,
+    nc_user_word_import;
 
 type
     TncDictionaryProvider = class
@@ -164,6 +165,14 @@ type
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function clear_user_dictionary: Boolean; virtual;
+        { The corpus evidence of a base word in the completion prior
+          (corpus_score), -1 where the prior has no row for it. }
+        function get_completion_corpus_score(const pinyin, text: string): Integer; virtual;
+        { Records each word as the user's own choice, as often as its count says
+          (a word's learning bonus grows with the log of its commits); imported
+          is the number of words the user dictionary took. }
+        function import_user_choices(const entries: TncUserWordImportEntries;
+            out imported: Integer): Boolean; virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
     end;
 
@@ -682,6 +691,18 @@ end;
 
 function TncDictionaryProvider.clear_user_dictionary: Boolean;
 begin
+    Result := False;
+end;
+
+function TncDictionaryProvider.get_completion_corpus_score(const pinyin, text: string): Integer;
+begin
+    Result := -1;
+end;
+
+function TncDictionaryProvider.import_user_choices(const entries: TncUserWordImportEntries;
+    out imported: Integer): Boolean;
+begin
+    imported := 0;
     Result := False;
 end;
 

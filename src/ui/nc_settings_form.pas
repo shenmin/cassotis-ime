@@ -147,6 +147,8 @@ type
     TncPreviewStatusWidgetProc = reference to procedure(const transparency: Integer;
         const preview_visible: Boolean);
     TncClearUserDictionaryProc = reference to function: Boolean;
+    TncImportUserWordsProc = reference to function(const path: string;
+        out entries, imported: Integer): Boolean;
 
     TncSettingsForm = class(TForm)
     private
@@ -212,6 +214,7 @@ type
         m_btn_log_defaults: TncModernButton;
         m_chk_debug_mode: TncModernCheckBox;
         m_btn_clear_user_dictionary: TncModernButton;
+        m_btn_import_user_words: TncModernButton;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
         m_hint_advanced: TLabel;
@@ -223,6 +226,7 @@ type
         m_preview_status_widget_proc: TncPreviewStatusWidgetProc;
         m_apply_proc: TncApplySettingsProc;
         m_clear_user_dictionary_proc: TncClearUserDictionaryProc;
+        m_import_user_words_proc: TncImportUserWordsProc;
         m_dirty: Boolean;
         m_applied: Boolean;
         procedure configure_form;
@@ -311,6 +315,7 @@ type
         procedure on_punctuation_markdown_click(Sender: TObject);
         procedure on_punctuation_standard_click(Sender: TObject);
         procedure on_clear_user_dictionary_click(Sender: TObject);
+        procedure on_import_user_words_click(Sender: TObject);
         procedure on_open_config_folder(Sender: TObject);
         procedure on_open_config_file(Sender: TObject);
         procedure on_website_link_click(Sender: TObject);
@@ -333,7 +338,8 @@ type
             var status_widget_visible: Boolean; var status_widget_transparency: Integer;
             const on_apply: TncApplySettingsProc;
             const on_clear_user_dictionary: TncClearUserDictionaryProc;
-            const on_preview_status_widget: TncPreviewStatusWidgetProc): Boolean; static;
+            const on_preview_status_widget: TncPreviewStatusWidgetProc;
+            const on_import_user_words: TncImportUserWordsProc = nil): Boolean; static;
     end;
 
 implementation
@@ -485,6 +491,13 @@ resourcestring
     SConfirmClearUserDictionary = '确定要清空用户词库吗？此操作将删除此前记住的本地用户词和相关学习记录，且无法撤销。';
     SClearUserDictionarySucceeded = '用户词库已清空，并已立即生效。';
     SClearUserDictionaryFailed = '清空用户词库失败，请稍后重试。';
+    SButtonImportUserWords = '导入输入频次';
+    SDialogSelectUserWordsFile = '选择词频文件';
+    SFilterUserWordsFiles = '文本文件|*.txt;*.tsv|所有文件|*.*';
+    SConfirmImportUserWords = '把文件里的词按使用次数记入用户词库，当作你自己的选词习惯，只影响本机。' +
+        '支持其他输入法导出的“序号. 词 — 次数 次 — 拼音”，或每行“词、拼音、次数”用 Tab 分隔。继续吗？';
+    SImportUserWordsSucceeded = '已导入 %d 个词（文件中共 %d 个），并已立即生效。';
+    SImportUserWordsFailed = '导入失败：文件中没有可识别的词，或输入法服务暂时不可用。';
     SLabelSimplifiedDictionary = '简体词库';
     SLabelTraditionalDictionary = '繁体词库';
     SLabelUserDictionary = '用户词库';
@@ -1468,7 +1481,8 @@ end;
 class function TncSettingsForm.ExecuteDialog(const owner: TComponent; var config: TncEngineConfig;
     var log_config: TncLogConfig; var status_widget_visible: Boolean; var status_widget_transparency: Integer;
     const on_apply: TncApplySettingsProc; const on_clear_user_dictionary: TncClearUserDictionaryProc;
-    const on_preview_status_widget: TncPreviewStatusWidgetProc): Boolean;
+    const on_preview_status_widget: TncPreviewStatusWidgetProc;
+    const on_import_user_words: TncImportUserWordsProc): Boolean;
 var
     form: TncSettingsForm;
 begin
@@ -1481,6 +1495,7 @@ begin
         form.m_preview_status_widget_proc := on_preview_status_widget;
         form.m_apply_proc := on_apply;
         form.m_clear_user_dictionary_proc := on_clear_user_dictionary;
+        form.m_import_user_words_proc := on_import_user_words;
         form.load_from_config;
         form.ShowModal;
         config := form.m_engine_config;
@@ -3182,6 +3197,10 @@ begin
     top := debug_hint.Top + debug_hint.Height + scale_ui(8);
     m_btn_clear_user_dictionary := create_action_button(Self, debug_group, scale_ui(c_label_left), top,
         SButtonClearUserDictionary, on_clear_user_dictionary_click);
+    m_btn_import_user_words := create_action_button(Self, debug_group,
+        scale_ui(c_label_left + c_action_button_width + 12), top,
+        SButtonImportUserWords, on_import_user_words_click);
+    m_btn_import_user_words.Name := 'SettingsImportUserWords';
     debug_group.Height := m_btn_clear_user_dictionary.Top + m_btn_clear_user_dictionary.Height + scale_ui(12);
 
     section_top := debug_group.Top + debug_group.Height + scale_ui(c_section_gap);
@@ -3218,6 +3237,40 @@ begin
 
     MessageBox(Handle, PChar(SClearUserDictionarySucceeded), PChar(Caption),
         MB_OK or MB_ICONINFORMATION);
+end;
+
+procedure TncSettingsForm.on_import_user_words_click(Sender: TObject);
+var
+    dialog: TOpenDialog;
+    entries, imported: Integer;
+    done: Boolean;
+begin
+    if not Assigned(m_import_user_words_proc) then
+        Exit;
+    dialog := TOpenDialog.Create(Self);
+    try
+        dialog.Title := SDialogSelectUserWordsFile;
+        dialog.Filter := SFilterUserWordsFiles;
+        dialog.Options := [ofFileMustExist, ofPathMustExist, ofEnableSizing];
+        if not dialog.Execute then
+            Exit;
+        if MessageBox(Handle, PChar(SConfirmImportUserWords), PChar(Caption),
+            MB_YESNO or MB_ICONQUESTION or MB_DEFBUTTON2) <> IDYES then
+            Exit;
+        Screen.Cursor := crHourGlass;
+        try
+            done := m_import_user_words_proc(dialog.FileName, entries, imported);
+        finally
+            Screen.Cursor := crDefault;
+        end;
+        if done and (imported > 0) then
+            MessageBox(Handle, PChar(Format(SImportUserWordsSucceeded, [imported, entries])), PChar(Caption),
+                MB_OK or MB_ICONINFORMATION)
+        else
+            MessageBox(Handle, PChar(SImportUserWordsFailed), PChar(Caption), MB_OK or MB_ICONERROR);
+    finally
+        dialog.Free;
+    end;
 end;
 
 procedure TncSettingsForm.mark_dirty(Sender: TObject);

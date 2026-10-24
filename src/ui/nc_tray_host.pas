@@ -171,6 +171,7 @@ type
         function apply_runtime_state_to_host: Boolean;
         function reload_host_config: Boolean;
         function clear_user_dictionary: Boolean;
+        function import_user_words(const path: string; out entries, imported: Integer): Boolean;
         procedure show_settings_dialog;
         procedure update_menu;
         procedure status_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
@@ -2485,6 +2486,14 @@ begin
     Result := m_ipc_client.clear_user_dictionary(m_session_id);
 end;
 
+function TncTrayHost.import_user_words(const path: string; out entries, imported: Integer): Boolean;
+begin
+    entries := 0;
+    imported := 0;
+    Result := (m_ipc_client <> nil) and (m_session_id <> '') and
+        m_ipc_client.import_user_words(m_session_id, path, entries, imported);
+end;
+
 procedure TncTrayHost.show_settings_dialog;
 var
     next_config: TncEngineConfig;
@@ -2518,6 +2527,10 @@ begin
             procedure(const transparency: Integer; const preview_visible: Boolean)
             begin
                 preview_status_widget(transparency, preview_visible);
+            end,
+            function(const path: string; out entries, imported: Integer): Boolean
+            begin
+                Result := Self.import_user_words(path, entries, imported);
             end);
     finally
         m_status_widget_preview := False;

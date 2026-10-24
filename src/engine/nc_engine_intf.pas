@@ -12,6 +12,7 @@ uses
     Winapi.Windows,
     nc_types,
     nc_custom_phrases,
+    nc_user_word_import,
     nc_quick_input,
     nc_english_input,
     nc_candidate_presentation,
@@ -979,6 +980,7 @@ type
         function apply_char_lm_short_top(var candidates: TncCandidateList;
             var source_indices: TArray<Integer>; const context, query: string;
             const page_size: Integer): Boolean;
+        function short_choice_may_replace(const query, first, chosen: string): Boolean;
         function apply_mixed_abbreviation_top(var candidates: TncCandidateList;
             var source_indices: TArray<Integer>; const page_size: Integer): Boolean;
         function build_tail_word_candidates(const syllables: TncPinyinParseResult;
@@ -1390,6 +1392,10 @@ type
         function remove_user_candidate(const pinyin: string; const text: string;
             const preserve_candidate: TncCandidate; const has_preserve_candidate: Boolean): Boolean; overload;
         function clear_user_dictionary: Boolean;
+        { Imports a list of the user's words with how often they typed them
+          (nc_user_word_import) as their own choices; entries is how many
+          words the file held, imported how many the user dictionary took. }
+        function import_user_words(const path: string; out entries, imported: Integer): Boolean;
         procedure notify_user_dictionary_cleared;
         property config: TncEngineConfig read m_config write update_config;
     end;
@@ -137860,10 +137866,43 @@ begin
         not nc_char_lm_choose_short(m_char_lm, context, choices, best) or
         (best = 0) then
         Exit;
+    // Without a context the ranker goes by each word's score at the start of
+    // a text and by the fiction it was fit on (视线 above 实现, 同事 above 同时,
+    // 一场 above 异常: words of that novel). The page's first word keeps its
+    // place where the general text holds it far more often than the choice
+    // (c_short_corpus_guard).
+    if (context = '') and not short_choice_may_replace(query, choices[0].text,
+        choices[best].text) then
+        Exit;
     value := candidates[choices[best].position];
     promote_char_lm_candidate(candidates, source_indices, value,
         source_indices[choices[best].position], page_size);
     Result := True;
+end;
+
+function TncEngine.short_choice_may_replace(const query, first, chosen: string): Boolean;
+const
+    // The corpus scores of the lexicon's completion prior (a word's
+    // occurrences in the general text, on a log scale): the first word stays
+    // when the choice has one and lies this far or more below it. Replayed
+    // on the ranker's traces (out/nocontext_choice_20261023, sim_corpus.py),
+    // first choices without a context: the official short set +46, the
+    // short cases of the chat messages +11, a user's typing statistics
+    // weighted by their counts +732; the fiction dev set the ranker was fit
+    // on -7. Every limit from
+    // 200 to 300 gained on the three; 400 changed almost nothing.
+    c_short_corpus_guard = 250;
+var
+    first_score, chosen_score: Integer;
+begin
+    Result := True;
+    if m_dictionary = nil then
+        Exit;
+    chosen_score := m_dictionary.get_completion_corpus_score(query, chosen);
+    if chosen_score <= 0 then
+        Exit;
+    first_score := m_dictionary.get_completion_corpus_score(query, first);
+    Result := first_score - chosen_score < c_short_corpus_guard;
 end;
 
 function TncEngine.apply_mixed_abbreviation_top(var candidates: TncCandidateList;
@@ -139401,6 +139440,10 @@ begin
         begin
             show(corrected, aligned);
             behind := gain - Max(0, corrected_gap);
+            // A text whose characters do not read the keys is not shown:
+            // the draft goes first then.
+            if Length(shown) = 0 then
+                behind := 0;
             if may_follow(draft, behind) then show(draft, aligned);
         end
         else
@@ -188753,6 +188796,25 @@ begin
     begin
         notify_user_dictionary_cleared;
     end;
+end;
+
+function TncEngine.import_user_words(const path: string; out entries, imported: Integer): Boolean;
+var
+    content: string;
+    items: TncUserWordImportEntries;
+    skipped: Integer;
+begin
+    entries := 0;
+    imported := 0;
+    Result := False;
+    if (m_dictionary = nil) or (not nc_read_user_word_import_file(path, content)) or
+        (not nc_parse_user_word_import(content, items, skipped)) then
+        Exit;
+    entries := Length(items);
+    Result := m_dictionary.import_user_choices(items, imported);
+    // The pages and caches of the session were built without these words.
+    if Result then
+        notify_user_dictionary_cleared;
 end;
 
 procedure TncEngine.notify_user_dictionary_cleared;
