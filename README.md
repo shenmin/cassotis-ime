@@ -35,7 +35,7 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 - **Short words.** The language model resolves competing exact candidates, using the text already committed before the cursor when there is any.
 - **Short phrases.** An input of three to five syllables that the dictionary does not contain (for example `jiuguize` → `旧规则`) gets whole phrases put together from dictionary words. The language model picks one, using the text before the cursor when there is any, and corrects its homophones against the typed Pinyin; when the choice is close, up to two more whole phrases follow the first.
 - **Pinyin schemes.** Full Pinyin and six selectable Double Pinyin schemes (Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia) share the same candidate ranking and user-learning data. Fuzzy Pinyin is configurable for common initial and final pairs, and initial-letter abbreviations are supported (for example `jt` → `今天`).
-- **Dictionaries.** Separate simplified and traditional base databases and a user database.
+- **Dictionaries.** Separate simplified and traditional base databases and a user database. Word frequencies exported by another input method can be imported in Advanced settings (one word a line: word, Pinyin and count, separated by commas or tabs); they go into the user database as the user's own choices.
 - **Quick input.** Use `ufh` for symbols, `uxh` for numbered markers, `usx` for mathematical symbols, and `urq` for the current date. `i123.45` or `v123.45` offers Chinese numbers and uppercase currency amounts; digits keep entering the number, so select with the displayed `a/b/c/d` keys, arrow keys and Space, or the mouse. Double Pinyin requires Shift+U/I/V to enter these modes. See the [quick-input guide (Chinese)](QUICK_INPUT.md).
 - **Chinese punctuation.** With Chinese punctuation and half-width input, the symbols that stay as typed can be edited in General settings, or set to the Markdown preset or to standard Chinese punctuation with one click. The default Markdown preset keeps ``-#*+_=`~[]<>|@``; commas, full stops, question and exclamation marks, parentheses and quotation marks stay Chinese, and the backslash gives the enumeration comma `、`.
 - **Application context.** Surrounding text and key state are synchronized with the application.
@@ -147,6 +147,7 @@ Corpus: 16,300 eligible Chinese sentences from the developer's own novel [**Eleg
 
 | Version | Top1 | Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|
+| `v2.4.0` | 13435/16300 (82.42%) | 14314/16300 (87.82%) | 71.84 | 63 | 110 | 344 |
 | `v2.3.0` | 13429/16300 (82.39%) | 14310/16300 (87.79%) | 73.35 | 78 | 125 | 344 |
 | `v2.2.0` | 13390/16300 (82.15%)<br>*13397/16300 (82.19%)* | 14273/16300 (87.56%)<br>*14281/16300 (87.61%)* | 73.26<br>*72.10* | 78 | 125<br>*110* | 344<br>*328* |
 | `v2.1.0` | 13381/16300 (82.09%) | 14270/16300 (87.55%) | 75.28 | 78 | 125 | 343 |
@@ -204,6 +205,7 @@ See [BENCHMARK.md](BENCHMARK.md) for the shared corpus source, short-word case c
 
 | Version | Top1 | Top2 | Contested Top1 | Contested Top2 | Mean (ms) | P50 (ms) | P95 (ms) | Max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `v2.4.0` | 63455/65000 (97.62%) | 64423/65000 (99.11%) | 10539/11685 (90.19%) | 11225/11685 (96.06%) | 4.599 | 2.297 | 12.579 | 32.917 |
 | `v2.3.0` | 63421/65000 (97.57%) | 64427/65000 (99.12%) | 10504/11685 (89.89%) | 11228/11685 (96.09%) | 4.611 | 2.267 | 12.545 | 33.331 |
 | `v2.2.0` | 63350/65000 (97.46%)<br>*63364/65000 (97.48%)* | 64347/65000 (99.00%)<br>*64292/65000 (98.91%)* | 10504/11685 (89.89%)<br>*10533/11728 (89.81%)* | 11228/11685 (96.09%)<br>*11244/11728 (95.87%)* | 4.710<br>*4.509* | 2.362<br>*2.201* | 12.952<br>*12.289* | 42.544<br>*41.085* |
 | `v2.1.0`<br/>`v2.0.0` | 63363/65000 (97.48%) | 64291/65000 (98.91%) | 10533/11728 (89.81%) | 11244/11728 (95.87%) | 4.637 | 2.205 | 12.621 | 40.883 |
@@ -241,6 +243,7 @@ Public results retain five columns: `Completion Hit`, `Avg Keys Saved`, `Stabili
 
 | Version | Completion Hit | Avg Keys Saved | Stability | Keystroke P95 (ms) | Final P95 (ms) |
 | --- | --- | --- | --- | --- | --- |
+| `v2.4.0` | 10512/12831 (81.93%) | 2.636 | 2152/2215 (97.16%) | 1.620 | 19.917 |
 | `v2.3.0` | 10512/12831 (81.93%) | 2.635 | 2151/2214 (97.15%) | 1.559 | 19.515 |
 | `v2.2.0` | 10465/12831 (81.56%)<br>*10456/12831 (81.49%)* | 2.632 | 2132/2196 (97.09%)<br>*2131/2193 (97.17%)* | 1.549<br>*1.508* | 19.976<br>*19.728* |
 | `v2.1.0`<br/>`v2.0.0` | 10440/12831 (81.37%) | 2.633 | 2124/2186 (97.16%) | 1.521 | 20.445 |
@@ -260,6 +263,7 @@ This benchmark leaves the final four complete Pinyin syllables untyped and evalu
 
 | Version | Local Completion Hit | Predictive Prompt Coverage | Total Keys Saved | P95 (ms) |
 | --- | --- | --- | --- | --- |
+| `v2.4.0` | 3876/16300 (23.78%) | 16147/16300 (99.06%) | 9576 | 129.597 |
 | `v2.3.0` | 3870/16300 (23.74%) | 16148/16300 (99.07%) | 9548 | 135.342 |
 | `v2.2.0` | 3769/16300 (23.12%)<br>*3766/16300 (23.10%)* | 16122/16300 (98.91%)<br>*16121/16300 (98.90%)* | 9279<br>*9271* | 133.142<br>*128.998* |
 | `v2.1.0` | 3758/16300 (23.06%) | 16123/16300 (98.91%) | 9272 | 141.519 |
