@@ -165,9 +165,10 @@ type
         function should_suppress_exact_query_learning(const pinyin: string; const text: string): Boolean; virtual;
         procedure remove_user_entry(const pinyin: string; const text: string); virtual;
         function clear_user_dictionary: Boolean; virtual;
-        { The corpus evidence of a base word in the completion prior
-          (corpus_score), -1 where the prior has no row for it. }
-        function get_completion_corpus_score(const pinyin, text: string): Integer; virtual;
+        { How often the general text holds a word as a word, as
+          100 * log10(1 + occurrences) (dict_base_word_frequency); 0 for a
+          word it lacks or a dictionary without the table. }
+        function get_word_frequency_score(const text: string): Integer; virtual;
         { Records each word as the user's own choice, as often as its count says
           (a word's learning bonus grows with the log of its commits); imported
           is the number of words the user dictionary took. }
@@ -694,9 +695,9 @@ begin
     Result := False;
 end;
 
-function TncDictionaryProvider.get_completion_corpus_score(const pinyin, text: string): Integer;
+function TncDictionaryProvider.get_word_frequency_score(const text: string): Integer;
 begin
-    Result := -1;
+    Result := 0;
 end;
 
 function TncDictionaryProvider.import_user_choices(const entries: TncUserWordImportEntries;

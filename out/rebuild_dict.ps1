@@ -240,6 +240,8 @@ $lexicon_completion_competition_sc = Join-Path $lexicon_root 'data\generated\dic
 $lexicon_completion_competition_tc = Join-Path $lexicon_root 'data\generated\dict_completion_competition_tc.txt'
 $lexicon_completion_pair_audit_sc = Join-Path $lexicon_root 'data\generated\dict_completion_pair_audit_sc.txt'
 $lexicon_completion_pair_audit_tc = Join-Path $lexicon_root 'data\generated\dict_completion_pair_audit_tc.txt'
+$lexicon_word_frequency_sc = Join-Path $lexicon_root 'data\generated\dict_word_frequency_sc.txt'
+$lexicon_word_frequency_tc = Join-Path $lexicon_root 'data\generated\dict_word_frequency_tc.txt'
 $lexicon_short_promotion_sc = Join-Path $lexicon_root 'data\generated\dict_short_promotion_sc.txt'
 $lexicon_short_promotion_tc = Join-Path $lexicon_root 'data\generated\dict_short_promotion_tc.txt'
 $lexicon_char_lm_sc = Join-Path $lexicon_root 'data\generated\dict_char_lm_sc.txt'
@@ -405,6 +407,23 @@ try {
             Write-Warning "Completion pair audit evidence files not found under lexicon data/generated; skipping import."
         }
 
+        if ((Test-Path -LiteralPath $lexicon_word_frequency_sc) -and
+            (Test-Path -LiteralPath $lexicon_word_frequency_tc)) {
+            Write-Host ("Importing general-text word frequencies from: " + $lexicon_word_frequency_sc)
+            invoke_tool 'cassotis_ime_dict_init (word frequency sc)' $dict_init @(
+                $base_db_sc_path, $schema_path, $lexicon_word_frequency_sc, 'word_frequency')
+
+            Write-Host ("Importing general-text word frequencies from: " + $lexicon_word_frequency_tc)
+            invoke_tool 'cassotis_ime_dict_init (word frequency tc)' $dict_init @(
+                $base_db_tc_path, $schema_path, $lexicon_word_frequency_tc, 'word_frequency')
+        }
+        else {
+            # Without the table the short-word choice without a context is
+            # quietly worse (every word scores 0).
+            throw ("Word frequency files not found under lexicon data/generated " +
+                "(dict_word_frequency_sc.txt, dict_word_frequency_tc.txt). Update the lexicon.")
+        }
+
         if (Test-Path -LiteralPath $lexicon_char_lm_sc) {
             Write-Host ("Importing lexicon character LM from: " + $lexicon_char_lm_sc)
             invoke_tool 'cassotis_ime_dict_init (lexicon character LM sc)' $dict_init @(
@@ -494,6 +513,10 @@ try {
             $base_db_sc_path, $schema_path, '--require-short-promotion')
         invoke_tool 'cassotis_ime_dict_init (require short promotion tc)' $dict_init @(
             $base_db_tc_path, $schema_path, '--require-short-promotion')
+        invoke_tool 'cassotis_ime_dict_init (require word frequency sc)' $dict_init @(
+            $base_db_sc_path, $schema_path, '--require-word-frequency')
+        invoke_tool 'cassotis_ime_dict_init (require word frequency tc)' $dict_init @(
+            $base_db_tc_path, $schema_path, '--require-word-frequency')
     }
 
     # Setup keeps a development build where it removes the base dictionaries

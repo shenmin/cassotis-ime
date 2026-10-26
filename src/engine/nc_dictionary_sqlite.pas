@@ -177,7 +177,8 @@ type
         m_literal_user_words_available: Integer;
         m_exact_base_entry_cache: TDictionary<string, Boolean>;
         m_normalized_base_entry_cache: TDictionary<string, Boolean>;
-        m_completion_corpus_score_cache: TDictionary<string, Integer>;
+        m_word_frequency_cache: TDictionary<string, Integer>;
+        m_word_frequency_missing: Boolean;
         m_single_char_readings_cache: TDictionary<string, TArray<string>>;
         m_explicit_user_entry_cache: TDictionary<string, Boolean>;
         m_literal_user_entry_cache: TDictionary<string, Boolean>;
@@ -452,7 +453,7 @@ type
         function clear_user_dictionary: Boolean; override;
         function import_user_choices(const entries: TncUserWordImportEntries;
             out imported: Integer): Boolean; override;
-        function get_completion_corpus_score(const pinyin, text: string): Integer; override;
+        function get_word_frequency_score(const text: string): Integer; override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
         property db_path: string read m_base_db_path;
@@ -2743,7 +2744,8 @@ begin
     m_literal_user_words_available := -1;
     m_exact_base_entry_cache := TDictionary<string, Boolean>.Create;
     m_normalized_base_entry_cache := TDictionary<string, Boolean>.Create;
-    m_completion_corpus_score_cache := TDictionary<string, Integer>.Create;
+    m_word_frequency_cache := TDictionary<string, Integer>.Create;
+    m_word_frequency_missing := False;
     m_single_char_readings_cache := TDictionary<string, TArray<string>>.Create;
     m_explicit_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_literal_user_entry_cache := TDictionary<string, Boolean>.Create;
@@ -3037,7 +3039,7 @@ begin
         m_normalized_base_entry_cache.Free;
         m_normalized_base_entry_cache := nil;
     end;
-    FreeAndNil(m_completion_corpus_score_cache);
+    FreeAndNil(m_word_frequency_cache);
     if m_single_char_readings_cache <> nil then
     begin
         m_single_char_readings_cache.Free;
@@ -11886,8 +11888,9 @@ begin
     begin
         m_normalized_base_entry_cache.Clear;
     end;
-    if m_completion_corpus_score_cache <> nil then
-        m_completion_corpus_score_cache.Clear;
+    if m_word_frequency_cache <> nil then
+        m_word_frequency_cache.Clear;
+    m_word_frequency_missing := False;
     if m_single_char_readings_cache <> nil then
     begin
         m_single_char_readings_cache.Clear;
@@ -19473,72 +19476,41 @@ begin
     Result := True;
 end;
 
-function TncSqliteDictionary.get_completion_corpus_score(const pinyin, text: string): Integer;
+function TncSqliteDictionary.get_word_frequency_score(const text: string): Integer;
 const
-    exact_sql = 'SELECT corpus_score FROM dict_base_completion_prior WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
-    base_text_sql = 'SELECT pinyin FROM dict_base WHERE text = ?1 LIMIT 64';
+    select_sql = 'SELECT score FROM dict_base_word_frequency WHERE text = ?1 LIMIT 1';
     c_cache_limit = 16384;
 var
-    pinyin_key, text_key, cache_key, stored: string;
+    text_key: string;
     stmt: Psqlite3_stmt;
-
-    function prior_score(const key: string): Integer;
-    var
-        prior_stmt: Psqlite3_stmt;
-    begin
-        Result := -1;
-        prior_stmt := nil;
-        try
-            if m_base_connection.prepare(exact_sql, prior_stmt) and
-                m_base_connection.bind_text(prior_stmt, 1, key) and
-                m_base_connection.bind_text(prior_stmt, 2, text_key) and
-                (m_base_connection.step(prior_stmt) = SQLITE_ROW) then
-                Result := m_base_connection.column_int(prior_stmt, 0);
-        finally
-            if prior_stmt <> nil then
-                m_base_connection.finalize(prior_stmt);
-        end;
-    end;
-
 begin
-    Result := -1;
-    pinyin_key := LowerCase(Trim(pinyin));
+    Result := 0;
     text_key := Trim(text);
-    if (pinyin_key = '') or (text_key = '') or (not ensure_open) or (not m_base_ready) or
+    if (text_key = '') or m_word_frequency_missing or (not ensure_open) or (not m_base_ready) or
         (m_base_connection = nil) then
         Exit;
-    cache_key := pinyin_key + #1 + text_key;
-    if (m_completion_corpus_score_cache <> nil) and
-        m_completion_corpus_score_cache.TryGetValue(cache_key, Result) then
+    if (m_word_frequency_cache <> nil) and m_word_frequency_cache.TryGetValue(text_key, Result) then
         Exit;
-    Result := prior_score(pinyin_key);
-    if Result < 0 then
-    begin
-        // The word's own key where it differs from the query's spelling
-        // (an apostrophe: xi'an).
-        stmt := nil;
-        try
-            if m_base_connection.prepare(base_text_sql, stmt) and
-                m_base_connection.bind_text(stmt, 1, text_key) then
-                while m_base_connection.step(stmt) = SQLITE_ROW do
-                begin
-                    stored := m_base_connection.column_text(stmt, 0);
-                    if (stored <> pinyin_key) and same_normalized_pinyin_key(stored, pinyin_key) then
-                    begin
-                        Result := prior_score(stored);
-                        Break;
-                    end;
-                end;
-        finally
-            if stmt <> nil then
-                m_base_connection.finalize(stmt);
+    stmt := nil;
+    try
+        // A dictionary built before the table has none: every word scores 0.
+        if not m_base_connection.prepare(select_sql, stmt) then
+        begin
+            m_word_frequency_missing := True;
+            Exit;
         end;
+        if m_base_connection.bind_text(stmt, 1, text_key) and
+            (m_base_connection.step(stmt) = SQLITE_ROW) then
+            Result := m_base_connection.column_int(stmt, 0);
+    finally
+        if stmt <> nil then
+            m_base_connection.finalize(stmt);
     end;
-    if m_completion_corpus_score_cache <> nil then
+    if m_word_frequency_cache <> nil then
     begin
-        if m_completion_corpus_score_cache.Count >= c_cache_limit then
-            m_completion_corpus_score_cache.Clear;
-        m_completion_corpus_score_cache.AddOrSetValue(cache_key, Result);
+        if m_word_frequency_cache.Count >= c_cache_limit then
+            m_word_frequency_cache.Clear;
+        m_word_frequency_cache.AddOrSetValue(text_key, Result);
     end;
 end;
 

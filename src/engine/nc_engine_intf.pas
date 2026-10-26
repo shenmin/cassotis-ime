@@ -980,7 +980,6 @@ type
         function apply_char_lm_short_top(var candidates: TncCandidateList;
             var source_indices: TArray<Integer>; const context, query: string;
             const page_size: Integer): Boolean;
-        function short_choice_may_replace(const query, first, chosen: string): Boolean;
         function apply_mixed_abbreviation_top(var candidates: TncCandidateList;
             var source_indices: TArray<Integer>; const page_size: Integer): Boolean;
         function build_tail_word_candidates(const syllables: TncPinyinParseResult;
@@ -137809,6 +137808,10 @@ end;
 function TncEngine.apply_char_lm_short_top(var candidates: TncCandidateList;
     var source_indices: TArray<Integer>; const context, query: string;
     const page_size: Integer): Boolean;
+const
+    // Word frequency scores are 100 * log10(1 + occurrences): 100 apart is
+    // ten times as often.
+    c_short_word_frequency_floor = 100;
 var
     choices: TArray<TncCharLmShortCandidate>;
     choice: TncCharLmShortCandidate;
@@ -137859,6 +137862,7 @@ begin
         choice.has_dict_weight := candidates[idx].has_dict_weight;
         choice.display_score := candidates[idx].score;
         choice.user := candidates[idx].source = cs_user;
+        choice.word_frequency := m_dictionary.get_word_frequency_score(text);
         choices := choices + [choice];
     end;
     // Only reorder within the group when the visible top belongs to it.
@@ -137866,43 +137870,16 @@ begin
         not nc_char_lm_choose_short(m_char_lm, context, choices, best) or
         (best = 0) then
         Exit;
-    // Without a context the ranker goes by each word's score at the start of
-    // a text and by the fiction it was fit on (视线 above 实现, 同事 above 同时,
-    // 一场 above 异常: words of that novel). The page's first word keeps its
-    // place where the general text holds it far more often than the choice
-    // (c_short_corpus_guard).
-    if (context = '') and not short_choice_may_replace(query, choices[0].text,
-        choices[best].text) then
+    // Without a context the model's score at the start of a text can favour
+    // a word the general text hardly writes (抽插 above 抽查: 33 against 16,752
+    // occurrences); the page's first word then keeps its place.
+    if (context = '') and (choices[0].word_frequency - choices[best].word_frequency >=
+        c_short_word_frequency_floor) then
         Exit;
     value := candidates[choices[best].position];
     promote_char_lm_candidate(candidates, source_indices, value,
         source_indices[choices[best].position], page_size);
     Result := True;
-end;
-
-function TncEngine.short_choice_may_replace(const query, first, chosen: string): Boolean;
-const
-    // The corpus scores of the lexicon's completion prior (a word's
-    // occurrences in the general text, on a log scale): the first word stays
-    // when the choice has one and lies this far or more below it. Replayed
-    // on the ranker's traces (out/nocontext_choice_20261023, sim_corpus.py),
-    // first choices without a context: the official short set +46, the
-    // short cases of the chat messages +11, a user's typing statistics
-    // weighted by their counts +732; the fiction dev set the ranker was fit
-    // on -7. Every limit from
-    // 200 to 300 gained on the three; 400 changed almost nothing.
-    c_short_corpus_guard = 250;
-var
-    first_score, chosen_score: Integer;
-begin
-    Result := True;
-    if m_dictionary = nil then
-        Exit;
-    chosen_score := m_dictionary.get_completion_corpus_score(query, chosen);
-    if chosen_score <= 0 then
-        Exit;
-    first_score := m_dictionary.get_completion_corpus_score(query, first);
-    Result := first_score - chosen_score < c_short_corpus_guard;
 end;
 
 function TncEngine.apply_mixed_abbreviation_top(var candidates: TncCandidateList;

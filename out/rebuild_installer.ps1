@@ -104,13 +104,18 @@ require-path (Join-Path $runtimeDataSourceDir 'dict_sc.db')
 require-path (Join-Path $runtimeDataSourceDir 'dict_tc.db')
 
 # The runtime reads short-word promotions from the dictionary instead of a
-# model. A dictionary without them is quietly worse, so it is not packaged.
+# model, and the general text's word frequencies for the choice without a
+# context. A dictionary without either is quietly worse, so it is not packaged.
 $dictInit = Join-Path $resolvedSourceRoot 'out\cassotis_ime_dict_init.exe'
 require-path $dictInit
 foreach ($dictName in @('dict_sc.db', 'dict_tc.db')) {
     & $dictInit (Join-Path $runtimeDataSourceDir $dictName) (Join-Path $resolvedSourceRoot 'data\schema.sql') '--require-short-promotion'
     if ($LASTEXITCODE -ne 0) {
         throw "$dictName has no short promotion table. Run rebuild_dict.ps1 first."
+    }
+    & $dictInit (Join-Path $runtimeDataSourceDir $dictName) (Join-Path $resolvedSourceRoot 'data\schema.sql') '--require-word-frequency'
+    if ($LASTEXITCODE -ne 0) {
+        throw "$dictName has no word frequency table. Run rebuild_dict.ps1 first."
     }
 }
 
