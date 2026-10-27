@@ -935,6 +935,8 @@ type
         function get_candidate_limit: Integer;
         function get_candidate_page_size: Integer;
         function get_total_candidate_limit: Integer;
+        function get_total_candidate_limit_max: Integer;
+        function is_single_full_syllable_composition: Boolean;
         function is_fuzzy_pinyin_active: Boolean; inline;
         function is_predictive_longer_candidate(const candidate: TncCandidate;
             const query: string): Boolean;
@@ -1688,6 +1690,10 @@ const
     c_default_total_limit = 256;
     c_candidate_total_expand_factor = 16;
     c_candidate_total_limit_max = 256;
+    // A single syllable keeps every character it reads, to be paged to (yi
+    // reads 446): at 256 the 190 last of yi were out of reach, 诣 and 饴
+    // among them.
+    c_single_syllable_total_limit = 512;
     c_user_score_bonus = 1000;
     c_partial_candidate_score_penalty = 260;
     c_left_context_max_len = 64;
@@ -5697,10 +5703,30 @@ end;
 function TncEngine.get_total_candidate_limit: Integer;
 begin
     Result := c_default_total_limit;
+    if is_single_full_syllable_composition then
+    begin
+        Result := c_single_syllable_total_limit;
+    end;
     if get_candidate_limit > Result then
     begin
         Result := get_candidate_limit;
     end;
+end;
+
+function TncEngine.get_total_candidate_limit_max: Integer;
+begin
+    Result := c_candidate_total_limit_max;
+    if is_single_full_syllable_composition then
+    begin
+        Result := c_single_syllable_total_limit;
+    end;
+end;
+
+function TncEngine.is_single_full_syllable_composition: Boolean;
+begin
+    Result := (m_config.pinyin_input_scheme = pis_full_pinyin) and
+        (m_composition_text <> '') and
+        nc_is_canonical_pinyin_syllable(LowerCase(m_composition_text));
 end;
 
 function TncEngine.create_dictionary_from_config: TncDictionaryProvider;
@@ -127073,9 +127099,9 @@ var
             apply_selected_prefix_single_context_lm_local(m_candidates);
             Inc(sort_elapsed_ms, Int64(GetTickCount64 - phase_start_tick));
             limit := get_total_candidate_limit;
-            if limit > c_candidate_total_limit_max then
+            if limit > get_total_candidate_limit_max then
             begin
-                limit := c_candidate_total_limit_max;
+                limit := get_total_candidate_limit_max;
             end;
             if (limit > 0) and (Length(m_candidates) > limit) then
             begin
@@ -129951,9 +129977,9 @@ var
             begin
                 limit := get_candidate_limit * c_candidate_total_expand_factor;
             end;
-            if limit > c_candidate_total_limit_max then
+            if limit > get_total_candidate_limit_max then
             begin
-                limit := c_candidate_total_limit_max;
+                limit := get_total_candidate_limit_max;
             end;
         end;
         if raw_from_dictionary and has_multi_syllable_input then
@@ -185306,11 +185332,13 @@ var
         var idx, count: Integer; value: TncCandidate; key: string;
             pool: TncCandidateList; sources: TArray<Integer>;
         begin
-            if ((not m_config.candidate_expand_on_paging) and (not short_context_swapped) and
-                (m_quick_input.kind <> qik_date_alias)) or (m_page_index <> 0) or
+            if (m_page_index <> 0) or
                 long_visible_candidate_pool_cache_is_current(visible_page_size) then Exit;
             // Most queries already have a final pool. Freeze the same filtered
             // tail for single syllables/long exacts without another search.
+            // Paged without it, a page began at its index times the page size
+            // in the candidates, and what the filters left out of a page came
+            // again on the next ("na": 南安 on two pages).
             count := Length(Result);
             SetLength(pool, count + Length(m_candidates));
             SetLength(sources, Length(pool));
@@ -185711,6 +185739,41 @@ var
         head_units_local: Integer;
         tail_units_local: Integer;
         tail_key_local: string;
+
+        // The keys before the tail read as whole syllables, one a character
+        // (xi'an: 西 + an). Initials taken as an abbreviation are none: "zhen"
+        // as 总和 + en made the syllable an input of three, and the page kept
+        // 16 of its characters.
+        function head_reads_whole_syllables_local: Boolean;
+        var
+            head_syllables_local: TncPinyinParseResult;
+            syllable_idx_local: Integer;
+        begin
+            Result := False;
+            if (Length(tail_key_local) >= Length(normalized_pinyin)) or
+                not SameText(Copy(normalized_pinyin,
+                Length(normalized_pinyin) - Length(tail_key_local) + 1, MaxInt),
+                tail_key_local) then
+            begin
+                Exit;
+            end;
+            head_syllables_local := get_effective_compact_pinyin_syllables(
+                Copy(normalized_pinyin, 1,
+                Length(normalized_pinyin) - Length(tail_key_local)));
+            if Length(head_syllables_local) <> head_units_local then
+            begin
+                Exit;
+            end;
+            for syllable_idx_local := 0 to High(head_syllables_local) do
+            begin
+                if not nc_is_canonical_pinyin_syllable(
+                    head_syllables_local[syllable_idx_local].text) then
+                begin
+                    Exit;
+                end;
+            end;
+            Result := True;
+        end;
     begin
         Result := 0;
         for idx_local := 0 to High(m_candidates) do
@@ -185725,6 +185788,10 @@ var
 
             head_units_local := get_candidate_text_unit_count(
                 Trim(m_candidates[idx_local].text));
+            if not head_reads_whole_syllables_local then
+            begin
+                Continue;
+            end;
             tail_units_local := get_effective_compact_pinyin_unit_count(
                 tail_key_local);
             if (head_units_local > 0) and (tail_units_local > 0) and
