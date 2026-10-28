@@ -626,6 +626,7 @@ type
         m_quick_input: TncQuickInputState;
         m_composition_display_text: string;
         m_candidates: TncCandidateList;
+        m_whole_key_readings: TncCandidateList;
         m_one_key_completion: TncOneKeyCompletion;
         m_tab_projection_shown: TncOneKeyCompletion;
         m_tab_projection_query, m_tab_projection_document: string;
@@ -937,6 +938,7 @@ type
         function get_total_candidate_limit: Integer;
         function get_total_candidate_limit_max: Integer;
         function is_single_full_syllable_composition: Boolean;
+        procedure append_whole_key_readings;
         function is_fuzzy_pinyin_active: Boolean; inline;
         function is_predictive_longer_candidate(const candidate: TncCandidate;
             const query: string): Boolean;
@@ -5729,6 +5731,44 @@ begin
         nc_is_canonical_pinyin_syllable(LowerCase(m_composition_text));
 end;
 
+// A few characters read a key that the parser takes for initials: ng and hm
+// (嗯, 噷). The candidates of such an input are the words the initials
+// abbreviate, and the characters themselves never came. They are looked up
+// here, and the page puts them on its first page
+// (keep_visible_whole_key_readings in get_candidates, which rebuilds the
+// candidates of such an input).
+procedure TncEngine.append_whole_key_readings;
+const
+    c_whole_key_max_length = 3;
+var
+    key: string;
+    idx: Integer;
+begin
+    SetLength(m_whole_key_readings, 0);
+    if (m_config.pinyin_input_scheme <> pis_full_pinyin) or (m_dictionary = nil) or
+        (m_confirmed_text <> '') then
+    begin
+        Exit;
+    end;
+    key := LowerCase(m_composition_text);
+    if (Length(key) < 2) or (Length(key) > c_whole_key_max_length) or
+        nc_is_canonical_pinyin_syllable(key) then
+    begin
+        Exit;
+    end;
+    for idx := 1 to Length(key) do
+    begin
+        if not CharInSet(key[idx], ['a' .. 'z']) then
+        begin
+            Exit;
+        end;
+    end;
+    if not m_dictionary.lookup_key_single_chars(key, m_whole_key_readings) then
+    begin
+        SetLength(m_whole_key_readings, 0);
+    end;
+end;
+
 function TncEngine.create_dictionary_from_config: TncDictionaryProvider;
 var
     base_path: string;
@@ -9443,6 +9483,7 @@ begin
     if m_composition_decoded_as_whole then
         clear_keystroke_decode_state;
     build_candidates_core;
+    append_whole_key_readings;
     refresh_raw_input_candidate;
 
     // Once a decimal stops being a quick command, pinyin lookup may have no
@@ -138651,8 +138692,17 @@ var
     end;
 
     // A span's dictionary entries, heaviest first ('' beyond the last one).
+    // A span of three syllables or more without an entry takes the paths the
+    // lexicon's corpus transitions hold for its key instead, heaviest first:
+    // 不|单单 for "budandan", which the page of that input shows first. Only
+    // the heaviest word of each part of a cut of three goes into a draft, so
+    // "wobudandan" (我|不|单单, 淡淡 above 单单) had 我不但但 and 我不淡淡 and
+    // no 我不单单; as one part of a cut of two it is.
     function nth_word(const start, count, rank: Integer): string;
-    var k: Integer;
+    var k, best, used: Integer;
+        paths: TncPairPathEvidenceList;
+        taken: TArray<Boolean>;
+        text: string;
     begin
         if not looked_up[start][count] then
         begin
@@ -138667,6 +138717,31 @@ var
                         word_weights[start][count] := word_weights[start][count] + [items[k].score];
                         if Length(words[start][count]) >= word_limit(count) then Break;
                     end;
+            if (count >= 3) and (Length(words[start][count]) = 0) and
+                m_dictionary.get_exact_pair_path_evidence(span_key(start, count), paths) then
+            begin
+                SetLength(taken, Length(paths));
+                for used := 1 to word_limit(count) do
+                begin
+                    best := -1;
+                    for k := 0 to High(paths) do
+                        if not taken[k] and (paths[k].lm_transition_weight > 0) and
+                            ((best < 0) or (paths[k].lm_transition_weight > paths[best].lm_transition_weight)) then
+                            best := k;
+                    if best < 0 then Break;
+                    taken[best] := True;
+                    text := StringReplace(Trim(paths[best].encoded_path), #3, '', [rfReplaceAll]);
+                    if (Length(text) <> count) or (get_candidate_text_unit_count(text) <> count) then
+                        Continue;
+                    for k := 0 to High(words[start][count]) do
+                        if words[start][count][k] = text then text := '';
+                    if text <> '' then
+                    begin
+                        words[start][count] := words[start][count] + [text];
+                        word_weights[start][count] := word_weights[start][count] + [paths[best].lm_transition_weight];
+                    end;
+                end;
+            end;
         end;
         if rank < Length(words[start][count]) then Result := words[start][count][rank]
         else Result := '';
@@ -185482,6 +185557,43 @@ var
                     Exit;
                 end;
         end;
+
+        // A character that reads the whole key where the parser sees initials
+        // (嗯 for ng; append_whole_key_readings) takes the last place of the
+        // first page, behind the words the initials abbreviate (那个, 能够).
+        procedure keep_visible_whole_key_readings;
+        var reading: TncCandidate; idx, source: Integer; visible: Boolean;
+        begin
+            if (m_page_index <> 0) or (Length(m_whole_key_readings) = 0) then Exit;
+            for reading in m_whole_key_readings do
+            begin
+                visible := False;
+                for idx := 0 to High(Result) do
+                    if (Trim(Result[idx].comment) = '') and
+                        (Trim(Result[idx].text) = Trim(reading.text)) then
+                    begin
+                        visible := True;
+                        Break;
+                    end;
+                if visible then Continue;
+                source := -1;
+                for idx := 0 to High(m_candidates) do
+                    if (Trim(m_candidates[idx].comment) = '') and
+                        (Trim(m_candidates[idx].text) = Trim(reading.text)) then
+                    begin
+                        source := idx;
+                        Break;
+                    end;
+                if source < 0 then
+                begin
+                    m_candidates := m_candidates + [reading];
+                    source := High(m_candidates);
+                end;
+                promote_char_lm_candidate(Result, visible_source_indices,
+                    m_candidates[source], source, visible_page_size, 0,
+                    Min(Length(Result), visible_page_size - 1));
+            end;
+        end;
     begin
         capture_supported_transition_top_local;
         capture_short_exact_ranked_order_local;
@@ -185679,6 +185791,7 @@ var
                 visible_page_size) then
                 short_context_swapped := True;
             enforce_visible_fixed_top_candidate;
+            keep_visible_whole_key_readings;
             if (Length(Result) > 0) and
                 (Trim(Result[0].comment) = '') and
                 (get_candidate_text_unit_count(Trim(Result[0].text)) =

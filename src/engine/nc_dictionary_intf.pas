@@ -96,6 +96,10 @@ type
         { The syllables a single character reads (single_char_matches_pinyin
           for every canonical syllable unless a provider knows them). }
         function get_single_char_readings(const text_unit: string): TArray<string>; virtual;
+        { The single characters stored under exactly this key, heaviest first:
+          the readings of keys the parser takes for initials (ng: 嗯). }
+        function lookup_key_single_chars(const pinyin: string;
+            out results: TncCandidateList): Boolean; virtual;
         procedure begin_learning_batch; virtual;
         procedure commit_learning_batch; virtual;
         procedure rollback_learning_batch; virtual;
@@ -443,6 +447,13 @@ begin
     for syllable in nc_canonical_pinyin_syllables_starting_with('') do
         if single_char_matches_pinyin(syllable, text_unit) then
             Result := Result + [syllable];
+end;
+
+function TncDictionaryProvider.lookup_key_single_chars(const pinyin: string;
+    out results: TncCandidateList): Boolean;
+begin
+    SetLength(results, 0);
+    Result := False;
 end;
 
 procedure TncDictionaryProvider.begin_learning_batch;
