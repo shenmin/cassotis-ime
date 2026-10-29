@@ -248,6 +248,9 @@ type
         candidate_page_key_scheme: TncCandidatePageKeyScheme;
         one_key_completion_key: TncOneKeyCompletionKey;
         candidate_color_scheme: Integer;
+        // A label beside the caret: the new mode on a switch, and English
+        // when a field takes the focus.
+        input_mode_hint: Boolean;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
         shortcuts: TncShortcutConfig;

@@ -15,6 +15,8 @@ uses
     nc_shortcut,
     nc_engine_intf,
     nc_candidate_window,
+    nc_mode_hint_policy,
+    nc_mode_hint_window,
     nc_candidate_paging,
     nc_candidate_click,
     nc_config,
@@ -176,6 +178,8 @@ type
         m_char_lm: IncCharLm;
         m_last_lookup_perf_info: string;
         m_input_epochs: TncInputEpochs;
+        // The label beside the caret, shared by every session (UI thread).
+        m_mode_hint_window: TncModeHintWindow;
         function admit_input_epoch_locked(const session_id: string; const input_epoch: UInt64;
             const command: string): TncInputEpochDecision;
         function admit_reset_locked(const session_id: string; const input_epoch: UInt64): Boolean;
@@ -252,6 +256,9 @@ type
         procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
             const line_height: Integer; const terminal_like_target: Boolean; const comless_target: Boolean;
             const source: TncCaretAnchorSource; const anchor_score: Integer);
+        procedure show_mode_hint(const point: TPoint; const line_height: Integer;
+            const reason: TncModeHintReason);
+        procedure hide_mode_hint;
         procedure update_surrounding(const session_id: string;
             const left_context: string; const document_key: string = '';
             const document_snapshot: string = '');
@@ -1667,6 +1674,7 @@ begin
             m_maintenance_thread := nil;
         end;
     end;
+    FreeAndNil(m_mode_hint_window);
     if m_local_completion_host <> nil then
     begin
         m_local_completion_host.Free;
@@ -3804,6 +3812,49 @@ begin
     end;
 end;
 
+procedure TncEngineHost.show_mode_hint(const point: TPoint; const line_height: Integer;
+    const reason: TncModeHintReason);
+var
+    enabled: Boolean;
+    input_mode: TncInputMode;
+    color_scheme: Integer;
+begin
+    // The mode is the host's: a document's own copy can be older.
+    reload_config_if_needed;
+    m_lock.Acquire;
+    try
+        enabled := m_config.input_mode_hint;
+        input_mode := m_config.input_mode;
+        color_scheme := m_config.candidate_color_scheme;
+    finally
+        m_lock.Release;
+    end;
+    if host_log_enabled_for(ll_debug) then
+        host_log_debug(Format('mode_hint reason=%s mode=%d enabled=%d point=(%d,%d) line=%d',
+            [nc_mode_hint_reason_to_text(reason), Ord(input_mode), Ord(enabled),
+            point.X, point.Y, line_height]));
+    if not nc_mode_hint_should_show(enabled, reason, input_mode) then
+        Exit;
+    TThread.Queue(nil,
+        procedure
+        begin
+            if m_mode_hint_window = nil then
+                m_mode_hint_window := TncModeHintWindow.create;
+            m_mode_hint_window.show_hint(point, line_height, input_mode, color_scheme,
+                nc_mode_hint_hold_ms(reason));
+        end);
+end;
+
+procedure TncEngineHost.hide_mode_hint;
+begin
+    TThread.Queue(nil,
+        procedure
+        begin
+            if m_mode_hint_window <> nil then
+                m_mode_hint_window.dismiss;
+        end);
+end;
+
 procedure TncEngineHost.update_surrounding(const session_id: string;
     const left_context: string; const document_key: string;
     const document_snapshot: string);
@@ -4207,6 +4258,7 @@ var
     punctuation_preceding_char: Integer;
     import_entries: Integer;
     import_imported: Integer;
+    mode_hint_reason: TncModeHintReason;
 begin
     Result := 'ERROR'#9'bad_request';
     try
@@ -4233,7 +4285,8 @@ begin
         end;
         if not (SameText(cmd, 'GET_ACTIVE') or SameText(cmd, 'GET_STATE') or SameText(cmd, 'GET_VARIANT') or
             SameText(cmd, 'PING') or SameText(cmd, 'SET_ACTIVE') or SameText(cmd, 'SET_SURROUNDING') or
-            SameText(cmd, 'SET_CARET')) then
+            SameText(cmd, 'SET_CARET') or SameText(cmd, 'MODE_HINT') or
+            SameText(cmd, 'HIDE_MODE_HINT')) then
         begin
             if host_log_enabled_for(ll_debug) then
             begin
@@ -4309,6 +4362,27 @@ begin
             m_host.update_caret(session_id, Point(x, y), has_caret,
                 line_height, caret_terminal_like_target, caret_comless_target,
                 caret_source, caret_score);
+            Result := 'OK';
+            Exit;
+        end;
+
+        if SameText(cmd, 'MODE_HINT') then
+        begin
+            if (Length(fields) < 6) or
+                not nc_try_parse_mode_hint_reason(fields[5], mode_hint_reason) then
+            begin
+                Result := 'ERROR'#9'bad_args';
+                Exit;
+            end;
+            m_host.show_mode_hint(Point(StrToIntDef(fields[2], 0), StrToIntDef(fields[3], 0)),
+                StrToIntDef(fields[4], 0), mode_hint_reason);
+            Result := 'OK';
+            Exit;
+        end;
+
+        if SameText(cmd, 'HIDE_MODE_HINT') then
+        begin
+            m_host.hide_mode_hint;
             Result := 'OK';
             Exit;
         end;

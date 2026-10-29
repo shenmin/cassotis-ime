@@ -184,6 +184,7 @@ type
         m_chk_full_width_mode: TncModernCheckBox;
         m_chk_auto_english: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
+        m_chk_input_mode_hint: TncModernCheckBox;
         m_track_status_widget_transparency: TTrackBar;
         m_label_status_widget_transparency: TLabel;
         m_combo_candidate_font: TComboBox;
@@ -438,6 +439,8 @@ resourcestring
     SCheckFullWidthMode = '使用全角输入';
     SCheckAutoEnglish = '识别英文单词，空格直接上屏';
     SCheckShowStatusWidget = '显示状态浮窗';
+    SCheckInputModeHint = '光标旁提示中英文状态';
+    SInputModeHintHint = '切换中英文时显示新状态；进入输入框时，处于英文状态才提醒。';
     SLabelStatusWidgetTransparency = '浮窗透明度';
     SLabelCandidateFont = '候选字体';
     SLabelCandidateSize = '大小';
@@ -1843,6 +1846,7 @@ begin
         update_check_box_metrics(m_chk_fuzzy_pinyin_rules[fuzzy_rule]);
     end;
     update_check_box_metrics(m_chk_show_status_widget);
+    update_check_box_metrics(m_chk_input_mode_hint);
     for action := Low(TncShortcutAction) to High(TncShortcutAction) do
         update_check_box_metrics(m_chk_shortcut_enabled[action]);
     update_check_box_metrics(m_chk_log_enabled);
@@ -2216,6 +2220,15 @@ begin
 
     top := scale_ui(c_untitled_section_inner_top);
     m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
+    m_chk_show_status_widget.Width := scale_ui(c_control_left - c_label_left);
+    m_chk_input_mode_hint := create_check_box(Self, appearance_group, top, SCheckInputModeHint, mark_dirty);
+    m_chk_input_mode_hint.Name := 'InputModeHint';
+    m_chk_input_mode_hint.Left := scale_ui(c_control_left);
+    m_chk_input_mode_hint.Width := appearance_group.ClientWidth -
+        m_chk_input_mode_hint.Left - scale_ui(c_label_left);
+    m_chk_input_mode_hint.Anchors := [akLeft, akTop, akRight];
+    m_chk_input_mode_hint.Hint := SInputModeHintHint;
+    m_chk_input_mode_hint.ShowHint := True;
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
     create_label(Self, appearance_group, SLabelStatusWidgetTransparency, top);
@@ -3443,6 +3456,7 @@ begin
     else if m_page_control.ActivePage = m_tab_appearance then
     begin
         m_chk_show_status_widget.Checked := True;
+        m_chk_input_mode_hint.Checked := default_engine_config.input_mode_hint;
         m_track_status_widget_transparency.Position := c_default_status_widget_transparency;
         candidate_font_name := Trim(default_engine_config.candidate_font_name);
         if candidate_font_name = '' then
@@ -4043,6 +4057,8 @@ begin
     begin
         m_chk_show_status_widget.Checked := m_status_widget_visible;
     end;
+    if m_chk_input_mode_hint <> nil then
+        m_chk_input_mode_hint.Checked := m_engine_config.input_mode_hint;
     if m_track_status_widget_transparency <> nil then
     begin
         m_loading_controls := True;
@@ -4220,6 +4236,7 @@ begin
 
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
     next_config.auto_english := m_chk_auto_english.Checked;
+    next_config.input_mode_hint := m_chk_input_mode_hint.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.decimal_period_after_digit := m_chk_decimal_period_after_digit.Checked;
     // An inactive edit must not reject Apply or overwrite the saved preference.

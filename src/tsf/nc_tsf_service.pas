@@ -31,7 +31,8 @@ uses
     nc_ipc_client,
     nc_ipc_common,
     nc_candidate_click,
-    nc_ipc_health;
+    nc_ipc_health,
+    nc_mode_hint_policy;
 
 type
     TncTextService = class(TComObject, ITfTextInputProcessor, ITfTextInputProcessorEx,
@@ -144,6 +145,25 @@ type
         m_terminal_ctrl_space_window: HWND;
         m_terminal_ctrl_space_key_down: Boolean;
         m_langbar_icon: HICON;
+        // The label beside the caret (nc_mode_hint_policy): a timer waits
+        // until the focused field reports its caret, then the worker thread
+        // asks the host, which decides from its mode whether to show it.
+        m_mode_hint_window: HWND;
+        m_mode_hint_armed: Boolean;
+        m_mode_hint_reason: TncModeHintReason;
+        m_mode_hint_attempts: Integer;
+        m_mode_hint_serial: Cardinal;
+        m_mode_hint_probed: Boolean;
+        m_mode_hint_protected: Boolean;
+        m_mode_hint_target: TncModeHintTarget;
+        m_mode_hint_target_tick: UInt64;
+        m_mode_hint_shown_until: UInt64;
+        m_pending_mode_hint: Boolean;
+        m_pending_mode_hint_show: Boolean;
+        m_pending_mode_hint_session_id: string;
+        m_pending_mode_hint_point: TPoint;
+        m_pending_mode_hint_line_height: Integer;
+        m_pending_mode_hint_reason: TncModeHintReason;
         procedure clear_state;
         procedure unpreserve_input_mode_shortcut;
         procedure refresh_preserved_input_mode_shortcut;
@@ -233,6 +253,14 @@ type
         procedure toggle_dictionary_variant_by_shortcut;
         procedure open_settings_by_shortcut;
         procedure configure_system_input_mode_icon;
+        procedure mode_hint_message(var message: TMessage);
+        procedure schedule_mode_hint(const reason: TncModeHintReason);
+        procedure cancel_mode_hint(const hide: Boolean);
+        procedure run_mode_hint;
+        procedure probe_mode_hint_under_lock(const context: ITfContext;
+            const ec: TfEditCookie; const serial: Cardinal);
+        procedure queue_mode_hint_request(const show: Boolean; const point: TPoint;
+            const line_height: Integer; const reason: TncModeHintReason);
         function on_test_key_down_core(const context: ITfContext; wParam: WPARAM;
             lParam: LPARAM; out eaten: Integer): HResult;
         function on_key_down_core(const context: ITfContext; wParam: WPARAM;
@@ -325,6 +353,15 @@ type
 const
     c_nc_terminal_ctrl_space_message = WM_APP + 311;
     c_nc_low_level_keyboard_injected = $00000010;
+    // The label beside the caret.
+    c_mode_hint_timer_id = 1;
+    // A field that just took the focus reports its caret a little later.
+    c_mode_hint_focus_delay_ms = 150;
+    c_mode_hint_toggle_delay_ms = 30;
+    c_mode_hint_retry_ms = 70;
+    c_mode_hint_max_attempts = 6;
+    GUID_NC_COMPARTMENT_KEYBOARD_DISABLED: TGUID = '{71A5B253-1951-466B-9FBC-9C8808FA84F2}';
+    GUID_NC_COMPARTMENT_EMPTYCONTEXT: TGUID = '{D7487DBF-804E-41C5-894D-AD96FD4EEA13}';
 
 threadvar
     g_terminal_ctrl_space_service: TncTextService;
@@ -875,6 +912,12 @@ begin
     begin
         DeallocateHWnd(m_candidate_click_window);
         m_candidate_click_window := 0;
+    end;
+    if m_mode_hint_window <> 0 then
+    begin
+        KillTimer(m_mode_hint_window, c_mode_hint_timer_id);
+        DeallocateHWnd(m_mode_hint_window);
+        m_mode_hint_window := 0;
     end;
     if m_compartment_deferred <> nil then
         m_compartment_deferred.Close;
@@ -1456,6 +1499,286 @@ begin
     end;
 end;
 
+type
+    // Reads, under a read lock of the focused field, whether it takes a
+    // password or PIN and where its caret is (TncCaretEditSession), for the
+    // label beside the caret.
+    TncModeHintProbeEditSession = class(TInterfacedObject, ITfEditSession)
+    private
+        m_service: TncTextService;
+        m_service_ref: IUnknown;
+        m_context: ITfContext;
+        m_serial: Cardinal;
+    public
+        constructor create(const service: TncTextService; const context: ITfContext;
+            const serial: Cardinal);
+        function DoEditSession(ec: TfEditCookie): HResult; stdcall;
+    end;
+
+constructor TncModeHintProbeEditSession.create(const service: TncTextService;
+    const context: ITfContext; const serial: Cardinal);
+begin
+    inherited create;
+    m_service := service;
+    // Keeps the service alive until an asynchronous session has run.
+    m_service_ref := service as IUnknown;
+    m_context := context;
+    m_serial := serial;
+end;
+
+function TncModeHintProbeEditSession.DoEditSession(ec: TfEditCookie): HResult;
+begin
+    Result := S_OK;
+    try
+        m_service.probe_mode_hint_under_lock(m_context, ec, m_serial);
+    except
+        log_tsf_boundary_exception('ModeHintProbe');
+        Result := E_FAIL;
+    end;
+end;
+
+// A field where the input method takes no keys: disabled for the keyboard
+// (a password box) or without text.
+function context_takes_no_input(const context: ITfContext): Boolean;
+var
+    compartment_mgr: ITfCompartmentMgr;
+
+    function compartment_set(guid: TGUID): Boolean;
+    var
+        compartment: ITfCompartment;
+        value: OleVariant;
+    begin
+        Result := False;
+        if (compartment_mgr.GetCompartment(guid, compartment) <> S_OK) or (compartment = nil) or
+            (compartment.GetValue(value) <> S_OK) then
+            Exit;
+        Result := (VarType(value) in [varInteger, varLongWord, varSmallint, varByte]) and
+            (Integer(value) <> 0);
+    end;
+begin
+    Result := Supports(context, ITfCompartmentMgr, compartment_mgr) and
+        (compartment_set(GUID_NC_COMPARTMENT_KEYBOARD_DISABLED) or
+        compartment_set(GUID_NC_COMPARTMENT_EMPTYCONTEXT));
+end;
+
+procedure TncTextService.mode_hint_message(var message: TMessage);
+begin
+    if (message.Msg = WM_TIMER) and (message.WParam = c_mode_hint_timer_id) then
+    begin
+        message.Result := 0;
+        try
+            run_mode_hint;
+        except
+            log_tsf_boundary_exception('ModeHintTimer');
+        end;
+        Exit;
+    end;
+    message.Result := DefWindowProc(m_mode_hint_window, message.Msg, message.WParam,
+        message.LParam);
+end;
+
+procedure TncTextService.schedule_mode_hint(const reason: TncModeHintReason);
+var
+    doc: ITfDocumentMgr;
+    target: TncModeHintTarget;
+    now_tick: UInt64;
+    delay_ms: UINT;
+begin
+    if (m_thread_mgr = nil) or (m_ipc_client = nil) or (m_session_id = '') then
+        Exit;
+    if reason = mhr_focus then
+    begin
+        // The answer to a switch the user just made is not replaced by a
+        // focus that comes with it.
+        if m_mode_hint_armed and (m_mode_hint_reason = mhr_toggle) then
+            Exit;
+        if Failed(m_thread_mgr.GetFocus(doc)) or (doc = nil) then
+            Exit;
+        target.document := NativeUInt(Pointer(doc));
+        target.window := NativeUInt(GetFocus);
+        now_tick := GetTickCount64;
+        if nc_mode_hint_focus_is_repeat(m_mode_hint_target, target,
+            m_mode_hint_target_tick, now_tick) then
+        begin
+            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                m_logger.debug('Mode hint reason=focus skipped: the same field again');
+            Exit;
+        end;
+        m_mode_hint_target := target;
+        m_mode_hint_target_tick := now_tick;
+        delay_ms := c_mode_hint_focus_delay_ms;
+    end
+    else
+    begin
+        delay_ms := c_mode_hint_toggle_delay_ms;
+    end;
+    if m_mode_hint_window = 0 then
+        m_mode_hint_window := AllocateHWnd(mode_hint_message);
+    if m_mode_hint_window = 0 then
+        Exit;
+    Inc(m_mode_hint_serial);
+    m_mode_hint_reason := reason;
+    m_mode_hint_attempts := 0;
+    m_mode_hint_probed := False;
+    m_mode_hint_protected := False;
+    m_mode_hint_armed := SetTimer(m_mode_hint_window, c_mode_hint_timer_id, delay_ms, nil) <> 0;
+end;
+
+procedure TncTextService.cancel_mode_hint(const hide: Boolean);
+begin
+    if m_mode_hint_armed and (m_mode_hint_window <> 0) then
+        KillTimer(m_mode_hint_window, c_mode_hint_timer_id);
+    m_mode_hint_armed := False;
+    Inc(m_mode_hint_serial);
+    if hide and (m_mode_hint_shown_until <> 0) and (GetTickCount64 < m_mode_hint_shown_until) then
+        queue_mode_hint_request(False, System.Types.Point(0, 0), 0, m_mode_hint_reason);
+    m_mode_hint_shown_until := 0;
+end;
+
+procedure TncTextService.run_mode_hint;
+var
+    doc: ITfDocumentMgr;
+    context: ITfContext;
+    probe: ITfEditSession;
+    request_hr: HRESULT;
+    session_hr: HRESULT;
+    point: TPoint;
+    line_height: Integer;
+    terminal_like_target: Boolean;
+    source: TncCaretAnchorSource;
+    score: Integer;
+    caret_found: Boolean;
+
+    procedure note(const text: string);
+    begin
+        if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+            m_logger.debug(Format('Mode hint reason=%s attempt=%d %s',
+                [nc_mode_hint_reason_to_text(m_mode_hint_reason), m_mode_hint_attempts, text]));
+    end;
+
+    procedure retry(const why: string);
+    begin
+        Inc(m_mode_hint_attempts);
+        if m_mode_hint_attempts < c_mode_hint_max_attempts then
+        begin
+            m_mode_hint_armed := SetTimer(m_mode_hint_window, c_mode_hint_timer_id,
+                c_mode_hint_retry_ms, nil) <> 0;
+            note('retry: ' + why);
+        end
+        else
+            note('given up: ' + why);
+    end;
+begin
+    KillTimer(m_mode_hint_window, c_mode_hint_timer_id);
+    m_mode_hint_armed := False;
+    if (m_thread_mgr = nil) or (m_client_id = 0) or (m_session_id = '') then
+        Exit;
+    if m_composition <> nil then
+    begin
+        note('skipped: composing');
+        Exit;
+    end;
+    if Failed(m_thread_mgr.GetFocus(doc)) or (doc = nil) or Failed(doc.GetTop(context)) or
+        (context = nil) then
+    begin
+        note('skipped: no focused context');
+        Exit;
+    end;
+    if (m_mode_hint_reason = mhr_focus) and
+        (NativeUInt(Pointer(doc)) <> m_mode_hint_target.document) then
+    begin
+        note('skipped: the focus moved on');
+        Exit;
+    end;
+    if not m_mode_hint_probed then
+    begin
+        // The caret of the field read now, not one left from the field before.
+        if m_mode_hint_attempts = 0 then
+            m_has_caret_point := False;
+        probe := TncModeHintProbeEditSession.create(Self, context, m_mode_hint_serial);
+        session_hr := S_OK;
+        request_hr := context.RequestEditSession(m_client_id, probe,
+            TF_ES_READ or TF_ES_ASYNCDONTCARE, session_hr);
+        // Without the lock there is no telling a password field: no label.
+        if not m_mode_hint_probed then
+        begin
+            retry(Format('no read lock hr=0x%s session=0x%s',
+                [IntToHex(Cardinal(request_hr), 8), IntToHex(Cardinal(session_hr), 8)]));
+            Exit;
+        end;
+    end;
+    if m_mode_hint_protected then
+    begin
+        note('skipped: the field takes no input or a password');
+        Exit;
+    end;
+    // Never at the mouse or a guessed place: without the field's own caret
+    // there is no label.
+    caret_found := get_candidate_point(point, line_height, terminal_like_target, source, score);
+    if not caret_found or not (source in [casTsf, casImm, casGui, casCaretPos]) then
+    begin
+        m_mode_hint_probed := False;
+        if caret_found then
+            retry('no caret of the field: ' + anchor_source_name(source))
+        else
+            retry('no caret');
+        Exit;
+    end;
+    note(Format('source=%s point=(%d,%d) line=%d', [anchor_source_name(source),
+        point.X, point.Y, line_height]));
+    queue_mode_hint_request(True, point, line_height, m_mode_hint_reason);
+    // Long enough for the host's fade in, hold and fade out.
+    m_mode_hint_shown_until := GetTickCount64 + nc_mode_hint_hold_ms(m_mode_hint_reason) + 600;
+end;
+
+procedure TncTextService.probe_mode_hint_under_lock(const context: ITfContext;
+    const ec: TfEditCookie; const serial: Cardinal);
+var
+    caret: ITfEditSession;
+    password_window, protected_scope, no_input: Boolean;
+begin
+    if (serial <> m_mode_hint_serial) or (m_thread_mgr = nil) then
+        Exit;
+    password_window := is_password_window_context(context);
+    protected_scope := is_protected_input_scope(context, ec);
+    no_input := context_takes_no_input(context);
+    m_mode_hint_protected := password_window or protected_scope or no_input;
+    if m_mode_hint_protected and (m_logger <> nil) and (m_logger.level <= ll_debug) then
+        m_logger.debug(Format('Mode hint protected password_window=%d scope=%d no_input=%d',
+            [Ord(password_window), Ord(protected_scope), Ord(no_input)]));
+    if not m_mode_hint_protected then
+    begin
+        caret := TncCaretEditSession.create(context, @m_composition, @m_last_caret_point,
+            @m_has_caret_point, @m_last_caret_line_height);
+        caret.DoEditSession(ec);
+    end;
+    m_mode_hint_probed := True;
+end;
+
+procedure TncTextService.queue_mode_hint_request(const show: Boolean; const point: TPoint;
+    const line_height: Integer; const reason: TncModeHintReason);
+begin
+    if m_active_state_thread = nil then
+        start_active_state_worker;
+    if (m_active_state_thread = nil) or (m_active_state_lock = nil) or
+        (m_active_state_event = nil) or (m_session_id = '') then
+        Exit;
+    m_active_state_lock.Acquire;
+    try
+        if m_active_state_shutdown then
+            Exit;
+        m_pending_mode_hint := True;
+        m_pending_mode_hint_show := show;
+        m_pending_mode_hint_session_id := m_session_id;
+        m_pending_mode_hint_point := point;
+        m_pending_mode_hint_line_height := line_height;
+        m_pending_mode_hint_reason := reason;
+        m_active_state_event.SetEvent;
+    finally
+        m_active_state_lock.Release;
+    end;
+end;
+
 procedure TncTextService.start_active_state_worker;
 begin
     if (m_active_state_thread <> nil) or (m_active_state_lock = nil) or (m_active_state_event = nil) then
@@ -1476,6 +1799,12 @@ begin
                 active_value: Boolean;
                 has_work: Boolean;
                 request_ok: Boolean;
+                hint_work: Boolean;
+                hint_show: Boolean;
+                hint_session_id: string;
+                hint_point: TPoint;
+                hint_line_height: Integer;
+                hint_reason: TncModeHintReason;
             begin
                 try
                     // Off the application's UI thread; SET_ACTIVE may build a cold session.
@@ -1501,13 +1830,36 @@ begin
                                     active_value := m_pending_active_value;
                                     m_active_state_pending := False;
                                     m_pending_active_session_id := '';
+                                    hint_work := m_pending_mode_hint and (m_pending_mode_hint_session_id <> '');
+                                    hint_show := m_pending_mode_hint_show;
+                                    hint_session_id := m_pending_mode_hint_session_id;
+                                    hint_point := m_pending_mode_hint_point;
+                                    hint_line_height := m_pending_mode_hint_line_height;
+                                    hint_reason := m_pending_mode_hint_reason;
+                                    m_pending_mode_hint := False;
+                                    m_pending_mode_hint_session_id := '';
                                 finally
                                     m_active_state_lock.Release;
                                 end;
 
-                                if not has_work then
+                                if not (has_work or hint_work) then
                                 begin
                                     Break;
+                                end;
+
+                                // The label never starts the host.
+                                if hint_work and ipc_client.is_host_running then
+                                begin
+                                    if hint_show then
+                                        ipc_client.show_mode_hint(hint_session_id, hint_point,
+                                            hint_line_height, hint_reason)
+                                    else
+                                        ipc_client.hide_mode_hint(hint_session_id);
+                                end;
+
+                                if not has_work then
+                                begin
+                                    Continue;
                                 end;
 
                                 if active_value then
@@ -2223,6 +2575,7 @@ begin
             m_logger.warn('TSF key trace sink unavailable; system-owned shortcuts may use compartment fallback');
         end;
     end;
+    schedule_mode_hint(mhr_focus);
 
     Result := S_OK;
 end;
@@ -2251,6 +2604,7 @@ end;
 
 procedure TncTextService.deactivate_core;
 begin
+    cancel_mode_hint(True);
     remove_terminal_ctrl_space_hook;
     unpreserve_input_mode_shortcut;
     if m_key_event_advised and (m_keystroke_mgr <> nil) then
@@ -2322,6 +2676,7 @@ begin
     try
         if focus = 0 then
         begin
+            cancel_mode_hint(True);
             if m_compartment_deferred <> nil then
                 m_compartment_deferred.Cancel;
             cancel_composition;
@@ -2354,6 +2709,7 @@ begin
             // Settings are edited in the tray process. Refresh on focus regain
             // so an already loaded client cannot keep its previous shortcut.
             reload_config_if_needed(True);
+            schedule_mode_hint(mhr_focus);
         end;
     except
         log_tsf_boundary_exception('KeyEventSink.OnSetFocus');
@@ -3358,6 +3714,7 @@ begin
     m_external_input_mode_target := next_input_mode;
     m_external_input_mode_transition_tick := GetTickCount64;
     send_state_to_host(next_input_mode, full_width_mode, punctuation_full_width, 'key_trace');
+    schedule_mode_hint(mhr_toggle);
 
     m_last_input_mode := next_input_mode;
     m_last_full_width_mode := full_width_mode;
@@ -3449,7 +3806,7 @@ begin
         m_logger.debug(Format('Shortcut %s toggled input mode -> %d source=%s',
             [nc_shortcut_to_text(m_shortcut_config.input_mode_toggle), Ord(next_input_mode), state_source]));
     end;
-
+    schedule_mode_hint(mhr_toggle);
 end;
 
 procedure TncTextService.toggle_full_width_mode_by_shortcut;
@@ -3850,6 +4207,10 @@ var
 begin
     Result := S_OK;
     try
+        // A key puts the label beside the caret away, and one still waiting
+        // for the caret does not come: a switch it makes asks again below.
+        if m_mode_hint_armed or (m_mode_hint_shown_until <> 0) then
+            cancel_mode_hint(True);
         reload_config_if_needed;
         key_code := Word(wParam);
         key_state := build_key_state;
@@ -4031,6 +4392,10 @@ begin
             m_last_surrounding_request_tick := 0;
             m_surrounding_needs_refresh := True;
         end;
+        if pdimFocus <> nil then
+            schedule_mode_hint(mhr_focus)
+        else
+            cancel_mode_hint(True);
     except
         log_tsf_boundary_exception('ThreadMgrEventSink.OnSetFocus');
     end;
@@ -4487,6 +4852,9 @@ begin
             save_engine_state_to_config(next_input_mode, next_full_width,
                 next_punctuation_full_width);
         end;
+        if (next_input_mode <> previous_input_mode) and
+            not (rejected_transition or guard_unconfigured_mode or external_transition) then
+            schedule_mode_hint(mhr_toggle);
         if next_input_mode = im_english then
         begin
             cancel_composition;

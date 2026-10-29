@@ -915,6 +915,7 @@ begin
     Result.candidate_page_key_scheme := cpks_minus_plus;
     Result.one_key_completion_key := ock_tab;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
+    Result.input_mode_hint := True;
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.shortcuts := nc_default_shortcut_config;
@@ -1186,6 +1187,8 @@ begin
         Result.candidate_color_scheme := parse_candidate_color_scheme_text(safe_ini_read_string(ini, 'appearance',
             'candidate_color_scheme', candidate_color_scheme_to_text(c_default_candidate_color_scheme)),
             c_default_candidate_color_scheme);
+        Result.input_mode_hint := safe_ini_read_bool(ini, 'appearance',
+            'input_mode_hint', True);
         Result.debug_mode := safe_ini_read_integer(ini, 'engine', 'debug', 0) <> 0;
         variant_text := safe_ini_read_string(ini, 'dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
@@ -1358,6 +1361,7 @@ begin
             config.candidate_expand_on_paging);
         ini.WriteString('appearance', 'candidate_color_scheme',
             candidate_color_scheme_to_text(config.candidate_color_scheme));
+        ini.WriteBool('appearance', 'input_mode_hint', config.input_mode_hint);
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
         ini.WriteString('shortcuts', 'input_mode_toggle',
             nc_shortcut_to_text(shortcut_config.input_mode_toggle));

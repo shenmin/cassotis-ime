@@ -7,7 +7,8 @@ uses
     System.SysUtils,
     System.Types,
     nc_types,
-    nc_caret_anchor_policy;
+    nc_caret_anchor_policy,
+    nc_mode_hint_policy;
 
 const
     // Upper bound for one request/reply exchange. The pipe availability wait
@@ -75,6 +76,11 @@ type
         function set_surrounding(const session_id: string;
             const left_context: string; const document_key: string = '';
             const document_snapshot: string = ''): Boolean;
+        // The label beside the caret (point: the caret's left and the bottom
+        // of its line); the host decides from its mode whether to show it.
+        function show_mode_hint(const session_id: string; const point: TPoint;
+            const line_height: Integer; const reason: TncModeHintReason): Boolean;
+        function hide_mode_hint(const session_id: string): Boolean;
         function reload_config(const session_id: string): Boolean;
         function clear_user_dictionary(const session_id: string): Boolean;
         function import_user_words(const session_id, path: string;
@@ -93,6 +99,8 @@ function build_set_caret_request(const session_id: string;
 function build_set_state_request(const session_id: string;
     const input_mode: TncInputMode; const full_width_mode: Boolean;
     const punctuation_full_width: Boolean; const source: string = ''): string;
+function build_mode_hint_request(const session_id: string; const point: TPoint;
+    const line_height: Integer; const reason: TncModeHintReason): string;
 function try_parse_shortcut_config_response(const response_text: string;
     out shortcut_config: TncShortcutConfig): Boolean;
 
@@ -878,6 +886,32 @@ begin
 
     fields := response_text.Split([#9], TStringSplitOptions.None);
     Result := (Length(fields) >= 1) and SameText(fields[0], 'OK');
+end;
+
+function build_mode_hint_request(const session_id: string; const point: TPoint;
+    const line_height: Integer; const reason: TncModeHintReason): string;
+begin
+    Result := Format('MODE_HINT'#9'%s'#9'%d'#9'%d'#9'%d'#9'%s',
+        [session_id, point.X, point.Y, line_height, nc_mode_hint_reason_to_text(reason)]);
+end;
+
+function TncIpcClient.show_mode_hint(const session_id: string; const point: TPoint;
+    const line_height: Integer; const reason: TncModeHintReason): Boolean;
+var
+    response_text: string;
+begin
+    Result := (session_id <> '') and
+        call_pipe(build_mode_hint_request(session_id, point, line_height, reason), response_text) and
+        response_text.StartsWith('OK');
+end;
+
+function TncIpcClient.hide_mode_hint(const session_id: string): Boolean;
+var
+    response_text: string;
+begin
+    Result := (session_id <> '') and
+        call_pipe('HIDE_MODE_HINT'#9 + session_id, response_text) and
+        response_text.StartsWith('OK');
 end;
 
 function TncIpcClient.release_session(const session_id: string): Boolean;
