@@ -8,9 +8,9 @@ uses
 
 type
     // Why the label beside the caret is asked for: a field took the keyboard
-    // focus (or the input method became active in it), or the user switched
-    // between Chinese and English.
-    TncModeHintReason = (mhr_focus, mhr_toggle);
+    // focus, the user switched between Chinese and English, or the user
+    // switched to this input method from another one (it became active).
+    TncModeHintReason = (mhr_focus, mhr_toggle, mhr_activate);
 
     // The field a focus hint was asked for: its document manager and window.
     TncModeHintTarget = record
@@ -23,11 +23,14 @@ const
     c_mode_hint_repeat_ms = 3000;
     // How long the label stays fully visible after fading in, before it fades
     // out: a reminder on focus a little longer than the answer to a switch.
+    // Switching to the input method holds as long as a focus: the eye is on
+    // the system's switcher, not yet on the caret.
     c_mode_hint_focus_hold_ms = 1300;
     c_mode_hint_toggle_hold_ms = 800;
 
-// A switch always shows the new mode; a focus only reminds of English, the
-// mode that types letters without any sign of the input method.
+// A switch, of the mode or to the input method, always shows the mode; a
+// focus only reminds of English, the mode that types letters without any sign
+// of the input method.
 function nc_mode_hint_should_show(const enabled: Boolean;
     const reason: TncModeHintReason; const input_mode: TncInputMode): Boolean;
 function nc_mode_hint_hold_ms(const reason: TncModeHintReason): Cardinal;
@@ -50,7 +53,7 @@ uses
 function nc_mode_hint_should_show(const enabled: Boolean;
     const reason: TncModeHintReason; const input_mode: TncInputMode): Boolean;
 begin
-    Result := enabled and ((reason = mhr_toggle) or (input_mode = im_english));
+    Result := enabled and ((reason <> mhr_focus) or (input_mode = im_english));
 end;
 
 function nc_mode_hint_hold_ms(const reason: TncModeHintReason): Cardinal;
@@ -95,10 +98,14 @@ end;
 
 function nc_mode_hint_reason_to_text(const reason: TncModeHintReason): string;
 begin
-    if reason = mhr_toggle then
-        Result := 'toggle'
+    case reason of
+        mhr_toggle:
+            Result := 'toggle';
+        mhr_activate:
+            Result := 'activate';
     else
         Result := 'focus';
+    end;
 end;
 
 function nc_try_parse_mode_hint_reason(const text: string;
@@ -107,6 +114,8 @@ begin
     Result := True;
     if SameText(text, 'toggle') then
         reason := mhr_toggle
+    else if SameText(text, 'activate') then
+        reason := mhr_activate
     else if SameText(text, 'focus') then
         reason := mhr_focus
     else

@@ -1586,18 +1586,20 @@ var
 begin
     if (m_thread_mgr = nil) or (m_ipc_client = nil) or (m_session_id = '') then
         Exit;
-    if reason = mhr_focus then
+    if reason <> mhr_toggle then
     begin
         // The answer to a switch the user just made is not replaced by a
         // focus that comes with it.
-        if m_mode_hint_armed and (m_mode_hint_reason = mhr_toggle) then
+        if (reason = mhr_focus) and m_mode_hint_armed and (m_mode_hint_reason <> mhr_focus) then
             Exit;
         if Failed(m_thread_mgr.GetFocus(doc)) or (doc = nil) then
             Exit;
         target.document := NativeUInt(Pointer(doc));
         target.window := NativeUInt(GetFocus);
         now_tick := GetTickCount64;
-        if nc_mode_hint_focus_is_repeat(m_mode_hint_target, target,
+        // Switching to the input method answers however recently the field
+        // had the focus; it also counts as that field's focus.
+        if (reason = mhr_focus) and nc_mode_hint_focus_is_repeat(m_mode_hint_target, target,
             m_mode_hint_target_tick, now_tick) then
         begin
             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
@@ -2575,7 +2577,10 @@ begin
             m_logger.warn('TSF key trace sink unavailable; system-owned shortcuts may use compartment fallback');
         end;
     end;
-    schedule_mode_hint(mhr_focus);
+    // The input method became active here: the user switched to it from
+    // another one (Win+Space, Alt+Shift, the taskbar's indicator), or a thread
+    // starts with it. Show the mode either way.
+    schedule_mode_hint(mhr_activate);
 
     Result := S_OK;
 end;

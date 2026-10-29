@@ -440,7 +440,7 @@ resourcestring
     SCheckAutoEnglish = '识别英文单词，空格直接上屏';
     SCheckShowStatusWidget = '显示状态浮窗';
     SCheckInputModeHint = '光标旁提示中英文状态';
-    SInputModeHintHint = '切换中英文时显示新状态；进入输入框时，处于英文状态才提醒。';
+    SInputModeHintHint = '切换中英文或从其他输入法切换到言泉时显示当前状态；进入输入框时，处于英文状态才提醒。';
     SLabelStatusWidgetTransparency = '浮窗透明度';
     SLabelCandidateFont = '候选字体';
     SLabelCandidateSize = '大小';
