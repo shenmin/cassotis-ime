@@ -36,6 +36,11 @@ function nc_mode_hint_should_show(const enabled: Boolean;
 function nc_mode_hint_hold_ms(const reason: TncModeHintReason): Cardinal;
 function nc_mode_hint_focus_is_repeat(const previous, target: TncModeHintTarget;
     const previous_tick, now_tick: UInt64): Boolean;
+// A key that types nothing by itself keeps the label: the modifiers, and the
+// masks the system sends around its own hotkeys (a Ctrl right after the
+// Win+Space or Ctrl+Space that switched to the input method). Any other key
+// puts it away.
+function nc_mode_hint_key_keeps_label(const key_code: Word): Boolean;
 // Top left of a label of the given size for a caret whose line ends at
 // anchor.Y (anchor.X its left): above the line, below it where the work area
 // has no room above, kept inside the work area.
@@ -48,6 +53,7 @@ function nc_try_parse_mode_hint_reason(const text: string;
 implementation
 
 uses
+    Winapi.Windows,
     System.SysUtils;
 
 function nc_mode_hint_should_show(const enabled: Boolean;
@@ -70,6 +76,18 @@ begin
     Result := (previous_tick <> 0) and (now_tick >= previous_tick) and
         (now_tick - previous_tick < c_mode_hint_repeat_ms) and
         (previous.document = target.document) and (previous.window = target.window);
+end;
+
+function nc_mode_hint_key_keeps_label(const key_code: Word): Boolean;
+begin
+    case key_code of
+        VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN,
+        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU,
+        $E8, $FF:
+            Result := True;
+    else
+        Result := False;
+    end;
 end;
 
 function nc_mode_hint_placement(const anchor: TPoint; const line_height: Integer;

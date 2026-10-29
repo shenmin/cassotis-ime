@@ -157,6 +157,9 @@ type
         m_mode_hint_protected: Boolean;
         m_mode_hint_target: TncModeHintTarget;
         m_mode_hint_target_tick: UInt64;
+        // When the input method became active here, until its label is asked
+        // for: 0 when none is owed.
+        m_mode_hint_activation_tick: UInt64;
         m_mode_hint_shown_until: UInt64;
         m_pending_mode_hint: Boolean;
         m_pending_mode_hint_show: Boolean;
@@ -360,6 +363,8 @@ const
     c_mode_hint_toggle_delay_ms = 30;
     c_mode_hint_retry_ms = 70;
     c_mode_hint_max_attempts = 6;
+    // A focus this soon after the activation still answers the switch.
+    c_mode_hint_activation_ms = 1500;
     GUID_NC_COMPARTMENT_KEYBOARD_DISABLED: TGUID = '{71A5B253-1951-466B-9FBC-9C8808FA84F2}';
     GUID_NC_COMPARTMENT_EMPTYCONTEXT: TGUID = '{D7487DBF-804E-41C5-894D-AD96FD4EEA13}';
 
@@ -1583,14 +1588,31 @@ var
     target: TncModeHintTarget;
     now_tick: UInt64;
     delay_ms: UINT;
+    kind: TncModeHintReason;
 begin
     if (m_thread_mgr = nil) or (m_ipc_client = nil) or (m_session_id = '') then
         Exit;
-    if reason <> mhr_toggle then
+    kind := reason;
+    if (kind = mhr_focus) and (m_mode_hint_activation_tick <> 0) then
+    begin
+        // The focus can leave and come back right after the activation (a
+        // window that takes it back from the taskbar, a form that hands it to
+        // its editor) and cancel the label of the switch on the way: the
+        // focus that follows answers the switch instead.
+        if GetTickCount64 - m_mode_hint_activation_tick < c_mode_hint_activation_ms then
+        begin
+            kind := mhr_activate;
+            if (m_logger <> nil) and (m_logger.level <= ll_debug) then
+                m_logger.debug('Mode hint reason=focus taken as activate');
+        end
+        else
+            m_mode_hint_activation_tick := 0;
+    end;
+    if kind <> mhr_toggle then
     begin
         // The answer to a switch the user just made is not replaced by a
         // focus that comes with it.
-        if (reason = mhr_focus) and m_mode_hint_armed and (m_mode_hint_reason <> mhr_focus) then
+        if (kind = mhr_focus) and m_mode_hint_armed and (m_mode_hint_reason <> mhr_focus) then
             Exit;
         if Failed(m_thread_mgr.GetFocus(doc)) or (doc = nil) then
             Exit;
@@ -1599,7 +1621,7 @@ begin
         now_tick := GetTickCount64;
         // Switching to the input method answers however recently the field
         // had the focus; it also counts as that field's focus.
-        if (reason = mhr_focus) and nc_mode_hint_focus_is_repeat(m_mode_hint_target, target,
+        if (kind = mhr_focus) and nc_mode_hint_focus_is_repeat(m_mode_hint_target, target,
             m_mode_hint_target_tick, now_tick) then
         begin
             if (m_logger <> nil) and (m_logger.level <= ll_debug) then
@@ -1619,7 +1641,7 @@ begin
     if m_mode_hint_window = 0 then
         Exit;
     Inc(m_mode_hint_serial);
-    m_mode_hint_reason := reason;
+    m_mode_hint_reason := kind;
     m_mode_hint_attempts := 0;
     m_mode_hint_probed := False;
     m_mode_hint_protected := False;
@@ -1729,6 +1751,8 @@ begin
     note(Format('source=%s point=(%d,%d) line=%d', [anchor_source_name(source),
         point.X, point.Y, line_height]));
     queue_mode_hint_request(True, point, line_height, m_mode_hint_reason);
+    if m_mode_hint_reason = mhr_activate then
+        m_mode_hint_activation_tick := 0;
     // Long enough for the host's fade in, hold and fade out.
     m_mode_hint_shown_until := GetTickCount64 + nc_mode_hint_hold_ms(m_mode_hint_reason) + 600;
 end;
@@ -2580,6 +2604,7 @@ begin
     // The input method became active here: the user switched to it from
     // another one (Win+Space, Alt+Shift, the taskbar's indicator), or a thread
     // starts with it. Show the mode either way.
+    m_mode_hint_activation_tick := GetTickCount64;
     schedule_mode_hint(mhr_activate);
 
     Result := S_OK;
@@ -2610,6 +2635,7 @@ end;
 procedure TncTextService.deactivate_core;
 begin
     cancel_mode_hint(True);
+    m_mode_hint_activation_tick := 0;
     remove_terminal_ctrl_space_hook;
     unpreserve_input_mode_shortcut;
     if m_key_event_advised and (m_keystroke_mgr <> nil) then
@@ -4214,8 +4240,14 @@ begin
     try
         // A key puts the label beside the caret away, and one still waiting
         // for the caret does not come: a switch it makes asks again below.
-        if m_mode_hint_armed or (m_mode_hint_shown_until <> 0) then
-            cancel_mode_hint(True);
+        // A modifier alone does not: the system sends a Ctrl of its own after
+        // the hotkey that switched to the input method.
+        if not nc_mode_hint_key_keeps_label(Word(wParam)) then
+        begin
+            if m_mode_hint_armed or (m_mode_hint_shown_until <> 0) then
+                cancel_mode_hint(True);
+            m_mode_hint_activation_tick := 0;
+        end;
         reload_config_if_needed;
         key_code := Word(wParam);
         key_state := build_key_state;
