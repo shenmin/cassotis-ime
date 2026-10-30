@@ -138229,7 +138229,13 @@ begin
                 pool[idx].evidence := m_char_lm_long_pool_evidence[idx];
         end;
         if not nc_char_lm_choose_long(m_char_lm, '', pool, candidates[0].text,
-            expected_units, chosen, second) then
+            expected_units, chosen, second,
+            function(const text: string): Integer
+            begin
+                Result := 0;
+                if m_dictionary <> nil then
+                    Result := m_dictionary.get_word_frequency_score(text);
+            end) then
             Exit;
         // The final pool can hold complete paths the visible merge left out.
         if chosen <> Trim(candidates[0].text) then
@@ -138273,8 +138279,8 @@ var
     choices: TArray<TncCharLmShortCandidate>;
     choice: TncCharLmShortCandidate;
     text: string;
-    idx, other, best: Integer;
-    value: TncCandidate;
+    idx, other, best, second, second_source: Integer;
+    value, second_value: TncCandidate;
 begin
     Result := False;
     // Without left context the short promotion table has already ordered
@@ -138331,7 +138337,7 @@ begin
     end;
     // Only reorder within the group when the visible top belongs to it.
     if (Length(choices) < 2) or (choices[0].position <> 0) or
-        not nc_char_lm_choose_short(m_char_lm, context, choices, best) or
+        not nc_char_lm_choose_short(m_char_lm, context, choices, best, second) or
         (best = 0) then
         Exit;
     // Without a context the model's score at the start of a text can favour
@@ -138341,8 +138347,17 @@ begin
         c_short_word_frequency_floor) then
         Exit;
     value := candidates[choices[best].position];
+    second_source := -1;
+    if second > 0 then
+    begin
+        second_value := candidates[choices[second].position];
+        second_source := source_indices[choices[second].position];
+    end;
     promote_char_lm_candidate(candidates, source_indices, value,
         source_indices[choices[best].position], page_size);
+    if second > 0 then
+        promote_char_lm_candidate(candidates, source_indices, second_value,
+            second_source, page_size, 0, 1);
     Result := True;
 end;
 

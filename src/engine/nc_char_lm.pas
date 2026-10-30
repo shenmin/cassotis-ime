@@ -7,7 +7,8 @@ unit nc_char_lm;
 interface
 
 uses System.SysUtils, System.Math, nc_one_key_completion_gbdt, nc_tab_continuation_gbdt,
-    nc_short_context_gbdt, nc_long_choice_gbdt;
+    nc_short_context_gbdt, nc_long_choice_gbdt, nc_word_frequency_evidence,
+    nc_short_context_detail_gbdt;
 
 type
     IncCharLm = interface
@@ -199,7 +200,8 @@ const
   the model's first (it can be the visible top1) and second its runner-up. }
 function nc_char_lm_choose_long(const model: IncCharLm; const context: string;
     const pool: TArray<TncCharLmLongCandidate>; const visible: string;
-    const expected_units: Integer; out chosen, second: string): Boolean;
+    const expected_units: Integer; out chosen, second: string;
+    const word_frequency: TncWordFrequencyLookup = nil): Boolean;
 
 { Chooses among the first c_char_lm_short_limit distinct texts (the visible
   complete candidates in order) by log P(text | context) - w * ln(position).
@@ -216,7 +218,13 @@ function nc_char_lm_choose_short_top(const model: IncCharLm; const context: stri
   c_char_lm_short_plain_lead, the choice is made from those. Ties keep the
   earlier candidate. Returns False when nothing was scored. }
 function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
-    const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean;
+    const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean; overload;
+{ The optional second slot changes only after a first-slot promotion, and
+  only when the model's runner-up clearly beats the previous first word.
+  -1 means retain the existing second slot. This makes no extra LM call. }
+function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
+    const candidates: TArray<TncCharLmShortCandidate>;
+    out best_index, second_index: Integer): Boolean; overload;
 
 { Estimates P(the displayed continuation is correct) for each candidate from
   log P(base + suffix | context) - log P(base | context) and each candidate's
@@ -906,6 +914,18 @@ end;
 function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
     const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean;
 var
+    second_index: Integer;
+begin
+    Result := nc_char_lm_choose_short(model, context, candidates, best_index, second_index);
+end;
+
+function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
+    const candidates: TArray<TncCharLmShortCandidate>;
+    out best_index, second_index: Integer): Boolean;
+const
+    // Frozen on independent calibration halves, then checked on their held-out halves.
+    c_second_slot_lead = 0.25;
+var
     count, idx, other, part: Integer;
     chars: TArray<string>;
     texts: TArray<string>;
@@ -923,18 +943,27 @@ var
     function choose(const with_context: Boolean; out lead: Double): Integer;
     var
         lp, lp1, lp2: TArray<Double>;
+        original_scores, detail_scores: TArray<Double>;
         features: array[0..c_short_gbdt_feature_count - 1] of Double;
+        detail: array[0..c_short_context_detail_feature_count - 1] of Double;
         own_chars, first_chars: TArray<string>;
         at, against, units, shared, lp_rank, weight_rank, context_units, frequency_max: Integer;
         lp_max, lp1_max, gain_max, score, best_score, next_score: Double;
+        first_gain_max, two_gain_max, tail_gain_max, joint_score, joint_best: Double;
+        detail_best: Integer;
         line: string;
     begin
         SetLength(lp, count);
         SetLength(lp1, count);
         SetLength(lp2, count);
+        SetLength(original_scores, count);
+        SetLength(detail_scores, count);
         lp_max := -MaxDouble;
         lp1_max := -MaxDouble;
         gain_max := -MaxDouble;
+        first_gain_max := -MaxDouble;
+        two_gain_max := -MaxDouble;
+        tail_gain_max := -MaxDouble;
         frequency_max := 0;
         for at := 0 to count - 1 do
         begin
@@ -954,6 +983,10 @@ var
             lp_max := Max(lp_max, lp[at]);
             lp1_max := Max(lp1_max, lp1[at]);
             gain_max := Max(gain_max, lp[at] - plain[at]);
+            first_gain_max := Max(first_gain_max, lp1[at] - plain1[at]);
+            two_gain_max := Max(two_gain_max, lp2[at] - plain2[at]);
+            tail_gain_max := Max(tail_gain_max,
+                (lp[at] - lp1[at]) - (plain[at] - plain1[at]));
         end;
         context_units := 0;
         if with_context then
@@ -1013,12 +1046,25 @@ var
             features[26] := candidates[at].word_frequency - candidates[0].word_frequency;
             features[27] := candidates[at].word_frequency - frequency_max;
             score := nc_short_gbdt_score(features);
+            original_scores[at] := score;
+            for against := 0 to High(features) do
+                detail[against] := features[against];
+            detail[28] := plain1[at];
+            detail[29] := plain2[at];
+            detail[30] := lp1[at] - plain1[at];
+            detail[31] := lp2[at] - plain2[at];
+            detail[32] := (lp[at] - lp1[at]) - (plain[at] - plain1[at]);
+            detail[33] := detail[30] - first_gain_max;
+            detail[34] := detail[31] - two_gain_max;
+            detail[35] := detail[32] - tail_gain_max;
+            if with_context then
+                detail_scores[at] := nc_short_context_detail_score(detail);
             // The trace holds the view the call is decided on with its context.
             if Assigned(nc_char_lm_short_trace) and (with_context = (context <> '')) then
             begin
                 line := candidates[at].text;
-                for against := 0 to c_short_gbdt_feature_count - 1 do
-                    line := line + #9 + FloatToStr(features[against], TFormatSettings.Invariant);
+                for against := 0 to High(detail) do
+                    line := line + #9 + FloatToStr(detail[against], TFormatSettings.Invariant);
                 nc_char_lm_short_trace(line + #9 + FloatToStr(score, TFormatSettings.Invariant));
             end;
             if at = 0 then
@@ -1033,11 +1079,47 @@ var
                 next_score := score;
         end;
         lead := best_score - next_score;
+        if with_context then
+        begin
+            // Keep the established choice unless the paired evidence gives
+            // the joint ranker a clear lead. No extra neural inference.
+            detail_best := 0;
+            joint_best := 0.5 * (original_scores[0] + detail_scores[0]);
+            for at := 1 to count - 1 do
+            begin
+                joint_score := 0.5 * (original_scores[at] + detail_scores[at]);
+                if joint_score > joint_best then
+                begin
+                    joint_best := joint_score;
+                    detail_best := at;
+                end;
+            end;
+            if joint_best - 0.5 * (original_scores[Result] + detail_scores[Result]) >= 0.25 then
+            begin
+                Result := detail_best;
+                for at := 0 to count - 1 do
+                    original_scores[at] := 0.5 * (original_scores[at] + detail_scores[at]);
+            end;
+        end;
+        second_index := -1;
+        if (Result = 0) or (count < 3) then
+            Exit;
+        for at := 0 to count - 1 do
+            if candidates[at].user then
+                Exit;
+        for at := 0 to count - 1 do
+            if (at <> Result) and ((second_index < 0) or
+                (original_scores[at] > original_scores[second_index])) then
+                second_index := at;
+        if (second_index <= 0) or
+            (original_scores[second_index] - original_scores[0] < c_second_slot_lead) then
+            second_index := -1;
     end;
 
 begin
     Result := False;
     best_index := 0;
+    second_index := -1;
     count := Min(Length(candidates), c_char_lm_short_choice_limit);
     if (model = nil) or (count < 2) or (not model.char_lm_ready) then
         Exit;
@@ -1066,10 +1148,8 @@ begin
     finally
         slot_of.Free;
     end;
-    // Without context, in the order of the texts themselves: the model's
-    // scores depend on what else is in a call, so the call must not depend on
-    // the order the candidates arrive in. The same group of words then always
-    // gets the same scores, and the host keeps them.
+    // Canonical request order lets the host reuse the group's cached plain
+    // scores regardless of the order its candidates appear on the page.
     sorted_texts := Copy(texts);
     TArray.Sort<string>(sorted_texts, TStringComparer.Ordinal);
     if model.score_texts('', sorted_texts, Length(sorted_texts), 0, logp) <>
@@ -1108,6 +1188,7 @@ begin
         not Assigned(nc_char_lm_short_trace)) then
         Exit(True);
     best_index := 0;
+    second_index := -1;
     if model.score_texts(context, texts, Length(texts), 0, logp) <> Length(texts) then
         Exit;
     best_index := choose(True, plain_lead);
@@ -1116,7 +1197,8 @@ end;
 
 function nc_char_lm_choose_long(const model: IncCharLm; const context: string;
     const pool: TArray<TncCharLmLongCandidate>; const visible: string;
-    const expected_units: Integer; out chosen, second: string): Boolean;
+    const expected_units: Integer; out chosen, second: string;
+    const word_frequency: TncWordFrequencyLookup): Boolean;
 var
     complete: TArray<TncCharLmLongCandidate>;
     item: TncCharLmLongCandidate;
@@ -1125,6 +1207,7 @@ var
     logp: TArray<Single>;
     formulas: TArray<Double>;
     features: array[0..c_long_gbdt_feature_count - 1] of Double;
+    frequency_evidence: TncWordFrequencyEvidence;
     text, visible_text, line: string;
     idx, other, count, visible_index, scored, best, runner_up, lp_rank: Integer;
     lp_max, lp_visible, formula_max, score, best_score, runner_up_score: Double;
@@ -1243,6 +1326,10 @@ begin
         features[12] := formulas[idx] - formula_max;
         for other := 0 to c_long_gbdt_evidence_count - 1 do
             features[13 + other] := item.evidence[other];
+        frequency_evidence := nc_build_word_frequency_evidence(
+            item.text, word_frequency);
+        for other := 0 to High(frequency_evidence) do
+            features[13 + c_long_gbdt_evidence_count + other] := frequency_evidence[other];
         score := nc_long_gbdt_score(features);
         if Assigned(nc_char_lm_long_trace) then
         begin
