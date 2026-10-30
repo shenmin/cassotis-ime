@@ -138307,6 +138307,13 @@ begin
         if (text = '') or (Trim(candidates[idx].comment) <> '') or
             not (m_dictionary.is_base_entry(query, text) or m_dictionary.is_user_entry(query, text)) then
             Continue;
+        // Without a context a single character keeps the dictionary's order,
+        // which is by how often modern text uses it. A syllable that also
+        // reads as two (jiao as ji'ao, zhua as zhu'a) comes here, and the
+        // tree, fit on words of two to four characters, put 嚼 above 交 and
+        // 爪 above 抓 (the word frequency table has no single characters).
+        if (Trim(context) = '') and (get_candidate_text_unit_count(text) = 1) then
+            Continue;
         other := 0;
         while (other < Length(choices)) and (choices[other].text <> text) do
             Inc(other);
@@ -188340,6 +188347,7 @@ var
     previous_committed_pinyin: string;
     literal_only_commit: Boolean;
     literal_word_to_record: Boolean;
+    single_char_tail: Boolean;
     literal_full_pinyin: string;
 
     function is_boundary_learning_unit(const text_value: string): Boolean;
@@ -188804,6 +188812,11 @@ begin
     begin
         commit_text := m_confirmed_text + commit_text;
     end;
+    // A single character learns its syllable only when it is committed on
+    // its own (the user, 2026-10-30): one chosen at the end of a longer
+    // input, after the characters before it, does not.
+    single_char_tail := (m_confirmed_text <> '') and
+        (get_candidate_text_unit_count(Trim(commit_segment_text)) = 1);
 
     out_text := commit_text;
     allow_learning := m_pending_commit_allow_learning;
@@ -188983,7 +188996,8 @@ begin
                     end;
                 end;
 
-                if (normalized_pinyin <> '') and (commit_segment_text <> '') then
+                if (normalized_pinyin <> '') and (commit_segment_text <> '') and
+                    (not single_char_tail) then
                 begin
                     if selected_short_phrase_choice then
                         m_dictionary.record_selected_short_phrase(normalized_pinyin,
@@ -189043,7 +189057,7 @@ begin
         record_context_pair(prev_left_context, out_text);
     end;
     if (not literal_only_commit) and (not fuzzy_commit_choice) and
-        (commit_segment_text <> '') then
+        (commit_segment_text <> '') and (not single_char_tail) then
     begin
         note_session_commit(commit_segment_text);
     end;
