@@ -17,12 +17,19 @@ uses
     System.Generics.Collections, nc_engine_intf;
 
 type
-    TncLmRepairHost = class(TInterfacedObject, IncLongLocalRepair, IncShortPhraseCorrector)
+    TncLmRepairHost = class(TInterfacedObject, IncLongLocalRepair, IncLongLocalCorrector,
+        IncShortPhraseCorrector)
     private type
         TCreateModel = function(directory: PWideChar; intra_threads: Integer;
             error_text: PWideChar; capacity: Integer): Pointer; cdecl;
         TCorrect = function(handle: Pointer; context, draft: PWideChar;
             allowed_code_points: PCardinal; allowed_offsets: PInteger; width: Integer;
+            out_text: PWideChar; out_capacity: Integer; out_gain: PSingle;
+            timeout_ms: Integer; error_text: PWideChar; capacity: Integer): Integer; cdecl;
+        TCorrectWith = function(handle: Pointer; context, draft: PWideChar;
+            allowed_code_points: PCardinal; allowed_offsets: PInteger; width: Integer;
+            candidates: PPWideChar; candidate_count, keep: Integer; floor: Single;
+            candidate_gains: PSingle;
             out_text: PWideChar; out_capacity: Integer; out_gain: PSingle;
             timeout_ms: Integer; error_text: PWideChar; capacity: Integer): Integer; cdecl;
         TDestroyModel = procedure(handle: Pointer); cdecl;
@@ -31,6 +38,8 @@ type
         m_module, m_ort, m_provider: HMODULE;
         m_handle: Pointer;
         m_correct: TCorrect;
+        // Optional (an older bridge lacks it): the correction that also scores candidates.
+        m_correct_with: TCorrectWith;
         m_destroy: TDestroyModel;
         m_readings: TDictionary<string, TArray<string>>;
         m_homophones: TDictionary<string, TArray<Cardinal>>;
@@ -47,8 +56,9 @@ type
         function align(const query_text, draft_text: string;
             out syllables: TArray<string>): Boolean;
         function correct(const query_text, draft_text, preceding_text: string;
-            const minimum_units, width: Integer; out corrected_text, aligned_pinyin: string;
-            out gain: Single): Integer;
+            const minimum_units, width: Integer; const candidates: TArray<string>;
+            const keep: Integer; const floor: Single; out corrected_text, aligned_pinyin: string;
+            out gain: Single; out candidate_gains: TArray<Single>): Integer;
     public
         { background_load loads on a lower-priority thread so the dictionary
           starts first; repairs are skipped until the model is ready. }
@@ -66,6 +76,20 @@ type
             const document_key, preceding_text: string;
             out repaired_text, aligned_pinyin: string;
             out minimum_word_ratio: Double): Boolean;
+        { The syllables of the draft as the correction aligns it, joined by #3;
+          '' when it does not align (one way only) or the model is not ready. }
+        function align_long(const query_text, draft_text: string): string;
+        { The correction of a draft of six characters or more, without a
+          threshold: 1 with the preferred text and its gain, 0 when the model
+          keeps the draft, -1 without an answer. Of the candidates (texts as
+          long as the draft) the keep whose first changed character the model
+          rates highest get their gains over the draft in candidate_gains, when
+          the best of those characters reaches floor against the draft's
+          (log-probability), the others NaN. The engine decides. }
+        function correct_long(const query_text, draft_text, preceding_text: string;
+            const candidates: TArray<string>; const keep: Integer; const floor: Single;
+            out corrected_text, aligned_pinyin: string; out gain: Single;
+            out candidate_gains: TArray<Single>): Integer;
         { The correction of a phrase of three to five characters, without a
           threshold: 1 with the preferred text and its gain, 0 when the model
           keeps the draft, -1 without an answer. The engine decides. }
@@ -75,7 +99,8 @@ type
 
 implementation
 
-uses System.IOUtils, System.JSON, System.Character, System.Hash, nc_log, nc_char_lm_host;
+uses System.IOUtils, System.JSON, System.Character, System.Hash, System.Math, nc_log, nc_char_lm_host,
+    nc_char_lm;
 
 const
     // Beam width and the whole-sentence log-probability margin over the draft,
@@ -84,6 +109,8 @@ const
     // A phrase of three to five characters: widths 3 and 4 changed nothing
     // on the clause development set.
     c_short_phrase_width = 2;
+    // try_repair's margin, for an engine without the shared LM; with it the
+    // engine weighs correct_long's gain together with that model's.
     c_lm_repair_min_gain = 1.0;
     // The dictionary path check accepts any segmentation, as for local repair.
     c_lm_repair_word_ratio = 0.01;
@@ -207,6 +234,7 @@ begin
             raise EInvalidOp.Create('Pinyin LM runtime DLL unavailable');
         create_model := TCreateModel(GetProcAddress(m_module, 'nc_lm_create'));
         m_correct := TCorrect(GetProcAddress(m_module, 'nc_lm_correct'));
+        m_correct_with := TCorrectWith(GetProcAddress(m_module, 'nc_lm_correct_with'));
         m_destroy := TDestroyModel(GetProcAddress(m_module, 'nc_lm_destroy'));
         if not Assigned(create_model) or not Assigned(m_correct) or not Assigned(m_destroy) then
             raise EInvalidOp.Create('Pinyin LM runtime must be rebuilt');
@@ -322,8 +350,9 @@ end;
 // with the text it prefers and the gain, 0 when it keeps the draft, -1 without
 // an answer. aligned_pinyin is set whenever the draft aligns.
 function TncLmRepairHost.correct(const query_text, draft_text, preceding_text: string;
-    const minimum_units, width: Integer; out corrected_text, aligned_pinyin: string;
-    out gain: Single): Integer;
+    const minimum_units, width: Integer; const candidates: TArray<string>;
+    const keep: Integer; const floor: Single; out corrected_text, aligned_pinyin: string;
+    out gain: Single; out candidate_gains: TArray<Single>): Integer;
 var
     syllables: TArray<string>;
     homophones: TArray<Cardinal>;
@@ -333,6 +362,7 @@ var
     buffer: array[0..255] of WideChar;
     error_text: array[0..1023] of WideChar;
     draft_point, point: Cardinal;
+    texts: TArray<PWideChar>;
     i, index: Integer;
     present: Boolean;
 begin
@@ -340,6 +370,8 @@ begin
     corrected_text := '';
     aligned_pinyin := '';
     gain := 0;
+    SetLength(candidate_gains, Length(candidates));
+    for i := 0 to High(candidate_gains) do candidate_gains[i] := NaN;
     if not ready or (Length(draft_text) < minimum_units) or (Length(draft_text) > 40) then Exit;
     // Only BMP drafts: one UTF-16 unit per character, as the engine counts units.
     for i := 1 to Length(draft_text) do
@@ -386,9 +418,19 @@ begin
     context := context + Char.ConvertFromUtf32(m_draft) + draft_text + Char.ConvertFromUtf32(m_sep);
     m_run_lock.Acquire;
     try
-        Result := m_correct(m_handle, PWideChar(context), PWideChar(draft_text), @allowed[0],
-            @offsets[0], width, @buffer[0], Length(buffer), @gain, 0,
-            @error_text[0], Length(error_text));
+        if (Length(candidates) > 0) and (keep > 0) and Assigned(m_correct_with) then
+        begin
+            SetLength(texts, Length(candidates));
+            for i := 0 to High(candidates) do texts[i] := PWideChar(candidates[i]);
+            Result := m_correct_with(m_handle, PWideChar(context), PWideChar(draft_text),
+                @allowed[0], @offsets[0], width, @texts[0], Length(texts), keep,
+                floor, @candidate_gains[0], @buffer[0], Length(buffer), @gain, 0,
+                @error_text[0], Length(error_text));
+        end
+        else
+            Result := m_correct(m_handle, PWideChar(context), PWideChar(draft_text), @allowed[0],
+                @offsets[0], width, @buffer[0], Length(buffer), @gain, 0,
+                @error_text[0], Length(error_text));
     finally
         m_run_lock.Release;
     end;
@@ -410,16 +452,40 @@ function TncLmRepairHost.try_repair(const query_text, draft_text: string;
     out repaired_text, aligned_pinyin: string; out minimum_word_ratio: Double): Boolean;
 var
     gain: Single;
+    candidate_gains: TArray<Single>;
 begin
     minimum_word_ratio := 1;
-    Result := (correct(query_text, draft_text, preceding_text, 6, c_lm_repair_width,
-        repaired_text, aligned_pinyin, gain) = 1) and (gain >= c_lm_repair_min_gain);
+    Result := (correct_long(query_text, draft_text, preceding_text, nil, 0, 0, repaired_text,
+        aligned_pinyin, gain, candidate_gains) = 1) and (gain >= c_lm_repair_min_gain);
     if Result then minimum_word_ratio := c_lm_repair_word_ratio
     else repaired_text := '';
 end;
 
+function TncLmRepairHost.align_long(const query_text, draft_text: string): string;
+var
+    syllables: TArray<string>;
+begin
+    Result := '';
+    if ready and align(query_text, draft_text, syllables) then
+        Result := String.Join(#3, syllables);
+end;
+
+function TncLmRepairHost.correct_long(const query_text, draft_text, preceding_text: string;
+    const candidates: TArray<string>; const keep: Integer; const floor: Single;
+    out corrected_text, aligned_pinyin: string; out gain: Single;
+    out candidate_gains: TArray<Single>): Integer;
+begin
+    Result := correct(query_text, draft_text, preceding_text, 6, c_lm_repair_width,
+        candidates, keep, floor, corrected_text, aligned_pinyin, gain, candidate_gains);
+    if Assigned(nc_char_lm_long_trace) then
+        nc_char_lm_long_trace('REPAIR_H'#9 + draft_text + #9 + corrected_text + #9 +
+            IntToStr(Result) + #9 + FloatToStr(gain, TFormatSettings.Invariant));
+end;
+
 function TncLmRepairHost.correct_short_phrase(const query_text, draft_text, preceding_text: string;
     out corrected_text, aligned_pinyin: string; out gain: Single): Integer;
+var
+    candidate_gains: TArray<Single>;
 begin
     if Length(draft_text) > 5 then
     begin
@@ -429,7 +495,7 @@ begin
         Exit(-1);
     end;
     Result := correct(query_text, draft_text, preceding_text, 3, c_short_phrase_width,
-        corrected_text, aligned_pinyin, gain);
+        nil, 0, 0, corrected_text, aligned_pinyin, gain, candidate_gains);
 end;
 
 end.

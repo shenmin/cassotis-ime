@@ -645,9 +645,19 @@ int CharLmContinue(CharLmHandle& h, const wchar_t* context, const wchar_t* prefi
 // and grows as a tree over the cached prompt and draft prefix, one run per
 // position. Returns 0 when the model keeps the draft, 1 with the best text
 // other than the draft and its log-probability gain over the draft, -1 on error.
+//
+// Candidates (token ids as long as the draft) are scored as well: of those
+// that differ from the draft, the `keep` whose first changed token the run
+// over the draft rates highest against the draft's token (ties by index) get
+// their whole log-probability, from that token on, in one run over the
+// chain's keys, when the best of those differences reaches `floor` (else no
+// candidate is scored and the run is saved); candidate_gains gets their gains
+// over the draft and NaN for the others.
 int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
     const std::vector<std::vector<int64_t>>& allowed, int width, std::wstring& out_text,
-    float& out_gain, Ort::RunOptions& options) {
+    float& out_gain, Ort::RunOptions& options,
+    const std::vector<std::vector<int64_t>>* candidates = nullptr, int keep = 0,
+    std::vector<float>* candidate_gains = nullptr, float floor = -std::numeric_limits<float>::infinity()) {
     const auto context_ids = CharLmEncode(h, context);
     const auto draft_ids = CharLmEncode(h, draft);
     const size_t n = draft_ids.size();
@@ -725,7 +735,27 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
     }
     draft_total = draft_prefix[n];
     h.correction_chain = ids;
-    if (first == n) {
+    // The candidates to score whole, each with its first changed position.
+    std::vector<std::pair<size_t, size_t>> chosen;
+    if (candidates && candidate_gains) {
+        candidate_gains->assign(candidates->size(), std::numeric_limits<float>::quiet_NaN());
+        std::vector<std::pair<float, std::pair<size_t, size_t>>> ranked;
+        for (size_t c = 0; c < candidates->size(); ++c) {
+            const auto& tokens = (*candidates)[c];
+            if (tokens.size() != n) continue;
+            size_t a = 0;
+            while (a < n && tokens[a] == draft_ids[a]) ++a;
+            if (a == n) continue;
+            const float* dist = row(prompt - 1 + static_cast<int64_t>(a));
+            ranked.push_back({dist[tokens[a]] - dist[draft_ids[a]], {c, a}});
+        }
+        std::stable_sort(ranked.begin(), ranked.end(),
+            [](const auto& x, const auto& y) { return x.first > y.first; });
+        if (!ranked.empty() && ranked[0].first >= floor)
+            for (size_t k = 0; k < ranked.size() && k < static_cast<size_t>(std::max(0, keep)); ++k)
+                chosen.push_back(ranked[k].second);
+    }
+    if (first == n && chosen.empty()) {
         // No search: the run's keys and values wait for the next correction.
         h.correction_settled = common;
         h.correction_waiting_rows = static_cast<size_t>(run);
@@ -738,6 +768,59 @@ int CharLmCorrect(CharLmHandle& h, const wchar_t* context, const wchar_t* draft,
     for (size_t i = 0; i < every.size(); ++i) every[i] = i;
     keys.Append(outputs, static_cast<size_t>(run), every);
     h.correction_settled = static_cast<size_t>(total);
+
+    if (!chosen.empty()) {
+        // A trie of the chosen candidates' tokens from their first change up to
+        // the one before the last (whose output scores the last); a node sees
+        // the chain before its candidate's first change and its own ancestors.
+        struct Node { int64_t token; int64_t position; int64_t kept; int64_t parent; };
+        std::vector<Node> nodes;
+        std::map<std::pair<int64_t, int64_t>, int64_t> children;  // (parent or -1 - first change, token)
+        std::vector<std::vector<int64_t>> paths(chosen.size());
+        for (size_t k = 0; k < chosen.size(); ++k) {
+            const auto& tokens = (*candidates)[chosen[k].first];
+            const size_t a = chosen[k].second;
+            int64_t parent = -1 - static_cast<int64_t>(a);
+            for (size_t t = a; t + 1 < n; ++t) {
+                const auto key = std::make_pair(parent, tokens[t]);
+                auto found = children.find(key);
+                if (found == children.end()) {
+                    nodes.push_back({tokens[t], prompt + static_cast<int64_t>(t), prompt + static_cast<int64_t>(a),
+                        parent < 0 ? -1 : parent});
+                    found = children.emplace(key, static_cast<int64_t>(nodes.size()) - 1).first;
+                }
+                parent = found->second;
+                paths[k].push_back(parent);
+            }
+        }
+        const float* tail_logp = nullptr;
+        std::vector<Ort::Value> tail;
+        const int64_t s = static_cast<int64_t>(nodes.size());
+        if (s > 0) {
+            std::vector<int64_t> tail_ids, tail_positions;
+            std::vector<int32_t> tail_mask(static_cast<size_t>(s * (room + s)), 0);
+            for (int64_t j = 0; j < s; ++j) {
+                tail_ids.push_back(nodes[static_cast<size_t>(j)].token);
+                tail_positions.push_back(nodes[static_cast<size_t>(j)].position);
+                int32_t* m = tail_mask.data() + j * (room + s);
+                for (int64_t c = 0; c < nodes[static_cast<size_t>(j)].kept; ++c) m[c] = 1;
+                for (int64_t q = j; q >= 0; q = nodes[static_cast<size_t>(q)].parent) m[room + q] = 1;
+            }
+            auto past = keys.Past();
+            tail = CharLmRun(h, tail_ids, tail_positions, tail_mask, room, &past, false, options);
+            tail_logp = tail[0].GetTensorData<float>();
+        }
+        for (size_t k = 0; k < chosen.size(); ++k) {
+            const auto& tokens = (*candidates)[chosen[k].first];
+            const size_t a = chosen[k].second;
+            float score = draft_prefix[a] + row(prompt - 1 + static_cast<int64_t>(a))[tokens[a]];
+            for (size_t t = a + 1; t < n; ++t)
+                score += tail_logp[static_cast<size_t>(paths[k][t - 1 - a]) * static_cast<size_t>(vocab) +
+                    static_cast<size_t>(tokens[t])];
+            (*candidate_gains)[chosen[k].first] = score - draft_total;
+        }
+        if (first == n) return 0;
+    }
 
     // The beams grow over the prompt and the draft before the first
     // disagreement (the first `kept` tokens of the chain); every step appends
@@ -1061,6 +1144,65 @@ extern "C" __declspec(dllexport) int __cdecl nc_lm_correct(void* handle, const w
         std::wstring text;
         float gain = 0.0f;
         const int result = CharLmCorrect(h, context ? context : L"", draft, allowed, width, text, gain, options);
+        if (result != 1) return result;
+        if (static_cast<int>(text.size()) + 1 > out_capacity) return -1;
+        std::wmemcpy(out_text, text.data(), text.size());
+        out_text[text.size()] = L'\0';
+        *out_gain = gain;
+        return 1;
+    } catch (const std::exception& e) { SetError(error, capacity, Utf8ToWide(e.what())); }
+    catch (...) { SetError(error, capacity, L"character LM correction failed"); }
+    return -1;
+}
+
+// nc_lm_correct that also scores candidate texts (see CharLmCorrect): of the
+// candidate_count texts, the `keep` whose first changed character the model
+// rates highest get their log-probability gain over the draft in
+// candidate_gains when the best of them lies no more than -floor below the
+// draft's character there (log-probability), the others NaN. A text of another length than the draft, or
+// with a character outside the vocabulary, is never scored. The result and
+// out_text as for nc_lm_correct; the gains are written whenever it is not -1.
+extern "C" __declspec(dllexport) int __cdecl nc_lm_correct_with(void* handle, const wchar_t* context,
+    const wchar_t* draft, const uint32_t* allowed_code_points, const int* allowed_offsets,
+    int width, const wchar_t* const* candidates, int candidate_count, int keep, float floor,
+    float* candidate_gains,
+    wchar_t* out_text, int out_capacity, float* out_gain, int timeout_ms,
+    wchar_t* error, int capacity) {
+    SetError(error, capacity, L"");
+    try {
+        if (!handle || !draft || !allowed_code_points || !allowed_offsets || !out_text || !out_gain ||
+            width < 1 || width > 16 || out_capacity < 2 || candidate_count < 0 ||
+            (candidate_count > 0 && (!candidates || !candidate_gains))) return -1;
+        out_text[0] = L'\0';
+        auto& h = *static_cast<CharLmHandle*>(handle);
+        const size_t n = CharLmEncode(h, draft).size();
+        std::vector<std::vector<int64_t>> allowed(n);
+        for (size_t t = 0; t < n; ++t) {
+            for (int k = allowed_offsets[t]; k < allowed_offsets[t + 1]; ++k) {
+                const auto found = h.vocabulary.find(allowed_code_points[k]);
+                if (found != h.vocabulary.end()) allowed[t].push_back(found->second);
+            }
+        }
+        std::vector<std::vector<int64_t>> encoded(static_cast<size_t>(candidate_count));
+        for (int c = 0; c < candidate_count; ++c) {
+            auto tokens = CharLmEncode(h, candidates[c]);
+            if (std::find(tokens.begin(), tokens.end(), kCharLmUnknown) == tokens.end())
+                encoded[static_cast<size_t>(c)] = std::move(tokens);
+        }
+        std::unique_lock<std::mutex> lock(h.mutex, std::try_to_lock);
+        if (!lock.owns_lock()) return -1;
+        FloatingPointMaskGuard fp;
+        Ort::RunOptions options;
+        CharLmDeadline deadline(options, timeout_ms);
+        std::wstring text;
+        float gain = 0.0f;
+        std::vector<float> gains;
+        const int result = CharLmCorrect(h, context ? context : L"", draft, allowed, width, text, gain, options,
+            &encoded, keep, &gains, floor);
+        if (result < 0) return -1;
+        for (int c = 0; c < candidate_count; ++c)
+            candidate_gains[c] = static_cast<size_t>(c) < gains.size() ? gains[static_cast<size_t>(c)]
+                : std::numeric_limits<float>::quiet_NaN();
         if (result != 1) return result;
         if (static_cast<int>(text.size()) + 1 > out_capacity) return -1;
         std::wmemcpy(out_text, text.data(), text.size());

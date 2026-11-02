@@ -8,7 +8,7 @@ interface
 
 uses System.SysUtils, System.Math, nc_one_key_completion_gbdt, nc_tab_continuation_gbdt,
     nc_short_context_gbdt, nc_long_choice_gbdt, nc_word_frequency_evidence,
-    nc_short_context_detail_gbdt;
+    nc_short_context_detail_gbdt, nc_short_with_context_gbdt;
 
 type
     IncCharLm = interface
@@ -213,10 +213,12 @@ function nc_char_lm_choose_short_top(const model: IncCharLm; const context: stri
   entries for the input (the first c_char_lm_short_choice_limit, page order)
   by a gradient-boosted ranker over log P(text | context), log P of its first
   one and two characters, log P(text) without context, the dictionary weight,
-  the display score and the page position (nc_short_context_gbdt). Without
-  a left context, and when the context-free scores alone give a lead of
-  c_char_lm_short_plain_lead, the choice is made from those. Ties keep the
-  earlier candidate. Returns False when nothing was scored. }
+  the display score and the page position. Without a left context, and when
+  the context-free scores alone give a lead of c_char_lm_short_plain_lead,
+  the choice is made from those (nc_short_context_gbdt); with the context it
+  is made by a ranker fit on choices with a context alone
+  (nc_short_with_context_gbdt). Ties keep the earlier candidate. Returns
+  False when nothing was scored. }
 function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
     const candidates: TArray<TncCharLmShortCandidate>; out best_index: Integer): Boolean; overload;
 { The optional second slot changes only after a first-slot promotion, and
@@ -1045,7 +1047,13 @@ var
             features[25] := candidates[at].word_frequency;
             features[26] := candidates[at].word_frequency - candidates[0].word_frequency;
             features[27] := candidates[at].word_frequency - frequency_max;
-            score := nc_short_gbdt_score(features);
+            // A view without a context is scored by the tree of both kinds,
+            // one with a context by the tree fit on such choices alone: fit
+            // on both, a tree chose worse after a context.
+            if with_context then
+                score := nc_short_with_context_score(features)
+            else
+                score := nc_short_gbdt_score(features);
             original_scores[at] := score;
             for against := 0 to High(features) do
                 detail[against] := features[against];

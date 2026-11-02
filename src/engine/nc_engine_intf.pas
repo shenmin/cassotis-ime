@@ -499,6 +499,25 @@ type
             out corrected_text, aligned_pinyin: string; out gain: Single): Integer;
     end;
 
+    { Optional: the long-sentence correction without a threshold, answered as
+      correct_short_phrase, that also scores candidates the engine proposes.
+      align_long gives the draft's syllables as the correction aligns them
+      (joined by #3, '' when it does not align). Of the candidates (texts as
+      long as the draft) the keep whose first changed character the model
+      rates highest get their gains over the draft in candidate_gains, when
+      the best of those characters reaches floor against the draft's
+      (log-probability), the others NaN. With the shared LM at hand the engine weighs these gains
+      together with that model's view of the sentences; without it the engine
+      asks try_repair, which applies the correction's own margin. }
+    IncLongLocalCorrector = interface
+        ['{0B6E2F4A-8C3D-4E71-A5B9-6D2C8E1F7A34}']
+        function align_long(const query_text, draft_text: string): string;
+        function correct_long(const query_text, draft_text, preceding_text: string;
+            const candidates: TArray<string>; const keep: Integer; const floor: Single;
+            out corrected_text, aligned_pinyin: string; out gain: Single;
+            out candidate_gains: TArray<Single>): Integer;
+    end;
+
     TncLongRankingStageDebug = record
         stage_name: string;
         top1_text: string;
@@ -1454,6 +1473,24 @@ const
     c_long_sentence_complete_candidate_display_limit = 2;
     c_long_postprocess_emergency_budget_ms = 320;
     c_fast_repair_promote_margin = 6000;
+    // A long correction replaces the draft when the two models' log-probability
+    // gains over it (the correction's, the shared LM's without a context, as the
+    // long choice scores) add up to this many nats. The correction alone needed
+    // 1.0 of its own: the shared LM now overrules a rewrite it rates far below
+    // the draft and carries one it rates above it.
+    c_long_repair_joint_gain = 1.0;
+    // Beside the correction's own rewrite, the draft with one word replaced by
+    // another of the same syllables (two to four characters, the heaviest
+    // c_long_repair_swaps_per_key of the key) competes: the correction scores
+    // the c_long_repair_swap_keep whose first changed character it rates
+    // highest, from that character on, and the shared LM scores them too.
+    c_long_repair_swaps_per_key = 3;
+    c_long_repair_swap_keep = 3;
+    // Only when the best of those characters lies no more than 4 nats below
+    // the draft's: scoring every sentence's swaps cost two graph runs, 16 to
+    // 21 ms; held to this, 35 to 41% of them make the correction's run and 14
+    // to 22% the shared LM's, for nearly all of the gain.
+    c_long_repair_swap_floor = -4.0;
     c_short_nocontext_protected_baseline_min_weight = 1000;
     c_short_residual_visibility_only_max_weight = 0;
 
@@ -138738,6 +138775,118 @@ var
     candidate, saved: TncCandidate;
     validated: TncValidatedRepairPath;
     paging_pool_current: Boolean;
+    // The draft with one word of two to four characters replaced by another
+    // word of the same syllables, heaviest first.
+    function homophone_word_swaps(const draft, aligned: string): TArray<string>;
+    var
+        syllables: TArray<string>;
+        items: TncCandidateList;
+        order: TArray<Integer>;
+        weights: TArray<Integer>;
+        seen: TDictionary<string, Byte>;
+        size, start, k, j, taken, held: Integer;
+        key, span, swapped: string;
+        readable: Boolean;
+    begin
+        Result := nil;
+        syllables := aligned.Split([#3], TStringSplitOptions.ExcludeEmpty);
+        if Length(syllables) <> Length(draft) then Exit;
+        seen := TDictionary<string, Byte>.Create;
+        try
+            for size := 2 to 4 do
+                for start := 0 to Length(draft) - size do
+                begin
+                    key := '';
+                    for k := start to start + size - 1 do key := key + syllables[k];
+                    if not m_dictionary.lookup_isolated_exact_component(key, items) then Continue;
+                    span := Copy(draft, start + 1, size);
+                    // By weight, heaviest first; equal weights keep the dictionary's order.
+                    SetLength(order, Length(items));
+                    SetLength(weights, Length(items));
+                    for k := 0 to High(items) do
+                    begin
+                        if items[k].has_dict_weight then weights[k] := items[k].dict_weight
+                        else weights[k] := items[k].score;
+                        j := k;
+                        while (j > 0) and (weights[order[j - 1]] < weights[k]) do
+                        begin
+                            order[j] := order[j - 1];
+                            Dec(j);
+                        end;
+                        order[j] := k;
+                    end;
+                    taken := 0;
+                    for held in order do
+                    begin
+                        if (Length(items[held].text) <> size) or (items[held].text = span) or
+                            (items[held].comment <> '') or (items[held].source = cs_user) then Continue;
+                        readable := True;
+                        for k := 1 to size do
+                            readable := readable and ((Ord(items[held].text[k]) < $D800) or
+                                (Ord(items[held].text[k]) > $DFFF));
+                        if not readable then Continue;
+                        swapped := Copy(draft, 1, start) + items[held].text +
+                            Copy(draft, start + size + 1, MaxInt);
+                        if not seen.ContainsKey(swapped) then
+                        begin
+                            seen.Add(swapped, 0);
+                            Result := Result + [swapped];
+                        end;
+                        Inc(taken);
+                        if taken >= c_long_repair_swaps_per_key then Break;
+                    end;
+                end;
+        finally
+            seen.Free;
+        end;
+    end;
+    // The correction of the draft, or the draft itself.
+    function repaired_draft(const draft: string): string;
+    var
+        corrector: IncLongLocalCorrector;
+        swaps, texts: TArray<string>;
+        gains, text_gains, scores: TArray<Single>;
+        corrected: string;
+        gain, best: Single;
+        i: Integer;
+    begin
+        Result := draft;
+        if (m_char_lm <> nil) and m_char_lm_long_enabled and m_char_lm.char_lm_ready and
+            Supports(m_long_local_repair, IncLongLocalCorrector, corrector) then
+        begin
+            swaps := homophone_word_swaps(draft, corrector.align_long(repair_query, draft));
+            if corrector.correct_long(repair_query, draft, repair_context, swaps,
+                c_long_repair_swap_keep, c_long_repair_swap_floor, corrected, aligned_pinyin, gain,
+                gains) < 0 then Exit;
+            texts := [draft];
+            text_gains := [0];
+            if (corrected <> '') and (corrected <> draft) then
+            begin
+                texts := texts + [corrected];
+                text_gains := text_gains + [gain];
+            end;
+            for i := 0 to High(swaps) do
+                if (i < Length(gains)) and not IsNan(gains[i]) and (swaps[i] <> corrected) then
+                begin
+                    texts := texts + [swaps[i]];
+                    text_gains := text_gains + [gains[i]];
+                end;
+            if (Length(texts) < 2) or
+                (m_char_lm.score_texts('', texts, Length(texts), 0, scores) <> Length(texts)) then
+                Exit;
+            best := c_long_repair_joint_gain;
+            for i := 1 to High(texts) do
+                if text_gains[i] + scores[i] - scores[0] >= best then
+                begin
+                    best := text_gains[i] + scores[i] - scores[0];
+                    Result := texts[i];
+                end;
+            Exit;
+        end;
+        if not m_long_local_repair.try_repair(repair_query, draft, '', repair_context, Result,
+            aligned_pinyin, minimum_word_ratio) then
+            Result := draft;
+    end;
     procedure remember_validated_path(const source_index: Integer);
     begin
         if not m_local_repair_validated.exact_path or
@@ -138807,9 +138956,9 @@ begin
     if candidates[0].has_dict_weight and m_dictionary.is_base_entry(
         normalize_pinyin_text(m_composition_text), candidates[0].text) then Exit;
     // The pinyin-conditioned LM rewrites the settled top1 (after the shared
-    // LM's long rerank). A rewrite is kept when its characters spell the
-    // syllables and it has a dictionary path; the model already compared the
-    // whole sentences.
+    // LM's long rerank). A rewrite is kept when both models together prefer
+    // it (repaired_draft), its characters spell the syllables and it has a
+    // dictionary path.
     // The text before the input. When the host reads the document, use only
     // what it reported (its snapshot, else the current sentence before the
     // caret); empty means the input starts the text. Only for a document the
@@ -138835,9 +138984,7 @@ begin
         // Model vocabularies use canonical syllables, with explicit boundaries intact.
         repair_query := nc_normalize_umlaut_spelling(m_composition_text);
         try
-            if not m_long_local_repair.try_repair(repair_query, candidates[0].text, '',
-                repair_context, text, aligned_pinyin, minimum_word_ratio) then
-                text := candidates[0].text;
+            text := repaired_draft(candidates[0].text);
         except
             Exit;
         end;
@@ -138845,6 +138992,9 @@ begin
         if text <> candidates[0].text then
         begin
             validated := build_repair_path(m_dictionary, text, aligned_pinyin);
+            if Assigned(nc_char_lm_long_trace) then
+                nc_char_lm_long_trace('REPAIR_E'#9 + candidates[0].text + #9 + text + #9 +
+                    IntToStr(Ord(validated.exact_path)));
             if not validated.exact_path then text := candidates[0].text;
         end;
         m_local_repair_query_key := key;
