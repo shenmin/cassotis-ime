@@ -26,7 +26,9 @@ uses
 
 function nc_traditional_to_simplified(const text: string): string;
 { Every character traditional text never writes in its traditional form (the
-  first of several: 發 for 发); the others as they are. }
+  first of several: 發 for 发); the others as they are. 么 stays: Taiwan's
+  text writes it for 幺 (老么, 么二), and the dictionary writes 麼 where it
+  reads me (什麼). }
 function nc_simplified_to_traditional(const text: string): string;
 { The traditional form of a character the LM wrote: as in
   nc_simplified_to_traditional, but '' for one that traditional text writes
@@ -121,6 +123,8 @@ begin
     Result := text;
     for idx := 1 to Length(Result) do
     begin
+        if find_code(c_simplified_taiwan_written, Word(Result[idx])) >= 0 then
+            Continue;
         found := find_code(c_simplified_chars, Word(Result[idx]));
         if found >= 0 then
             Result[idx] := Char(c_simplified_traditional[found]);

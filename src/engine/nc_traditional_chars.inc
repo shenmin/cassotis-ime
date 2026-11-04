@@ -11,7 +11,9 @@
   c_simplified_chars / c_simplified_traditional: a character traditional
   text never writes and its traditional form, Taiwan's (為 for 为, 著 for
   着). c_simplified_ambiguous: one that traditional text writes as well,
-  beside other forms (后: 後 or 后).
+  beside other forms (后: 後 or 后). c_simplified_taiwan_written: one of
+  c_simplified_chars that Taiwan's text writes as a form of another (么 of
+  幺: 老么), left as it is in pages and commits.
   UTF-16 code units of the Basic Multilingual Plane only. }
 
 const c_traditional_chars: array[0..2956] of Word = (
@@ -977,3 +979,6 @@ const c_simplified_ambiguous: array[0..164] of Word = (
     $7B51, $7CFB, $80C4, $80CC, $80DC, $80E1, $814A, $814C, $81BB, $81F4, $820D, $82B8,
     $82D4, $82F9, $8303, $8350, $8499, $8511, $866B, $869D, $8721, $874E, $8868, $8C37,
     $8DD6, $8F9F, $9002, $90C1, $9178, $91C7, $91CC, $96D5, $9762);
+
+const c_simplified_taiwan_written: array[0..0] of Word = (
+    $4E48);
