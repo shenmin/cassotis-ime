@@ -82,12 +82,14 @@ var
     g_sogou_codes: TDictionary<string, string>;
     g_ziguang_codes: TDictionary<string, string>;
     g_pinyinjiajia_codes: TDictionary<string, string>;
+    g_zhinengabc_codes: TDictionary<string, string>;
 
 function nc_is_shuangpin_scheme(const scheme: TncPinyinInputScheme): Boolean;
 begin
     Result := scheme in [pis_microsoft_shuangpin, pis_xiaohe_shuangpin,
         pis_ziranma_shuangpin, pis_sogou_shuangpin,
-        pis_ziguang_shuangpin, pis_pinyinjiajia_shuangpin];
+        pis_ziguang_shuangpin, pis_pinyinjiajia_shuangpin,
+        pis_zhinengabc_shuangpin];
 end;
 
 function ends_with(const value: string; const suffix: string): Boolean;
@@ -608,6 +610,103 @@ begin
     Result := LowerCase(transform_pinyinjiajia_initial(value));
 end;
 
+// Zhineng ABC: zh, ch and sh take the keys of the finals a, e and v, and a
+// syllable without an initial takes a fixed o (ai = ol, er = or), never a doubled
+// vowel: aa is zha and ee is che. The initial is split off first, so that a
+// final's key is never read as part of an initial (zang = zh, zhi = ai). ve shares
+// the key of ue, as Rime, fcitx, Windows and macOS have it: on the v of the older
+// key charts lv and lve would be one code, and a code decodes to one syllable.
+function transform_zhinengabc_code(const source: string): string;
+var
+    value: string;
+    initial_code: string;
+begin
+    value := LowerCase(source);
+    if (value <> '') and CharInSet(value[1], ['a', 'o', 'e']) then
+    begin
+        initial_code := 'o';
+    end
+    else if Copy(value, 1, 2) = 'zh' then
+    begin
+        initial_code := 'a';
+        Delete(value, 1, 2);
+    end
+    else if Copy(value, 1, 2) = 'ch' then
+    begin
+        initial_code := 'e';
+        Delete(value, 1, 2);
+    end
+    else if Copy(value, 1, 2) = 'sh' then
+    begin
+        initial_code := 'v';
+        Delete(value, 1, 2);
+    end
+    else
+    begin
+        initial_code := Copy(value, 1, 1);
+        Delete(value, 1, 1);
+    end;
+
+    if ends_with(value, 'iang') then
+        value := replace_suffix(value, 'iang', 't')
+    else if ends_with(value, 'uang') then
+        value := replace_suffix(value, 'uang', 't')
+    else if ends_with(value, 'iong') then
+        value := replace_suffix(value, 'iong', 's')
+    else if ends_with(value, 'uai') then
+        value := replace_suffix(value, 'uai', 'c')
+    else if ends_with(value, 'uan') then
+        value := replace_suffix(value, 'uan', 'p')
+    else if ends_with(value, 'ian') then
+        value := replace_suffix(value, 'ian', 'w')
+    else if ends_with(value, 'iao') then
+        value := replace_suffix(value, 'iao', 'z')
+    else if ends_with(value, 'ing') then
+        value := replace_suffix(value, 'ing', 'y')
+    else if ends_with(value, 'ong') then
+        value := replace_suffix(value, 'ong', 's')
+    else if ends_with(value, 'eng') then
+        value := replace_suffix(value, 'eng', 'g')
+    else if ends_with(value, 'ang') then
+        value := replace_suffix(value, 'ang', 'h')
+    else if ends_with(value, 'ai') then
+        value := replace_suffix(value, 'ai', 'l')
+    else if ends_with(value, 'an') then
+        value := replace_suffix(value, 'an', 'j')
+    else if ends_with(value, 'ao') then
+        value := replace_suffix(value, 'ao', 'k')
+    else if ends_with(value, 'ei') then
+        value := replace_suffix(value, 'ei', 'q')
+    else if ends_with(value, 'en') then
+        value := replace_suffix(value, 'en', 'f')
+    else if ends_with(value, 'er') then
+        value := replace_suffix(value, 'er', 'r')
+    else if ends_with(value, 'ia') then
+        value := replace_suffix(value, 'ia', 'd')
+    else if ends_with(value, 'ie') then
+        value := replace_suffix(value, 'ie', 'x')
+    else if ends_with(value, 'in') then
+        value := replace_suffix(value, 'in', 'c')
+    else if ends_with(value, 'iu') then
+        value := replace_suffix(value, 'iu', 'r')
+    else if ends_with(value, 'ou') then
+        value := replace_suffix(value, 'ou', 'b')
+    else if ends_with(value, 'ua') then
+        value := replace_suffix(value, 'ua', 'd')
+    else if ends_with(value, 'ue') then
+        value := replace_suffix(value, 'ue', 'm')
+    else if ends_with(value, 've') then
+        value := replace_suffix(value, 've', 'm')
+    else if ends_with(value, 'ui') then
+        value := replace_suffix(value, 'ui', 'm')
+    else if ends_with(value, 'un') then
+        value := replace_suffix(value, 'un', 'n')
+    else if ends_with(value, 'uo') then
+        value := replace_suffix(value, 'uo', 'o');
+
+    Result := initial_code + value;
+end;
+
 procedure append_unique(var values: TArray<string>; const value: string);
 var
     idx: Integer;
@@ -737,6 +836,13 @@ begin
                     end;
                 end;
             end;
+        pis_zhinengabc_shuangpin:
+            begin
+                for source in sources do
+                begin
+                    append_unique(Result, transform_zhinengabc_code(source));
+                end;
+            end;
     end;
 end;
 
@@ -761,7 +867,8 @@ begin
     end;
 
     // Valid syllables can share one code: lo/luo in every scheme; ng with
-    // neng, niang (Ziguang), or nang (Pinyin Jiajia); and hm/hun in Ziguang.
+    // neng, niang (Ziguang), or nang (Pinyin Jiajia); hm/hun in Ziguang and
+    // hm/hui in Zhineng ABC.
     // Prefer the productive longer syllable while retaining all other codes.
     if Length(syllable) > Length(current) then
     begin
@@ -799,7 +906,8 @@ begin
     g_sogou_codes := TDictionary<string, string>.Create;
     g_ziguang_codes := TDictionary<string, string>.Create;
     g_pinyinjiajia_codes := TDictionary<string, string>.Create;
-    for scheme := pis_microsoft_shuangpin to pis_pinyinjiajia_shuangpin do
+    g_zhinengabc_codes := TDictionary<string, string>.Create;
+    for scheme := pis_microsoft_shuangpin to High(TncPinyinInputScheme) do
     begin
         case scheme of
             pis_microsoft_shuangpin:
@@ -812,6 +920,8 @@ begin
                 code_map := g_sogou_codes;
             pis_ziguang_shuangpin:
                 code_map := g_ziguang_codes;
+            pis_zhinengabc_shuangpin:
+                code_map := g_zhinengabc_codes;
         else
             code_map := g_pinyinjiajia_codes;
         end;
@@ -843,6 +953,14 @@ begin
                 'v': Result := 'zh';
                 'u': Result := 'ch';
                 'i': Result := 'sh';
+            else
+                Result := value;
+            end;
+        pis_zhinengabc_shuangpin:
+            case value of
+                'a': Result := 'zh';
+                'e': Result := 'ch';
+                'v': Result := 'sh';
             else
                 Result := value;
             end;
@@ -917,6 +1035,8 @@ begin
             code_map := g_sogou_codes;
         pis_ziguang_shuangpin:
             code_map := g_ziguang_codes;
+        pis_zhinengabc_shuangpin:
+            code_map := g_zhinengabc_codes;
     else
         code_map := g_pinyinjiajia_codes;
     end;
@@ -1066,6 +1186,7 @@ initialization
     initialize_maps;
 
 finalization
+    g_zhinengabc_codes.Free;
     g_pinyinjiajia_codes.Free;
     g_ziguang_codes.Free;
     g_sogou_codes.Free;

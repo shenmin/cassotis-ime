@@ -107,7 +107,7 @@ begin
         if (Length(syllable) >= 2) and CharInSet(syllable[1], ['j', 'q', 'x']) and
             (syllable[2] = 'u') then
             add_spelling(syllable[1] + 'v' + Copy(syllable, 3, MaxInt));
-        for scheme := pis_microsoft_shuangpin to pis_pinyinjiajia_shuangpin do
+        for scheme := pis_microsoft_shuangpin to High(TncPinyinInputScheme) do
         begin
             codes := nc_get_shuangpin_codes(scheme, syllable);
             for code in codes do

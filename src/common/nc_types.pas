@@ -179,7 +179,8 @@ type
         pis_ziranma_shuangpin,
         pis_sogou_shuangpin,
         pis_ziguang_shuangpin,
-        pis_pinyinjiajia_shuangpin
+        pis_pinyinjiajia_shuangpin,
+        pis_zhinengabc_shuangpin
     );
     TncDictionaryVariant = (dv_simplified, dv_traditional);
     TncCandidatePageKeyScheme = (

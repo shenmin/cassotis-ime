@@ -110,6 +110,8 @@ begin
             Result := 'ziguang-shuangpin';
         pis_pinyinjiajia_shuangpin:
             Result := 'pinyinjiajia-shuangpin';
+        pis_zhinengabc_shuangpin:
+            Result := 'zhinengabc-shuangpin';
     else
         Result := 'full-pinyin';
     end;
@@ -148,6 +150,14 @@ begin
         SameText(Trim(value), 'pyjj') then
     begin
         Exit(pis_pinyinjiajia_shuangpin);
+    end;
+    if SameText(Trim(value), 'zhinengabc-shuangpin') or
+        SameText(Trim(value), 'zhinengabc') or
+        SameText(Trim(value), 'znabc-shuangpin') or
+        SameText(Trim(value), 'znabc') or
+        SameText(Trim(value), 'abc-shuangpin') then
+    begin
+        Exit(pis_zhinengabc_shuangpin);
     end;
     Result := pis_full_pinyin;
 end;

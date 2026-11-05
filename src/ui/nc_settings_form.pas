@@ -427,6 +427,7 @@ resourcestring
     SOptionSogouShuangpin = '搜狗双拼';
     SOptionZiguangShuangpin = '紫光双拼';
     SOptionPinyinJiajiaShuangpin = '拼音加加';
+    SOptionZhinengabcShuangpin = '智能ABC双拼';
     SCheckEnableFuzzyPinyin = '启用模糊拼音';
     SLabelPunctuationMode = '标点';
     SCheckDecimalPeriodAfterDigit = '连续输入数字后面的“。”转为“.”';
@@ -2092,6 +2093,7 @@ begin
     m_combo_pinyin_input_scheme.Items.Add(SOptionSogouShuangpin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionZiguangShuangpin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionPinyinJiajiaShuangpin);
+    m_combo_pinyin_input_scheme.Items.Add(SOptionZhinengabcShuangpin);
     m_combo_pinyin_input_scheme.OnChange := mark_dirty;
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
@@ -4218,6 +4220,8 @@ begin
             next_config.pinyin_input_scheme := pis_ziguang_shuangpin;
         Ord(pis_pinyinjiajia_shuangpin):
             next_config.pinyin_input_scheme := pis_pinyinjiajia_shuangpin;
+        Ord(pis_zhinengabc_shuangpin):
+            next_config.pinyin_input_scheme := pis_zhinengabc_shuangpin;
     else
         next_config.pinyin_input_scheme := pis_full_pinyin;
     end;

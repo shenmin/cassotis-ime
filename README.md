@@ -35,7 +35,7 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 - **Long sentences.** Lexicon-constrained path search builds complete candidates (for example `womenjintian` → `我们今天`) while keeping prefix candidates for partial commitment. The language model chooses among the complete candidates and then corrects small homophone errors in the chosen sentence against the typed Pinyin and the text before the input.
 - **Short words.** The language model resolves competing exact candidates, using the text already committed before the cursor when there is any.
 - **Short phrases.** An input of three to five syllables that the dictionary does not contain (for example `jiuguize` → `旧规则`) gets whole phrases put together from dictionary words. The language model picks one, using the text before the cursor when there is any, and corrects its homophones against the typed Pinyin; when the choice is close, up to two more whole phrases follow the first.
-- **Pinyin schemes.** Full Pinyin and six selectable Double Pinyin schemes (Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia) share the same candidate ranking and user-learning data. Fuzzy Pinyin is configurable for common initial and final pairs, and initial-letter abbreviations are supported (for example `jt` → `今天`).
+- **Pinyin schemes.** Full Pinyin and seven selectable Double Pinyin schemes (Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, Pinyin Jiajia, and Zhineng ABC) share the same candidate ranking and user-learning data. Fuzzy Pinyin is configurable for common initial and final pairs, and initial-letter abbreviations are supported (for example `jt` → `今天`).
 - **Dictionaries.** Separate simplified and traditional base databases and a user database. Word frequencies exported by another input method can be imported in Advanced settings (one word a line: word, Pinyin and count, separated by commas or tabs); they go into the user database as the user's own choices.
 - **Quick input.** Use `ufh` for symbols, `uxh` for numbered markers, `usx` for mathematical symbols, and `urq` for the current date. `i123.45` or `v123.45` offers Chinese numbers and uppercase currency amounts; digits keep entering the number, so select with the displayed `a/b/c/d` keys, arrow keys and Space, or the mouse. Double Pinyin requires Shift+U/I/V to enter these modes. See the [quick-input guide (Chinese)](QUICK_INPUT.md).
 - **Chinese punctuation.** With Chinese punctuation and half-width input, the symbols that stay as typed can be edited in General settings, or set to the Markdown preset or to standard Chinese punctuation with one click. The default Markdown preset keeps ``-#*+_=`~[]<>|@``; commas, full stops, question and exclamation marks, parentheses and quotation marks stay Chinese, and the backslash gives the enumeration comma `、`.
@@ -314,7 +314,7 @@ Default config file:
 - `%LOCALAPPDATA%\CassotisIme\cassotis_ime.ini`
 
 Important options include:
-- Pinyin scheme (Full Pinyin / Microsoft Double Pinyin / Xiaohe Double Pinyin / Ziranma Double Pinyin / Sogou Double Pinyin / Ziguang Double Pinyin / Pinyin Jiajia)
+- Pinyin scheme (Full Pinyin / Microsoft Double Pinyin / Xiaohe Double Pinyin / Ziranma Double Pinyin / Sogou Double Pinyin / Ziguang Double Pinyin / Pinyin Jiajia / Zhineng ABC Double Pinyin)
 - simplified/traditional variant switching (`variant`)
 - full-width / punctuation mode
 - whether a full stop typed after consecutive digits becomes a decimal point (`decimal_period_after_digit`)

@@ -34,7 +34,7 @@
 | 键 | 含义 | 可取值 | 默认值 | 示例 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `input_mode` | 初始输入模式 | `0`=中文, `1`=英文 | `0` | `input_mode=0` | 非 `1` 的值均回退为中文模式。运行时可按 Shift 键切换。 |
-| `pinyin_scheme` | 拼音输入方案 | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | 可选择全拼或六种双拼方案，无法识别的值回退为全拼。 |
+| `pinyin_scheme` | 拼音输入方案 | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` / `zhinengabc-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | 可选择全拼或七种双拼方案，无法识别的值回退为全拼。 |
 | `full_width_mode` | 全角输出模式 | `true` / `false` | `false` | `full_width_mode=false` | 开启后 ASCII 字符映射为全角形式。运行时可按 Shift+Space 切换。 |
 | `punctuation_full_width` | 中文标点风格 | `true` / `false` | `true` | `punctuation_full_width=true` | 开启后标点键按中文习惯输出，半角例外见 `[punctuation]` 段。运行时可按 Ctrl+句号 切换。 |
 | `decimal_period_after_digit` | 连续输入数字后使用小数点 | `true` / `false` | `true` | `decimal_period_after_digit=true` | 中文标点模式下，连续键入数字后紧接着按句号键，输出 `.` 而不是 `。`；不根据光标前已有或粘贴的文本判断，移动光标或输入其他按键后不再转换。设置中选为英文标点时，此选项不可操作，但保留勾选状态。 |
@@ -55,7 +55,8 @@
 - 修改方案后立即生效，并清空未上屏内容，避免混用新旧键位。
 - 候选查询和用户学习统一使用解码后的标准全拼，因此所有拼音方案共享候选排序和用户数据。
 - 单引号可显式分隔音节。微软、搜狗和紫光双拼中的分号仅在作为双拼码第二键时表示 `ing`，其他位置仍作为标点。
-- 状态浮窗以 `拼`、`微`、`鹤`、`自`、`搜`、`紫`、`加` 分别表示全拼、微软、小鹤、自然码、搜狗、紫光和拼音加加。
+- 智能ABC双拼的 `zh`、`ch`、`sh` 在 `a`、`e`、`v` 键，零声母音节固定以 `o` 开头（`ol` = ai，`or` = er）。`üe` 与 `ue` 同在 `m` 键（`lm` = lüe，`lv` = lü）。
+- 状态浮窗以 `拼`、`微`、`鹤`、`自`、`搜`、`紫`、`加`、`智` 分别表示全拼、微软、小鹤、自然码、搜狗、紫光、拼音加加和智能ABC。
 
 ---
 
@@ -249,4 +250,11 @@ pinyin_scheme=ziguang-shuangpin
 ```ini
 [engine]
 pinyin_scheme=pinyinjiajia-shuangpin
+```
+
+### 使用智能ABC双拼
+
+```ini
+[engine]
+pinyin_scheme=zhinengabc-shuangpin
 ```

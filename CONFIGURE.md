@@ -34,7 +34,7 @@ Notes:
 | Key | Meaning | Allowed values | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `input_mode` | Initial input mode | `0` = Chinese, `1` = English | `0` | `input_mode=0` | Any value other than `1` defaults to Chinese. Can be toggled at runtime with the Shift key. |
-| `pinyin_scheme` | Pinyin input scheme | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | Selects Full Pinyin or one of six Double Pinyin layouts. Unknown values fall back to Full Pinyin. |
+| `pinyin_scheme` | Pinyin input scheme | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` / `zhinengabc-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | Selects Full Pinyin or one of seven Double Pinyin layouts. Unknown values fall back to Full Pinyin. |
 | `full_width_mode` | Full-width output | `true` / `false` | `false` | `full_width_mode=false` | When enabled, ASCII characters are mapped to full-width forms. Toggle at runtime with Shift+Space. |
 | `punctuation_full_width` | Chinese punctuation style | `true` / `false` | `true` | `punctuation_full_width=true` | Uses Chinese punctuation, except for the half-width symbols in `[punctuation]`. Toggle at runtime with Ctrl+Period. |
 | `decimal_period_after_digit` | Decimal point after consecutively typed digits | `true` / `false` | `true` | `decimal_period_after_digit=true` | In Chinese punctuation mode, pressing the period key immediately after typing a digit produces `.` rather than `。`. Existing or pasted text is not considered; moving the caret or pressing another key cancels the conversion. The checkbox is disabled in English punctuation mode without clearing the saved preference. |
@@ -55,7 +55,8 @@ Double Pinyin follows these rules:
 - Changing the scheme takes effect immediately and clears any active composition to avoid mixing layouts.
 - Candidate lookup and user learning use decoded canonical Full Pinyin, so all Pinyin schemes share ranking and user data.
 - An apostrophe explicitly separates syllables. In Microsoft, Sogou, and Ziguang Double Pinyin, semicolon represents the `ing` final only as the second key of a pair; elsewhere it remains punctuation.
-- The status widget uses `拼`, `微`, `鹤`, `自`, `搜`, `紫`, and `加` for Full Pinyin, Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, and Pinyin Jiajia respectively.
+- Zhineng ABC Double Pinyin puts `zh`, `ch`, and `sh` on `a`, `e`, and `v`, and every zero-initial syllable begins with `o` (`ol` = ai, `or` = er). `üe` shares the `m` key with `ue` (`lm` = lüe, `lv` = lü).
+- The status widget uses `拼`, `微`, `鹤`, `自`, `搜`, `紫`, `加`, and `智` for Full Pinyin, Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, Pinyin Jiajia, and Zhineng ABC respectively.
 
 ---
 
@@ -249,4 +250,11 @@ pinyin_scheme=ziguang-shuangpin
 ```ini
 [engine]
 pinyin_scheme=pinyinjiajia-shuangpin
+```
+
+### Use Zhineng ABC Double Pinyin
+
+```ini
+[engine]
+pinyin_scheme=zhinengabc-shuangpin
 ```

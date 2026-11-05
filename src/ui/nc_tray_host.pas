@@ -1904,6 +1904,11 @@ begin
                 scheme_text := '加';
                 scheme_hint := '拼音方案：拼音加加';
             end;
+        pis_zhinengabc_shuangpin:
+            begin
+                scheme_text := '智';
+                scheme_hint := '拼音方案：智能ABC双拼';
+            end;
     else
         begin
             scheme_text := '拼';
