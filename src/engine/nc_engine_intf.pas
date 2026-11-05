@@ -898,6 +898,7 @@ type
         m_local_repair_validated: TncValidatedRepairPath;
         // The short-phrase stage's answer for the input it was asked about.
         m_short_phrase_key, m_short_phrase_debug: string;
+        m_short_phrase_refused_key: string;
         // The particle phrases of a split syllable the shared LM rejected
         // (judge_split_particle_candidates), for the input and context of key.
         m_split_particle_query, m_split_particle_key, m_split_particle_debug: string;
@@ -139188,6 +139189,11 @@ const
     // the comma at half weight 21 to 61 of about 5,000.
     c_plain_first_lead = 2.0;
     c_plain_first_margin = 1.0;
+    // A word still being typed gives way to a phrase only when it is rare, by
+    // its word frequency score, and the phrase ends in a word that scores this
+    // much above it (see the check of the completion below).
+    c_yielding_completion_frequency = 200;
+    c_yielding_completion_lead = 150;
     // The parser keeps one reading of the letters; where they also read as
     // the same number of syllables another way ("henganjing": heng an jing,
     // and hen gan jing for 很干净), the drafts of that reading join the
@@ -139237,6 +139243,8 @@ var
     reading, chosen_reading, cut_index: Integer;
     cuts: TArray<TArray<Integer>>;
     top_complete, context_free: Boolean;
+    yielding_completion: Boolean;
+    completion_frequency: Integer;
 
     function span_key(const start, count: Integer): string;
     var k: Integer;
@@ -139414,6 +139422,51 @@ var
             end;
         end;
         Result := False;
+    end;
+
+    // Whether the keys end in a word of two characters or more, not part of
+    // the word being typed, that scores c_yielding_completion_lead above it.
+    function word_ends_input_above_completion: Boolean;
+    var r, start, k: Integer;
+        tail_key, tail_text: string;
+        tail_items: TncCandidateList;
+    begin
+        Result := False;
+        for r := 0 to High(readings) do
+            for start := 1 to units - 2 do
+            begin
+                tail_key := '';
+                for k := start to units - 1 do tail_key := tail_key + readings[r][k];
+                if not m_dictionary.lookup_isolated_exact_component(tail_key, tail_items) then
+                    Continue;
+                for k := 0 to High(tail_items) do
+                begin
+                    tail_text := Trim(tail_items[k].text);
+                    if (Trim(tail_items[k].comment) = '') and
+                        (get_candidate_text_unit_count(tail_text) = units - start) and
+                        (Pos(tail_text, top_text) = 0) and
+                        (m_dictionary.get_word_frequency_score(tail_text) >=
+                        completion_frequency + c_yielding_completion_lead) then
+                        Exit(True);
+                end;
+            end;
+    end;
+
+    // Whether a phrase ends in such a word: what the stage chose, and not only
+    // what the keys can spell (相貌出 ends in a character of no weight).
+    function phrase_ends_above_completion(const text: string): Boolean;
+    var size: Integer;
+        tail_text: string;
+    begin
+        Result := False;
+        for size := 2 to Length(text) do
+        begin
+            tail_text := Copy(text, Length(text) - size + 1, size);
+            if (Pos(tail_text, top_text) = 0) and
+                (m_dictionary.get_word_frequency_score(tail_text) >=
+                completion_frequency + c_yielding_completion_lead) then
+                Exit(True);
+        end;
     end;
 
     // Whether the characters of a text from char_index on read as the input
@@ -139801,13 +139854,35 @@ begin
     // first candidate whose characters do not read as typed is still
     // rewritten: leaving all of them in place cost four clauses of five
     // characters in 5,000.
+    // A rare word does not hold the page against a phrase that ends in a common
+    // word: "xinjiqi" kept 心肌桥 (31 occurrences in the general text, on the
+    // way to "xinjiqiao"), and 新|机器, which the keys spell to their end, was
+    // not on the page at all. Typed through held-out text the check stopped
+    // the stage on about 1% of the keys, and on 64% of those the word was what
+    // was being typed and the stage would have taken its place (不知道 for
+    // 不直达 at "buzhida"), on 2% the stage's phrase was right and the word not:
+    // so only such a word gives way (out/nianzhao_20261104/xinjiqi, census.py,
+    // report.py, sim2.py). The word returns when its last syllable is complete.
+    yielding_completion := False;
+    completion_frequency := 0;
     if top_complete and not reads_as_typed(top_text, False) and
         reads_as_typed(top_text, True) then
+    begin
+        completion_frequency := m_dictionary.get_word_frequency_score(top_text);
+        if (completion_frequency > c_yielding_completion_frequency) or
+            not word_ends_input_above_completion then
+        begin
+            if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=completion]';
+            Exit;
+        end;
+        yielding_completion := True;
+    end;
+    key := m_composition_text + #0 + m_last_lookup_key + #0 + context;
+    if yielding_completion and (key = m_short_phrase_refused_key) then
     begin
         if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=completion]';
         Exit;
     end;
-    key := m_composition_text + #0 + m_last_lookup_key + #0 + context;
     if (key = m_short_phrase_key) and (Length(m_short_phrase_texts) > 0) then
     begin
         shown := m_short_phrase_texts;
@@ -140126,6 +140201,12 @@ begin
                     not implausible(order[index]) and not comma_lifted(order[index]) then
                     show(drafts[order[index]], reading_pinyin(draft_readings[order[index]]));
         if Length(shown) = 0 then Exit;
+        if yielding_completion and not phrase_ends_above_completion(shown[0]) then
+        begin
+            m_short_phrase_refused_key := key;
+            if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=completion]';
+            Exit;
+        end;
         // A Tab continuation goes on from the input as the beginning of a
         // sentence, where the comma is wrong: without it the Tab benchmark
         // had 3887 hits instead of 3754 (with it at half weight about 3830),
@@ -180547,6 +180628,258 @@ var
         Result := True;
     end;
 
+    // A first syllable whose letters also read as two ("nian" as ni an,
+    // "xian" as xi an) gives the page the characters of the first of the two
+    // as well, with the rest still to type (ni + "anzhao" for "nianzhao"),
+    // among the first syllable's own characters by their dictionary weights.
+    // The page of "nianzhao" held the characters of nian and nothing else, so
+    // the first character of ni an zhao could not be chosen. A bare a, e or o
+    // is no such rest: the parser reads it after a syllable last, and xi +
+    // "ade" for "xiade" is noise. The page of a single syllable has its own
+    // split partials (append_split_syllable_partials).
+    // The list's characters of the first syllable, in its order, place the
+    // others: each goes behind the last of them that weighs as much or more,
+    // before the first when none does. A character of the syllable that the
+    // list put above a heavier one keeps its place, and so does the heavier
+    // one. The result is heaviest first with the index each goes to in the
+    // list as it is; at most room_value of them.
+    function plan_first_syllable_split_singles(const list_value: TncCandidateList;
+        const room_value: Integer; out out_singles: TncCandidateList;
+        out out_targets: TArray<Integer>): Boolean;
+    var
+        first_key_local: string;
+        rest_key_local: string;
+        head_key_local: string;
+        tail_key_local: string;
+        comment_local: string;
+        text_local: string;
+        split_local: Integer;
+        idx_local: Integer;
+        sort_idx_local: Integer;
+        weight_local: Integer;
+        own_local: TncCandidateList;
+        heads_local: TncCandidateList;
+        own_weights_local: TDictionary<string, Integer>;
+        listed_local: TDictionary<string, Boolean>;
+        candidate_local: TncCandidate;
+        anchor_indices_local: TArray<Integer>;
+        anchor_weights_local: TArray<Integer>;
+
+        function has_vowel_local(const text_value: string): Boolean;
+        var
+            char_idx_local: Integer;
+        begin
+            for char_idx_local := 1 to Length(text_value) do
+            begin
+                if CharInSet(text_value[char_idx_local],
+                    ['a', 'e', 'i', 'o', 'u', 'v']) then
+                begin
+                    Exit(True);
+                end;
+            end;
+            Result := False;
+        end;
+
+        function weight_of_local(const candidate_value: TncCandidate): Integer;
+        begin
+            Result := candidate_value.score;
+            if candidate_value.has_dict_weight then
+            begin
+                Result := candidate_value.dict_weight;
+            end;
+            if candidate_value.source = cs_user then
+            begin
+                Inc(Result, c_user_score_bonus);
+            end;
+        end;
+    begin
+        Result := False;
+        out_singles := nil;
+        out_targets := nil;
+        if (m_dictionary = nil) or (room_value <= 0) or
+            (m_config.pinyin_input_scheme <> pis_full_pinyin) or
+            is_shuangpin_input or is_fuzzy_pinyin_active or
+            (m_last_lookup_syllable_count < 2) or
+            (Length(syllables) < 2) or
+            (Pos('''', m_composition_text) > 0) or
+            (Length(list_value) = 0) then
+        begin
+            Exit;
+        end;
+        first_key_local := normalize_pinyin_text(syllables[0].text);
+        if (Length(first_key_local) < 4) or
+            (not nc_is_canonical_pinyin_syllable(first_key_local)) then
+        begin
+            Exit;
+        end;
+        rest_key_local := '';
+        for idx_local := 1 to High(syllables) do
+        begin
+            rest_key_local := rest_key_local +
+                normalize_pinyin_text(syllables[idx_local].text);
+        end;
+        if (rest_key_local = '') or
+            (first_key_local + rest_key_local <> normalized_pinyin) then
+        begin
+            Exit;
+        end;
+
+        own_weights_local := nil;
+        listed_local := TDictionary<string, Boolean>.Create;
+        try
+            for idx_local := 0 to High(list_value) do
+            begin
+                listed_local.AddOrSetValue(Trim(list_value[idx_local].text) + #1 +
+                    normalize_pinyin_text(Trim(list_value[idx_local].comment)), True);
+            end;
+            for split_local := 2 to Length(first_key_local) - 2 do
+            begin
+                head_key_local := Copy(first_key_local, 1, split_local);
+                tail_key_local := Copy(first_key_local, split_local + 1, MaxInt);
+                if (not has_vowel_local(head_key_local)) or
+                    (not has_vowel_local(tail_key_local)) or
+                    (not nc_is_canonical_pinyin_syllable(head_key_local)) or
+                    (not nc_is_canonical_pinyin_syllable(tail_key_local)) or
+                    (not m_dictionary.lookup_exact_full_pinyin(head_key_local,
+                    heads_local)) then
+                begin
+                    Continue;
+                end;
+                comment_local := tail_key_local + rest_key_local;
+                for idx_local := 0 to High(heads_local) do
+                begin
+                    candidate_local := heads_local[idx_local];
+                    candidate_local.text := Trim(candidate_local.text);
+                    if (Trim(candidate_local.comment) <> '') or
+                        (get_candidate_text_unit_count(candidate_local.text) <> 1) or
+                        listed_local.ContainsKey(candidate_local.text + #1 +
+                        comment_local) then
+                    begin
+                        Continue;
+                    end;
+                    listed_local.Add(candidate_local.text + #1 + comment_local, True);
+                    candidate_local.comment := comment_local;
+                    out_singles := out_singles + [candidate_local];
+                end;
+            end;
+            if (Length(out_singles) = 0) or
+                (not m_dictionary.lookup_exact_full_pinyin(first_key_local,
+                own_local)) then
+            begin
+                out_singles := nil;
+                Exit;
+            end;
+
+            // Heaviest first, the head's order among equal weights.
+            for idx_local := 1 to High(out_singles) do
+            begin
+                sort_idx_local := idx_local;
+                while (sort_idx_local > 0) and
+                    (weight_of_local(out_singles[sort_idx_local]) >
+                    weight_of_local(out_singles[sort_idx_local - 1])) do
+                begin
+                    candidate_local := out_singles[sort_idx_local];
+                    out_singles[sort_idx_local] := out_singles[sort_idx_local - 1];
+                    out_singles[sort_idx_local - 1] := candidate_local;
+                    Dec(sort_idx_local);
+                end;
+            end;
+            if Length(out_singles) > room_value then
+            begin
+                SetLength(out_singles, room_value);
+            end;
+
+            own_weights_local := TDictionary<string, Integer>.Create;
+            for idx_local := 0 to High(own_local) do
+            begin
+                text_local := Trim(own_local[idx_local].text);
+                if (Trim(own_local[idx_local].comment) = '') and
+                    (not own_weights_local.ContainsKey(text_local)) then
+                begin
+                    own_weights_local.Add(text_local,
+                        weight_of_local(own_local[idx_local]));
+                end;
+            end;
+            anchor_indices_local := nil;
+            anchor_weights_local := nil;
+            for idx_local := 0 to High(list_value) do
+            begin
+                text_local := Trim(list_value[idx_local].text);
+                if (get_candidate_text_unit_count(text_local) = 1) and
+                    (normalize_pinyin_text(Trim(list_value[idx_local].comment)) =
+                    rest_key_local) and
+                    own_weights_local.TryGetValue(text_local, weight_local) then
+                begin
+                    anchor_indices_local := anchor_indices_local + [idx_local];
+                    anchor_weights_local := anchor_weights_local + [weight_local];
+                end;
+            end;
+            if Length(anchor_indices_local) = 0 then
+            begin
+                out_singles := nil;
+                Exit;
+            end;
+
+            SetLength(out_targets, Length(out_singles));
+            for sort_idx_local := 0 to High(out_singles) do
+            begin
+                weight_local := weight_of_local(out_singles[sort_idx_local]);
+                out_targets[sort_idx_local] := anchor_indices_local[0];
+                out_singles[sort_idx_local].score :=
+                    list_value[anchor_indices_local[0]].score;
+                for idx_local := High(anchor_indices_local) downto 0 do
+                begin
+                    if anchor_weights_local[idx_local] >= weight_local then
+                    begin
+                        out_targets[sort_idx_local] :=
+                            anchor_indices_local[idx_local] + 1;
+                        out_singles[sort_idx_local].score :=
+                            list_value[anchor_indices_local[idx_local]].score;
+                        Break;
+                    end;
+                end;
+            end;
+            Result := True;
+        finally
+            listed_local.Free;
+            own_weights_local.Free;
+        end;
+    end;
+
+    // One character of a first syllable read as two, waiting for the second
+    // and the rest of the keys (ni + "anzhaoni" for "nianzhaoni"; see
+    // insert_first_syllable_split_partials_local). Its rest holds as many
+    // syllables as the whole input.
+    function is_first_syllable_split_partial(
+        const candidate_value: TncCandidate): Boolean;
+    var
+        first_key_local: string;
+        comment_local: string;
+        head_key_local: string;
+    begin
+        Result := False;
+        if (Length(syllables) < 2) or
+            (get_candidate_text_unit_count(Trim(candidate_value.text)) <> 1) then
+        begin
+            Exit;
+        end;
+        comment_local := normalize_pinyin_text(Trim(candidate_value.comment));
+        first_key_local := normalize_pinyin_text(syllables[0].text);
+        if (comment_local = '') or
+            (Length(comment_local) >= Length(normalized_pinyin)) or
+            (not normalized_pinyin.EndsWith(comment_local)) then
+        begin
+            Exit;
+        end;
+        head_key_local := Copy(normalized_pinyin, 1,
+            Length(normalized_pinyin) - Length(comment_local));
+        Result := (Length(head_key_local) + 2 <= Length(first_key_local)) and
+            first_key_local.StartsWith(head_key_local) and
+            nc_is_canonical_pinyin_syllable(head_key_local) and
+            nc_is_canonical_pinyin_syllable(Copy(first_key_local,
+            Length(head_key_local) + 1, MaxInt));
+    end;
+
     function display_candidate_should_drop_short_invalid_partial(
         const candidate_value: TncCandidate): Boolean;
     var
@@ -180556,6 +180889,7 @@ var
     begin
         Result := False;
         if umlaut_raw_prefix_units(candidate_value) > 0 then Exit;
+        if is_first_syllable_split_partial(candidate_value) then Exit;
         if (expected_units < 3) or (expected_units > 6) or
             (normalized_pinyin = '') or
             (not is_full_pinyin_key(normalized_pinyin)) or
@@ -180718,6 +181052,83 @@ var
                 end;
                 // Preserve complete candidates and the source-index/page mapping.
                 insert_display_candidate(umlaut_raw_prefixes[idx], '', insert_idx);
+            end;
+        end;
+
+        // The characters of a first syllable read as two (see
+        // plan_first_syllable_split_singles) among the candidates. A long
+        // input's page is its pool's (build_visible_long_sentence_candidate_pool_local).
+        procedure insert_first_syllable_split_partials_local;
+        var
+            singles_local: TncCandidateList;
+            targets_local: TArray<Integer>;
+            idx_local: Integer;
+            kept_local: Integer;
+            target_local: Integer;
+            least_target_local: Integer;
+            count_local: Integer;
+            read_local: Integer;
+            write_local: Integer;
+        begin
+            if (expected_units >= c_long_sentence_full_path_min_syllables) or
+                (not plan_first_syllable_split_singles(m_candidates,
+                get_total_candidate_limit_max - Length(m_candidates),
+                singles_local, targets_local)) then
+            begin
+                Exit;
+            end;
+            // The checks of insert_display_candidate, whose moves one by one
+            // cost 0.2 ms a key on the official short set: a syllable like xi
+            // brings hundreds of characters. The targets do not fall, as the
+            // weights do; those of one place stay in the order of their weights.
+            kept_local := 0;
+            least_target_local := 0;
+            for idx_local := 0 to High(singles_local) do
+            begin
+                if (umlaut_raw_prefix_units(singles_local[idx_local]) = 0) and
+                    (display_candidate_is_unsupported_short_four_ab_cd_complete(
+                    singles_local[idx_local]) or
+                    display_candidate_is_unsupported_short_four_ab_c_partial(
+                    singles_local[idx_local])) then
+                begin
+                    Continue;
+                end;
+                target_local := targets_local[idx_local];
+                if (target_local = 0) and
+                    should_keep_display_top_before_candidate(singles_local[idx_local]) then
+                begin
+                    target_local := 1;
+                end;
+                least_target_local := Max(least_target_local, target_local);
+                singles_local[kept_local] := singles_local[idx_local];
+                targets_local[kept_local] := least_target_local;
+                Inc(kept_local);
+            end;
+            if kept_local = 0 then
+            begin
+                Exit;
+            end;
+            count_local := Length(m_candidates);
+            SetLength(m_candidates, count_local + kept_local);
+            if Length(m_candidate_segment_paths) < count_local + kept_local then
+            begin
+                SetLength(m_candidate_segment_paths, count_local + kept_local);
+            end;
+            read_local := count_local - 1;
+            write_local := count_local + kept_local - 1;
+            for idx_local := kept_local - 1 downto 0 do
+            begin
+                while read_local >= targets_local[idx_local] do
+                begin
+                    m_candidates[write_local] := m_candidates[read_local];
+                    m_candidate_segment_paths[write_local] :=
+                        m_candidate_segment_paths[read_local];
+                    Dec(read_local);
+                    Dec(write_local);
+                end;
+                m_candidates[write_local] := singles_local[idx_local];
+                m_candidate_segment_paths[write_local] := '';
+                Dec(write_local);
             end;
         end;
 
@@ -185500,6 +185911,49 @@ var
                 end;
             end;
 
+            // The characters of a first syllable read as two among those of
+            // the first syllable (plan_first_syllable_split_singles).
+            procedure append_first_syllable_split_singles_local;
+            var
+                singles_local: TncCandidateList;
+                targets_local: TArray<Integer>;
+                idx_local: Integer;
+                move_idx_local: Integer;
+                at_local: Integer;
+                key_local: string;
+            begin
+                if not plan_first_syllable_split_singles(pool_candidates_local,
+                    MaxInt, singles_local, targets_local) then
+                begin
+                    Exit;
+                end;
+                for idx_local := High(singles_local) downto 0 do
+                begin
+                    singles_local[idx_local].has_dict_weight := False;
+                    singles_local[idx_local].dict_weight := 0;
+                    singles_local[idx_local].display_kind := cdk_default;
+                    key_local := nc_visible_candidate_key(singles_local[idx_local],
+                        singles_local[idx_local].comment);
+                    if seen_candidates_local.ContainsKey(key_local) then
+                    begin
+                        Continue;
+                    end;
+                    seen_candidates_local.Add(key_local, True);
+                    at_local := targets_local[idx_local];
+                    SetLength(pool_candidates_local, Length(pool_candidates_local) + 1);
+                    SetLength(pool_source_indices_local, Length(pool_candidates_local));
+                    for move_idx_local := High(pool_candidates_local) downto at_local + 1 do
+                    begin
+                        pool_candidates_local[move_idx_local] :=
+                            pool_candidates_local[move_idx_local - 1];
+                        pool_source_indices_local[move_idx_local] :=
+                            pool_source_indices_local[move_idx_local - 1];
+                    end;
+                    pool_candidates_local[at_local] := singles_local[idx_local];
+                    pool_source_indices_local[at_local] := -1;
+                end;
+            end;
+
             procedure append_nasal_boundary_singles_local;
             var
                 first_key, head_key, tail_key: string;
@@ -185747,6 +186201,7 @@ var
                 append_short_prefixes_from_list_local(m_candidates,
                     visible_source_indices, True, True);
                 append_all_first_syllable_singles_local;
+                append_first_syllable_split_singles_local;
                 append_nasal_boundary_singles_local;
 
                 m_long_visible_candidate_pool_cache := Copy(
@@ -186205,6 +186660,7 @@ var
         // before slicing so a pinned exact cannot be lost on a later page.
         if m_page_index = 0 then enforce_final_fixed_top_candidate;
         judge_split_particle_candidates(normalized_pinyin);
+        insert_first_syllable_split_partials_local;
         normalize_page_and_selection;
         start_index := m_page_index * visible_page_size;
         promoted_repeated_initial_count := 0;
