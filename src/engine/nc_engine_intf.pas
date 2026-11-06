@@ -180878,21 +180878,26 @@ var
     // A first syllable whose letters also read as two ("nian" as ni an,
     // "xian" as xi an) gives the page the characters of the first of the two
     // as well, with the rest still to type (ni + "anzhao" for "nianzhao"),
-    // among the first syllable's own characters by their dictionary weights.
-    // The page of "nianzhao" held the characters of nian and nothing else, so
-    // the first character of ni an zhao could not be chosen. A bare a, e or o
-    // is no such rest: the parser reads it after a syllable last, and xi +
-    // "ade" for "xiade" is noise. The page of a single syllable has its own
-    // split partials (append_split_syllable_partials).
+    // among the first syllable's own characters. The page of "nianzhao" held
+    // the characters of nian and nothing else, so the first character of ni an
+    // zhao could not be chosen. A bare a, e or o is no such rest: the parser
+    // reads it after a syllable last, and xi + "ade" for "xiade" is noise. The
+    // page of a single syllable has its own split partials
+    // (append_split_syllable_partials).
     // The list's characters of the first syllable, in its order, place the
-    // others: each goes behind the last of them that weighs as much or more,
-    // before the first when none does. A character of the syllable that the
-    // list put above a heavier one keeps its place, and so does the heavier
-    // one. The result is heaviest first with the index each goes to in the
-    // list as it is; at most room_value of them.
+    // others: each goes behind the last of them that weighs as much or more
+    // once 200 is taken from its own weight, and never before the first. The
+    // letters read as one syllable far more often than as two (99.6 to 99.9%
+    // in text the LM never saw), and at their full weight the characters of ji
+    // filled the page of "jiangzai" and led it. A character of the syllable
+    // that the list put above a heavier one keeps its place, and so does the
+    // heavier one. The result is heaviest first with the index each goes to in
+    // the list as it is; at most room_value of them.
     function plan_first_syllable_split_singles(const list_value: TncCandidateList;
         const room_value: Integer; out out_singles: TncCandidateList;
         out out_targets: TArray<Integer>): Boolean;
+    const
+        c_split_weight_lead = 200;
     var
         first_key_local: string;
         rest_key_local: string;
@@ -181070,11 +181075,12 @@ var
             SetLength(out_targets, Length(out_singles));
             for sort_idx_local := 0 to High(out_singles) do
             begin
-                weight_local := weight_of_local(out_singles[sort_idx_local]);
-                out_targets[sort_idx_local] := anchor_indices_local[0];
+                weight_local := weight_of_local(out_singles[sort_idx_local]) -
+                    c_split_weight_lead;
+                out_targets[sort_idx_local] := anchor_indices_local[0] + 1;
                 out_singles[sort_idx_local].score :=
                     list_value[anchor_indices_local[0]].score;
-                for idx_local := High(anchor_indices_local) downto 0 do
+                for idx_local := High(anchor_indices_local) downto 1 do
                 begin
                     if anchor_weights_local[idx_local] >= weight_local then
                     begin
@@ -181341,11 +181347,6 @@ var
                     Continue;
                 end;
                 target_local := targets_local[idx_local];
-                if (target_local = 0) and
-                    should_keep_display_top_before_candidate(singles_local[idx_local]) then
-                begin
-                    target_local := 1;
-                end;
                 least_target_local := Max(least_target_local, target_local);
                 singles_local[kept_local] := singles_local[idx_local];
                 targets_local[kept_local] := least_target_local;
