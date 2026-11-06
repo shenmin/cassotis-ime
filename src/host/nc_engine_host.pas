@@ -84,6 +84,7 @@ type
         procedure ensure_candidate_window;
         procedure update_window_debug_context;
         procedure handle_remove_user_candidate(const candidate_index: Integer);
+        procedure handle_candidate_context_menu;
         function handle_prepare_candidate(const page_index, candidate_index: Integer;
             const generation: UInt64): TncCandidateClickResult;
         procedure refresh_candidate_pages(const input_changed: Boolean);
@@ -756,6 +757,33 @@ begin
     end;
 end;
 
+// The candidate window's menu is the tray's own: its items act on the tray's
+// state, and it opens there, at the cursor.
+procedure request_tray_menu;
+var
+    tray_window: HWND;
+    tray_process: DWORD;
+begin
+    tray_window := FindWindow(c_nc_tray_host_window_class, nil);
+    if tray_window = 0 then
+    begin
+        host_log('tray host not found, no candidate window menu');
+        Exit;
+    end;
+    tray_process := 0;
+    GetWindowThreadProcessId(tray_window, @tray_process);
+    // A menu closes on a click outside only when its owner is in the foreground.
+    // This process took the last input, the right button, and may pass that on.
+    if (tray_process <> 0) and (not AllowSetForegroundWindow(tray_process)) then
+    begin
+        host_log(Format('candidate window menu: foreground not passed on err=%d', [GetLastError]));
+    end;
+    if not PostMessage(tray_window, get_nc_show_tray_menu_message, 0, 0) then
+    begin
+        host_log(Format('candidate window menu: request failed err=%d', [GetLastError]));
+    end;
+end;
+
 constructor TncHostSession.create(const owner: TncEngineHost; const session_id: string; const instance_id: UInt64;
     const config: TncEngineConfig;
     const defer_optional_dictionary_models: Boolean = False;
@@ -855,6 +883,7 @@ begin
         m_candidate_window := TncCandidateWindow.create;
         m_candidate_window.on_remove_user_candidate := handle_remove_user_candidate;
         m_candidate_window.on_prepare_candidate := handle_prepare_candidate;
+        m_candidate_window.on_context_menu := handle_candidate_context_menu;
     end;
     if m_engine <> nil then
     begin
@@ -878,6 +907,11 @@ begin
     begin
         m_owner.remove_user_candidate(m_session_id, candidate_index);
     end;
+end;
+
+procedure TncHostSession.handle_candidate_context_menu;
+begin
+    request_tray_menu;
 end;
 
 procedure TncHostSession.refresh_candidate_pages(const input_changed: Boolean);

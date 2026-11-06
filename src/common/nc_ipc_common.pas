@@ -8,6 +8,8 @@ const
     c_nc_active_event_base = 'Local\cassotis_ime_engine_active_v1';
     c_nc_inactive_event_base = 'Local\cassotis_ime_engine_inactive_v1';
     c_nc_open_settings_message_name = 'CassotisIme.OpenSettings.v1';
+    // The window class of the tray host's hidden form, which owns the menu.
+    c_nc_tray_host_window_class = 'TncTrayHost';
 
 function encode_ipc_text(const value: string): string;
 function decode_ipc_text(const value: string): string;
@@ -19,6 +21,7 @@ function get_nc_active_event: string;
 function get_nc_inactive_event: string;
 function get_nc_open_settings_message: Cardinal;
 function get_nc_candidate_click_message: Cardinal;
+function get_nc_show_tray_menu_message: Cardinal;
 
 implementation
 
@@ -33,6 +36,7 @@ var
     g_scope_ready: Boolean = False;
     g_open_settings_message: Cardinal = 0;
     g_candidate_click_message: Cardinal = 0;
+    g_show_tray_menu_message: Cardinal = 0;
 
 function get_process_scope_suffix: string;
 var
@@ -99,6 +103,13 @@ begin
     if g_candidate_click_message = 0 then
         g_candidate_click_message := RegisterWindowMessage('CassotisIme.CandidateClick.v1');
     Result := g_candidate_click_message;
+end;
+
+function get_nc_show_tray_menu_message: Cardinal;
+begin
+    if g_show_tray_menu_message = 0 then
+        g_show_tray_menu_message := RegisterWindowMessage('CassotisIme.ShowTrayMenu.v1');
+    Result := g_show_tray_menu_message;
 end;
 
 function decode_ipc_text(const value: string): string;

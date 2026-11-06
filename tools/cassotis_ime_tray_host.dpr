@@ -78,7 +78,7 @@ var
     open_settings_message: Cardinal;
 begin
     open_settings_message := get_nc_open_settings_message;
-    tray_window := FindWindow('TncTrayHost', nil);
+    tray_window := FindWindow(c_nc_tray_host_window_class, nil);
     if tray_window <> 0 then
     begin
         PostMessage(tray_window, open_settings_message, 0, 0);

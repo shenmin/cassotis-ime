@@ -195,6 +195,7 @@ type
         procedure on_exit_click(Sender: TObject);
         procedure on_tray_mouse_up(Sender: TObject; Button: TMouseButton;
             Shift: TShiftState; X, Y: Integer);
+        procedure show_menu_over_application;
         procedure on_menu_popup(Sender: TObject);
         procedure on_menu_closed(Sender: TObject);
         procedure log_menu(const detail: string);
@@ -447,6 +448,13 @@ begin
         (Cardinal(Message.Msg) = get_nc_open_settings_message) then
     begin
         PostMessage(Handle, WM_NC_OPEN_SETTINGS, 0, 0);
+        Message.Result := 0;
+        Exit;
+    end;
+    if (get_nc_show_tray_menu_message <> 0) and
+        (Cardinal(Message.Msg) = get_nc_show_tray_menu_message) then
+    begin
+        show_menu_over_application;
         Message.Result := 0;
         Exit;
     end;
@@ -2976,6 +2984,17 @@ begin
     m_menu.PopupOwner := Handle;
     m_menu.PopupComponent := Self;
     m_menu.Popup(X, Y);
+end;
+
+procedure TncTrayHost.show_menu_over_application;
+var
+    cursor: TPoint;
+begin
+    // The candidate window's right button, in the engine host (request_tray_menu).
+    if (m_menu = nil) or (not GetCursorPos(cursor)) then Exit;
+    m_menu.PopupOwner := Handle;
+    m_menu.PopupComponent := Self;
+    m_menu.PopupOverApplication(cursor.X, cursor.Y);
 end;
 
 procedure TncTrayHost.on_menu_popup(Sender: TObject);

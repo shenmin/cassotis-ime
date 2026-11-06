@@ -29,6 +29,7 @@ uses
 
 type
     TncCandidateRemoveEvent = procedure(const candidate_index: Integer) of object;
+    TncCandidateMenuEvent = procedure of object;
     TncCandidateClickResult = (ccr_rejected, ccr_prepared, ccr_dispatched);
     TncCandidatePrepareEvent = function(const page_index, candidate_index: Integer;
         const generation: UInt64): TncCandidateClickResult of object;
@@ -112,6 +113,7 @@ type
         m_swallow_next_button_up: Boolean;
         m_on_remove_user_candidate: TncCandidateRemoveEvent;
         m_on_prepare_candidate: TncCandidatePrepareEvent;
+        m_on_context_menu: TncCandidateMenuEvent;
         procedure configure_form;
         procedure configure_page_label;
         procedure configure_preedit_label;
@@ -148,6 +150,7 @@ type
         procedure WMNCHitTest(var Message: TMessage); message WM_NCHITTEST;
         procedure WMLButtonDown(var Message: TWMLButtonDown); message WM_LBUTTONDOWN;
         procedure WMLButtonUp(var Message: TWMLButtonUp); message WM_LBUTTONUP;
+        procedure WMContextMenu(var Message: TWMContextMenu); message WM_CONTEXTMENU;
         procedure Paint; override;
     public
         constructor create; reintroduce;
@@ -181,6 +184,9 @@ type
             write m_on_remove_user_candidate;
         property on_prepare_candidate: TncCandidatePrepareEvent read m_on_prepare_candidate
             write m_on_prepare_candidate;
+        // The right button anywhere on the window; the settings' preview has none.
+        property on_context_menu: TncCandidateMenuEvent read m_on_context_menu
+            write m_on_context_menu;
     end;
 
 function nc_calculate_candidate_top(const anchor_y: Integer;
@@ -1021,6 +1027,17 @@ begin
     end;
 
     Message.Result := 0;
+end;
+
+procedure TncCandidateWindow.WMContextMenu(var Message: TWMContextMenu);
+begin
+    if Assigned(m_on_context_menu) then
+    begin
+        m_on_context_menu();
+        Message.Result := 1;
+        Exit;
+    end;
+    inherited;
 end;
 
 procedure TncCandidateWindow.configure_preedit_label;

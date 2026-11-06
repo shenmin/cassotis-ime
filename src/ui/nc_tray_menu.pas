@@ -17,8 +17,16 @@ type
         procedure trace(const detail: string);
     protected
         function track_menu(const x, y: Integer): Cardinal; virtual;
+        function foreground_window: HWND; virtual;
+        function set_foreground_window(const window: HWND): Boolean; virtual;
     public
         procedure Popup(X, Y: Integer); override;
+        // For a menu opened from over an application, not from the taskbar: the
+        // owner is hidden, and left in the foreground it would keep the keyboard
+        // from that application. The foreground goes back once the command has
+        // run, so that a dialog it opens can come up first, unless the user or
+        // that command has put another window there.
+        procedure PopupOverApplication(X, Y: Integer);
         property PopupOwner: HWND read m_popup_owner write m_popup_owner;
         property Tracking: Boolean read m_tracking;
         property OnClosed: TNotifyEvent read m_on_closed write m_on_closed;
@@ -47,6 +55,16 @@ begin
         m_popup_owner, nil));
 end;
 
+function TncTrayPopupMenu.foreground_window: HWND;
+begin
+    Result := GetForegroundWindow;
+end;
+
+function TncTrayPopupMenu.set_foreground_window(const window: HWND): Boolean;
+begin
+    Result := SetForegroundWindow(window);
+end;
+
 procedure TncTrayPopupMenu.Popup(X, Y: Integer);
 var
     command_id: Cardinal;
@@ -68,10 +86,10 @@ begin
             // so a menu opened after an RDP/display change uses its current DPI.
             SetWindowPos(m_popup_owner, 0, X, Y, 1, 1,
                 SWP_NOACTIVATE or SWP_NOZORDER or SWP_NOOWNERZORDER);
-            foreground_set := SetForegroundWindow(m_popup_owner);
+            foreground_set := set_foreground_window(m_popup_owner);
             trace(Format('open x=%d y=%d foreground_set=%d owner=%s foreground=%s',
                 [X, Y, Ord(foreground_set), IntToHex(m_popup_owner, SizeOf(HWND) * 2),
-                 IntToHex(GetForegroundWindow, SizeOf(HWND) * 2)]));
+                 IntToHex(foreground_window, SizeOf(HWND) * 2)]));
             command_id := track_menu(X, Y);
         finally
             m_tracking := False;
@@ -87,6 +105,26 @@ begin
         trace(Format('complete command=%d', [command_id]));
     finally
         if Assigned(m_on_closed) then m_on_closed(Self);
+    end;
+end;
+
+procedure TncTrayPopupMenu.PopupOverApplication(X, Y: Integer);
+var
+    application_window: HWND;
+    returned: Boolean;
+begin
+    if m_tracking then Exit;
+    application_window := foreground_window;
+    try
+        Popup(X, Y);
+    finally
+        if (application_window <> 0) and (application_window <> m_popup_owner) and
+            IsWindow(application_window) and (foreground_window = m_popup_owner) then
+        begin
+            returned := set_foreground_window(application_window);
+            trace(Format('foreground back window=%s returned=%d',
+                [IntToHex(application_window, SizeOf(HWND) * 2), Ord(returned)]));
+        end;
     end;
 end;
 
