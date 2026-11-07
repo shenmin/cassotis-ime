@@ -758,25 +758,16 @@ begin
 end;
 
 // The candidate window's menu is the tray's own: its items act on the tray's
-// state, and it opens there, at the cursor.
+// state, and it opens there, at the cursor, with the foreground left where it is.
 procedure request_tray_menu;
 var
     tray_window: HWND;
-    tray_process: DWORD;
 begin
     tray_window := FindWindow(c_nc_tray_host_window_class, nil);
     if tray_window = 0 then
     begin
         host_log('tray host not found, no candidate window menu');
         Exit;
-    end;
-    tray_process := 0;
-    GetWindowThreadProcessId(tray_window, @tray_process);
-    // A menu closes on a click outside only when its owner is in the foreground.
-    // This process took the last input, the right button, and may pass that on.
-    if (tray_process <> 0) and (not AllowSetForegroundWindow(tray_process)) then
-    begin
-        host_log(Format('candidate window menu: foreground not passed on err=%d', [GetLastError]));
     end;
     if not PostMessage(tray_window, get_nc_show_tray_menu_message, 0, 0) then
     begin

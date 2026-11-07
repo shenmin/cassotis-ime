@@ -1257,6 +1257,10 @@ begin
     m_status_form := TncStatusForm.CreateNew(Self);
     m_status_form.BorderStyle := bsNone;
     m_status_form.Position := poDesigned;
+    // The user's place for it. The default, dmActiveForm, moves a form that is
+    // shown to the monitor of the active form: the hidden tray form, which every
+    // menu moves to the cursor.
+    m_status_form.DefaultMonitor := dmDesktop;
     m_status_form.FormStyle := fsStayOnTop;
     m_status_form.Width := c_status_widget_default_width;
     m_status_form.Height := c_status_widget_default_height;
@@ -2888,6 +2892,9 @@ end;
 
 procedure TncTrayHost.on_open_config_click(Sender: TObject);
 begin
+    // The dialog opens on the monitor of the active form: this hidden form, which
+    // the menu moved to the cursor. A menu over an application did not activate it.
+    log_menu(Format('foreground for the dialog set=%d', [Ord(SetForegroundWindow(Handle))]));
     show_settings_dialog;
 end;
 
