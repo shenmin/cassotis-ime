@@ -139340,6 +139340,13 @@ const
     c_longest_word = 4;
     // A full-width comma: the end of a clause for the shared LM.
     c_clause_end = Char($FF0C);
+    // A full-width question mark: how a draft ending in mei ends ("shoudaomei"
+    // 收到没 above 收到美; a chat message asks so). Not ma: with it the
+    // particle ma lost to the question (对不起吗 above 对不起嘛 for
+    // "duibuqima"), and of 114 chat clauses ending in ma or mei 8 lost their
+    // first choice without a context; an ASCII question mark lifts it a tenth
+    // of a nat and cost after a context.
+    c_question_end = Char($FF1F);
     // Drafts the shared LM compares, and the entries of each word of a
     // two-word cut among them. On the clause development set 1, 2, 3 and 4
     // entries gave 74.8, 77.3, 78.2 and 79.1% first choices on four
@@ -139424,6 +139431,15 @@ const
     // the comma at half weight 21 to 61 of about 5,000.
     c_plain_first_lead = 2.0;
     c_plain_first_margin = 1.0;
+    // Without a context, from farther behind where the comma's choice rests
+    // on a rare word and that draft rests on commoner ones: the comma likes a
+    // literary word at the end of a clause (倒假寐 for "daojiamei": 假寐 scores
+    // 234 in the word frequencies, 到家 404; 到家没 lies 2.39 nats behind with
+    // the comma and 3.55 ahead without it).
+    c_rare_first_lead = 3.0;
+    c_rare_first_margin = 4.0;
+    c_rare_first_word = 300;
+    c_rare_first_word_lead = 150;
     // A word still being typed gives way to a phrase only when it is rare, by
     // its word frequency score, and the phrase ends in a word that scores this
     // much above it (see the check of the completion below).
@@ -139915,6 +139931,64 @@ var
             (scores[order[0]] - scores[index]) > c_max_comma_lift);
     end;
 
+    // A draft as the LM scores it as a clause of its own: with a comma behind
+    // it, or a question mark where it ends in mei (c_question_end).
+    function as_clause(const text: string): string;
+    begin
+        if Copy(text, Length(text), 1) = variant_char($6CA1, $6C92) then
+            Result := text + c_question_end
+        else
+            Result := text + c_clause_end;
+    end;
+
+    // The lowest word frequency score among the words of a text, its longest
+    // counted words from the left; -1 when it holds none.
+    function rarest_word_score(const text: string): Integer;
+    var position, size, word_score: Integer;
+    begin
+        Result := -1;
+        position := 1;
+        while position < Length(text) do
+        begin
+            word_score := 0;
+            for size := Min(c_longest_word, Length(text) - position + 1) downto 2 do
+            begin
+                word_score := m_dictionary.get_word_frequency_score(Copy(text, position, size));
+                if word_score > 0 then
+                begin
+                    if (Result < 0) or (word_score < Result) then Result := word_score;
+                    Inc(position, size);
+                    Break;
+                end;
+            end;
+            if word_score <= 0 then Inc(position);
+        end;
+    end;
+
+    // Whether a first draft that the comma lifts gives way to the draft the LM
+    // prefers without it, by the words each rests on (c_rare_first_lead).
+    function rests_on_rarer_word(const first_text, plain_text: string): Boolean;
+    var first_score: Integer;
+    begin
+        first_score := rarest_word_score(first_text);
+        Result := (first_score >= 0) and (first_score <= c_rare_first_word) and
+            (rarest_word_score(plain_text) - first_score >= c_rare_first_word_lead);
+    end;
+
+    // The draft at this index of the drafts goes to the first place of the order.
+    procedure put_first(const draft_index: Integer);
+    var k: Integer;
+    begin
+        k := 0;
+        while order[k] <> draft_index do Inc(k);
+        while k > 0 do
+        begin
+            order[k] := order[k - 1];
+            Dec(k);
+        end;
+        order[0] := draft_index;
+    end;
+
     // The deficit of a draft's text as implausible reads it (0 for a text
     // that is no draft or whose path the transitions hold).
     function text_deficit(const text: string): Single;
@@ -140200,7 +140274,7 @@ begin
             SetLength(ended, 2 * Length(drafts));
             for index := 0 to High(drafts) do
             begin
-                ended[index] := drafts[index] + c_clause_end;
+                ended[index] := as_clause(drafts[index]);
                 ended[Length(drafts) + index] := drafts[index];
             end;
             // And, where the model reads the next characters' scores, the
@@ -140317,12 +140391,12 @@ begin
                 if (best_index <> order[0]) and
                     (plain_scores[best_index] - plain_scores[order[0]] >= c_plain_first_lead) and
                     (scores[order[0]] - scores[best_index] <= c_plain_first_margin) then
-                begin
-                    index := 0;
-                    while order[index] <> best_index do Inc(index);
-                    for other := index downto 1 do order[other] := order[other - 1];
-                    order[0] := best_index;
-                end;
+                    put_first(best_index)
+                else if context_free and (best_index <> order[0]) and
+                    (plain_scores[best_index] - plain_scores[order[0]] >= c_rare_first_lead) and
+                    (scores[order[0]] - scores[best_index] <= c_rare_first_margin) and
+                    rests_on_rarer_word(drafts[order[0]], drafts[best_index]) then
+                    put_first(best_index);
             end
             else
                 scored := 0;
@@ -140365,7 +140439,7 @@ begin
         if judged then
         begin
             try
-                if m_char_lm.score_texts(lm_context, [corrected + c_clause_end], 1, 128,
+                if m_char_lm.score_texts(lm_context, [as_clause(corrected)], 1, 128,
                     corrected_scores) = 1 then
                 begin
                     if context_free then
