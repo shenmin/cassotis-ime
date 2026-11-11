@@ -87,6 +87,11 @@ type
         m_last_caret_point: TPoint;
         m_has_caret_point: Boolean;
         m_last_caret_line_height: Integer;
+        // The start of the composition, read with m_last_caret_point; the host
+        // keeps the candidate window there (candidate_at_input_start).
+        m_input_start_point: TPoint;
+        m_has_input_start: Boolean;
+        m_composition_text_length: Integer;
         m_last_ipc_error: DWORD;
         m_ipc_health: TncIpcHealth;
         m_host_resync_pending: Boolean;
@@ -101,6 +106,8 @@ type
         m_last_sent_caret_valid: Boolean;
         m_last_sent_caret_line_height: Integer;
         m_last_sent_caret_tick: DWORD;
+        m_last_sent_input_start_offset: Integer;
+        m_last_sent_input_start_valid: Boolean;
         m_last_sent_surrounding_text: string;
         m_last_sent_document_key: string;
         m_last_sent_surrounding_valid: Boolean;
@@ -1028,6 +1035,8 @@ begin
     m_last_sent_caret_valid := False;
     m_last_sent_caret_line_height := 0;
     m_last_sent_caret_tick := 0;
+    m_last_sent_input_start_offset := 0;
+    m_last_sent_input_start_valid := False;
     m_last_sent_surrounding_text := '';
     m_last_sent_document_key := '';
     m_last_sent_surrounding_valid := False;
@@ -1243,6 +1252,8 @@ begin
     m_last_sent_caret_valid := False;
     m_last_sent_caret_line_height := 0;
     m_last_sent_caret_tick := 0;
+    m_last_sent_input_start_offset := 0;
+    m_last_sent_input_start_valid := False;
 end;
 
 procedure TncTextService.refresh_pending_canvas_caret;
@@ -2030,15 +2041,34 @@ const
 var
     same_caret: Boolean;
     now_tick: DWORD;
+    input_start_offset: Integer;
+    input_start_valid: Boolean;
+    point_tolerance: Integer;
 begin
     if (m_ipc_client = nil) or (m_session_id = '') then
     begin
         Exit;
     end;
 
+    // How far left of the point the composition starts, where the point is the
+    // caret this text service read behind the composition (another source, or
+    // a point converted for a terminal, may lie in other coordinates).
+    input_start_offset := 0;
+    point_tolerance := line_height;
+    if point_tolerance < 16 then
+    begin
+        point_tolerance := 16;
+    end;
+    input_start_valid := has_caret and (m_composition <> nil) and m_has_caret_point and m_has_input_start and
+        points_are_close(point, m_last_caret_point, point_tolerance) and
+        nc_input_start_offset(m_last_caret_point, m_input_start_point, line_height,
+        m_composition_text_length, input_start_offset);
+
     same_caret := m_last_sent_caret_valid and (m_last_sent_has_caret = has_caret) and
         (m_last_sent_caret_point.X = point.X) and (m_last_sent_caret_point.Y = point.Y) and
-        (m_last_sent_caret_line_height = line_height);
+        (m_last_sent_caret_line_height = line_height) and
+        (m_last_sent_input_start_valid = input_start_valid) and
+        (m_last_sent_input_start_offset = input_start_offset);
     if same_caret and (not force) then
     begin
         now_tick := GetTickCount;
@@ -2049,13 +2079,16 @@ begin
     end;
 
     if m_ipc_client.set_caret(m_session_id, point, has_caret, line_height, source, anchor_score,
-        terminal_like_target, (m_activation_flags and TF_TMAE_COMLESS) <> 0) then
+        terminal_like_target, (m_activation_flags and TF_TMAE_COMLESS) <> 0, input_start_offset,
+        input_start_valid) then
     begin
         m_last_sent_caret_point := point;
         m_last_sent_has_caret := has_caret;
         m_last_sent_caret_valid := True;
         m_last_sent_caret_line_height := line_height;
         m_last_sent_caret_tick := GetTickCount;
+        m_last_sent_input_start_offset := input_start_offset;
+        m_last_sent_input_start_valid := input_start_valid;
     end;
 end;
 
@@ -6228,7 +6261,7 @@ begin
     end;
 
     edit_session := TncCaretEditSession.create(context, @m_composition, @m_last_caret_point, @m_has_caret_point,
-        @m_last_caret_line_height);
+        @m_last_caret_line_height, @m_input_start_point, @m_has_input_start);
     hr := context.RequestEditSession(m_client_id, edit_session, TF_ES_READ or TF_ES_ASYNCDONTCARE, session_hr);
     if hr = S_OK then
     begin
@@ -6591,9 +6624,11 @@ begin
 
     confirmed_length := 0;
     m_composition_context := context;
+    m_composition_text_length := Length(text);
 
     edit_session := TncCompositionEditSession.create(context, Self as ITfCompositionSink, @m_composition, text,
-        @m_last_caret_point, @m_has_caret_point, @m_last_caret_line_height, confirmed_length, m_attr_input_atom);
+        @m_last_caret_point, @m_has_caret_point, @m_last_caret_line_height, confirmed_length, m_attr_input_atom,
+        @m_input_start_point, @m_has_input_start);
     session_hr := E_FAIL;
     hr := context.RequestEditSession(m_client_id, edit_session, TF_ES_READWRITE or TF_ES_SYNC, session_hr);
     if hr <> S_OK then

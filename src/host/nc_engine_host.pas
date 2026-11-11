@@ -43,6 +43,9 @@ type
         m_candidate_window: TncCandidateWindow;
         m_last_caret: TPoint;
         m_has_caret: Boolean;
+        // Where the candidate window stays in the input being typed
+        // (candidate_at_input_start); cleared with the candidates.
+        m_input_start_anchor: TncInputStartAnchor;
         m_caret_line_height: Integer;
         m_terminal_like_target: Boolean;
         m_comless_target: Boolean;
@@ -102,6 +105,9 @@ type
         procedure warm_candidate_window;
         procedure set_caret(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean; const comless_target: Boolean);
+        function anchor_at_input_start(const point: TPoint; const line_height: Integer;
+            const input_start_offset: Integer; const input_start_valid: Boolean): TPoint;
+        procedure forget_input_start;
         function needs_candidate_refresh(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
             const terminal_like_target: Boolean; const comless_target: Boolean): Boolean;
         function candidate_generation: UInt64;
@@ -254,9 +260,10 @@ type
           entries is how many words the file held, imported how many it took. }
         function import_user_words(const session_id, path: string;
             out entries, imported: Integer): Boolean;
-        procedure update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
+        procedure update_caret(const session_id: string; const caret_point: TPoint; const has_caret: Boolean;
             const line_height: Integer; const terminal_like_target: Boolean; const comless_target: Boolean;
-            const source: TncCaretAnchorSource; const anchor_score: Integer);
+            const source: TncCaretAnchorSource; const anchor_score: Integer;
+            const input_start_offset: Integer = 0; const input_start_valid: Boolean = False);
         procedure show_mode_hint(const point: TPoint; const line_height: Integer;
             const reason: TncModeHintReason);
         procedure hide_mode_hint;
@@ -1041,6 +1048,18 @@ begin
     m_comless_target := comless_target;
 end;
 
+function TncHostSession.anchor_at_input_start(const point: TPoint; const line_height: Integer;
+    const input_start_offset: Integer; const input_start_valid: Boolean): TPoint;
+begin
+    Result := nc_anchor_at_input_start(m_input_start_anchor, point, line_height, input_start_offset,
+        input_start_valid);
+end;
+
+procedure TncHostSession.forget_input_start;
+begin
+    m_input_start_anchor := Default(TncInputStartAnchor);
+end;
+
 function TncHostSession.needs_candidate_refresh(const point: TPoint; const has_caret: Boolean; const line_height: Integer;
     const terminal_like_target: Boolean; const comless_target: Boolean): Boolean;
 begin
@@ -1145,6 +1164,7 @@ end;
 procedure TncHostSession.clear_candidates;
 begin
     m_click.cancel;
+    forget_input_start;
     SetLength(m_candidates, 0);
     m_candidate_pages := nil;
     m_candidate_viewport := Default(TncCandidateViewport);
@@ -3763,14 +3783,16 @@ begin
         end);
 end;
 
-procedure TncEngineHost.update_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
+procedure TncEngineHost.update_caret(const session_id: string; const caret_point: TPoint; const has_caret: Boolean;
     const line_height: Integer; const terminal_like_target: Boolean; const comless_target: Boolean;
-    const source: TncCaretAnchorSource; const anchor_score: Integer);
+    const source: TncCaretAnchorSource; const anchor_score: Integer;
+    const input_start_offset: Integer; const input_start_valid: Boolean);
 var
     session: TncHostSession;
     should_apply: Boolean;
     should_queue: Boolean;
     session_instance_id: UInt64;
+    point: TPoint;
 begin
     should_queue := False;
     session_instance_id := 0;
@@ -3781,6 +3803,18 @@ begin
             Exit;
         end;
         session_instance_id := session.instance_id;
+        // While an input is typed the window keeps the start of its text
+        // (issue 33); the caret alone decides where no input is shown.
+        point := caret_point;
+        if m_config.candidate_at_input_start and has_caret and session.has_candidates then
+        begin
+            point := session.anchor_at_input_start(caret_point, line_height, input_start_offset,
+                input_start_valid);
+        end
+        else
+        begin
+            session.forget_input_start;
+        end;
         should_apply := session.has_candidates and
             session.needs_candidate_refresh(point, has_caret, line_height,
             terminal_like_target, comless_target);
@@ -4274,6 +4308,8 @@ var
     caret_source_value: Integer;
     caret_source: TncCaretAnchorSource;
     caret_score: Integer;
+    caret_input_start_offset: Integer;
+    caret_input_start_valid: Boolean;
     active_flag: Boolean;
     shortcut_config: TncShortcutConfig;
     state_source: string;
@@ -4383,10 +4419,19 @@ begin
             begin
                 caret_comless_target := flag_to_bool(fields[9]);
             end;
+            // How far left of the point the input starts; a text service
+            // without the fields sends ten.
+            caret_input_start_offset := 0;
+            caret_input_start_valid := False;
+            if Length(fields) >= 12 then
+            begin
+                caret_input_start_offset := StrToIntDef(fields[10], 0);
+                caret_input_start_valid := flag_to_bool(fields[11]) and (caret_input_start_offset >= 0);
+            end;
 
             m_host.update_caret(session_id, Point(x, y), has_caret,
                 line_height, caret_terminal_like_target, caret_comless_target,
-                caret_source, caret_score);
+                caret_source, caret_score, caret_input_start_offset, caret_input_start_valid);
             Result := 'OK';
             Exit;
         end;

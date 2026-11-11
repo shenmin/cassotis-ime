@@ -108,6 +108,8 @@ Codes contain 1–32 ASCII letters and are case-insensitive. Full Pinyin and Dou
 | `candidate_page_size` | Candidates per page | `3` through `9` | `9` | Changes page size without reducing the total candidate pool. |
 | `candidate_expand_on_paging` | Expand candidate rows when paging | `true` / `false` | `false` | Press Up/Down or page forward to expand up to three pages. Up/Down and page keys move between rows while keeping the selected number, or selecting the last item if the target row is shorter. Up on the first row expands without wrapping to the last page. Left/Right still move by one item. Only the active row shows numbers; other rows reserve the same space so words do not shift when switching rows. Number keys select from the active row only; the Tab area is unchanged. |
 | `candidate_color_scheme` | Candidate window theme | `clear-white` / `moon-white` / `celadon` / `clear-blue` / `pine-ink` / `indigo-night` | `clear-white` | Corresponds to the six built-in light and dark themes. |
+| `input_mode_hint` | Mode label beside the caret | `true` / `false` | `true` | Briefly shows 中 or 英 above the caret when the mode is switched or Cassotis is switched to; a field that takes the focus gets it in English mode only. Not shown in password fields or where the caret cannot be located. |
+| `candidate_at_input_start` | Candidate window at the start of the input | `true` / `false` | `true` | The window's left edge lines up with the start of the text being typed and stays there for the whole input; `false` makes it follow the caret. |
 
 ---
 
@@ -191,6 +193,8 @@ candidate_font_size=12
 candidate_page_size=9
 candidate_expand_on_paging=false
 candidate_color_scheme=clear-white
+input_mode_hint=true
+candidate_at_input_start=true
 
 [dictionary]
 variant=simplified

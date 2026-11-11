@@ -33,10 +33,13 @@ type
         m_point_ref: PPoint;
         m_point_valid_ref: PBoolean;
         m_line_height_ref: PInteger;
+        m_start_ref: PPoint;
+        m_start_valid_ref: PBoolean;
         function update_text_ext(const ec: TfEditCookie): Boolean;
     public
         constructor create(const context: ITfContext; const composition_ref: PITfComposition; const point_ref: PPoint;
-            const point_valid_ref: PBoolean; const line_height_ref: PInteger = nil);
+            const point_valid_ref: PBoolean; const line_height_ref: PInteger = nil; const start_ref: PPoint = nil;
+            const start_valid_ref: PBoolean = nil);
         function DoEditSession(ec: TfEditCookie): HResult; stdcall;
     end;
 
@@ -64,6 +67,8 @@ type
         m_point_ref: PPoint;
         m_point_valid_ref: PBoolean;
         m_line_height_ref: PInteger;
+        m_start_ref: PPoint;
+        m_start_valid_ref: PBoolean;
         function start_composition(const ec: TfEditCookie): Boolean;
         function update_composition_text(const ec: TfEditCookie): Boolean;
         function end_composition(const ec: TfEditCookie): Boolean;
@@ -73,7 +78,7 @@ type
         constructor create(const context: ITfContext; const sink: ITfCompositionSink;
             const composition_ref: PITfComposition; const text: string; const point_ref: PPoint;
             const point_valid_ref: PBoolean; const line_height_ref: PInteger; const confirmed_length: Integer;
-            const attr_input_atom: TfGuidAtom);
+            const attr_input_atom: TfGuidAtom; const start_ref: PPoint = nil; const start_valid_ref: PBoolean = nil);
         function DoEditSession(ec: TfEditCookie): HResult; stdcall;
     end;
 
@@ -621,7 +626,8 @@ begin
 end;
 
 constructor TncCaretEditSession.create(const context: ITfContext; const composition_ref: PITfComposition; const point_ref: PPoint;
-    const point_valid_ref: PBoolean; const line_height_ref: PInteger);
+    const point_valid_ref: PBoolean; const line_height_ref: PInteger; const start_ref: PPoint;
+    const start_valid_ref: PBoolean);
 begin
     inherited create;
     m_context := context;
@@ -629,6 +635,8 @@ begin
     m_point_ref := point_ref;
     m_point_valid_ref := point_valid_ref;
     m_line_height_ref := line_height_ref;
+    m_start_ref := start_ref;
+    m_start_valid_ref := start_valid_ref;
 end;
 
 function TncCaretEditSession.update_text_ext(const ec: TfEditCookie): Boolean;
@@ -651,6 +659,9 @@ var
     full_rect: Winapi.Windows.TRect;
     full_line_height: Integer;
     full_found: Boolean;
+    start_rect: Winapi.Windows.TRect;
+    start_line_height: Integer;
+    start_found: Boolean;
 
     function rect_in_screen(const candidate: Winapi.Windows.TRect;
         const screen_bounds: Winapi.Windows.TRect): Boolean;
@@ -956,6 +967,13 @@ var
 
     procedure try_promote_estimated_tail(const base_rect: Winapi.Windows.TRect; const base_line_height: Integer);
     begin
+        // Only an application that answers the query for the end with the
+        // start needs the estimate (nc_text_end_needs_estimate).
+        if not nc_text_end_needs_estimate(base_rect, start_found, start_rect, full_found, full_rect,
+            base_line_height) then
+        begin
+            Exit;
+        end;
         if not try_estimate_tail_rect_from_text(base_rect, base_line_height, candidate_rect) then
         begin
             Exit;
@@ -979,7 +997,8 @@ var
     end;
 
     function try_get_range_rect(const source_range: ITfRange; const collapse_to_end: Boolean;
-        out out_rect: Winapi.Windows.TRect; out out_line_height: Integer; out out_score: Integer): Boolean;
+        const at_start: Boolean; out out_rect: Winapi.Windows.TRect; out out_line_height: Integer;
+        out out_score: Integer): Boolean;
     var
         query_range: ITfRange;
         local_rect: Winapi.Windows.TRect;
@@ -1013,7 +1032,14 @@ var
             begin
                 Exit;
             end;
-            query_range.Collapse(ec, TF_ANCHOR_END);
+            if at_start then
+            begin
+                query_range.Collapse(ec, TF_ANCHOR_START);
+            end
+            else
+            begin
+                query_range.Collapse(ec, TF_ANCHOR_END);
+            end;
         end;
 
         local_hr := view.GetTextExt(ec, query_range, local_rect, local_clipped);
@@ -1125,6 +1151,10 @@ begin
     end;
 
     m_point_valid_ref^ := False;
+    if m_start_valid_ref <> nil then
+    begin
+        m_start_valid_ref^ := False;
+    end;
     if m_line_height_ref <> nil then
     begin
         m_line_height_ref^ := 0;
@@ -1164,8 +1194,14 @@ begin
     full_found := False;
     collapsed_line_height := 0;
     full_line_height := 0;
+    start_found := False;
+    start_line_height := 0;
+    if (m_composition_ref <> nil) and (m_composition_ref^ <> nil) then
+    begin
+        start_found := try_get_range_rect(range, True, True, start_rect, start_line_height, candidate_score);
+    end;
 
-    if try_get_range_rect(range, True, candidate_rect, candidate_line_height, candidate_score) then
+    if try_get_range_rect(range, True, False, candidate_rect, candidate_line_height, candidate_score) then
     begin
         collapsed_rect := candidate_rect;
         collapsed_line_height := candidate_line_height;
@@ -1177,7 +1213,7 @@ begin
     end;
 
     if ((m_composition_ref <> nil) and (m_composition_ref^ <> nil)) and
-        try_get_range_rect(range, False, candidate_rect, candidate_line_height, candidate_score) then
+        try_get_range_rect(range, False, False, candidate_rect, candidate_line_height, candidate_score) then
     begin
         full_rect := candidate_rect;
         full_line_height := candidate_line_height;
@@ -1216,6 +1252,13 @@ begin
             m_line_height_ref^ := best_line_height;
         end;
         m_point_valid_ref^ := True;
+        // The start of the composition, read in the same session: where the
+        // candidate window stays while the input is typed.
+        if start_found and (m_start_ref <> nil) and (m_start_valid_ref <> nil) then
+        begin
+            m_start_ref^ := Point(start_rect.Left, start_rect.Bottom);
+            m_start_valid_ref^ := True;
+        end;
         Result := True;
     end;
 end;
@@ -1398,7 +1441,7 @@ end;
 constructor TncCompositionEditSession.create(const context: ITfContext; const sink: ITfCompositionSink;
     const composition_ref: PITfComposition; const text: string; const point_ref: PPoint;
     const point_valid_ref: PBoolean; const line_height_ref: PInteger; const confirmed_length: Integer;
-    const attr_input_atom: TfGuidAtom);
+    const attr_input_atom: TfGuidAtom; const start_ref: PPoint; const start_valid_ref: PBoolean);
 begin
     inherited create;
     m_context := context;
@@ -1410,6 +1453,8 @@ begin
     m_point_ref := point_ref;
     m_point_valid_ref := point_valid_ref;
     m_line_height_ref := line_height_ref;
+    m_start_ref := start_ref;
+    m_start_valid_ref := start_valid_ref;
 end;
 
 function TncCompositionEditSession.start_composition(const ec: TfEditCookie): Boolean;
@@ -1533,10 +1578,14 @@ var
     full_rect: Winapi.Windows.TRect;
     full_line_height: Integer;
     full_found: Boolean;
+    start_rect: Winapi.Windows.TRect;
+    start_line_height: Integer;
+    start_found: Boolean;
 const
     c_query_collapsed_end = 0;
     c_query_full_range = 1;
     c_query_tail_char = 2;
+    c_query_collapsed_start = 3;
 
     function rect_in_screen(const candidate: Winapi.Windows.TRect;
         const screen_bounds: Winapi.Windows.TRect): Boolean;
@@ -1829,6 +1878,13 @@ const
 
     procedure try_promote_estimated_tail(const base_rect: Winapi.Windows.TRect; const base_line_height: Integer);
     begin
+        // Only an application that answers the query for the end with the
+        // start needs the estimate (nc_text_end_needs_estimate).
+        if not nc_text_end_needs_estimate(base_rect, start_found, start_rect, full_found, full_rect,
+            base_line_height) then
+        begin
+            Exit;
+        end;
         if not try_estimate_tail_rect_from_text(base_rect, base_line_height, candidate_rect) then
         begin
             Exit;
@@ -1890,7 +1946,14 @@ const
             begin
                 Exit;
             end;
-            query_range.Collapse(ec, TF_ANCHOR_END);
+            if query_mode = c_query_collapsed_start then
+            begin
+                query_range.Collapse(ec, TF_ANCHOR_START);
+            end
+            else
+            begin
+                query_range.Collapse(ec, TF_ANCHOR_END);
+            end;
             if query_mode = c_query_tail_char then
             begin
                 FillChar(local_halt, SizeOf(local_halt), 0);
@@ -2016,6 +2079,10 @@ begin
     end;
 
     m_point_valid_ref^ := False;
+    if m_start_valid_ref <> nil then
+    begin
+        m_start_valid_ref^ := False;
+    end;
     if m_line_height_ref <> nil then
     begin
         m_line_height_ref^ := 0;
@@ -2044,6 +2111,9 @@ begin
     collapsed_line_height := 0;
     tail_line_height := 0;
     full_line_height := 0;
+    start_line_height := 0;
+    start_found := try_get_range_rect(range, c_query_collapsed_start, start_rect, start_line_height,
+        candidate_score);
 
     collapsed_found := try_get_range_rect(range, c_query_collapsed_end, candidate_rect, candidate_line_height,
         candidate_score);
@@ -2100,7 +2170,9 @@ begin
         end;
     end;
 
-    if collapsed_found and best_found and EqualRect(best_rect, collapsed_rect) then
+    if collapsed_found and best_found and EqualRect(best_rect, collapsed_rect) and
+        nc_text_end_needs_estimate(collapsed_rect, start_found, start_rect, full_found, full_rect,
+        collapsed_line_height) then
     begin
         if try_estimate_tail_rect_from_text(collapsed_rect, collapsed_line_height, candidate_rect) then
         begin
@@ -2130,6 +2202,13 @@ begin
             m_line_height_ref^ := best_line_height;
         end;
         m_point_valid_ref^ := True;
+        // The start of the composition, read in the same session: where the
+        // candidate window stays while the input is typed.
+        if start_found and (m_start_ref <> nil) and (m_start_valid_ref <> nil) then
+        begin
+            m_start_ref^ := Point(start_rect.Left, start_rect.Bottom);
+            m_start_valid_ref^ := True;
+        end;
         Result := True;
     end;
 end;

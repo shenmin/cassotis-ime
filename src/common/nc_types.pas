@@ -252,6 +252,9 @@ type
         // A label beside the caret: the new mode on a switch, and English
         // when a field takes the focus.
         input_mode_hint: Boolean;
+        // The candidate window stays at the start of the text being typed for
+        // the whole input, instead of following the caret behind it.
+        candidate_at_input_start: Boolean;
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
         shortcuts: TncShortcutConfig;

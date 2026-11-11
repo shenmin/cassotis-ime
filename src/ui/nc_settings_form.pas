@@ -193,6 +193,7 @@ type
             array[0..c_candidate_font_size_level_count - 1] of TLabel;
         m_combo_candidate_page_size: TComboBox;
         m_chk_candidate_expand_on_paging: TncModernCheckBox;
+        m_chk_candidate_at_input_start: TncModernCheckBox;
         m_combo_candidate_color_scheme: TComboBox;
         m_candidate_preview: TPaintBox;
         m_candidate_preview_window: TncCandidateWindow;
@@ -381,7 +382,7 @@ const
     c_hint_width = c_section_width - (c_label_left * 2);
     c_general_row_gap = 8;
     c_candidate_preview_height = 152;
-    c_appearance_group_height = 446;
+    c_appearance_group_height = 484;
     c_tbm_get_channel_rect = WM_USER + 26;
     c_official_website_url = 'https://www.yanquan.org';
 
@@ -447,6 +448,9 @@ resourcestring
     SLabelCandidateSize = '大小';
     SLabelCandidatePageSize = '每页候选';
     SCheckCandidateExpandOnPaging = '翻页时展开多行候选';
+    SLabelCandidatePosition = '候选位置';
+    SCheckCandidateAtInputStart = '对齐输入的起点，打字时不随光标左右移动';
+    SCandidateAtInputStartHint = '候选窗口的左边对齐正在输入的文字的开头，一次输入中位置不变；关闭后候选窗口跟随光标。';
     SCandidatePageSizeItem = '%d 项';
     SLabelCandidateColorScheme = '配色';
     SLabelCandidatePreview = '预览';
@@ -1848,6 +1852,7 @@ begin
     end;
     update_check_box_metrics(m_chk_show_status_widget);
     update_check_box_metrics(m_chk_input_mode_hint);
+    update_check_box_metrics(m_chk_candidate_at_input_start);
     for action := Low(TncShortcutAction) to High(TncShortcutAction) do
         update_check_box_metrics(m_chk_shortcut_enabled[action]);
     update_check_box_metrics(m_chk_log_enabled);
@@ -2343,6 +2348,18 @@ begin
     m_chk_candidate_expand_on_paging.Left := scale_ui(c_control_left + 148);
     m_chk_candidate_expand_on_paging.Width := scale_ui(230);
     m_chk_candidate_expand_on_paging.Name := 'CandidateExpandOnPaging';
+
+    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    create_label(Self, appearance_group, SLabelCandidatePosition, top);
+    m_chk_candidate_at_input_start := create_check_box(Self, appearance_group, top,
+        SCheckCandidateAtInputStart, mark_dirty);
+    m_chk_candidate_at_input_start.Name := 'CandidateAtInputStart';
+    m_chk_candidate_at_input_start.Left := scale_ui(c_control_left);
+    m_chk_candidate_at_input_start.Width := appearance_group.ClientWidth -
+        m_chk_candidate_at_input_start.Left - scale_ui(c_label_left);
+    m_chk_candidate_at_input_start.Anchors := [akLeft, akTop, akRight];
+    m_chk_candidate_at_input_start.Hint := SCandidateAtInputStartHint;
+    m_chk_candidate_at_input_start.ShowHint := True;
 
     Inc(top, scale_ui(c_row_height + c_general_row_gap));
     create_label(Self, appearance_group, SLabelCandidateColorScheme, top);
@@ -3474,6 +3491,8 @@ begin
         set_candidate_page_size_combo(default_engine_config.candidate_page_size);
         m_chk_candidate_expand_on_paging.Checked :=
             default_engine_config.candidate_expand_on_paging;
+        m_chk_candidate_at_input_start.Checked :=
+            default_engine_config.candidate_at_input_start;
         set_candidate_color_scheme_combo(default_engine_config.candidate_color_scheme);
     end
     else if m_page_control.ActivePage = m_tab_fuzzy_pinyin then
@@ -4092,6 +4111,8 @@ begin
     set_candidate_page_size_combo(m_engine_config.candidate_page_size);
     m_chk_candidate_expand_on_paging.Checked :=
         m_engine_config.candidate_expand_on_paging;
+    m_chk_candidate_at_input_start.Checked :=
+        m_engine_config.candidate_at_input_start;
     set_candidate_color_scheme_combo(m_engine_config.candidate_color_scheme);
     load_shortcut_controls(m_engine_config.shortcuts);
     set_one_key_completion_key_combo(
@@ -4265,6 +4286,8 @@ begin
     next_config.candidate_page_size := get_selected_candidate_page_size;
     next_config.candidate_expand_on_paging :=
         m_chk_candidate_expand_on_paging.Checked;
+    next_config.candidate_at_input_start :=
+        m_chk_candidate_at_input_start.Checked;
     next_config.one_key_completion_key :=
         get_selected_one_key_completion_key;
     next_config.candidate_page_key_scheme :=

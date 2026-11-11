@@ -72,7 +72,8 @@ type
         function set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
             const line_height: Integer = 0; const source: TncCaretAnchorSource = casCursor;
             const anchor_score: Integer = 0; const terminal_like_target: Boolean = False;
-            const comless_target: Boolean = False): Boolean;
+            const comless_target: Boolean = False; const input_start_offset: Integer = 0;
+            const input_start_valid: Boolean = False): Boolean;
         function set_surrounding(const session_id: string;
             const left_context: string; const document_key: string = '';
             const document_snapshot: string = ''): Boolean;
@@ -95,7 +96,8 @@ type
 function build_set_caret_request(const session_id: string;
     const point: TPoint; const has_caret: Boolean; const line_height: Integer;
     const source: TncCaretAnchorSource; const anchor_score: Integer;
-    const terminal_like_target: Boolean; const comless_target: Boolean): string;
+    const terminal_like_target: Boolean; const comless_target: Boolean;
+    const input_start_offset: Integer = 0; const input_start_valid: Boolean = False): string;
 function build_set_state_request(const session_id: string;
     const input_mode: TncInputMode; const full_width_mode: Boolean;
     const punctuation_full_width: Boolean; const source: string = ''): string;
@@ -940,14 +942,16 @@ end;
 
 function TncIpcClient.set_caret(const session_id: string; const point: TPoint; const has_caret: Boolean;
     const line_height: Integer; const source: TncCaretAnchorSource; const anchor_score: Integer;
-    const terminal_like_target: Boolean; const comless_target: Boolean): Boolean;
+    const terminal_like_target: Boolean; const comless_target: Boolean; const input_start_offset: Integer;
+    const input_start_valid: Boolean): Boolean;
 var
     request_text: string;
     response_text: string;
     fields: TArray<string>;
 begin
     request_text := build_set_caret_request(session_id, point, has_caret,
-        line_height, source, anchor_score, terminal_like_target, comless_target);
+        line_height, source, anchor_score, terminal_like_target, comless_target,
+        input_start_offset, input_start_valid);
     if not call_pipe(request_text, response_text) then
     begin
         Result := False;
@@ -961,12 +965,19 @@ end;
 function build_set_caret_request(const session_id: string;
     const point: TPoint; const has_caret: Boolean; const line_height: Integer;
     const source: TncCaretAnchorSource; const anchor_score: Integer;
-    const terminal_like_target: Boolean; const comless_target: Boolean): string;
+    const terminal_like_target: Boolean; const comless_target: Boolean;
+    const input_start_offset: Integer; const input_start_valid: Boolean): string;
 begin
     Result := Format('SET_CARET'#9'%s'#9'%d'#9'%d'#9'%d'#9'%d'#9'%d'#9'%d'#9'%d'#9'%d',
         [session_id, point.X, point.Y, Ord(has_caret), line_height,
         Ord(source), anchor_score, Ord(terminal_like_target),
         Ord(comless_target)]);
+    // How far left of the point the input starts (candidate_at_input_start);
+    // a host that does not know the fields reads the first ten.
+    if input_start_valid then
+    begin
+        Result := Result + Format(#9'%d'#9'1', [input_start_offset]);
+    end;
 end;
 
 function TncIpcClient.set_surrounding(const session_id: string;

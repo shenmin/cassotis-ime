@@ -31,6 +31,17 @@ type
         allow_cursor_fallback: Boolean;
     end;
 
+    // The candidate window's left edge during one input when it stays at the
+    // start of the text being typed (candidate_at_input_start), as the WeChat
+    // input method places it: the composition shows the first candidate, and
+    // the caret behind it moves back and forth as that candidate grows and
+    // shrinks (issue 33, 2026-11-10).
+    TncInputStartAnchor = record
+        valid: Boolean;
+        left: Integer;
+        line_bottom: Integer;
+    end;
+
 function anchor_source_name(const source: TncCaretAnchorSource): string;
 function points_are_close(const left_point: TPoint; const right_point: TPoint; const max_delta: Integer): Boolean;
 function anchor_looks_like_window_origin(const candidate: TPoint; const base_rect: TRect;
@@ -67,6 +78,15 @@ function try_choose_best_anchor_scored(const observations: array of TncCaretAnch
     out best_score: Integer): Boolean;
 function try_choose_best_anchor(const observations: array of TncCaretAnchorObservation;
     const context: TncCaretAnchorContext; out best_point: TPoint; out best_source: TncCaretAnchorSource): Boolean;
+function nc_same_text_line(const first_bottom: Integer; const second_bottom: Integer;
+    const line_height: Integer): Boolean;
+function nc_input_start_offset(const caret_point: TPoint; const start_point: TPoint;
+    const line_height: Integer; const text_length: Integer; out offset: Integer): Boolean;
+function nc_anchor_at_input_start(var state: TncInputStartAnchor; const caret_point: TPoint;
+    const line_height: Integer; const start_offset: Integer; const start_offset_valid: Boolean): TPoint;
+function nc_text_end_needs_estimate(const end_rect: TRect; const has_start: Boolean;
+    const start_rect: TRect; const has_full: Boolean; const full_rect: TRect;
+    const line_height: Integer): Boolean;
 
 implementation
 
@@ -808,6 +828,82 @@ var
     ignored_score: Integer;
 begin
     Result := try_choose_best_anchor_scored(observations, context, best_point, best_source, ignored_score);
+end;
+
+function nc_same_text_line(const first_bottom: Integer; const second_bottom: Integer;
+    const line_height: Integer): Boolean;
+begin
+    Result := Abs(first_bottom - second_bottom) <= Max(8, line_height div 2);
+end;
+
+// How far the caret behind the composition lies from the composition's start,
+// both read from the application in one edit session. Only on one line, never
+// negative, and no wider than the text could be.
+function nc_input_start_offset(const caret_point: TPoint; const start_point: TPoint;
+    const line_height: Integer; const text_length: Integer; out offset: Integer): Boolean;
+begin
+    offset := caret_point.X - start_point.X;
+    Result := nc_same_text_line(caret_point.Y, start_point.Y, line_height) and (offset >= 0) and
+        (offset <= Max(64, (Max(0, text_length) + 2) * Max(16, line_height) * 2));
+    if not Result then
+    begin
+        offset := 0;
+    end;
+end;
+
+// The point the candidate window goes to: the start of the input when the
+// application tells where it is (the offset from the caret), else the place the
+// window took first in this input, as long as the caret stays on that line and
+// does not go left of it. A new line or a caret left of it starts over.
+function nc_anchor_at_input_start(var state: TncInputStartAnchor; const caret_point: TPoint;
+    const line_height: Integer; const start_offset: Integer; const start_offset_valid: Boolean): TPoint;
+begin
+    if start_offset_valid and (start_offset >= 0) then
+    begin
+        state.valid := True;
+        state.left := caret_point.X - start_offset;
+        state.line_bottom := caret_point.Y;
+        Result := Point(state.left, caret_point.Y);
+        Exit;
+    end;
+
+    if state.valid and nc_same_text_line(state.line_bottom, caret_point.Y, line_height) and
+        (caret_point.X >= state.left) then
+    begin
+        Result := Point(state.left, caret_point.Y);
+        Exit;
+    end;
+
+    state.valid := True;
+    state.left := caret_point.X;
+    state.line_bottom := caret_point.Y;
+    Result := caret_point;
+end;
+
+// Whether the end of the composition has to be estimated from its text: only
+// for an application that answers the query for the end with the start. Where
+// the application tells the end, adding the text's width to it put the window
+// that far beyond the caret once the text was wider than three lines' height
+// (issue 33: five characters, about 90 pixels).
+function nc_text_end_needs_estimate(const end_rect: TRect; const has_start: Boolean;
+    const start_rect: TRect; const has_full: Boolean; const full_rect: TRect;
+    const line_height: Integer): Boolean;
+var
+    tolerance: Integer;
+begin
+    tolerance := Max(4, line_height div 4);
+    if has_start then
+    begin
+        Result := (Abs(end_rect.Left - start_rect.Left) <= tolerance) and
+            nc_same_text_line(end_rect.Bottom, start_rect.Bottom, line_height);
+        Exit;
+    end;
+    if has_full then
+    begin
+        Result := end_rect.Left <= full_rect.Left + tolerance;
+        Exit;
+    end;
+    Result := False;
 end;
 
 end.
