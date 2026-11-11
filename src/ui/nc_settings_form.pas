@@ -204,6 +204,9 @@ type
         m_combo_one_key_completion_key: TComboBox;
         m_panel_candidate_page_previous_key: TPanel;
         m_panel_candidate_page_next_key: TPanel;
+        m_combo_second_third_candidate_keys: TComboBox;
+        m_panel_second_candidate_key: TPanel;
+        m_panel_third_candidate_key: TPanel;
         m_custom_phrase_grid: TStringGrid;
         m_custom_phrase_notice: TLabel;
         m_loading_custom_phrases: Boolean;
@@ -279,6 +282,9 @@ type
         procedure update_candidate_page_key_scheme_preview;
         procedure candidate_page_key_scheme_changed(Sender: TObject);
         procedure one_key_completion_key_changed(Sender: TObject);
+        procedure populate_second_third_candidate_keys_combo;
+        procedure update_second_third_candidate_keys_preview;
+        procedure second_third_candidate_keys_changed(Sender: TObject);
         function shortcut_action_caption(const action: TncShortcutAction): string;
         function shortcut_from_controls(const action: TncShortcutAction): TncShortcut;
         procedure set_shortcut_controls(const action: TncShortcutAction; const shortcut: TncShortcut);
@@ -295,6 +301,9 @@ type
         function get_selected_one_key_completion_key: TncOneKeyCompletionKey;
         procedure set_one_key_completion_key_combo(
             const completion_key: TncOneKeyCompletionKey);
+        function get_selected_second_third_candidate_keys: TncSecondThirdCandidateKeys;
+        procedure set_second_third_candidate_keys_combo(
+            const keys: TncSecondThirdCandidateKeys);
         function get_selected_candidate_color_scheme: Integer;
         procedure set_candidate_color_scheme_combo(const color_scheme: Integer);
         procedure update_candidate_preview;
@@ -463,8 +472,8 @@ resourcestring
     SShortcutFullWidth = '全角/半角切换';
     SShortcutOpenSettings = '打开设置';
     SShortcutNoModifier = '无';
-    SGroupCandidatePaging = '候选翻页';
-    SLabelCandidatePageKeys = '按键组合';
+    SGroupCandidateKeys = '候选按键';
+    SLabelCandidatePageKeys = '候选翻页';
     SLabelCandidatePagePrevious = '向上翻';
     SLabelCandidatePageNext = '向下翻';
     SPageKeysMinusPlus = '减号等号';
@@ -475,6 +484,13 @@ resourcestring
     SGroupOneKeyCompletion = '一键补全';
     SLabelOneKeyCompletionKey = '触发按键';
     SOneKeyCompletionHint = '输入至少两个完整音节，并存在可继续补全的精确词库词时生效。';
+    SLabelSecondThirdCandidateKeys = '二三候选';
+    SLabelSecondCandidate = '第二个';
+    SLabelThirdCandidate = '第三个';
+    SSecondThirdKeysNone = '不使用';
+    SSecondThirdKeysSemicolonQuote = '分号单引号';
+    SSecondThirdCandidateKeysHint = '输入拼音时，分号选第二个候选，单引号选第三个候选，数字键照常可用。' +
+        '使用时单引号不再分隔音节；微软、搜狗、紫光双拼中，声母后的分号仍是韵母 ing。';
     SShortcutMissingKey = '“%s”尚未选择按键。';
     SShortcutInvalidModifierKey = '“%s”的快捷键无效：单独的修饰键仅支持 Shift，且不能再叠加其他修饰键。';
     SShortcutNeedsModifier = '“%s”不能使用未带修饰键的 %s，因为这会占用正常输入。请添加 Ctrl、Shift 或 Alt；无修饰键时仅支持 Shift 或 F1-F24。';
@@ -2550,7 +2566,7 @@ begin
 
     section_top := shortcut_group.Top + shortcut_group.Height + scale_ui(c_section_gap);
     paging_group := create_section_group(Self, m_scroll_shortcuts,
-        SGroupCandidatePaging, section_top, 90);
+        SGroupCandidateKeys, section_top, 149);
     top := scale_ui(54);
     create_label(Self, paging_group, SLabelCandidatePageKeys, top);
 
@@ -2608,6 +2624,65 @@ begin
 
     m_combo_candidate_page_keys.OnChange := candidate_page_key_scheme_changed;
     update_candidate_page_key_scheme_preview;
+
+    // The second row of the group: the keys of the second and third candidate.
+    top := scale_ui(113);
+    create_label(Self, paging_group, SLabelSecondThirdCandidateKeys, top);
+
+    header_label := TLabel.Create(Self);
+    header_label.Parent := paging_group;
+    header_label.AutoSize := False;
+    header_label.Left := scale_ui(c_control_left + 172);
+    header_label.Top := scale_ui(90);
+    header_label.Width := scale_ui(76);
+    header_label.Alignment := taCenter;
+    header_label.Caption := SLabelSecondCandidate;
+    header_label.Font.Color := RGB(90, 100, 115);
+
+    header_label := TLabel.Create(Self);
+    header_label.Parent := paging_group;
+    header_label.AutoSize := False;
+    header_label.Left := scale_ui(c_control_left + 260);
+    header_label.Top := scale_ui(90);
+    header_label.Width := scale_ui(76);
+    header_label.Alignment := taCenter;
+    header_label.Caption := SLabelThirdCandidate;
+    header_label.Font.Color := RGB(90, 100, 115);
+
+    m_combo_second_third_candidate_keys := TComboBox.Create(Self);
+    m_combo_second_third_candidate_keys.Parent := paging_group;
+    m_combo_second_third_candidate_keys.Left := scale_ui(c_control_left);
+    m_combo_second_third_candidate_keys.Top := top;
+    m_combo_second_third_candidate_keys.Width := scale_ui(160);
+    m_combo_second_third_candidate_keys.Style := csDropDownList;
+    m_combo_second_third_candidate_keys.Hint := SSecondThirdCandidateKeysHint;
+    m_combo_second_third_candidate_keys.ShowHint := True;
+    populate_second_third_candidate_keys_combo;
+
+    m_panel_second_candidate_key := TPanel.Create(Self);
+    m_panel_second_candidate_key.Parent := paging_group;
+    m_panel_second_candidate_key.Left := scale_ui(c_control_left + 172);
+    m_panel_second_candidate_key.Top := top;
+    m_panel_second_candidate_key.Width := scale_ui(76);
+    m_panel_second_candidate_key.Height := scale_ui(24);
+    m_panel_second_candidate_key.BevelOuter := bvNone;
+    m_panel_second_candidate_key.ParentBackground := False;
+    m_panel_second_candidate_key.Color := RGB(238, 240, 244);
+    m_panel_second_candidate_key.Font.Color := RGB(50, 56, 66);
+
+    m_panel_third_candidate_key := TPanel.Create(Self);
+    m_panel_third_candidate_key.Parent := paging_group;
+    m_panel_third_candidate_key.Left := scale_ui(c_control_left + 260);
+    m_panel_third_candidate_key.Top := top;
+    m_panel_third_candidate_key.Width := scale_ui(76);
+    m_panel_third_candidate_key.Height := scale_ui(24);
+    m_panel_third_candidate_key.BevelOuter := bvNone;
+    m_panel_third_candidate_key.ParentBackground := False;
+    m_panel_third_candidate_key.Color := RGB(238, 240, 244);
+    m_panel_third_candidate_key.Font.Color := RGB(50, 56, 66);
+
+    m_combo_second_third_candidate_keys.OnChange := second_third_candidate_keys_changed;
+    update_second_third_candidate_keys_preview;
 
     section_top := paging_group.Top + paging_group.Height + scale_ui(c_section_gap);
     completion_group := create_section_group(Self, m_scroll_shortcuts,
@@ -2713,6 +2788,83 @@ procedure TncSettingsForm.candidate_page_key_scheme_changed(Sender: TObject);
 begin
     update_candidate_page_key_scheme_preview;
     mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.populate_second_third_candidate_keys_combo;
+begin
+    if m_combo_second_third_candidate_keys = nil then
+    begin
+        Exit;
+    end;
+
+    m_combo_second_third_candidate_keys.Items.BeginUpdate;
+    try
+        m_combo_second_third_candidate_keys.Items.Clear;
+        m_combo_second_third_candidate_keys.Items.Add(SSecondThirdKeysNone);
+        m_combo_second_third_candidate_keys.Items.Add(SSecondThirdKeysSemicolonQuote);
+    finally
+        m_combo_second_third_candidate_keys.Items.EndUpdate;
+    end;
+    m_combo_second_third_candidate_keys.ItemIndex := Ord(stck_none);
+end;
+
+procedure TncSettingsForm.update_second_third_candidate_keys_preview;
+var
+    second_key: string;
+    third_key: string;
+begin
+    if (m_panel_second_candidate_key = nil) or
+        (m_panel_third_candidate_key = nil) then
+    begin
+        Exit;
+    end;
+
+    case get_selected_second_third_candidate_keys of
+        stck_semicolon_quote:
+            begin
+                second_key := ';';
+                third_key := '''';
+            end;
+    else
+        second_key := '—';
+        third_key := '—';
+    end;
+
+    m_panel_second_candidate_key.Caption := second_key;
+    m_panel_third_candidate_key.Caption := third_key;
+end;
+
+procedure TncSettingsForm.second_third_candidate_keys_changed(Sender: TObject);
+begin
+    update_second_third_candidate_keys_preview;
+    mark_dirty(Sender);
+end;
+
+function TncSettingsForm.get_selected_second_third_candidate_keys:
+    TncSecondThirdCandidateKeys;
+begin
+    Result := stck_none;
+    if (m_combo_second_third_candidate_keys <> nil) and
+        (m_combo_second_third_candidate_keys.ItemIndex >=
+        Ord(Low(TncSecondThirdCandidateKeys))) and
+        (m_combo_second_third_candidate_keys.ItemIndex <=
+        Ord(High(TncSecondThirdCandidateKeys))) then
+    begin
+        Result := TncSecondThirdCandidateKeys(
+            m_combo_second_third_candidate_keys.ItemIndex);
+    end;
+end;
+
+procedure TncSettingsForm.set_second_third_candidate_keys_combo(
+    const keys: TncSecondThirdCandidateKeys);
+begin
+    if m_combo_second_third_candidate_keys = nil then
+    begin
+        Exit;
+    end;
+    m_combo_second_third_candidate_keys.ItemIndex :=
+        Ord(nc_normalize_second_third_candidate_keys(keys));
+    update_second_third_candidate_keys_preview;
 end;
 
 procedure TncSettingsForm.one_key_completion_key_changed(Sender: TObject);
@@ -3513,6 +3665,8 @@ begin
             default_engine_config.one_key_completion_key);
         set_candidate_page_key_scheme_combo(
             default_engine_config.candidate_page_key_scheme);
+        set_second_third_candidate_keys_combo(
+            default_engine_config.second_third_candidate_keys);
     end
     else if m_page_control.ActivePage = m_tab_custom_phrases then
     begin
@@ -4119,6 +4273,8 @@ begin
         m_engine_config.one_key_completion_key);
     set_candidate_page_key_scheme_combo(
         m_engine_config.candidate_page_key_scheme);
+    set_second_third_candidate_keys_combo(
+        m_engine_config.second_third_candidate_keys);
     if m_chk_log_enabled <> nil then
     begin
         m_chk_log_enabled.Checked := m_log_config.enabled;
@@ -4294,6 +4450,8 @@ begin
         nc_resolve_candidate_page_key_scheme(
         get_selected_candidate_page_key_scheme,
         next_config.one_key_completion_key);
+    next_config.second_third_candidate_keys :=
+        get_selected_second_third_candidate_keys;
     next_config.candidate_color_scheme := get_selected_candidate_color_scheme;
     shortcut_config := nc_default_shortcut_config;
     for action_index := Ord(Low(TncShortcutAction)) to Ord(High(TncShortcutAction)) do

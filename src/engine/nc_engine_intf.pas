@@ -156715,6 +156715,29 @@ begin
         Exit;
     end;
 
+    // ; and ' pick the second and third candidate of the page (of the active
+    // row when the rows are expanded), as the digits 2 and 3 do (issue #34; off
+    // by default). Double pinyin keeps ; as the final ing inside a pair (above),
+    // and ' no longer separates syllables while the keys are on. A page without
+    // such a candidate leaves the key without effect rather than committing.
+    if (m_composition_text <> '') and (m_quick_input.kind = qik_none) and
+        nc_second_third_candidate_key_index(
+        m_config.second_third_candidate_keys, key_code, key_state, index) then
+    begin
+        page_size := get_candidate_page_size;
+        if (index < page_size) and
+            (index < get_current_page_candidate_count(page_size)) then
+        begin
+            m_selected_index := index;
+            set_raw_input_selected_by_user(False);
+            if get_selected_candidate(candidate, True) then
+            begin
+                Exit(apply_candidate_selection(candidate, index, True, True));
+            end;
+        end;
+        Exit(True);
+    end;
+
     if (m_one_key_completion.text <> '') and
         nc_one_key_completion_matches(m_config.one_key_completion_key,
         key_code, key_state) then
@@ -189147,6 +189170,7 @@ var
     punct_char: Char;
     has_candidates: Boolean;
     direct_commit_text: string;
+    selection_index: Integer;
 begin
     Result := False;
     if nc_shortcut_matches(m_config.shortcuts.input_mode_toggle, key_code, key_state) then
@@ -189191,6 +189215,15 @@ begin
         (not m_quick_input.explicit_mode) and
         nc_shuangpin_accepts_semicolon(m_config.pinyin_input_scheme,
         m_composition_display_text) then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    if (m_composition_text <> '') and (m_quick_input.kind = qik_none) and
+        nc_second_third_candidate_key_index(
+        m_config.second_third_candidate_keys, key_code, key_state,
+        selection_index) then
     begin
         Result := True;
         Exit;

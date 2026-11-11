@@ -124,6 +124,7 @@
 | `open_settings` | 打开设置 | 快捷键文本 | `Ctrl+Shift+F10` | 打开设置窗口。 |
 | `candidate_page_keys` | 候选翻页按键方案 | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | 分别表示 `-/=`、`[/]`、`,/.`、`Shift+Tab/Tab`。 |
 | `one_key_completion_key` | 一键补全触发按键 | `tab` / `backtick` | `tab` | 接受候选窗底部一键补全区的唯一结果。完整匹配的自定义短语优先于自动补全，不受音节数限制；未匹配时使用原有预测补全。`backtick` 表示反引号键 `` ` ``。 |
+| `second_third_candidate_keys` | 第二、第三候选的按键 | `none` / `semicolon-quote` | `none` | `semicolon-quote`：输入拼音时，`;` 选第二个候选，`'` 选第三个候选，数字键照常可用；没有正在输入的拼音时，两个键照常输入标点。使用时 `'` 不再分隔音节；微软、搜狗、紫光双拼中，声母后的 `;` 仍是韵母 ing。按住 Shift（`:` 和 `"`）时仍是标点。 |
 
 当 `one_key_completion_key=tab` 时，`candidate_page_keys=shift-tab` 会与一键补全冲突，因此该翻页方案在设置界面不可选；若 INI 中同时配置这两个值，翻页方案会自动规范化为 `minus-plus`。
 
@@ -207,6 +208,7 @@ full_width_toggle=Shift+Space
 open_settings=Ctrl+Shift+F10
 candidate_page_keys=minus-plus
 one_key_completion_key=tab
+second_third_candidate_keys=none
 
 [log]
 enabled=false

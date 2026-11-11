@@ -193,6 +193,12 @@ type
         ock_tab,
         ock_backtick
     );
+    // Keys that pick the second and third candidate of the page beside the
+    // digits 2 and 3 (issue #34). A new scheme is appended last.
+    TncSecondThirdCandidateKeys = (
+        stck_none,
+        stck_semicolon_quote
+    );
 
     TncShortcutAction = (
         sa_input_mode_toggle,
@@ -248,6 +254,7 @@ type
         candidate_expand_on_paging: Boolean;
         candidate_page_key_scheme: TncCandidatePageKeyScheme;
         one_key_completion_key: TncOneKeyCompletionKey;
+        second_third_candidate_keys: TncSecondThirdCandidateKeys;
         candidate_color_scheme: Integer;
         // A label beside the caret: the new mode on a switch, and English
         // when a field takes the focus.

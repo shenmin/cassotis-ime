@@ -124,6 +124,7 @@ Codes contain 1–32 ASCII letters and are case-insensitive. Full Pinyin and Dou
 | `open_settings` | Open Settings | Shortcut text | `Ctrl+Shift+F10` | Opens the Settings window. |
 | `candidate_page_keys` | Candidate paging key scheme | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | Represents `-/=`, `[/]`, `,/.`, or `Shift+Tab/Tab`. |
 | `one_key_completion_key` | One-key completion trigger | `tab` / `backtick` | `tab` | Accepts the single result in the one-key completion area. An exact custom-phrase match takes priority over automatic completion and has no syllable-count requirement. Otherwise, the existing predictive completion applies. `backtick` means the `` ` `` key. |
+| `second_third_candidate_keys` | Keys for the second and third candidate | `none` / `semicolon-quote` | `none` | `semicolon-quote`: while pinyin is being typed, `;` picks the second candidate and `'` the third; the digit keys still work. Without a composition both keys type punctuation as before. With the keys on, `'` no longer separates syllables; in Microsoft, Sogou and Ziguang double pinyin a `;` after an initial is still the final ing. With Shift (`:` and `"`) they stay punctuation. |
 
 When `one_key_completion_key=tab`, `candidate_page_keys=shift-tab` conflicts with completion. Settings therefore hides that paging option, and an INI file containing both values is normalized to `minus-plus`.
 
@@ -207,6 +208,7 @@ full_width_toggle=Shift+Space
 open_settings=Ctrl+Shift+F10
 candidate_page_keys=minus-plus
 one_key_completion_key=tab
+second_third_candidate_keys=none
 
 [log]
 enabled=false

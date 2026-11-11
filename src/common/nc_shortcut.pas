@@ -71,6 +71,17 @@ function nc_candidate_page_key_matches_next(
     const key_state: TncKeyState): Boolean;
 function nc_composition_navigation_skips_host_test(const key_code: Word;
     const key_state: TncKeyState): Boolean;
+function nc_normalize_second_third_candidate_keys(
+    const keys: TncSecondThirdCandidateKeys): TncSecondThirdCandidateKeys;
+function nc_second_third_candidate_keys_to_text(
+    const keys: TncSecondThirdCandidateKeys): string;
+function nc_parse_second_third_candidate_keys(
+    const value: string): TncSecondThirdCandidateKeys;
+// The place on the page (1 or 2) a key picks under the scheme; False for any
+// other key or with a modifier down.
+function nc_second_third_candidate_key_index(
+    const keys: TncSecondThirdCandidateKeys; const key_code: Word;
+    const key_state: TncKeyState; out index: Integer): Boolean;
 
 implementation
 
@@ -279,6 +290,57 @@ function nc_candidate_page_key_matches_next(
     const key_state: TncKeyState): Boolean;
 begin
     Result := candidate_page_key_matches(scheme, key_code, key_state, True);
+end;
+
+function nc_normalize_second_third_candidate_keys(
+    const keys: TncSecondThirdCandidateKeys): TncSecondThirdCandidateKeys;
+begin
+    if (Ord(keys) < Ord(Low(TncSecondThirdCandidateKeys))) or
+        (Ord(keys) > Ord(High(TncSecondThirdCandidateKeys))) then
+    begin
+        Exit(stck_none);
+    end;
+    Result := keys;
+end;
+
+function nc_second_third_candidate_keys_to_text(
+    const keys: TncSecondThirdCandidateKeys): string;
+begin
+    case nc_normalize_second_third_candidate_keys(keys) of
+        stck_semicolon_quote:
+            Result := 'semicolon-quote';
+    else
+        Result := 'none';
+    end;
+end;
+
+function nc_parse_second_third_candidate_keys(
+    const value: string): TncSecondThirdCandidateKeys;
+begin
+    if SameText(Trim(value), 'semicolon-quote') then
+    begin
+        Exit(stck_semicolon_quote);
+    end;
+    Result := stck_none;
+end;
+
+function nc_second_third_candidate_key_index(
+    const keys: TncSecondThirdCandidateKeys; const key_code: Word;
+    const key_state: TncKeyState; out index: Integer): Boolean;
+begin
+    index := -1;
+    if (not key_state.shift_down) and (not key_state.ctrl_down) and
+        (not key_state.alt_down) and
+        (nc_normalize_second_third_candidate_keys(keys) = stck_semicolon_quote) then
+    begin
+        case key_code of
+            VK_OEM_1:
+                index := 1;
+            VK_OEM_7:
+                index := 2;
+        end;
+    end;
+    Result := index >= 0;
 end;
 
 function nc_make_shortcut(const key_code: Word; const shift_down: Boolean;

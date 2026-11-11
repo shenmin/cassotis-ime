@@ -924,6 +924,7 @@ begin
     Result.candidate_expand_on_paging := False;
     Result.candidate_page_key_scheme := cpks_minus_plus;
     Result.one_key_completion_key := ock_tab;
+    Result.second_third_candidate_keys := stck_none;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.input_mode_hint := True;
     Result.candidate_at_input_start := True;
@@ -1220,6 +1221,9 @@ begin
             nc_one_key_completion_key_to_text(ock_tab)));
         Result.candidate_page_key_scheme := nc_resolve_candidate_page_key_scheme(
             Result.candidate_page_key_scheme, Result.one_key_completion_key);
+        Result.second_third_candidate_keys := nc_parse_second_third_candidate_keys(
+            safe_ini_read_string(ini, 'shortcuts', 'second_third_candidate_keys',
+            nc_second_third_candidate_keys_to_text(stck_none)));
         shortcut_values_valid := shortcut_values_valid and
             (not nc_shortcut_config_has_duplicates(Result.shortcuts));
         nc_normalize_shortcut_config(Result.shortcuts);
@@ -1392,6 +1396,9 @@ begin
             candidate_page_key_scheme));
         ini.WriteString('shortcuts', 'one_key_completion_key',
             nc_one_key_completion_key_to_text(completion_key));
+        ini.WriteString('shortcuts', 'second_third_candidate_keys',
+            nc_second_third_candidate_keys_to_text(
+            config.second_third_candidate_keys));
         write_config_version(ini, True);
         ini.UpdateFile;
     finally
