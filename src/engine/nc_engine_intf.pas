@@ -138471,6 +138471,14 @@ begin
     if (context = '') and (choices[0].word_frequency - choices[best].word_frequency >=
         c_short_word_frequency_floor) then
         Exit;
+    // Nor where conversation, the dictionary weight and a near tie in the
+    // general text take its side (这周 over 褶皱 for zhezhou).
+    if (context = '') and choices[0].has_dict_weight and nc_conversation_keeps_first(
+        choices[0].dict_weight, IfThen(choices[best].has_dict_weight, choices[best].dict_weight, 0),
+        choices[0].word_frequency, choices[best].word_frequency,
+        m_dictionary.get_conversation_frequency_score(choices[0].text),
+        m_dictionary.get_conversation_frequency_score(choices[best].text)) then
+        Exit;
     value := candidates[choices[best].position];
     second_source := -1;
     if second > 0 then

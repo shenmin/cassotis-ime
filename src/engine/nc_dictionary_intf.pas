@@ -173,6 +173,9 @@ type
           100 * log10(1 + occurrences) (dict_base_word_frequency); 0 for a
           word it lacks or a dictionary without the table. }
         function get_word_frequency_score(const text: string): Integer; virtual;
+        { The same for everyday conversation (LCCC,
+          dict_base_conversation_frequency). }
+        function get_conversation_frequency_score(const text: string): Integer; virtual;
         { Records each word as the user's own choice, as often as its count says
           (a word's learning bonus grows with the log of its commits); imported
           is the number of words the user dictionary took. }
@@ -707,6 +710,11 @@ begin
 end;
 
 function TncDictionaryProvider.get_word_frequency_score(const text: string): Integer;
+begin
+    Result := 0;
+end;
+
+function TncDictionaryProvider.get_conversation_frequency_score(const text: string): Integer;
 begin
     Result := 0;
 end;

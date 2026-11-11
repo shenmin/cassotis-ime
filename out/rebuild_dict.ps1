@@ -242,6 +242,8 @@ $lexicon_completion_pair_audit_sc = Join-Path $lexicon_root 'data\generated\dict
 $lexicon_completion_pair_audit_tc = Join-Path $lexicon_root 'data\generated\dict_completion_pair_audit_tc.txt'
 $lexicon_word_frequency_sc = Join-Path $lexicon_root 'data\generated\dict_word_frequency_sc.txt'
 $lexicon_word_frequency_tc = Join-Path $lexicon_root 'data\generated\dict_word_frequency_tc.txt'
+$lexicon_conversation_frequency_sc = Join-Path $lexicon_root 'data\generated\dict_conversation_frequency_sc.txt'
+$lexicon_conversation_frequency_tc = Join-Path $lexicon_root 'data\generated\dict_conversation_frequency_tc.txt'
 $lexicon_short_promotion_sc = Join-Path $lexicon_root 'data\generated\dict_short_promotion_sc.txt'
 $lexicon_short_promotion_tc = Join-Path $lexicon_root 'data\generated\dict_short_promotion_tc.txt'
 $lexicon_char_lm_sc = Join-Path $lexicon_root 'data\generated\dict_char_lm_sc.txt'
@@ -424,6 +426,23 @@ try {
                 "(dict_word_frequency_sc.txt, dict_word_frequency_tc.txt). Update the lexicon.")
         }
 
+        if ((Test-Path -LiteralPath $lexicon_conversation_frequency_sc) -and
+            (Test-Path -LiteralPath $lexicon_conversation_frequency_tc)) {
+            Write-Host ("Importing conversation word frequencies from: " + $lexicon_conversation_frequency_sc)
+            invoke_tool 'cassotis_ime_dict_init (conversation frequency sc)' $dict_init @(
+                $base_db_sc_path, $schema_path, $lexicon_conversation_frequency_sc, 'conversation_frequency')
+
+            Write-Host ("Importing conversation word frequencies from: " + $lexicon_conversation_frequency_tc)
+            invoke_tool 'cassotis_ime_dict_init (conversation frequency tc)' $dict_init @(
+                $base_db_tc_path, $schema_path, $lexicon_conversation_frequency_tc, 'conversation_frequency')
+        }
+        else {
+            # Without the table the first word of a page without a context
+            # no longer keeps its place where conversation takes its side.
+            throw ("Conversation frequency files not found under lexicon data/generated " +
+                "(dict_conversation_frequency_sc.txt, dict_conversation_frequency_tc.txt). Update the lexicon.")
+        }
+
         if (Test-Path -LiteralPath $lexicon_char_lm_sc) {
             Write-Host ("Importing lexicon character LM from: " + $lexicon_char_lm_sc)
             invoke_tool 'cassotis_ime_dict_init (lexicon character LM sc)' $dict_init @(
@@ -517,6 +536,10 @@ try {
             $base_db_sc_path, $schema_path, '--require-word-frequency')
         invoke_tool 'cassotis_ime_dict_init (require word frequency tc)' $dict_init @(
             $base_db_tc_path, $schema_path, '--require-word-frequency')
+        invoke_tool 'cassotis_ime_dict_init (require conversation frequency sc)' $dict_init @(
+            $base_db_sc_path, $schema_path, '--require-conversation-frequency')
+        invoke_tool 'cassotis_ime_dict_init (require conversation frequency tc)' $dict_init @(
+            $base_db_tc_path, $schema_path, '--require-conversation-frequency')
     }
 
     # Setup keeps a development build where it removes the base dictionaries

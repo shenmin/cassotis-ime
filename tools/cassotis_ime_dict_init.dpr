@@ -16,7 +16,8 @@ type
     TncImportMode = (imBaseDict, imQueryPathPrior, imLmTransition, imCharLm,
         imCharReverseLm, imTransitionCompletion, imCompletionPrior,
         imCompletionLookup, imCompletionCompetition, imCompletionPairAudit,
-        imLongCompletion, imShortPromotion, imWordFrequency);
+        imLongCompletion, imShortPromotion, imWordFrequency,
+        imConversationFrequency);
 
 const
     c_segment_path_separator = #3;
@@ -24,10 +25,12 @@ const
 procedure print_usage;
 begin
     Writeln('Usage: cassotis_ime_dict_init <db_path> <schema_path> [import_path] [base|query_path|lm_transition|char_lm|char_reverse_lm|transition_completion|completion_prior|completion_lookup|' +
-        'completion_competition|completion_pair_audit|long_completion|short_promotion|word_frequency]');
+        'completion_competition|completion_pair_audit|long_completion|short_promotion|word_frequency|' +
+        'conversation_frequency]');
     Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --build-contains-index');
     Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --require-short-promotion');
     Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --require-word-frequency');
+    Writeln('       cassotis_ime_dict_init <db_path> <schema_path> --require-conversation-frequency');
 end;
 
 { The runtime reads a short query's promotions from the dictionary instead of
@@ -73,9 +76,11 @@ begin
 end;
 
 { Without a context the short-word choice weighs how often the general text
-  holds each word (dict_base_word_frequency); a dictionary without the table
-  gives every word 0 and chooses worse. Exit code 0 when it has rows. }
-function require_word_frequency(const db_path: string): Integer;
+  holds each word (dict_base_word_frequency) and how often everyday
+  conversation does (dict_base_conversation_frequency); a dictionary without
+  a table gives every word 0 and chooses worse. Exit code 0 when it has rows. }
+function require_frequency_table(const db_path, table, what, files: string;
+    const failure: Integer): Integer;
 var
     conn: TncSqliteConnection;
     stmt: Psqlite3_stmt;
@@ -86,7 +91,7 @@ begin
     try
         stmt := nil;
         if conn.open(SQLITE_OPEN_READONLY) and conn.prepare(
-            'SELECT COUNT(*) FROM dict_base_word_frequency', stmt) then
+            'SELECT COUNT(*) FROM ' + table, stmt) then
         begin
             try
                 if conn.step(stmt) = SQLITE_ROW then
@@ -102,14 +107,14 @@ begin
     end;
     if rows > 0 then
     begin
-        Writeln(Format('Word frequency rows: %d', [rows]));
+        Writeln(Format('%s rows: %d', [what, rows]));
         Result := 0;
     end
     else
     begin
-        Writeln('No word frequency rows in ' + db_path +
-            ': import dict_word_frequency_*.txt (out\rebuild_dict.ps1).');
-        Result := 5;
+        Writeln('No ' + LowerCase(what) + ' rows in ' + db_path +
+            ': import ' + files + ' (out\rebuild_dict.ps1).');
+        Result := failure;
     end;
 end;
 
@@ -695,6 +700,10 @@ begin
         begin
             Exit(imShortPromotion);
         end;
+        if Pos('conversation_frequency', normalized) > 0 then
+        begin
+            Exit(imConversationFrequency);
+        end;
         if Pos('word_frequency', normalized) > 0 then
         begin
             Exit(imWordFrequency);
@@ -770,6 +779,12 @@ begin
         (normalized = 'word-frequency') then
     begin
         Exit(imWordFrequency);
+    end;
+
+    if (normalized = 'conversation_frequency') or
+        (normalized = 'conversation-frequency') then
+    begin
+        Exit(imConversationFrequency);
     end;
 
     if (normalized = 'char_lm') or (normalized = 'char-lm') or
@@ -1005,6 +1020,9 @@ const
         'VALUES (?1, ?2, ?3, ?4, ?5);';
     insert_word_frequency_sql =
         'INSERT OR REPLACE INTO dict_base_word_frequency(text, score) ' +
+        'VALUES (?1, ?2);';
+    insert_conversation_frequency_sql =
+        'INSERT OR REPLACE INTO dict_base_conversation_frequency(text, score) ' +
         'VALUES (?1, ?2);';
     insert_char_lm_sql =
         'INSERT OR REPLACE INTO dict_base_char_lm(ngram, score, backoff) VALUES (?1, ?2, ?3);';
@@ -1394,6 +1412,24 @@ begin
                 Exit;
             end;
         end
+        else if import_mode = imConversationFrequency then
+        begin
+            if (not conn.exec(
+                'DROP TABLE IF EXISTS dict_base_conversation_frequency;')) or
+                (not conn.exec(
+                'CREATE TABLE dict_base_conversation_frequency (' +
+                'text TEXT NOT NULL PRIMARY KEY,' +
+                'score INTEGER NOT NULL DEFAULT 0' +
+                ') WITHOUT ROWID;')) then
+            begin
+                Exit;
+            end;
+            if not conn.prepare(insert_conversation_frequency_sql,
+                stmt_query_path) then
+            begin
+                Exit;
+            end;
+        end
         else if not conn.prepare(insert_base_sql, stmt_base) or
             (not conn.prepare(insert_jianpin_sql, stmt_jianpin)) or
             (not conn.prepare(insert_alias_sql, stmt_alias)) or
@@ -1744,10 +1780,10 @@ begin
                 Continue;
             end;
 
-            if import_mode = imWordFrequency then
+            if import_mode in [imWordFrequency, imConversationFrequency] then
             begin
-                // A word and how often the general text holds it as a word,
-                // 100 * log10(1 + occurrences).
+                // A word and how often the general text (or conversation)
+                // holds it as a word, 100 * log10(1 + occurrences).
                 promotion_parts := line.Split([#9]);
                 if (Length(promotion_parts) <> 2) or
                     (Trim(promotion_parts[0]) = '') or
@@ -2171,6 +2207,12 @@ begin
                 'Imported %d word frequencies from %d lines.',
                 [inserted_word_frequencies, line_count]));
         end
+        else if import_mode = imConversationFrequency then
+        begin
+            Writeln(Format(
+                'Imported %d conversation frequencies from %d lines.',
+                [inserted_word_frequencies, line_count]));
+        end
         else
         begin
             Writeln(Format('Imported %d entries (%d jianpin rows, %d compact aliases) from %d lines.',
@@ -2239,7 +2281,14 @@ begin
     if (ParamCount >= 3) and
         SameText(Trim(ParamStr(3)), '--require-word-frequency') then
     begin
-        Halt(require_word_frequency(db_path));
+        Halt(require_frequency_table(db_path, 'dict_base_word_frequency',
+            'Word frequency', 'dict_word_frequency_*.txt', 5));
+    end;
+    if (ParamCount >= 3) and
+        SameText(Trim(ParamStr(3)), '--require-conversation-frequency') then
+    begin
+        Halt(require_frequency_table(db_path, 'dict_base_conversation_frequency',
+            'Conversation frequency', 'dict_conversation_frequency_*.txt', 6));
     end;
     build_contains_index := (ParamCount >= 3) and
         SameText(Trim(ParamStr(3)), '--build-contains-index');

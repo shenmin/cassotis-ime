@@ -53,6 +53,11 @@ This file lists third-party software/data used by Cassotis IME and the related l
   - The model was trained by this project on separately licensed corpora, for
     both plain text and pinyin-conditioned correction; it does not contain or
     redistribute training documents.
+  - Its training continued on a selection of everyday dialogues from LCCC
+    (Wang et al., "A Large-Scale Chinese Short-Text Conversation Dataset",
+    NLPCC 2020; <https://github.com/thu-coai/CDial-GPT>), released under the
+    MIT License, Copyright (c) 2020 lemon234071. The model does not contain
+    or redistribute the dialogues.
   - It is the only neural model shipped from `v2.0.0`. It replaces the
     RBT3-derived short-word context model (no longer shipped from `v1.30.0`),
     the pinyin parallel generator and the MacBERT-derived local correction

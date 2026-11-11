@@ -299,6 +299,23 @@ var
       (text and features, tab-separated). }
     nc_char_lm_long_trace: TProc<string>;
 
+const
+    // nc_conversation_keeps_first: 100 is ten times as often.
+    c_conversation_first_lead = 150;
+    c_conversation_general_deficit = 40;
+
+{ Without a context the page's first word keeps its place over the short-word
+  choice where three of the signals take its side against the general text:
+  everyday conversation writes it 30 times as often or more (150 in the
+  scores of the conversation frequency table, LCCC), the general text writes
+  the choice at most about 2.5 times as often (40), and the dictionary weighs
+  it half again as much or more. zhezhou: 这周 7,602 times in LCCC and 褶皱
+  229, the general text 2,647 and 5,181, weights 1000 and 546. LCCC filtered
+  sensitive words, so a word it lacks (a score of 0) is no evidence. }
+function nc_conversation_keeps_first(const first_weight, choice_weight,
+    first_frequency, choice_frequency, first_conversation,
+    choice_conversation: Integer): Boolean;
+
 implementation
 
 uses System.Generics.Collections, System.Generics.Defaults;
@@ -1363,6 +1380,16 @@ begin
     if runner_up >= 0 then
         second := complete[runner_up].text;
     Result := True;
+end;
+
+function nc_conversation_keeps_first(const first_weight, choice_weight,
+    first_frequency, choice_frequency, first_conversation,
+    choice_conversation: Integer): Boolean;
+begin
+    Result := (first_conversation > 0) and (choice_conversation > 0) and
+        (first_conversation - choice_conversation >= c_conversation_first_lead) and
+        (first_frequency - choice_frequency >= -c_conversation_general_deficit) and
+        (Int64(Max(0, first_weight)) * 2 >= Int64(Max(1, choice_weight)) * 3);
 end;
 
 end.

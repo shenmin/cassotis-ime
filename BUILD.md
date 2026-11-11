@@ -94,13 +94,13 @@ This script imports generated lexicon artifacts from the sibling [cassotis-lexic
 
 1. Locates the lexicon repository
 2. Imports the word lists `dict_unihan_sc.txt` / `dict_unihan_tc.txt` and `dict_clean_sc.txt` / `dict_clean_tc.txt`
-3. Imports the corpus-trained tables from the same directory: word-transition and query-path priors, the completion tables, and the short-word promotion tables `dict_short_promotion_sc.txt` / `dict_short_promotion_tc.txt`
+3. Imports the corpus-trained tables from the same directory: word-transition and query-path priors, the completion tables, the short-word promotion tables `dict_short_promotion_sc.txt` / `dict_short_promotion_tc.txt`, and the word-frequency and conversation-frequency tables `dict_word_frequency_{sc,tc}.txt` / `dict_conversation_frequency_{sc,tc}.txt`
 4. Rebuilds:
    - `%LOCALAPPDATA%\CassotisIme\data\dict_sc.db`
    - `%LOCALAPPDATA%\CassotisIme\data\dict_tc.db`
 5. Restarts the host if it was stopped at the beginning
 
-The short-word promotion tables are part of a complete dictionary: `rebuild_installer.ps1` refuses a dictionary without them.
+The short-word promotion, word-frequency and conversation-frequency tables are part of a complete dictionary: `rebuild_dict.ps1` and `rebuild_installer.ps1` refuse a dictionary without them.
 
 Options:
 
@@ -190,7 +190,7 @@ If Inno Setup 6 is installed, you can build the installer from `out/` after `reb
 .\rebuild_installer.ps1
 ```
 
-The version comes from `version.props`. The script checks that both runtime dictionaries under `%LOCALAPPDATA%\CassotisIme\data\` carry the short-word promotion table and are in SQLite's rollback-journal mode with no journal or WAL file beside them, then packages them with the binaries and the language model in `out/`. The installed runtime reads them read-only from its own folder (`runtime\<version folder>\base_dict\`), shared by every Windows account; their hash is part of the runtime folder's name, so a dictionary-only change also installs into a new folder.
+The version comes from `version.props`. The script checks that both runtime dictionaries under `%LOCALAPPDATA%\CassotisIme\data\` carry the short-word promotion, word-frequency and conversation-frequency tables and are in SQLite's rollback-journal mode with no journal or WAL file beside them, then packages them with the binaries and the language model in `out/`. The installed runtime reads them read-only from its own folder (`runtime\<version folder>\base_dict\`), shared by every Windows account; their hash is part of the runtime folder's name, so a dictionary-only change also installs into a new folder.
 
 Installer scripts:
 

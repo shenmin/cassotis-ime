@@ -105,7 +105,7 @@ For full build details, see `BUILD.md`.
 ## Dictionary Workflow
 The base dictionaries are built from the generated artifacts of the [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) project:
 - word lists: `dict_unihan_sc.txt`, `dict_unihan_tc.txt`, `dict_clean_sc.txt`, `dict_clean_tc.txt` (`pinyin<TAB>text<TAB>weight`)
-- corpus-trained tables from the same directory: word-transition priors, completion priors, and the short-word promotion table
+- corpus-trained tables from the same directory: word-transition priors, completion priors, the short-word promotion table, and the word frequencies of general text and of everyday conversation
 - runtime databases are rebuilt under `%LOCALAPPDATA%\CassotisIme\data\` (`dict_sc.db`, `dict_tc.db`), together with the initial-letter abbreviation index; a development build reads them there, and the installer packages them as the program's read-only base dictionaries
 - the user dictionary defaults to `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 

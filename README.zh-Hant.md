@@ -105,7 +105,7 @@ Cassotis IME（言泉輸入法）是一款適用於 Windows 10/11 的實驗性�
 ## 詞庫流程
 基礎詞庫由 [cassotis-lexicon](https://github.com/shenmin/cassotis-lexicon) 專案產生的檔案建置：
 - 詞表：`dict_unihan_sc.txt`、`dict_unihan_tc.txt`、`dict_clean_sc.txt`、`dict_clean_tc.txt`（格式為 `pinyin<TAB>text<TAB>weight`）
-- 同一目錄下由語料訓練得到的各張表：詞間轉移先驗、補全先驗和短詞首選表
+- 同一目錄下由語料訓練得到的各張表：詞間轉移先驗、補全先驗、短詞首選表，以及通用文本和日常對話的詞頻
 - 執行階段資料庫會重建至 `%LOCALAPPDATA%\CassotisIme\data\`（`dict_sc.db`、`dict_tc.db`），同時產生首字母簡拼索引；開發版直接讀取這裡，安裝檔將它們打包為程式自帶的唯讀基礎詞庫
 - 使用者詞庫預設位於 `%LOCALAPPDATA%\CassotisIme\data\user_dict.db`
 

@@ -183,6 +183,8 @@ type
         m_word_frequency_cache: TDictionary<string, Integer>;
         m_word_frequency_missing: Boolean;
         m_stmt_word_frequency: Psqlite3_stmt;
+        m_conversation_frequency_missing: Boolean;
+        m_stmt_conversation_frequency: Psqlite3_stmt;
         m_single_char_readings_cache: TDictionary<string, TArray<string>>;
         m_explicit_user_entry_cache: TDictionary<string, Boolean>;
         m_literal_user_entry_cache: TDictionary<string, Boolean>;
@@ -460,6 +462,7 @@ type
         function import_user_choices(const entries: TncUserWordImportEntries;
             out imported: Integer): Boolean; override;
         function get_word_frequency_score(const text: string): Integer; override;
+        function get_conversation_frequency_score(const text: string): Integer; override;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
         property db_path: string read m_base_db_path;
@@ -2754,6 +2757,8 @@ begin
     m_word_frequency_cache := TDictionary<string, Integer>.Create;
     m_word_frequency_missing := False;
     m_stmt_word_frequency := nil;
+    m_conversation_frequency_missing := False;
+    m_stmt_conversation_frequency := nil;
     m_single_char_readings_cache := TDictionary<string, TArray<string>>.Create;
     m_explicit_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_literal_user_entry_cache := TDictionary<string, Boolean>.Create;
@@ -11375,6 +11380,11 @@ begin
         m_base_connection.finalize(m_stmt_word_frequency);
         m_stmt_word_frequency := nil;
     end;
+    if (m_stmt_conversation_frequency <> nil) and (m_base_connection <> nil) then
+    begin
+        m_base_connection.finalize(m_stmt_conversation_frequency);
+        m_stmt_conversation_frequency := nil;
+    end;
     if (m_stmt_base_query_path_bonus <> nil) and (m_base_connection <> nil) then
     begin
         m_base_connection.finalize(m_stmt_base_query_path_bonus);
@@ -11915,6 +11925,7 @@ begin
     if m_word_frequency_cache <> nil then
         m_word_frequency_cache.Clear;
     m_word_frequency_missing := False;
+    m_conversation_frequency_missing := False;
     if m_single_char_readings_cache <> nil then
     begin
         m_single_char_readings_cache.Clear;
@@ -19577,6 +19588,35 @@ begin
         if m_word_frequency_cache.Count >= c_cache_limit then
             m_word_frequency_cache.Clear;
         m_word_frequency_cache.AddOrSetValue(text_key, Result);
+    end;
+end;
+
+// Asked for two words of a short-word choice without a context at most, so
+// no cache. A dictionary without the table gives every word 0.
+function TncSqliteDictionary.get_conversation_frequency_score(const text: string): Integer;
+const
+    select_sql = 'SELECT score FROM dict_base_conversation_frequency WHERE text = ?1 LIMIT 1';
+var
+    text_key: string;
+begin
+    Result := 0;
+    text_key := Trim(text);
+    if (text_key = '') or m_conversation_frequency_missing or (not ensure_open) or
+        (not m_base_ready) or (m_base_connection = nil) then
+        Exit;
+    if (m_stmt_conversation_frequency = nil) and
+        not m_base_connection.prepare(select_sql, m_stmt_conversation_frequency) then
+    begin
+        m_conversation_frequency_missing := True;
+        Exit;
+    end;
+    try
+        if m_base_connection.bind_text(m_stmt_conversation_frequency, 1, text_key) and
+            (m_base_connection.step(m_stmt_conversation_frequency) = SQLITE_ROW) then
+            Result := m_base_connection.column_int(m_stmt_conversation_frequency, 0);
+    finally
+        m_base_connection.reset(m_stmt_conversation_frequency);
+        m_base_connection.clear_bindings(m_stmt_conversation_frequency);
     end;
 end;
 
