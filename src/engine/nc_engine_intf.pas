@@ -9657,6 +9657,10 @@ begin
     else if capital then
         // Typed with Shift: nobody writes pinyin that way.
         offer(True)
+    else if (raw = 'oo') and (shown_reading = #$54E6#$54E6) then
+        // The fixed Chinese interjection wins over counted English "oo",
+        // including an earlier raw commit. Manual selection still works.
+        offer(False)
     else if reading_is_user and not learned then
         // The user's own word for this input.
     else if learned and not complete then
@@ -139939,14 +139943,25 @@ var
             (scores[order[0]] - scores[index]) > c_max_comma_lift);
     end;
 
-    // A draft as the LM scores it as a clause of its own: with a comma behind
-    // it, or a question mark where it ends in mei (c_question_end).
-    function as_clause(const text: string): string;
+    // Only a standalone mei gets a question mark, not mo in a word such as
+    // yanmo. Validate the text's own path, including after a correction.
+    function as_clause(const text: string; const reading_index: Integer): string;
+    var
+        particle: string;
+        syllables_local: TArray<string>;
+        path: TncValidatedRepairPath;
     begin
-        if Copy(text, Length(text), 1) = variant_char($6CA1, $6C92) then
-            Result := text + c_question_end
-        else
-            Result := text + c_clause_end;
+        Result := text + c_clause_end;
+        particle := variant_char($6CA1, $6C92);
+        if (Copy(text, Length(text), 1) <> particle) or
+            (reading_index < 0) or (reading_index >= Length(readings)) then Exit;
+        syllables_local := readings[reading_index];
+        if (Length(syllables_local) < 2) or
+            (Length(syllables_local) <> Length(text)) then Exit;
+        if syllables_local[High(syllables_local)] <> 'mei' then Exit;
+        path := build_repair_path(m_dictionary, text, String.Join(#3, syllables_local));
+        if path.exact_path and path.segment_path.EndsWith(#3 + particle) then
+            Result := text + c_question_end;
     end;
 
     // The lowest word frequency score among the words of a text, its longest
@@ -140282,7 +140297,7 @@ begin
             SetLength(ended, 2 * Length(drafts));
             for index := 0 to High(drafts) do
             begin
-                ended[index] := as_clause(drafts[index]);
+                ended[index] := as_clause(drafts[index], draft_readings[index]);
                 ended[Length(drafts) + index] := drafts[index];
             end;
             // And, where the model reads the next characters' scores, the
@@ -140447,7 +140462,7 @@ begin
         if judged then
         begin
             try
-                if m_char_lm.score_texts(lm_context, [as_clause(corrected)], 1, 128,
+                if m_char_lm.score_texts(lm_context, [as_clause(corrected, chosen_reading)], 1, 128,
                     corrected_scores) = 1 then
                 begin
                     if context_free then
@@ -163668,6 +163683,19 @@ var
                     found_candidate := True;
                     Break;
                 end;
+            end;
+        end;
+        if not found_candidate then
+        begin
+            // The whole-query interjection is available even without an oo
+            // word row. Do not turn other repeated syllables into words here.
+            if (normalized_pinyin = 'oo') and (m_dictionary <> nil) and
+                m_dictionary.single_char_matches_pinyin('o', #$54E6) then
+            begin
+                fixed_candidate := Default(TncCandidate);
+                fixed_candidate.text := expected_text;
+                fixed_candidate.source := cs_rule;
+                found_candidate := True;
             end;
         end;
         if not found_candidate then

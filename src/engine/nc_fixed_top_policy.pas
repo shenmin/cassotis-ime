@@ -16,11 +16,12 @@ type
     end;
 
 const
-    c_fixed_top: array[0..34] of TFixedTopEntry = (
+    c_fixed_top: array[0..35] of TFixedTopEntry = (
         (pinyin:'en'; simplified:#$55EF; traditional:#$55EF),
         (pinyin:'ba'; simplified:#$5427; traditional:#$5427),
         (pinyin:'e'; simplified:#$5443; traditional:#$5443),
         (pinyin:'o'; simplified:#$54E6; traditional:#$54E6),
+        (pinyin:'oo'; simplified:#$54E6#$54E6; traditional:#$54E6#$54E6),
         (pinyin:'ai'; simplified:#$5509; traditional:#$5509),
         (pinyin:'ha'; simplified:#$54C8; traditional:#$54C8),
         (pinyin:'xi'; simplified:#$563B; traditional:#$563B),
