@@ -140416,6 +140416,15 @@ begin
                     (scores[order[0]] - scores[best_index] <= c_rare_first_margin) and
                     rests_on_rarer_word(drafts[order[0]], drafts[best_index]) then
                     put_first(best_index);
+                // The page's own phrase goes back first where the corpus
+                // transitions hold its path for the input and not the
+                // choice's, and the choice does not lead it without the
+                // comma: the comma alone put the choice first (合并到,
+                // which ends no clause, under 何病倒 for "hebingdao").
+                if top_complete and (drafts[0] = top_text) and (order[0] <> 0) and
+                    vouched[0] and not vouched[order[0]] and
+                    (plain_scores[0] >= plain_scores[order[0]]) then
+                    put_first(0);
             end
             else
                 scored := 0;
