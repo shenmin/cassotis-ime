@@ -139943,24 +139943,20 @@ var
             (scores[order[0]] - scores[index]) > c_max_comma_lift);
     end;
 
-    // Only a standalone mei gets a question mark, not mo in a word such as
-    // yanmo. Validate the text's own path, including after a correction.
+    // A draft as the LM scores it as a clause of its own: with a comma behind
+    // it, or a question mark where it ends in 没 read mei (c_question_end) by
+    // the syllables of its reading. 没 read mo ends a word (淹没, 沉没) and keeps
+    // the comma. Whether 没 stands as a word of its own is no test: the
+    // dictionary holds the questions themselves as words (了没, 吃了没, 来了没).
     function as_clause(const text: string; const reading_index: Integer): string;
-    var
-        particle: string;
-        syllables_local: TArray<string>;
-        path: TncValidatedRepairPath;
+    var syllables_local: TArray<string>;
     begin
         Result := text + c_clause_end;
-        particle := variant_char($6CA1, $6C92);
-        if (Copy(text, Length(text), 1) <> particle) or
+        if (Copy(text, Length(text), 1) <> variant_char($6CA1, $6C92)) or
             (reading_index < 0) or (reading_index >= Length(readings)) then Exit;
         syllables_local := readings[reading_index];
-        if (Length(syllables_local) < 2) or
-            (Length(syllables_local) <> Length(text)) then Exit;
-        if syllables_local[High(syllables_local)] <> 'mei' then Exit;
-        path := build_repair_path(m_dictionary, text, String.Join(#3, syllables_local));
-        if path.exact_path and path.segment_path.EndsWith(#3 + particle) then
+        if (Length(syllables_local) = Length(text)) and
+            (syllables_local[High(syllables_local)] = 'mei') then
             Result := text + c_question_end;
     end;
 
@@ -163683,19 +163679,6 @@ var
                     found_candidate := True;
                     Break;
                 end;
-            end;
-        end;
-        if not found_candidate then
-        begin
-            // The whole-query interjection is available even without an oo
-            // word row. Do not turn other repeated syllables into words here.
-            if (normalized_pinyin = 'oo') and (m_dictionary <> nil) and
-                m_dictionary.single_char_matches_pinyin('o', #$54E6) then
-            begin
-                fixed_candidate := Default(TncCandidate);
-                fixed_candidate.text := expected_text;
-                fixed_candidate.source := cs_rule;
-                found_candidate := True;
             end;
         end;
         if not found_candidate then
