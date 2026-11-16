@@ -32,6 +32,12 @@ type
         syllables: TArray<string>;
     end;
 
+    // When a key's choice of a text was last made, and the time before.
+    TncRecentChoiceTimes = record
+        last_used: Int64;
+        previous_used: Int64;
+    end;
+
     TncSqliteDictionary = class(TncDictionaryProvider)
     private
         m_base_db_path: string;
@@ -66,6 +72,7 @@ type
         m_query_choice_bonus_cache: TDictionary<string, Integer>;
         m_context_query_choice_bonus_cache: TDictionary<string, Integer>;
         m_query_latest_choice_text_cache: TDictionary<string, string>;
+        m_recent_choice_times_cache: TDictionary<string, TncRecentChoiceTimes>;
         m_query_path_bonus_cache: TDictionary<string, Integer>;
         m_query_path_bonus_cache_loaded: Boolean;
         m_base_query_path_pinyin_cache: TDictionary<string, Boolean>;
@@ -122,6 +129,7 @@ type
         m_stmt_query_choice_bonus: Psqlite3_stmt;
         m_stmt_context_query_choice_bonus: Psqlite3_stmt;
         m_stmt_query_latest_choice_text: Psqlite3_stmt;
+        m_stmt_recent_choice_times: Psqlite3_stmt;
         m_stmt_query_path_bonus: Psqlite3_stmt;
         m_stmt_query_path_penalty: Psqlite3_stmt;
         m_stmt_candidate_penalty: Psqlite3_stmt;
@@ -231,6 +239,11 @@ type
         function get_top_single_char_exact_weight(const pinyin: string): Integer;
         function should_ignore_weak_single_char_query_choice(const pinyin: string;
             const text_unit: string; const commit_count: Integer): Boolean;
+        function get_query_choice_bonus_raw(const query_key: string;
+            const candidate_text: string): Integer;
+        function get_query_latest_choice_text_raw(const query_key: string): string;
+        function is_lapsed_single_char_choice(const query_key: string;
+            const candidate_text: string): Boolean;
         function get_user_entry_count(const connection: TncSqliteConnection; out count: Integer): Boolean;
         procedure migrate_user_entries;
         function exact_base_entry_exists(const pinyin: string; const text: string): Boolean;
@@ -425,6 +438,8 @@ type
             const query_key: string; const candidate_text: string): Integer; override;
         function get_query_choice_bonus(const query_key: string; const candidate_text: string): Integer; override;
         function get_query_latest_choice_text(const query_key: string): string; override;
+        function is_recent_repeated_query_choice(const query_key: string;
+            const candidate_text: string): Boolean; override;
         procedure record_raw_input_choice(const input_key, text: string); override;
         function get_raw_input_choice(const input_key: string): string; override;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; override;
@@ -659,6 +674,7 @@ const
         '    text TEXT NOT NULL,' + sLineBreak +
         '    commit_count INTEGER DEFAULT 0,' + sLineBreak +
         '    last_used INTEGER DEFAULT 0,' + sLineBreak +
+        '    previous_used INTEGER DEFAULT 0,' + sLineBreak +
         '    PRIMARY KEY(pinyin, text)' + sLineBreak +
         ');' + sLineBreak +
         sLineBreak +
@@ -2650,6 +2666,7 @@ begin
     m_stmt_query_choice_bonus := nil;
     m_stmt_context_query_choice_bonus := nil;
     m_stmt_query_latest_choice_text := nil;
+    m_stmt_recent_choice_times := nil;
     m_stmt_query_path_bonus := nil;
     m_stmt_query_path_penalty := nil;
     m_stmt_candidate_penalty := nil;
@@ -2679,6 +2696,7 @@ begin
     m_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
     m_context_query_choice_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_latest_choice_text_cache := TDictionary<string, string>.Create;
+    m_recent_choice_times_cache := TDictionary<string, TncRecentChoiceTimes>.Create;
     m_query_path_bonus_cache := TDictionary<string, Integer>.Create;
     m_query_path_bonus_cache_loaded := False;
     m_base_query_path_pinyin_cache := TDictionary<string, Boolean>.Create;
@@ -2863,6 +2881,11 @@ begin
     begin
         m_query_latest_choice_text_cache.Free;
         m_query_latest_choice_text_cache := nil;
+    end;
+    if m_recent_choice_times_cache <> nil then
+    begin
+        m_recent_choice_times_cache.Free;
+        m_recent_choice_times_cache := nil;
     end;
     if m_query_path_bonus_cache <> nil then
     begin
@@ -7058,8 +7081,18 @@ begin
         'text TEXT NOT NULL,' +
         'commit_count INTEGER DEFAULT 0,' +
         'last_used INTEGER DEFAULT 0,' +
+        'previous_used INTEGER DEFAULT 0,' +
         'PRIMARY KEY(pinyin, text)' +
         ');') then
+    begin
+        Result := False;
+        Exit;
+    end;
+
+    // The time of the choice before the last one (is_recent_repeated_query_choice).
+    if (not table_has_column('dict_user_stats', 'previous_used')) and
+        (not connection.exec(
+        'ALTER TABLE dict_user_stats ADD COLUMN previous_used INTEGER DEFAULT 0;')) then
     begin
         Result := False;
         Exit;
@@ -11617,6 +11650,10 @@ begin
     begin
         m_query_latest_choice_text_cache.Clear;
     end;
+    if m_recent_choice_times_cache <> nil then
+    begin
+        m_recent_choice_times_cache.Clear;
+    end;
     if m_query_path_bonus_cache <> nil then
     begin
         m_query_path_bonus_cache.Clear;
@@ -11713,6 +11750,11 @@ begin
     begin
         m_user_connection.finalize(m_stmt_context_query_choice_bonus);
         m_stmt_context_query_choice_bonus := nil;
+    end;
+    if (m_stmt_recent_choice_times <> nil) and (m_user_connection <> nil) then
+    begin
+        m_user_connection.finalize(m_stmt_recent_choice_times);
+        m_stmt_recent_choice_times := nil;
     end;
     if (m_stmt_query_latest_choice_text <> nil) and (m_user_connection <> nil) then
     begin
@@ -11813,6 +11855,10 @@ begin
     if m_query_latest_choice_text_cache <> nil then
     begin
         m_query_latest_choice_text_cache.Clear;
+    end;
+    if m_recent_choice_times_cache <> nil then
+    begin
+        m_recent_choice_times_cache.Clear;
     end;
     if m_query_path_penalty_cache <> nil then
     begin
@@ -15220,7 +15266,8 @@ begin
                             step_result := m_user_connection.step(stmt);
                             Continue;
                         end;
-                        if should_ignore_weak_single_char_query_choice(query_key, text_value, commit_count) then
+                        if should_ignore_weak_single_char_query_choice(query_key, text_value, commit_count) or
+                            is_lapsed_single_char_choice(query_key, text_value) then
                         begin
                             Inc(skipped_noisy_user_count);
                             step_result := m_user_connection.step(stmt);
@@ -16237,6 +16284,7 @@ procedure TncSqliteDictionary.record_commit_internal(const pinyin, text: string;
     const explicit_choice, selected_short_phrase: Boolean);
 const
     update_stats_sql = 'UPDATE dict_user_stats SET commit_count = commit_count + 1, ' +
+        'previous_used = last_used, ' +
         'last_used = strftime(''%s'',''now'') WHERE pinyin = ?1 AND text = ?2';
     insert_stats_sql = 'INSERT OR IGNORE INTO dict_user_stats(pinyin, text, commit_count, last_used) ' +
         'VALUES (?1, ?2, 1, strftime(''%s'',''now''))';
@@ -16698,6 +16746,10 @@ begin
         Exit;
     end;
     refresh_user_data_version_if_changed(False);
+    if is_lapsed_single_char_choice(normalized_query, text_value) then
+    begin
+        Exit;
+    end;
 
     cache_key := context_value + #2 + normalized_query + #1 + text_value;
     if (m_context_query_choice_bonus_cache <> nil) and
@@ -16781,7 +16833,7 @@ begin
     end;
 end;
 
-function TncSqliteDictionary.get_query_choice_bonus(const query_key: string;
+function TncSqliteDictionary.get_query_choice_bonus_raw(const query_key: string;
     const candidate_text: string): Integer;
 const
     query_sql = 'SELECT commit_count, last_used FROM dict_user_stats WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
@@ -16846,7 +16898,7 @@ begin
 
     latest_bonus := 0;
     has_latest_choice_match := False;
-    latest_choice_text := get_query_latest_choice_text(normalized_query);
+    latest_choice_text := get_query_latest_choice_text_raw(normalized_query);
     if (latest_choice_text <> '') and SameText(latest_choice_text, text_key) then
     begin
         has_latest_choice_match := True;
@@ -16999,7 +17051,7 @@ begin
     end;
 end;
 
-function TncSqliteDictionary.get_query_latest_choice_text(const query_key: string): string;
+function TncSqliteDictionary.get_query_latest_choice_text_raw(const query_key: string): string;
 const
     query_sql =
         'SELECT l.text, l.last_used, COALESCE(s.commit_count, 0) ' +
@@ -17170,6 +17222,119 @@ begin
     if m_query_latest_choice_text_cache <> nil then
     begin
         m_query_latest_choice_text_cache.AddOrSetValue(normalized_query, Result);
+    end;
+end;
+
+function TncSqliteDictionary.is_recent_repeated_query_choice(const query_key: string;
+    const candidate_text: string): Boolean;
+const
+    query_sql = 'SELECT last_used, previous_used FROM dict_user_stats ' +
+        'WHERE pinyin = ?1 AND text = ?2 LIMIT 1';
+    // Two choices at most this far apart start it, and it lasts this long
+    // after the last one (the user, 2026-11-15: two choices, an hour or two).
+    c_recent_choice_window = 2 * 60 * 60;
+var
+    normalized_query: string;
+    text_key: string;
+    cache_key: string;
+    times: TncRecentChoiceTimes;
+    step_result: Integer;
+    now_unix: Int64;
+begin
+    Result := False;
+    normalized_query := LowerCase(Trim(query_key));
+    text_key := Trim(candidate_text);
+    if (normalized_query = '') or (text_key = '') or (not ensure_open) or
+        (not m_user_ready) or (m_user_connection = nil) then
+    begin
+        Exit;
+    end;
+    refresh_user_data_version_if_changed(False);
+    if not SameText(get_query_latest_choice_text_raw(normalized_query), text_key) then
+    begin
+        Exit;
+    end;
+    // Penalties and the guards against learning a text hold here as well.
+    if get_query_choice_bonus_raw(normalized_query, text_key) <= 0 then
+    begin
+        Exit;
+    end;
+
+    cache_key := normalized_query + #1 + text_key;
+    if (m_recent_choice_times_cache = nil) or
+        (not m_recent_choice_times_cache.TryGetValue(cache_key, times)) then
+    begin
+        times := Default(TncRecentChoiceTimes);
+        if m_stmt_recent_choice_times = nil then
+        begin
+            if not m_user_connection.prepare(query_sql, m_stmt_recent_choice_times) then
+            begin
+                Exit;
+            end;
+        end;
+        if (not m_user_connection.reset(m_stmt_recent_choice_times)) or
+            (not m_user_connection.clear_bindings(m_stmt_recent_choice_times)) or
+            (not m_user_connection.bind_text(m_stmt_recent_choice_times, 1,
+            normalized_query)) or
+            (not m_user_connection.bind_text(m_stmt_recent_choice_times, 2,
+            user_storage_text('dict_user_stats', normalized_query, text_key))) then
+        begin
+            Exit;
+        end;
+        step_result := m_user_connection.step(m_stmt_recent_choice_times);
+        if step_result = SQLITE_ROW then
+        begin
+            times.last_used := m_user_connection.column_int(m_stmt_recent_choice_times, 0);
+            times.previous_used := m_user_connection.column_int(m_stmt_recent_choice_times, 1);
+        end;
+        m_user_connection.reset(m_stmt_recent_choice_times);
+        if m_recent_choice_times_cache <> nil then
+        begin
+            m_recent_choice_times_cache.AddOrSetValue(cache_key, times);
+        end;
+    end;
+
+    // The window is measured at each call: a cached row ages with the clock.
+    now_unix := get_unix_time_now;
+    Result := (times.previous_used > 0) and (times.last_used >= times.previous_used) and
+        (times.last_used - times.previous_used <= c_recent_choice_window) and
+        (now_unix - times.last_used <= c_recent_choice_window);
+end;
+
+// A single character learns only for the window of a recent repeated choice:
+// two choices within two hours put it first, and two hours after the last one
+// its syllable has the order it had before (the user, 2026-11-15: "86码" typed
+// often left 码 first for every "ma"). Every learned signal of a single
+// character goes through here: the query's choice bonus, its latest choice, the
+// statistics of the lookup and the choices after a context.
+function TncSqliteDictionary.is_lapsed_single_char_choice(const query_key: string;
+    const candidate_text: string): Boolean;
+var
+    text_key: string;
+begin
+    text_key := Trim(candidate_text);
+    Result := (get_valid_cjk_codepoint_count(text_key) = 1) and
+        ((Length(text_key) = 1) or ((Length(text_key) = 2) and
+        (Ord(text_key[1]) >= $D800) and (Ord(text_key[1]) <= $DBFF))) and
+        (not is_recent_repeated_query_choice(query_key, text_key));
+end;
+
+function TncSqliteDictionary.get_query_choice_bonus(const query_key: string;
+    const candidate_text: string): Integer;
+begin
+    Result := get_query_choice_bonus_raw(query_key, candidate_text);
+    if (Result > 0) and is_lapsed_single_char_choice(query_key, candidate_text) then
+    begin
+        Result := 0;
+    end;
+end;
+
+function TncSqliteDictionary.get_query_latest_choice_text(const query_key: string): string;
+begin
+    Result := get_query_latest_choice_text_raw(query_key);
+    if (Result <> '') and is_lapsed_single_char_choice(query_key, Result) then
+    begin
+        Result := '';
     end;
 end;
 

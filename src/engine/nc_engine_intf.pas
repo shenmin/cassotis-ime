@@ -1155,6 +1155,8 @@ type
             const query_key: string): string;
         function get_base_exact_choice_weight_bonus(const query_key: string;
             const candidate_text: string): Integer;
+        function is_recent_repeated_exact_choice(const query_key: string;
+            const candidate_text: string): Boolean;
         function normalize_learned_prefix_exact_scores(const query_key: string;
             var candidates: TncCandidateList): Boolean;
         procedure clear_session_learning_after_user_removal;
@@ -3726,6 +3728,19 @@ begin
         (not is_full_pinyin_key(query_key)) then Exit;
     Result := m_dictionary.get_query_choice_bonus(query_key, candidate_text);
     if Result < c_min_repeated_choice_evidence then Result := 0;
+end;
+
+function TncEngine.is_recent_repeated_exact_choice(const query_key: string;
+    const candidate_text: string): Boolean;
+begin
+    // A word of the key the user has just chosen twice goes first for a while,
+    // whatever its weight (the user, 2026-11-15: 五笔 stayed third behind 无比
+    // and 务必, whose weights the bounded learning above could never pass).
+    // Single characters keep the order of their own page.
+    Result := (m_dictionary <> nil) and (Trim(candidate_text) <> '') and
+        is_full_pinyin_key(query_key) and
+        (get_candidate_text_unit_count(Trim(candidate_text)) >= 2) and
+        m_dictionary.is_recent_repeated_query_choice(query_key, Trim(candidate_text));
 end;
 
 function TncEngine.normalize_learned_prefix_exact_scores(const query_key: string;
@@ -6425,6 +6440,25 @@ begin
     if m_lookup_segment_path_context_bonus_cache <> nil then
     begin
         m_lookup_segment_path_context_bonus_cache.Clear;
+    end;
+end;
+
+// One Han character (a surrogate pair counts as one).
+function is_single_han_char_text(const text: string): Boolean;
+var
+    code: Integer;
+begin
+    Result := False;
+    if Length(text) = 1 then
+    begin
+        code := Ord(text[1]);
+        Result := ((code >= $3400) and (code <= $9FFF)) or
+            ((code >= $F900) and (code <= $FAFF));
+    end
+    else if Length(text) = 2 then
+    begin
+        Result := (Ord(text[1]) >= $D800) and (Ord(text[1]) <= $DBFF) and
+            (Ord(text[2]) >= $DC00) and (Ord(text[2]) <= $DFFF);
     end;
 end;
 
@@ -21913,6 +21947,13 @@ var
             if not is_complete_exact_local(candidates[idx_local]) then
             begin
                 Continue;
+            end;
+            // A word the user has just chosen twice leads (is_recent_repeated_exact_choice).
+            if is_recent_repeated_exact_choice(normalize_pinyin_text(lookup_text),
+                candidates[idx_local].text) then
+            begin
+                best_idx_local := idx_local;
+                Break;
             end;
 
             rank_local := get_exact_rank_local(candidates[idx_local]);
@@ -154754,6 +154795,14 @@ begin
 
     Inc(m_session_commit_serial);
 
+    // A single character learns by the dictionary's recent repeated choice
+    // alone (is_recent_repeated_query_choice), which ends two hours after the
+    // last choice: the session keeps no count of it.
+    if is_single_han_char_text(text_key) then
+    begin
+        Exit;
+    end;
+
     if m_session_text_counts.TryGetValue(text_key, count) then
     begin
         Inc(count);
@@ -154800,7 +154849,8 @@ var
     current_serial: Int64;
 begin
     key := build_session_query_choice_key(normalize_pinyin_text(query_key), text);
-    if (key = '') or (m_session_query_choice_counts = nil) or (m_session_query_choice_order = nil) then
+    if (key = '') or (m_session_query_choice_counts = nil) or (m_session_query_choice_order = nil) or
+        is_single_han_char_text(Trim(text)) then
     begin
         Exit;
     end;
@@ -155037,7 +155087,8 @@ var
     persist_choice: Boolean;
 begin
     if (Trim(context_text) = '') or (Trim(query_key) = '') or (Trim(text) = '') or
-        (m_session_context_query_choice_counts = nil) or (m_session_context_query_choice_order = nil) then
+        (m_session_context_query_choice_counts = nil) or (m_session_context_query_choice_order = nil) or
+        is_single_han_char_text(Trim(text)) then
     begin
         Exit;
     end;
@@ -159542,6 +159593,8 @@ var
             low_frequency_medical_exact: Boolean;
             nocontext_exact_priority: Integer;
             context_exact_priority: Integer;
+            // The user has just chosen it twice (is_recent_repeated_exact_choice).
+            recent_choice: Boolean;
         end;
     var
         exact_results: TncCandidateList;
@@ -161104,6 +161157,7 @@ var
             item.actual_full_exact := candidate_is_actual_full_exact_local(
                 candidate_value);
             item.user_full_exact := False;
+            item.recent_choice := False;
             item.decisive_transition_override := False;
             item.transition_evidence := 0;
             item.low_frequency_medical_exact := False;
@@ -161287,6 +161341,8 @@ var
                         end;
                         item.rank_score := local_direct_exact_rank;
                     end;
+                    item.recent_choice := is_recent_repeated_exact_choice(
+                        normalized_pinyin, local_text);
 
                     if local_exact_user then
                     begin
@@ -161346,6 +161402,16 @@ var
             list.Sort(TComparer<TShortExactRankItem>.Construct(
                 function(const left, right: TShortExactRankItem): Integer
                 begin
+                    // A key has one latest choice, so one item at most.
+                    if left.recent_choice <> right.recent_choice then
+                    begin
+                        if left.recent_choice then
+                        begin
+                            Exit(-1);
+                        end;
+                        Exit(1);
+                    end;
+
                     if left.user_full_exact <> right.user_full_exact then
                     begin
                         if left.user_full_exact then

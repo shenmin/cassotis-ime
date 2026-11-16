@@ -131,6 +131,10 @@ type
             const query_key: string; const candidate_text: string): Integer; virtual;
         function get_query_choice_bonus(const query_key: string; const candidate_text: string): Integer; virtual;
         function get_query_latest_choice_text(const query_key: string): string; virtual;
+        // The latest choice of the key, its last two choices at most two hours
+        // apart and the last one at most two hours ago.
+        function is_recent_repeated_query_choice(const query_key: string;
+            const candidate_text: string): Boolean; virtual;
         function get_query_segment_path_bonus(const query_key: string; const encoded_path: string): Integer; virtual;
         function get_long_query_segment_path_bonus(const query_key: string;
             const encoded_path: string): Integer; virtual;
@@ -550,6 +554,12 @@ end;
 function TncDictionaryProvider.get_query_latest_choice_text(const query_key: string): string;
 begin
     Result := '';
+end;
+
+function TncDictionaryProvider.is_recent_repeated_query_choice(const query_key: string;
+    const candidate_text: string): Boolean;
+begin
+    Result := False;
 end;
 
 procedure TncDictionaryProvider.record_raw_input_choice(const input_key, text: string);

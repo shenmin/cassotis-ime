@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS dict_user_stats (
     text TEXT NOT NULL,
     commit_count INTEGER DEFAULT 0,
     last_used INTEGER DEFAULT 0,
+    previous_used INTEGER DEFAULT 0,
     PRIMARY KEY(pinyin, text)
 );
 
