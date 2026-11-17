@@ -23,6 +23,9 @@ constexpr float kCharLmNoLogp = -1e30f;
 // Tokens a handle keeps between scoring calls (about 90 KiB each: eleven
 // layers of keys and values).
 constexpr size_t kCharLmMemoCapacity = 384;
+// Distributions after kept tokens that a handle keeps (one row of the
+// vocabulary each, about 47 KiB).
+constexpr size_t kCharLmMemoRows = 8;
 
 // A real ORT cancellation deadline, not merely discarding an already-late result.
 class CharLmDeadline {
@@ -149,9 +152,54 @@ struct CharLmMemo {
     std::vector<Ort::Value> waiting;
     size_t waiting_rows{};            // tokens of that run
     std::vector<size_t> waiting_row;  // the run's row of node keys.count() + k
+    // The distributions (log-probabilities over the vocabulary) after a few
+    // nodes: the end of a call's context and the texts whose next characters a
+    // call asked for. A later call that needs one of them runs nothing for it;
+    // a single syllable typed after a context asks for the context's last token
+    // on every key. Like the logp of a node, a row is the same bits whatever
+    // run computed it.
+    struct Row {
+        int32_t node{-1};
+        uint64_t used{};
+        std::vector<float> values;
+    };
+    std::array<Row, kCharLmMemoRows> rows;
+    uint64_t row_clock{};
 
     static uint64_t ChildKey(int32_t parent, int64_t token) {
         return (static_cast<uint64_t>(static_cast<uint32_t>(parent + 1)) << 32) | static_cast<uint32_t>(token);
+    }
+
+    // The kept distribution after a node, or null.
+    const float* RowOf(int32_t node) {
+        for (auto& row : rows)
+            if (row.node == node && node >= 0) {
+                row.used = ++row_clock;
+                return row.values.data();
+            }
+        return nullptr;
+    }
+
+    // Keeps the distribution after a node in place of the one used longest ago.
+    void KeepRow(int32_t node, const float* values, size_t vocab) {
+        if (RowOf(node)) return;
+        Row* slot = &rows[0];
+        for (auto& row : rows)
+            if (row.node < 0 || row.used < slot->used) {
+                slot = &row;
+                if (row.node < 0) break;
+            }
+        slot->values.assign(values, values + vocab);
+        slot->node = node;
+        slot->used = ++row_clock;
+    }
+
+    // The rows follow their nodes to their new numbers (-1: gone).
+    void RenumberRows(const std::vector<int32_t>& renumbered) {
+        for (auto& row : rows)
+            if (row.node >= 0)
+                row.node = static_cast<size_t>(row.node) < renumbered.size() ?
+                    renumbered[static_cast<size_t>(row.node)] : -1;
     }
 
     void Clear() {
@@ -160,6 +208,7 @@ struct CharLmMemo {
         keys.Truncate(0);
         waiting.clear();
         waiting_row.clear();
+        for (auto& row : rows) row.node = -1;
     }
 
     void Index() {
@@ -187,6 +236,7 @@ struct CharLmMemo {
         if (!taken.empty()) keys.Append(waiting, waiting_rows, taken);
         nodes.swap(remaining);
         Index();
+        RenumberRows(renumbered);
         waiting.clear();
         waiting_row.clear();
     }
@@ -205,6 +255,7 @@ struct CharLmMemo {
         }
         nodes.swap(remaining);
         Index();
+        RenumberRows(renumbered);
         keys.Keep(kept);
     }
 };
@@ -478,15 +529,21 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
         // A call too large to keep is run against what is kept and leaves no trace.
         const bool store = static_cast<size_t>(kept) + fresh.size() <= memo.keys.capacity();
 
-        // A kept token is run again where the call needs its distribution.
+        // A kept token is run again where the call needs its distribution,
+        // unless the memo keeps that distribution.
         std::vector<uint8_t> again(static_cast<size_t>(kept), 0);
-        for (const auto& node : fresh)
-            if (node.parent >= 0 && node.parent < kept) again[static_cast<size_t>(node.parent)] = 1;
+        std::vector<const float*> kept_row(static_cast<size_t>(kept), nullptr);
+        auto need = [&](int32_t node) {
+            if (node < 0 || node >= kept || again[static_cast<size_t>(node)] || kept_row[static_cast<size_t>(node)])
+                return;
+            kept_row[static_cast<size_t>(node)] = memo.RowOf(node);
+            if (!kept_row[static_cast<size_t>(node)]) again[static_cast<size_t>(node)] = 1;
+        };
+        for (const auto& node : fresh) need(node.parent);
         for (int j = 0; j < next_count; ++j) {
             const int i = next_indices[j];
             if (i < 0 || i >= static_cast<int>(paths.size()) || paths[static_cast<size_t>(i)].empty()) continue;
-            const int32_t last = paths[static_cast<size_t>(i)].back();
-            if (last < kept) again[static_cast<size_t>(last)] = 1;
+            need(paths[static_cast<size_t>(i)].back());
         }
         std::vector<int32_t> row_of(static_cast<size_t>(kept) + fresh.size(), -1);
         std::vector<int32_t> row_nodes;
@@ -530,10 +587,14 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
             }
             logp = outputs[0].GetTensorData<float>();
         }
+        // The distribution after a node: this run's row, or the memo's.
+        auto row_after = [&](int32_t node) -> const float* {
+            const int32_t row = row_of[static_cast<size_t>(node)];
+            return row >= 0 ? logp + static_cast<size_t>(row) * vocab : kept_row[static_cast<size_t>(node)];
+        };
         for (auto& node : fresh)
             if (node.parent >= 0)
-                node.logp = logp[static_cast<size_t>(row_of[static_cast<size_t>(node.parent)]) * vocab +
-                    static_cast<size_t>(node.token)];
+                node.logp = row_after(node.parent)[static_cast<size_t>(node.token)];
 
         for (size_t i = 0; i < paths.size(); ++i) {
             double total = 0.0;
@@ -543,8 +604,7 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
         for (int j = 0; j < next_count; ++j) {
             const int i = next_indices[j];
             const bool scored = !(i < 0 || i >= static_cast<int>(paths.size()) || paths[static_cast<size_t>(i)].empty());
-            const float* row_logp = scored ? logp + static_cast<size_t>(row_of[static_cast<size_t>(
-                paths[static_cast<size_t>(i)].back())]) * vocab : nullptr;
+            const float* row_logp = scored ? row_after(paths[static_cast<size_t>(i)].back()) : nullptr;
             if (top_k > 0) {
                 uint32_t* cps = next_code_points + static_cast<size_t>(j) * static_cast<size_t>(top_k);
                 float* lps = next_logps + static_cast<size_t>(j) * static_cast<size_t>(top_k);
@@ -566,6 +626,19 @@ int CharLmScore(CharLmHandle& h, const wchar_t* context, const wchar_t* const* t
             }
         }
 
+        // The memo keeps the distributions after the context and after the texts
+        // whose next characters were asked, as this run computed them (a new node
+        // only when it joins the memo, under the number it has there).
+        auto keep_row = [&](int32_t node) {
+            if (node >= 0 && row_of[static_cast<size_t>(node)] >= 0 && (node < kept || store))
+                memo.KeepRow(node, row_after(node), vocab);
+        };
+        keep_row(root);
+        for (int j = 0; j < next_count; ++j) {
+            const int i = next_indices[j];
+            if (i >= 0 && i < static_cast<int>(paths.size()) && !paths[static_cast<size_t>(i)].empty())
+                keep_row(paths[static_cast<size_t>(i)].back());
+        }
         if (store && !fresh.empty()) {
             // The new nodes join the memo; their keys and values wait in the outputs.
             try {

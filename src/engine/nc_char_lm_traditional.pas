@@ -34,6 +34,10 @@ function nc_simplified_to_traditional(const text: string): string;
   nc_simplified_to_traditional, but '' for one that traditional text writes
   as well beside other forms (后: 後 or 后). }
 function nc_simplified_char_to_traditional(const ch: Char): string;
+{ Whether a and b are two forms of one simplified character, each written by
+  traditional text in its own sense (隻 and 只, 製 and 制, 係 and 繫); not a
+  form Taiwan does not write beside the one it does (裏 and 裡, 説 and 說). }
+function nc_traditional_forms_of_one(const a, b: Char): Boolean;
 { model as the traditional variant uses it (nil stays nil). }
 function nc_traditional_char_lm(const model: IncCharLm): IncCharLm;
 
@@ -142,6 +146,27 @@ begin
         Result := Char(c_simplified_traditional[found])
     else
         Result := ch;
+end;
+
+function nc_traditional_forms_of_one(const a, b: Char): Boolean;
+var
+    pair: Cardinal;
+    first, last, middle: Integer;
+begin
+    pair := (Cardinal(Word(a)) shl 16) or Word(b);
+    first := 0;
+    last := High(c_traditional_form_pairs);
+    while first <= last do
+    begin
+        middle := (first + last) div 2;
+        if c_traditional_form_pairs[middle] = pair then
+            Exit(True);
+        if c_traditional_form_pairs[middle] < pair then
+            first := middle + 1
+        else
+            last := middle - 1;
+    end;
+    Result := False;
 end;
 
 function written_to_traditional(const text: string): string;

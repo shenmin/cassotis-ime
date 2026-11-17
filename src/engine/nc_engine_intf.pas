@@ -138544,10 +138544,17 @@ end;
 // uses each). The first sixteen characters of the page take the places they
 // hold; words and partials on the page keep theirs. It needs no token of its
 // own: the context's last token is the one the next call runs from anyway, and
-// the graph run reads every character's score off that one row.
+// the graph run reads every character's score off that one row. In the
+// traditional variant the model reads a character as its simplified form, so
+// one further down the page that is the other form of a character of the
+// sixteen has that one's score: it is ordered with them and takes its own
+// place among theirs (隻 of zhi, read as 只; 製 as 制). Not a form Taiwan does
+// not write (裏 of 裡, 説 of 說): it would stand behind its twin as well.
 function TncEngine.order_single_chars_by_lm(const context, query: string): Boolean;
 const
     c_single_char_lm_count = 16;
+    // The most characters one call asks about (nc_lm_score_next_query).
+    c_single_char_lm_max = 64;
     // 0.25 * ln(10) / 100: a weight 100 higher is worth 0.58 nats.
     c_single_char_weight_nats = 0.0057565;
     // A character outside the model's vocabulary follows those it can read.
@@ -138562,10 +138569,11 @@ var
     moved: TncCandidateList;
     moved_paths: TArray<string>;
     key, text, head, tail: string;
-    idx, count, tail_length, best, other: Integer;
+    idx, count, window, tail_length, best, other: Integer;
     used: TArray<Boolean>;
-    known: Boolean;
+    known, traditional: Boolean;
     value: Single;
+    window_texts, window_forms: TArray<string>;
 
     function asked_index(const asked_text: string): Integer;
     begin
@@ -138573,6 +138581,21 @@ var
         while (Result < Length(m_single_char_lm_texts)) and
             (m_single_char_lm_texts[Result] <> asked_text) do
             Inc(Result);
+    end;
+
+    function form_of_window_char(const candidate_text: string): Boolean;
+    var
+        at: Integer;
+        form: string;
+    begin
+        Result := False;
+        if Length(candidate_text) <> 1 then
+            Exit;
+        form := nc_traditional_to_simplified(candidate_text);
+        for at := 0 to High(window_texts) do
+            if (window_forms[at] = form) and (Length(window_texts[at]) = 1) and
+                nc_traditional_forms_of_one(candidate_text[1], window_texts[at][1]) then
+                Exit(True);
     end;
 
 begin
@@ -138588,15 +138611,30 @@ begin
         (m_dictionary.get_context_query_choice_bonus(context, query,
         Trim(m_candidates[0].text)) > 0)) then
         Exit;
+    traditional := m_config.dictionary_variant = dv_traditional;
     count := 0;
-    SetLength(slots, c_single_char_lm_count);
-    SetLength(texts, c_single_char_lm_count);
+    window := 0;
+    SetLength(slots, c_single_char_lm_max);
+    SetLength(texts, c_single_char_lm_max);
     for idx := 0 to High(m_candidates) do
     begin
-        if count >= c_single_char_lm_count then Break;
+        if (count >= c_single_char_lm_max) or
+            ((window >= c_single_char_lm_count) and not traditional) then
+            Break;
         text := Trim(m_candidates[idx].text);
         if (text = '') or (Trim(m_candidates[idx].comment) <> '') or
             (get_candidate_text_unit_count(text) <> 1) then
+            Continue;
+        if window < c_single_char_lm_count then
+        begin
+            if traditional then
+            begin
+                window_texts := window_texts + [text];
+                window_forms := window_forms + [nc_traditional_to_simplified(text)];
+            end;
+            Inc(window);
+        end
+        else if not form_of_window_char(text) then
             Continue;
         slots[count] := idx;
         texts[count] := text;
