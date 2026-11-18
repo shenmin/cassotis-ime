@@ -67,7 +67,7 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 </p>
 
 <p align="center">
-  <img src="snapshot_settings.png" alt="The Keys page of the settings" width="780" height="670">
+  <img src="snapshot_settings.png" alt="The Keys page of the settings" width="779" height="672">
   <br>
   <em>The Keys page of the settings: keys for paging, the second and third candidate, a character of the word, and one-key completion.</em>
 </p>

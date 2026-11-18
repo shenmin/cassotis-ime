@@ -482,7 +482,6 @@ resourcestring
     SSettingsTitle = '言泉输入法 - 设置';
     SProductName = '言泉输入法';
     SNavSubtitleVersion = '设置 · v%s';
-    SSettingsVersionedTitle = '言泉输入法 (v%s) - 设置';
     STabGeneral = '常规';
     STabAppearance = '外观';
     STabFuzzyPinyin = '模糊拼音';
@@ -664,18 +663,6 @@ resourcestring
     SFilterDatabaseFiles = '数据库文件|*.db;*.sqlite|所有文件|*.*';
     SCurrentLogFolder = '当前日志目录';
     SCurrentDictionaryPath = '当前词库路径';
-
-function get_settings_window_title: string;
-var
-    product_version: string;
-begin
-    Result := SSettingsTitle;
-    product_version := Trim(nc_get_current_exe_display_version);
-    if product_version <> '' then
-    begin
-        Result := Format(SSettingsVersionedTitle, [product_version]);
-    end;
-end;
 
 type
     TGetDpiForWindow = function(hwnd: HWND): UINT; stdcall;
@@ -2114,7 +2101,7 @@ procedure TncSettingsForm.configure_form;
 begin
     BorderStyle := bsDialog;
     BorderIcons := [biSystemMenu];
-    Caption := get_settings_window_title;
+    Caption := SSettingsTitle;
     ClientWidth := scale_ui(c_dialog_width);
     ClientHeight := scale_ui(c_dialog_height);
     Position := poScreenCenter;
@@ -5277,7 +5264,7 @@ begin
 
     active_page_caption := m_page_control.ActivePage.Caption;
     if Application.MessageBox(PChar(Format(SConfirmRestoreDefaults, [active_page_caption])),
-        PChar(get_settings_window_title),
+        PChar(SSettingsTitle),
         MB_YESNO or MB_ICONQUESTION) = IDYES then
     begin
         restore_current_page_defaults;
@@ -5313,7 +5300,7 @@ procedure TncSettingsForm.apply_changes;
 var error_text: string;
 begin
     if not try_apply_changes(error_text) then
-        Application.MessageBox(PChar(error_text), PChar(get_settings_window_title),
+        Application.MessageBox(PChar(error_text), PChar(SSettingsTitle),
             MB_OK or MB_ICONWARNING);
 end;
 

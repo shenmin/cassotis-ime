@@ -67,7 +67,7 @@ Cassotis IME（言泉输入法）是一个面向 Windows 10/11 的实验性中�
 </p>
 
 <p align="center">
-  <img src="snapshot_settings.png" alt="设置窗口的“按键”页" width="780" height="670">
+  <img src="snapshot_settings.png" alt="设置窗口的“按键”页" width="779" height="672">
   <br>
   <em>设置窗口的“按键”页：翻页、二三候选、以词定字和一键补全的按键。</em>
 </p>
