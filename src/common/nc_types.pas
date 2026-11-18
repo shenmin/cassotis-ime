@@ -199,6 +199,12 @@ type
         stck_none,
         stck_semicolon_quote
     );
+    // Keys that commit the first and the last character of the selected
+    // candidate instead of the whole word. A new scheme is appended last.
+    TncSelectCharacterKeys = (
+        sck_none,
+        sck_brackets
+    );
 
     TncShortcutAction = (
         sa_input_mode_toggle,
@@ -255,6 +261,7 @@ type
         candidate_page_key_scheme: TncCandidatePageKeyScheme;
         one_key_completion_key: TncOneKeyCompletionKey;
         second_third_candidate_keys: TncSecondThirdCandidateKeys;
+        select_character_keys: TncSelectCharacterKeys;
         candidate_color_scheme: Integer;
         // A label beside the caret: the new mode on a switch, and English
         // when a field takes the focus.

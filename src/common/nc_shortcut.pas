@@ -82,6 +82,30 @@ function nc_parse_second_third_candidate_keys(
 function nc_second_third_candidate_key_index(
     const keys: TncSecondThirdCandidateKeys; const key_code: Word;
     const key_state: TncKeyState; out index: Integer): Boolean;
+function nc_normalize_select_character_keys(
+    const keys: TncSelectCharacterKeys): TncSelectCharacterKeys;
+function nc_select_character_keys_to_text(
+    const keys: TncSelectCharacterKeys): string;
+function nc_parse_select_character_keys(
+    const value: string): TncSelectCharacterKeys;
+// [ and ] page through the candidates under the bracket paging scheme, and
+// that scheme keeps them.
+function nc_select_character_keys_conflict_with_page_keys(
+    const keys: TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme): Boolean;
+function nc_resolve_select_character_keys(
+    const keys: TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme): TncSelectCharacterKeys;
+// Whether a key commits a character of the selected candidate under the
+// scheme (the paging scheme taken into account), and which: the first, or
+// the last when last is True. False for any other key or with a modifier down.
+function nc_select_character_key_side(const keys: TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme; const key_code: Word;
+    const key_state: TncKeyState; out last: Boolean): Boolean;
+// The first or the last character of a candidate's text (a surrogate pair
+// counts as one); '' for an empty text.
+function nc_select_character_of_text(const text: string;
+    const last: Boolean): string;
 
 implementation
 
@@ -341,6 +365,109 @@ begin
         end;
     end;
     Result := index >= 0;
+end;
+
+function nc_normalize_select_character_keys(
+    const keys: TncSelectCharacterKeys): TncSelectCharacterKeys;
+begin
+    if (Ord(keys) < Ord(Low(TncSelectCharacterKeys))) or
+        (Ord(keys) > Ord(High(TncSelectCharacterKeys))) then
+    begin
+        Exit(sck_none);
+    end;
+    Result := keys;
+end;
+
+function nc_select_character_keys_to_text(
+    const keys: TncSelectCharacterKeys): string;
+begin
+    case nc_normalize_select_character_keys(keys) of
+        sck_brackets:
+            Result := 'brackets';
+    else
+        Result := 'none';
+    end;
+end;
+
+function nc_parse_select_character_keys(
+    const value: string): TncSelectCharacterKeys;
+begin
+    if SameText(Trim(value), 'brackets') then
+    begin
+        Exit(sck_brackets);
+    end;
+    Result := sck_none;
+end;
+
+function nc_select_character_keys_conflict_with_page_keys(
+    const keys: TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme): Boolean;
+begin
+    Result := (nc_normalize_select_character_keys(keys) = sck_brackets) and
+        (nc_normalize_candidate_page_key_scheme(page_scheme) = cpks_brackets);
+end;
+
+function nc_resolve_select_character_keys(
+    const keys: TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme): TncSelectCharacterKeys;
+begin
+    Result := nc_normalize_select_character_keys(keys);
+    if nc_select_character_keys_conflict_with_page_keys(Result, page_scheme) then
+    begin
+        Result := sck_none;
+    end;
+end;
+
+function nc_select_character_key_side(const keys: TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme; const key_code: Word;
+    const key_state: TncKeyState; out last: Boolean): Boolean;
+begin
+    last := False;
+    Result := False;
+    if key_state.shift_down or key_state.ctrl_down or key_state.alt_down or
+        (nc_resolve_select_character_keys(keys, page_scheme) <> sck_brackets) then
+    begin
+        Exit;
+    end;
+    case key_code of
+        VK_OEM_4:
+            Result := True;
+        VK_OEM_6:
+            begin
+                last := True;
+                Result := True;
+            end;
+    end;
+end;
+
+function nc_select_character_of_text(const text: string;
+    const last: Boolean): string;
+var
+    value: string;
+    count: Integer;
+begin
+    value := Trim(text);
+    Result := '';
+    if value = '' then
+    begin
+        Exit;
+    end;
+    count := Length(value);
+    if not last then
+    begin
+        if (count >= 2) and (Ord(value[1]) >= $D800) and (Ord(value[1]) <= $DBFF) and
+            (Ord(value[2]) >= $DC00) and (Ord(value[2]) <= $DFFF) then
+        begin
+            Exit(Copy(value, 1, 2));
+        end;
+        Exit(value[1]);
+    end;
+    if (count >= 2) and (Ord(value[count]) >= $DC00) and (Ord(value[count]) <= $DFFF) and
+        (Ord(value[count - 1]) >= $D800) and (Ord(value[count - 1]) <= $DBFF) then
+    begin
+        Exit(Copy(value, count - 1, 2));
+    end;
+    Result := value[count];
 end;
 
 function nc_make_shortcut(const key_code: Word; const shift_down: Boolean;

@@ -38,7 +38,8 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
 
 ## Features
 - **TSF text service.** Registration, activation and the composition lifecycle are in place, including the TSF COM-less capability category for hosts that use that activation path. The TSF DLL is built for Win64 and Win32 (`svr.dll` / `svr32.dll`); the host process is Win64 only.
-- **Candidate window.** Paging, selection and text commitment, with an optional expanded view showing up to three rows when paging. Number keys select from the active row; the Tab completion area is unchanged. By default the window lines up with the start of the input and stays there while typing; Candidate position in Appearance settings makes it follow the caret instead. Optionally, `;` and `'` pick the second and third candidate while pinyin is being typed and stay punctuation otherwise (Shortcuts settings, off by default). A right click on the window opens the same menu as the tray icon, and the Pinyin being typed stays.
+- **Candidate window.** Paging, selection and text commitment, with an optional expanded view showing up to three rows when paging. Number keys select from the active row; the Tab completion area is unchanged. By default the window lines up with the start of the input and stays there while typing; Candidate position in Appearance settings makes it follow the caret instead. Optionally, `;` and `'` pick the second and third candidate while pinyin is being typed and stay punctuation otherwise (Keys settings, off by default). A right click on the window opens the same menu as the tray icon, and the Pinyin being typed stays.
+- **A character of the word (以词定字).** While Pinyin is being typed, `[` commits the first character of the selected candidate and `]` its last: `ciku` then `[` gives 词, and `]` gives 库. Without Pinyin both keys stay punctuation. Off by default and turned on in Keys settings; not available when the brackets are the paging keys.
 - **English recognition.** In Chinese full-Pinyin, half-width mode, letters that are an English word or name (`pro`, `markdown`, `Effie`), that are typed with a capital, or that were committed as letters before appear before the numbered candidates. When the input has no Chinese reading as a whole they are selected and Space commits them as typed; when it has one (`bug`, `mac`), the language model weighs the letters against it with the preceding text and selects them, shows them unselected, or leaves the candidates alone. Chinese selection numbers stay unchanged. Enabled by default and optional in General settings; Double Pinyin keeps its normal behavior.
 - **Mode label beside the caret.** Switching between Chinese and English (Shift by default, the configured shortcut, or the taskbar's input indicator) briefly shows the Cassotis mark and 中 or 英 just above the caret, and so does switching to Cassotis from another input method (Win+Space, Alt+Shift, or the taskbar's input indicator). A text field that takes the focus in English mode gets the same reminder, since English types letters without any sign of the input method; Chinese mode shows itself with the first key. The label takes neither the focus nor clicks, goes away with the next key, and is not shown in password fields or where the caret cannot be located. On by default and optional in Appearance settings.
 - **One-key completion**, original to Cassotis. Exactly one trusted continuation is shown and accepted with the configured key. Exact completions from the user and base dictionaries and offline-vetted strong-transition completions appear at once; the language model then reranks them in the background, using the text before the cursor when there is any. In a long sentence it finishes the current word or continues with the next phrase, and shows nothing when its confidence is insufficient.
@@ -63,6 +64,12 @@ The Chinese name **言泉** (Yanquan, "Spring of Words") matches Cassotis as a p
   <img src="snapshot_mode_label.png" alt="The mode label above the caret" width="166" height="120">
   <br>
   <em>A text field taking the focus in English mode: the mode label above the caret.</em>
+</p>
+
+<p align="center">
+  <img src="snapshot_settings.png" alt="The Keys page of the settings" width="780" height="670">
+  <br>
+  <em>The Keys page of the settings: keys for paging, the second and third candidate, a character of the word, and one-key completion.</em>
 </p>
 
 ## Download and Install
@@ -334,6 +341,7 @@ Important options include:
 - English recognition in Chinese mode (`auto_english` in `[input]`, on by default)
 - the candidate window at the start of the input (`candidate_at_input_start`, on by default)
 - `;` and `'` for the second and third candidate (`second_third_candidate_keys`, off by default)
+- `[` and `]` for the first and last character of the candidate (`select_character_keys`, off by default)
 - the mode label beside the caret (`input_mode_hint`, on by default)
 - debug logging and log path
 

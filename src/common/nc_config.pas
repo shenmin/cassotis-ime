@@ -925,6 +925,7 @@ begin
     Result.candidate_page_key_scheme := cpks_minus_plus;
     Result.one_key_completion_key := ock_tab;
     Result.second_third_candidate_keys := stck_none;
+    Result.select_character_keys := sck_none;
     Result.candidate_color_scheme := c_default_candidate_color_scheme;
     Result.input_mode_hint := True;
     Result.candidate_at_input_start := True;
@@ -1224,6 +1225,12 @@ begin
         Result.second_third_candidate_keys := nc_parse_second_third_candidate_keys(
             safe_ini_read_string(ini, 'shortcuts', 'second_third_candidate_keys',
             nc_second_third_candidate_keys_to_text(stck_none)));
+        // [ and ] page through the candidates under the bracket scheme, which
+        // keeps them; the keys that commit a character are then off.
+        Result.select_character_keys := nc_resolve_select_character_keys(
+            nc_parse_select_character_keys(safe_ini_read_string(ini, 'shortcuts',
+            'select_character_keys', nc_select_character_keys_to_text(sck_none))),
+            Result.candidate_page_key_scheme);
         shortcut_values_valid := shortcut_values_valid and
             (not nc_shortcut_config_has_duplicates(Result.shortcuts));
         nc_normalize_shortcut_config(Result.shortcuts);
@@ -1399,6 +1406,9 @@ begin
         ini.WriteString('shortcuts', 'second_third_candidate_keys',
             nc_second_third_candidate_keys_to_text(
             config.second_third_candidate_keys));
+        ini.WriteString('shortcuts', 'select_character_keys',
+            nc_select_character_keys_to_text(nc_resolve_select_character_keys(
+            config.select_character_keys, candidate_page_key_scheme)));
         write_config_version(ini, True);
         ini.UpdateFile;
     finally

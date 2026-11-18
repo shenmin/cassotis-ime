@@ -141,6 +141,63 @@ type
         procedure CreateParams(var Params: TCreateParams); override;
     end;
 
+    // The list of pages on the left of the dialog. It shows the pages of a
+    // page control whose own tabs are hidden, and switches between them.
+    TncNavBar = class(TCustomControl)
+    private
+        m_pages: TPageControl;
+        m_glyphs: string;
+        m_title: string;
+        m_subtitle: string;
+        m_hot: Integer;
+        m_on_change: TNotifyEvent;
+        procedure set_title(const value: string);
+        procedure set_subtitle(const value: string);
+        function get_selected: Integer;
+        procedure select_page(const index: Integer);
+        procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
+        procedure WMGetDlgCode(var Message: TWMGetDlgCode); message WM_GETDLGCODE;
+    protected
+        procedure Paint; override;
+        procedure MouseMove(Shift: TShiftState; X: Integer; Y: Integer); override;
+        procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer); override;
+        procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+        procedure DoEnter; override;
+        procedure DoExit; override;
+    public
+        constructor Create(AOwner: TComponent); override;
+        function item_rect(const index: Integer): TRect;
+        function item_at(const X: Integer; const Y: Integer): Integer;
+        property Pages: TPageControl read m_pages write m_pages;
+        // One icon character of Segoe MDL2 Assets for each page, in order.
+        property Glyphs: string read m_glyphs write m_glyphs;
+        property Title: string read m_title write set_title;
+        property Subtitle: string read m_subtitle write set_subtitle;
+        property Selected: Integer read get_selected;
+        property OnChange: TNotifyEvent read m_on_change write m_on_change;
+    end;
+
+    // A group of settings: a white card with a thin border and round corners.
+    TncSectionCard = class(TPanel)
+    protected
+        procedure Paint; override;
+    public
+        constructor Create(AOwner: TComponent); override;
+    end;
+
+    // A key drawn as a key cap, beside the scheme that assigns it.
+    TncKeyCap = class(TCustomControl)
+    private
+        m_caption: string;
+        procedure set_caption(const value: string);
+        procedure CMEnabledChanged(var Message: TMessage); message CM_ENABLEDCHANGED;
+    protected
+        procedure Paint; override;
+    public
+        constructor Create(AOwner: TComponent); override;
+        property Caption: string read m_caption write set_caption;
+    end;
+
     TncApplySettingsProc = reference to procedure(const engine_config: TncEngineConfig;
         const log_config: TncLogConfig; const status_widget_visible: Boolean;
         const status_widget_transparency: Integer);
@@ -153,16 +210,20 @@ type
     TncSettingsForm = class(TForm)
     private
         m_scaled_dpi: Integer;
+        m_nav: TncNavBar;
+        m_content_host: TPanel;
         m_page_control: TncFlatPageControl;
         m_tab_general: TTabSheet;
         m_tab_appearance: TTabSheet;
         m_tab_fuzzy_pinyin: TTabSheet;
+        m_tab_keys: TTabSheet;
         m_tab_shortcuts: TTabSheet;
         m_tab_custom_phrases: TTabSheet;
         m_tab_advanced: TTabSheet;
         m_scroll_general: TScrollBox;
         m_scroll_appearance: TScrollBox;
         m_scroll_fuzzy_pinyin: TScrollBox;
+        m_scroll_keys: TScrollBox;
         m_scroll_shortcuts: TScrollBox;
         m_scroll_custom_phrases: TScrollBox;
         m_scroll_advanced: TScrollBox;
@@ -202,11 +263,17 @@ type
         m_combo_shortcut_keys: array[TncShortcutAction] of TComboBox;
         m_combo_candidate_page_keys: TComboBox;
         m_combo_one_key_completion_key: TComboBox;
-        m_panel_candidate_page_previous_key: TPanel;
-        m_panel_candidate_page_next_key: TPanel;
+        m_panel_candidate_page_previous_key: TncKeyCap;
+        m_panel_candidate_page_next_key: TncKeyCap;
         m_combo_second_third_candidate_keys: TComboBox;
-        m_panel_second_candidate_key: TPanel;
-        m_panel_third_candidate_key: TPanel;
+        m_panel_second_candidate_key: TncKeyCap;
+        m_panel_third_candidate_key: TncKeyCap;
+        m_combo_select_character_keys: TComboBox;
+        m_panel_first_character_key: TncKeyCap;
+        m_panel_last_character_key: TncKeyCap;
+        m_label_select_character_note: TLabel;
+        m_label_candidate_page_previous: TLabel;
+        m_label_candidate_page_next: TLabel;
         m_custom_phrase_grid: TStringGrid;
         m_custom_phrase_notice: TLabel;
         m_loading_custom_phrases: Boolean;
@@ -222,7 +289,7 @@ type
         m_btn_import_user_words: TncModernButton;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
-        m_hint_advanced: TLabel;
+        m_hint_user_dictionary: TLabel;
         m_engine_config: TncEngineConfig;
         m_log_config: TncLogConfig;
         m_status_widget_visible: Boolean;
@@ -239,12 +306,14 @@ type
         procedure configure_buttons;
         procedure update_website_link_layout;
         procedure on_tabs_resize(Sender: TObject);
+        procedure on_nav_change(Sender: TObject);
         procedure normalize_dialog_client_width_for_dpi(const dpi: Integer);
         procedure update_dialog_height_for_content;
         procedure fit_section_groups_to_pages;
         procedure add_general_controls;
         procedure add_appearance_controls;
         procedure add_fuzzy_pinyin_controls;
+        procedure add_key_controls;
         procedure add_shortcut_controls;
         procedure add_custom_phrase_controls;
         procedure load_custom_phrase_controls(const phrases: TncCustomPhraseList);
@@ -285,6 +354,11 @@ type
         procedure populate_second_third_candidate_keys_combo;
         procedure update_second_third_candidate_keys_preview;
         procedure second_third_candidate_keys_changed(Sender: TObject);
+        procedure populate_select_character_keys_combo;
+        procedure update_select_character_keys_controls;
+        procedure select_character_keys_changed(Sender: TObject);
+        function get_selected_select_character_keys: TncSelectCharacterKeys;
+        procedure set_select_character_keys_combo(const keys: TncSelectCharacterKeys);
         function shortcut_action_caption(const action: TncShortcutAction): string;
         function shortcut_from_controls(const action: TncShortcutAction): TncShortcut;
         procedure set_shortcut_controls(const action: TncShortcutAction; const shortcut: TncShortcut);
@@ -365,17 +439,27 @@ type
     end;
 
 const
-    c_dialog_width = 596;
-    c_dialog_height = 452;
-    c_page_margin = 10;
-    c_footer_height = 50;
-    c_section_left = 12;
-    c_section_width = c_dialog_width - 62;
-    c_section_gap = 12;
-    c_section_inner_top = 34;
-    c_untitled_section_inner_top = 12;
-    c_label_left = 18;
-    c_control_left = 148;
+    c_dialog_width = 780;
+    c_dialog_height = 560;
+    c_nav_width = 176;
+    c_footer_height = 60;
+    c_section_left = 24;
+    c_section_width = c_dialog_width - c_nav_width - (c_section_left * 2);
+    c_section_gap = 14;
+    c_first_section_top = 20;
+    c_section_title_top = 16;
+    c_section_inner_top = 48;
+    c_untitled_section_inner_top = 18;
+    c_section_bottom_padding = 16;
+    c_label_left = 20;
+    c_control_left = 150;
+    c_key_cap_width = 30;
+    c_key_cap_height = 24;
+    c_no_key_caption = '—';
+    c_check_row_pitch = 32;
+    c_key_row_gap = 14;
+    c_key_label_slot = 40;
+    c_shortcut_key_offset = 156;
     c_row_height = 30;
     c_row_gap = 10;
     c_edit_width = 120;
@@ -391,12 +475,13 @@ const
     c_hint_width = c_section_width - (c_label_left * 2);
     c_general_row_gap = 8;
     c_candidate_preview_height = 152;
-    c_appearance_group_height = 484;
     c_tbm_get_channel_rect = WM_USER + 26;
     c_official_website_url = 'https://www.yanquan.org';
 
 resourcestring
     SSettingsTitle = '言泉输入法 - 设置';
+    SProductName = '言泉输入法';
+    SNavSubtitleVersion = '设置 · v%s';
     SSettingsVersionedTitle = '言泉输入法 (v%s) - 设置';
     STabGeneral = '常规';
     STabAppearance = '外观';
@@ -412,6 +497,9 @@ resourcestring
     SCustomPhraseInvalidFile = '无法读取自定义短语文件。请选择由本页导出的 JSON 文件，并检查快捷码和短语内容。';
     SCustomPhraseFileFilter = '自定义短语 (*.json)|*.json';
     STabAdvanced = '高级';
+    STabKeys = '按键';
+    SNavSubtitle = '设置';
+    SWebsiteLinkText = 'www.yanquan.org';
     SWebsiteLinkShort = '官网';
     SButtonBrowse = '浏览';
     SButtonDefaults = '恢复默认';
@@ -419,6 +507,13 @@ resourcestring
     SButtonOK = '确定';
     SButtonCancel = '取消';
     SGroupDefaultBehavior = '输入';
+    SGroupPunctuation = '标点';
+    SGroupStatusHints = '状态提示';
+    SGroupCandidateWindow = '候选窗口';
+    SGroupUserDictionary = '用户词库';
+    SGroupDebugLogging = '调试与日志';
+    SLabelInputOptions = '选项';
+    SLabelStatusDisplay = '显示';
     SGroupLogging = '日志';
     SGroupDebug = '调试';
     SGroupDictionaryPaths = '词库路径';
@@ -439,7 +534,7 @@ resourcestring
     SOptionPinyinJiajiaShuangpin = '拼音加加';
     SOptionZhinengabcShuangpin = '智能ABC双拼';
     SCheckEnableFuzzyPinyin = '启用模糊拼音';
-    SLabelPunctuationMode = '标点';
+    SLabelPunctuationMode = '中英文标点';
     SCheckDecimalPeriodAfterDigit = '连续输入数字后面的“。”转为“.”';
     SLabelPunctuationAsciiSymbols = '保持半角的符号';
     SPunctuationAsciiHint = '仅在中文标点、半角输入时生效；移除 # 可恢复输入 ＃。';
@@ -449,6 +544,8 @@ resourcestring
     SButtonPunctuationStandard = '标准中文标点';
     SCheckFullWidthMode = '使用全角输入';
     SCheckAutoEnglish = '识别英文单词，空格直接上屏';
+    SAutoEnglishHint = '全拼、半角输入时生效；中文候选的数字编号保持不变。';
+    SFuzzyPinyinHint = '勾选的每组读音可以互相代替，例如勾选 z / zh 后，输入 zi 也能找到“知”。';
     SCheckShowStatusWidget = '显示状态浮窗';
     SCheckInputModeHint = '光标旁提示中英文状态';
     SInputModeHintHint = '切换中英文或从其他输入法切换到言泉时显示当前状态；进入输入框时，处于英文状态才提醒。';
@@ -491,6 +588,14 @@ resourcestring
     SSecondThirdKeysSemicolonQuote = '分号单引号';
     SSecondThirdCandidateKeysHint = '输入拼音时，分号选第二个候选，单引号选第三个候选，数字键照常可用。' +
         '使用时单引号不再分隔音节；微软、搜狗、紫光双拼中，声母后的分号仍是韵母 ing。';
+    SLabelSelectCharacterKeys = '以词定字';
+    SLabelFirstCharacter = '首字';
+    SLabelLastCharacter = '末字';
+    SSelectCharacterKeysNone = '不使用';
+    SSelectCharacterKeysBrackets = '左右中括号';
+    SSelectCharacterKeysHint = '输入拼音时，左中括号上屏当前候选词的第一个字，右中括号上屏最后一个字，' +
+        '如输入 ciku 按 [ 得到“词”。';
+    SSelectCharacterKeysBusy = '翻页已使用左右中括号，换用其他翻页键后可选。';
     SShortcutMissingKey = '“%s”尚未选择按键。';
     SShortcutInvalidModifierKey = '“%s”的快捷键无效：单独的修饰键仅支持 Shift，且不能再叠加其他修饰键。';
     SShortcutNeedsModifier = '“%s”不能使用未带修饰键的 %s，因为这会占用正常输入。请添加 Ctrl、Shift 或 Alt；无修饰键时仅支持 Shift 或 F1-F24。';
@@ -540,7 +645,7 @@ resourcestring
     SButtonOpenDictionaryFolder = '打开词库目录';
     SButtonOpenConfigFolder = '打开配置目录';
     SButtonOpenConfigFile = '打开配置文件';
-    SHintAdvanced = '可直接打开配置目录和当前配置文件。';
+    SHintUserDictionary = '导入其他输入法导出的输入频次，或清空本机打字积累的学习记录。';
     SPathEditHint = '留空表示使用内置默认路径。';
     SPathEmpty = '%s为空。';
     SPathMissing = '%s不存在。';
@@ -1170,6 +1275,446 @@ begin
     Params.ExStyle := Params.ExStyle and (not WS_EX_CLIENTEDGE);
 end;
 
+const
+    c_ui_accent = $00FF7632; // RGB(50, 118, 255)
+    c_ui_text = $002D2520; // RGB(32, 37, 45)
+    c_ui_text_secondary = $00827268; // RGB(104, 114, 130)
+    c_ui_back = $00F8F5F3; // RGB(243, 245, 248)
+    c_ui_card_border = $00EBE4E0; // RGB(224, 228, 235)
+    c_ui_nav_back = $00F6F1ED; // RGB(237, 241, 246)
+    c_ui_nav_hot = $00F0E8E2; // RGB(226, 232, 240)
+    c_ui_nav_border = $00EAE3DE; // RGB(222, 227, 234)
+    c_ui_icon_font = 'Segoe MDL2 Assets';
+
+type
+    TWinControlAccess = class(TWinControl);
+
+var
+    g_icon_font_checked: Boolean = False;
+    g_icon_font_present: Boolean = False;
+
+function icon_font_present: Boolean;
+begin
+    if not g_icon_font_checked then
+    begin
+        g_icon_font_present := Screen.Fonts.IndexOf(c_ui_icon_font) >= 0;
+        g_icon_font_checked := True;
+    end;
+    Result := g_icon_font_present;
+end;
+
+function parent_back_color(const control: TControl): TColor;
+begin
+    Result := c_ui_back;
+    if (control <> nil) and (control.Parent <> nil) then
+    begin
+        Result := TWinControlAccess(control.Parent).Color;
+    end;
+end;
+
+constructor TncNavBar.Create(AOwner: TComponent);
+begin
+    inherited Create(AOwner);
+    ControlStyle := ControlStyle + [csOpaque];
+    DoubleBuffered := True;
+    TabStop := True;
+    m_hot := -1;
+    m_pages := nil;
+    m_glyphs := '';
+    m_title := '';
+    m_subtitle := '';
+end;
+
+procedure TncNavBar.set_title(const value: string);
+begin
+    if m_title <> value then
+    begin
+        m_title := value;
+        Invalidate;
+    end;
+end;
+
+procedure TncNavBar.set_subtitle(const value: string);
+begin
+    if m_subtitle <> value then
+    begin
+        m_subtitle := value;
+        Invalidate;
+    end;
+end;
+
+function TncNavBar.get_selected: Integer;
+begin
+    Result := -1;
+    if m_pages <> nil then
+    begin
+        Result := m_pages.ActivePageIndex;
+    end;
+end;
+
+function TncNavBar.item_rect(const index: Integer): TRect;
+var
+    dpi: Integer;
+    top: Integer;
+begin
+    dpi := get_control_scale_dpi(Self);
+    top := scale_ui_for_dpi(88, dpi) + index * scale_ui_for_dpi(42, dpi);
+    Result := Rect(scale_ui_for_dpi(12, dpi), top, ClientWidth - scale_ui_for_dpi(12, dpi),
+        top + scale_ui_for_dpi(38, dpi));
+end;
+
+function TncNavBar.item_at(const X: Integer; const Y: Integer): Integer;
+var
+    index: Integer;
+begin
+    Result := -1;
+    if m_pages = nil then
+    begin
+        Exit;
+    end;
+    for index := 0 to m_pages.PageCount - 1 do
+    begin
+        if PtInRect(item_rect(index), Point(X, Y)) then
+        begin
+            Exit(index);
+        end;
+    end;
+end;
+
+procedure TncNavBar.select_page(const index: Integer);
+begin
+    if (m_pages = nil) or (index < 0) or (index >= m_pages.PageCount) or
+        (index = m_pages.ActivePageIndex) then
+    begin
+        Exit;
+    end;
+    m_pages.ActivePageIndex := index;
+    Invalidate;
+    if Assigned(m_on_change) then
+    begin
+        m_on_change(Self);
+    end;
+end;
+
+procedure TncNavBar.CMMouseLeave(var Message: TMessage);
+begin
+    inherited;
+    if m_hot >= 0 then
+    begin
+        m_hot := -1;
+        Invalidate;
+    end;
+end;
+
+procedure TncNavBar.WMGetDlgCode(var Message: TWMGetDlgCode);
+begin
+    inherited;
+    Message.Result := Message.Result or DLGC_WANTARROWS;
+end;
+
+procedure TncNavBar.MouseMove(Shift: TShiftState; X: Integer; Y: Integer);
+var
+    index: Integer;
+begin
+    inherited;
+    index := item_at(X, Y);
+    if index <> m_hot then
+    begin
+        m_hot := index;
+        Invalidate;
+    end;
+    if index >= 0 then
+        Cursor := crHandPoint
+    else
+        Cursor := crDefault;
+end;
+
+procedure TncNavBar.MouseDown(Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
+begin
+    inherited;
+    if Button = mbLeft then
+    begin
+        select_page(item_at(X, Y));
+    end;
+end;
+
+procedure TncNavBar.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+    inherited;
+    if m_pages = nil then
+    begin
+        Exit;
+    end;
+    case Key of
+        VK_UP, VK_LEFT:
+            select_page(Max(0, Selected - 1));
+        VK_DOWN, VK_RIGHT:
+            select_page(Min(m_pages.PageCount - 1, Selected + 1));
+        VK_HOME:
+            select_page(0);
+        VK_END:
+            select_page(m_pages.PageCount - 1);
+    else
+        Exit;
+    end;
+    Key := 0;
+end;
+
+procedure TncNavBar.DoEnter;
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncNavBar.DoExit;
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncNavBar.Paint;
+var
+    dpi: Integer;
+    index: Integer;
+    item: TRect;
+    glyph_rect: TRect;
+    text_rect: TRect;
+    bar_rect: TRect;
+    corner: Integer;
+    caption: string;
+    glyph: string;
+    is_selected: Boolean;
+begin
+    dpi := get_control_scale_dpi(Self);
+    corner := scale_ui_for_dpi(10, dpi);
+    Canvas.Brush.Style := bsSolid;
+    Canvas.Brush.Color := c_ui_nav_back;
+    Canvas.FillRect(ClientRect);
+    Canvas.Pen.Style := psSolid;
+    Canvas.Pen.Width := 1;
+    Canvas.Pen.Color := c_ui_nav_border;
+    Canvas.MoveTo(ClientWidth - 1, 0);
+    Canvas.LineTo(ClientWidth - 1, ClientHeight);
+
+    Canvas.Brush.Style := bsClear;
+    Canvas.Font.Assign(Font);
+    Canvas.Font.Height := -scale_ui_for_dpi(18, dpi);
+    Canvas.Font.Style := [fsBold];
+    Canvas.Font.Color := c_ui_text;
+    Canvas.TextOut(scale_ui_for_dpi(24, dpi), scale_ui_for_dpi(22, dpi), m_title);
+    Canvas.Font.Height := -scale_ui_for_dpi(12, dpi);
+    Canvas.Font.Style := [];
+    Canvas.Font.Color := c_ui_text_secondary;
+    Canvas.TextOut(scale_ui_for_dpi(24, dpi), scale_ui_for_dpi(50, dpi), m_subtitle);
+
+    if m_pages = nil then
+    begin
+        Exit;
+    end;
+    for index := 0 to m_pages.PageCount - 1 do
+    begin
+        item := item_rect(index);
+        is_selected := index = m_pages.ActivePageIndex;
+        if is_selected or (index = m_hot) then
+        begin
+            Canvas.Brush.Style := bsSolid;
+            if is_selected then
+            begin
+                Canvas.Brush.Color := clWhite;
+                Canvas.Pen.Color := c_ui_nav_border;
+            end
+            else
+            begin
+                Canvas.Brush.Color := c_ui_nav_hot;
+                Canvas.Pen.Color := c_ui_nav_hot;
+            end;
+            Canvas.RoundRect(item.Left, item.Top, item.Right, item.Bottom, corner, corner);
+        end;
+        if is_selected then
+        begin
+            bar_rect := Rect(item.Left + scale_ui_for_dpi(1, dpi),
+                item.Top + scale_ui_for_dpi(11, dpi),
+                item.Left + scale_ui_for_dpi(4, dpi),
+                item.Bottom - scale_ui_for_dpi(11, dpi));
+            Canvas.Brush.Style := bsSolid;
+            Canvas.Brush.Color := c_ui_accent;
+            Canvas.Pen.Color := c_ui_accent;
+            Canvas.RoundRect(bar_rect.Left, bar_rect.Top, bar_rect.Right, bar_rect.Bottom,
+                scale_ui_for_dpi(3, dpi), scale_ui_for_dpi(3, dpi));
+        end;
+
+        Canvas.Brush.Style := bsClear;
+        text_rect := Rect(item.Left + scale_ui_for_dpi(16, dpi), item.Top, item.Right, item.Bottom);
+        if icon_font_present and (index < Length(m_glyphs)) then
+        begin
+            glyph := m_glyphs[index + 1];
+            glyph_rect := Rect(item.Left + scale_ui_for_dpi(12, dpi), item.Top,
+                item.Left + scale_ui_for_dpi(40, dpi), item.Bottom);
+            Canvas.Font.Name := c_ui_icon_font;
+            Canvas.Font.Height := -scale_ui_for_dpi(16, dpi);
+            Canvas.Font.Style := [];
+            if is_selected then
+                Canvas.Font.Color := c_ui_accent
+            else
+                Canvas.Font.Color := c_ui_text_secondary;
+            DrawText(Canvas.Handle, PChar(glyph), Length(glyph), glyph_rect,
+                DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+            text_rect.Left := item.Left + scale_ui_for_dpi(48, dpi);
+        end;
+        caption := m_pages.Pages[index].Caption;
+        Canvas.Font.Assign(Font);
+        Canvas.Font.Height := -scale_ui_for_dpi(13, dpi);
+        if is_selected then
+        begin
+            Canvas.Font.Color := c_ui_text;
+            Canvas.Font.Style := [fsBold];
+        end
+        else
+        begin
+            Canvas.Font.Color := RGB(60, 68, 80);
+            Canvas.Font.Style := [];
+        end;
+        DrawText(Canvas.Handle, PChar(caption), Length(caption), text_rect,
+            DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX or DT_END_ELLIPSIS);
+        if is_selected and Focused then
+        begin
+            Canvas.Brush.Style := bsClear;
+            Canvas.Pen.Style := psDot;
+            Canvas.Pen.Color := RGB(132, 146, 166);
+            Canvas.RoundRect(item.Left + scale_ui_for_dpi(3, dpi), item.Top + scale_ui_for_dpi(3, dpi),
+                item.Right - scale_ui_for_dpi(3, dpi), item.Bottom - scale_ui_for_dpi(3, dpi),
+                corner, corner);
+            Canvas.Pen.Style := psSolid;
+        end;
+    end;
+end;
+
+constructor TncSectionCard.Create(AOwner: TComponent);
+begin
+    inherited Create(AOwner);
+    BevelOuter := bvNone;
+    ParentBackground := False;
+    ShowCaption := False;
+    FullRepaint := True;
+    DoubleBuffered := True;
+    Color := clWhite;
+end;
+
+procedure TncSectionCard.Paint;
+var
+    corner: Integer;
+begin
+    corner := scale_ui_for_dpi(12, get_control_scale_dpi(Self));
+    Canvas.Brush.Style := bsSolid;
+    Canvas.Brush.Color := parent_back_color(Self);
+    Canvas.FillRect(ClientRect);
+    Canvas.Brush.Color := Color;
+    Canvas.Pen.Style := psSolid;
+    Canvas.Pen.Width := 1;
+    Canvas.Pen.Color := c_ui_card_border;
+    Canvas.RoundRect(0, 0, ClientWidth, ClientHeight, corner, corner);
+end;
+
+constructor TncKeyCap.Create(AOwner: TComponent);
+begin
+    inherited Create(AOwner);
+    ControlStyle := ControlStyle + [csOpaque];
+    DoubleBuffered := True;
+    m_caption := '';
+    Width := 30;
+    Height := 24;
+end;
+
+procedure TncKeyCap.set_caption(const value: string);
+begin
+    if m_caption <> value then
+    begin
+        m_caption := value;
+        Invalidate;
+    end;
+end;
+
+procedure TncKeyCap.CMEnabledChanged(var Message: TMessage);
+begin
+    inherited;
+    Invalidate;
+end;
+
+procedure TncKeyCap.Paint;
+var
+    dpi: Integer;
+    corner: Integer;
+    face: TRect;
+    text_rect: TRect;
+    is_key: Boolean;
+begin
+    dpi := get_control_scale_dpi(Self);
+    corner := scale_ui_for_dpi(8, dpi);
+    Canvas.Brush.Style := bsSolid;
+    Canvas.Brush.Color := parent_back_color(Self);
+    Canvas.FillRect(ClientRect);
+    is_key := Enabled and (m_caption <> '') and (m_caption <> c_no_key_caption);
+    face := ClientRect;
+    Canvas.Pen.Style := psSolid;
+    Canvas.Pen.Width := 1;
+    if is_key then
+    begin
+        // A key cap: a darker edge below the face.
+        Canvas.Brush.Color := RGB(214, 220, 229);
+        Canvas.Pen.Color := RGB(196, 204, 216);
+        Canvas.RoundRect(face.Left, face.Top, face.Right, face.Bottom, corner, corner);
+        Canvas.Brush.Color := RGB(251, 252, 253);
+        Canvas.RoundRect(face.Left, face.Top, face.Right,
+            face.Bottom - scale_ui_for_dpi(2, dpi), corner, corner);
+    end
+    else
+    begin
+        Canvas.Brush.Color := RGB(246, 247, 249);
+        Canvas.Pen.Color := RGB(228, 232, 238);
+        Canvas.RoundRect(face.Left, face.Top, face.Right, face.Bottom, corner, corner);
+    end;
+    Canvas.Brush.Style := bsClear;
+    Canvas.Font.Assign(Font);
+    if Length(m_caption) <= 1 then
+    begin
+        Canvas.Font.Name := 'Segoe UI';
+        Canvas.Font.Height := -scale_ui_for_dpi(15, dpi);
+        Canvas.Font.Style := [fsBold];
+    end;
+    if is_key then
+        Canvas.Font.Color := RGB(40, 46, 56)
+    else
+        Canvas.Font.Color := RGB(176, 182, 192);
+    text_rect := face;
+    if is_key then
+    begin
+        text_rect.Bottom := text_rect.Bottom - scale_ui_for_dpi(2, dpi);
+    end;
+    DrawText(Canvas.Handle, PChar(m_caption), Length(m_caption), text_rect,
+        DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+end;
+
+// The width a key cap needs for its caption.
+function key_cap_width(const cap: TncKeyCap): Integer;
+var
+    bitmap: TBitmap;
+    dpi: Integer;
+begin
+    dpi := get_control_scale_dpi(cap);
+    Result := scale_ui_for_dpi(c_key_cap_width, dpi);
+    if Length(cap.Caption) <= 1 then
+    begin
+        Exit;
+    end;
+    bitmap := TBitmap.Create;
+    try
+        bitmap.Canvas.Font.Assign(cap.Font);
+        Result := Max(Result, bitmap.Canvas.TextWidth(cap.Caption) + scale_ui_for_dpi(18, dpi));
+    finally
+        bitmap.Free;
+    end;
+end;
+
 procedure TncSettingsForm.CreateParams(var Params: TCreateParams);
 begin
     inherited CreateParams(Params);
@@ -1190,7 +1735,6 @@ end;
 function create_section_group(const owner: TComponent; const parent: TWinControl; const caption: string;
     const top: Integer; const height: Integer): TPanel;
 var
-    accent: TPanel;
     title_label: TLabel;
     section_width: Integer;
 begin
@@ -1200,36 +1744,52 @@ begin
         section_width := parent.ClientWidth - (scale_ui(c_section_left) * 2);
     end;
 
-    Result := TPanel.Create(owner);
+    Result := TncSectionCard.Create(owner);
     Result.Parent := parent;
     Result.Left := scale_ui(c_section_left);
     Result.Top := top;
     Result.Width := section_width;
     Result.Height := scale_ui(height);
-    Result.BevelOuter := bvNone;
-    Result.ParentBackground := False;
-    Result.Color := clWhite;
     Result.ParentFont := True;
     Result.Anchors := [akLeft, akTop, akRight];
-
-    accent := TPanel.Create(Result);
-    accent.Parent := Result;
-    accent.Align := alTop;
-    accent.Height := scale_ui(3);
-    accent.BevelOuter := bvNone;
-    accent.ParentBackground := False;
-    accent.Color := RGB(50, 118, 255);
 
     if caption <> '' then
     begin
         title_label := TLabel.Create(Result);
         title_label.Parent := Result;
         title_label.Left := scale_ui(c_label_left);
-        title_label.Top := scale_ui(10);
+        title_label.Top := scale_ui(c_section_title_top);
         title_label.Caption := caption;
         title_label.Font.Style := [fsBold];
-        title_label.Font.Color := RGB(34, 39, 46);
+        title_label.Font.Size := 10;
+        title_label.Font.Color := c_ui_text;
     end;
+end;
+
+// The height of a card whose last control is last: its bottom and a margin.
+procedure fit_section_height(const group: TPanel; const last: TControl);
+begin
+    group.Height := last.Top + last.Height + scale_ui(c_section_bottom_padding);
+end;
+
+function create_key_cap(const owner: TComponent; const parent: TWinControl; const left: Integer;
+    const top: Integer): TncKeyCap;
+begin
+    Result := TncKeyCap.Create(owner);
+    Result.Parent := parent;
+    Result.ParentFont := True;
+    Result.SetBounds(left, top, scale_ui(c_key_cap_width), scale_ui(c_key_cap_height));
+end;
+
+function create_side_label(const owner: TComponent; const parent: TWinControl; const caption: string;
+    const left: Integer; const top: Integer): TLabel;
+begin
+    Result := TLabel.Create(owner);
+    Result.Parent := parent;
+    Result.Left := left;
+    Result.Top := top;
+    Result.Caption := caption;
+    Result.Font.Color := c_ui_text_secondary;
 end;
 
 function create_page_scroll_box(const owner: TComponent;
@@ -1293,7 +1853,7 @@ begin
     Result.Width := width;
     Result.Height := measure_wrapped_label_height(Result.Font, caption, width);
     Result.Caption := caption;
-    Result.Font.Color := clGrayText;
+    Result.Font.Color := c_ui_text_secondary;
 end;
 
 function get_ui_scale_dpi: Integer;
@@ -1494,6 +2054,7 @@ begin
     add_general_controls;
     add_appearance_controls;
     add_fuzzy_pinyin_controls;
+    add_key_controls;
     add_shortcut_controls;
     add_custom_phrase_controls;
     add_advanced_controls;
@@ -1563,7 +2124,7 @@ begin
     end;
     Font.Name := 'Microsoft YaHei UI';
     Font.Size := 9;
-    Color := RGB(245, 247, 250);
+    Color := c_ui_back;
 end;
 
 procedure TncSettingsForm.update_dialog_height_for_content;
@@ -1651,10 +2212,10 @@ begin
         end;
     end;
 
-    desired_page_client_height := max_content_bottom + scale_ui_for_dpi(18, dpi);
-    desired_page_client_width := max_content_right + scale_ui_for_dpi(18, dpi);
-    desired_client_width := scale_ui_for_dpi(c_page_margin, dpi) * 2 + page_nonclient_width + desired_page_client_width;
-    desired_client_height := scale_ui_for_dpi(c_page_margin, dpi) + tab_strip_height + desired_page_client_height + scale_ui_for_dpi(c_footer_height, dpi);
+    desired_page_client_height := max_content_bottom + scale_ui_for_dpi(c_first_section_top, dpi);
+    desired_page_client_width := max_content_right + scale_ui_for_dpi(c_section_left, dpi);
+    desired_client_width := m_nav.Width + page_nonclient_width + desired_page_client_width;
+    desired_client_height := tab_strip_height + desired_page_client_height + scale_ui_for_dpi(c_footer_height, dpi);
     if desired_client_width < scale_ui_for_dpi(c_dialog_width, dpi) then
     begin
         desired_client_width := scale_ui_for_dpi(c_dialog_width, dpi);
@@ -1873,6 +2434,7 @@ begin
         update_check_box_metrics(m_chk_shortcut_enabled[action]);
     update_check_box_metrics(m_chk_log_enabled);
     update_check_box_metrics(m_chk_debug_mode);
+    update_candidate_page_key_scheme_preview;
     if m_custom_phrase_grid <> nil then
     begin
         m_custom_phrase_grid.DefaultRowHeight := scale_ui_for_dpi(26, dpi);
@@ -1918,91 +2480,106 @@ begin
 end;
 
 procedure TncSettingsForm.configure_tabs;
+const
+    // Segoe MDL2 Assets, one a page: Setting, Color, Language (A and a
+    // character), Keyboard, Switch, Message, Repair.
+    c_page_glyphs = #$E713#$E790#$E164#$E765#$E8AB#$E8BD#$E90F;
+var
+    product_version: string;
+
+    function add_page(const caption: string): TTabSheet;
+    begin
+        Result := TTabSheet.Create(m_page_control);
+        Result.PageControl := m_page_control;
+        Result.Caption := caption;
+        // The navigation bar shows the pages; the page control's own tabs
+        // stay hidden.
+        Result.TabVisible := False;
+    end;
 begin
+    m_nav := TncNavBar.Create(Self);
+    m_nav.Name := 'SettingsNavigation';
+    m_nav.Parent := Self;
+    m_nav.Align := alLeft;
+    m_nav.Width := scale_ui(c_nav_width);
+    m_nav.Title := SProductName;
+    product_version := Trim(nc_get_current_exe_display_version);
+    if product_version <> '' then
+        m_nav.Subtitle := Format(SNavSubtitleVersion, [product_version])
+    else
+        m_nav.Subtitle := SNavSubtitle;
+
+    m_content_host := TPanel.Create(Self);
+    m_content_host.Parent := Self;
+    m_content_host.Align := alClient;
+    m_content_host.BevelOuter := bvNone;
+    m_content_host.ParentBackground := False;
+    m_content_host.ShowCaption := False;
+    m_content_host.Color := c_ui_back;
+
     m_page_control := TncFlatPageControl.Create(Self);
-    m_page_control.Parent := Self;
+    m_page_control.Parent := m_content_host;
     m_page_control.Align := alClient;
-    m_page_control.AlignWithMargins := True;
-    m_page_control.Margins.Left := scale_ui(c_page_margin);
-    m_page_control.Margins.Top := scale_ui(c_page_margin);
-    m_page_control.Margins.Right := scale_ui(c_page_margin);
-    m_page_control.Margins.Bottom := 0;
     m_page_control.Style := tsFlatButtons;
-    m_page_control.HotTrack := True;
     m_page_control.OnChange := on_page_change;
 
-    m_tab_general := TTabSheet.Create(m_page_control);
-    m_tab_general.PageControl := m_page_control;
-    m_tab_general.Caption := STabGeneral;
-
-    m_tab_appearance := TTabSheet.Create(m_page_control);
-    m_tab_appearance.PageControl := m_page_control;
-    m_tab_appearance.Caption := STabAppearance;
-
-    m_tab_fuzzy_pinyin := TTabSheet.Create(m_page_control);
-    m_tab_fuzzy_pinyin.PageControl := m_page_control;
-    m_tab_fuzzy_pinyin.Caption := STabFuzzyPinyin;
-
-    m_tab_shortcuts := TTabSheet.Create(m_page_control);
-    m_tab_shortcuts.PageControl := m_page_control;
-    m_tab_shortcuts.Caption := STabShortcuts;
-
-    m_tab_custom_phrases := TTabSheet.Create(m_page_control);
-    m_tab_custom_phrases.PageControl := m_page_control;
-    m_tab_custom_phrases.Caption := STabCustomPhrases;
-
-    m_tab_advanced := TTabSheet.Create(m_page_control);
-    m_tab_advanced.PageControl := m_page_control;
-    m_tab_advanced.Caption := STabAdvanced;
+    m_tab_general := add_page(STabGeneral);
+    m_tab_appearance := add_page(STabAppearance);
+    m_tab_fuzzy_pinyin := add_page(STabFuzzyPinyin);
+    m_tab_keys := add_page(STabKeys);
+    m_tab_shortcuts := add_page(STabShortcuts);
+    m_tab_custom_phrases := add_page(STabCustomPhrases);
+    m_tab_advanced := add_page(STabAdvanced);
+    m_page_control.ActivePage := m_tab_general;
 
     m_scroll_general := create_page_scroll_box(Self, m_tab_general);
     m_scroll_appearance := create_page_scroll_box(Self, m_tab_appearance);
     m_scroll_fuzzy_pinyin := create_page_scroll_box(Self, m_tab_fuzzy_pinyin);
+    m_scroll_keys := create_page_scroll_box(Self, m_tab_keys);
     m_scroll_shortcuts := create_page_scroll_box(Self, m_tab_shortcuts);
     m_scroll_custom_phrases := create_page_scroll_box(Self, m_tab_custom_phrases);
     m_scroll_advanced := create_page_scroll_box(Self, m_tab_advanced);
 
+    m_nav.Pages := m_page_control;
+    m_nav.Glyphs := c_page_glyphs;
+    m_nav.OnChange := on_nav_change;
+
     m_label_website := TLabel.Create(Self);
     m_label_website.Name := 'SettingsWebsiteLink';
-    m_label_website.Parent := m_page_control;
-    m_label_website.Caption := c_official_website_url;
-    m_label_website.Font.Color := RGB(50, 118, 255);
-    m_label_website.Font.Style := [fsUnderline];
+    m_label_website.Parent := m_nav;
+    m_label_website.Caption := SWebsiteLinkText;
+    m_label_website.Font.Color := c_ui_accent;
     m_label_website.Cursor := crHandPoint;
     m_label_website.Hint := c_official_website_url;
     m_label_website.ShowHint := True;
+    m_label_website.Transparent := True;
     m_label_website.OnClick := on_website_link_click;
-    m_label_website.Anchors := [akTop, akRight];
     m_page_control.OnResize := on_tabs_resize;
+    // With a handle the panels align at once, so that the footer's buttons
+    // are anchored to its final width.
+    m_content_host.HandleNeeded;
     update_website_link_layout;
 end;
 
 procedure TncSettingsForm.update_website_link_layout;
 var
-    gap, left_edge, right_edge, available_width, tab_strip_height: Integer;
+    available_width: Integer;
 begin
     if (csDestroying in ComponentState) or (m_label_website = nil) or
-        (m_page_control = nil) then
+        (m_nav = nil) then
     begin
         Exit;
     end;
 
-    m_page_control.HandleNeeded;
-    gap := scale_ui_for_dpi(8, CurrentPPI);
-    left_edge := gap;
-    if m_page_control.PageCount > 0 then
-        left_edge := m_page_control.TabRect(m_page_control.PageCount - 1).Right + gap;
-    right_edge := m_page_control.ClientWidth - scale_ui_for_dpi(12, CurrentPPI);
-    available_width := right_edge - left_edge;
-    m_label_website.Caption := c_official_website_url;
-    // Keep the link available even when the work area limits the dialog width.
+    // The link sits at the foot of the navigation bar.
+    available_width := m_nav.ClientWidth - scale_ui_for_dpi(24 + 12, CurrentPPI);
+    m_label_website.Caption := SWebsiteLinkText;
     if m_label_website.Width > available_width then
         m_label_website.Caption := SWebsiteLinkShort;
-    m_label_website.Left := right_edge - m_label_website.Width;
-    tab_strip_height := m_page_control.DisplayRect.Top;
-    m_label_website.Top := Max(0, (tab_strip_height - m_label_website.Height) div 2);
+    m_label_website.Left := scale_ui_for_dpi(24, CurrentPPI);
+    m_label_website.Top := Max(0, m_nav.ClientHeight - scale_ui_for_dpi(22, CurrentPPI) -
+        m_label_website.Height);
     m_label_website.Visible := True;
-    m_label_website.BringToFront;
 end;
 
 procedure TncSettingsForm.on_tabs_resize(Sender: TObject);
@@ -2010,103 +2587,114 @@ begin
     update_website_link_layout;
 end;
 
+procedure TncSettingsForm.on_nav_change(Sender: TObject);
+begin
+    on_page_change(Sender);
+end;
+
 procedure TncSettingsForm.configure_buttons;
 var
     footer_panel: TPanel;
-    footer_line: TBevel;
+    footer_line: TPanel;
+    right_edge: Integer;
+
+    function add_button(const caption: string; const kind: TncModernButtonKind;
+        const on_click: TNotifyEvent): TncModernButton;
+    begin
+        Result := TncModernButton.Create(Self);
+        Result.Parent := footer_panel;
+        Result.Top := (scale_ui(c_footer_height) - scale_ui(c_footer_button_height)) div 2;
+        Result.Width := scale_ui(84);
+        Result.Height := scale_ui(c_footer_button_height);
+        Result.Caption := caption;
+        Result.OnClick := on_click;
+        Result.VisualKind := kind;
+    end;
 begin
     footer_panel := TPanel.Create(Self);
-    footer_panel.Parent := Self;
+    footer_panel.Parent := m_content_host;
     footer_panel.Align := alBottom;
     footer_panel.Height := scale_ui(c_footer_height);
     footer_panel.BevelOuter := bvNone;
     footer_panel.ParentBackground := False;
-    footer_panel.Color := RGB(250, 251, 252);
+    footer_panel.ShowCaption := False;
+    footer_panel.Color := clWhite;
 
-    footer_line := TBevel.Create(footer_panel);
+    footer_line := TPanel.Create(footer_panel);
     footer_line.Parent := footer_panel;
     footer_line.Align := alTop;
-    footer_line.Shape := bsTopLine;
-    footer_line.Height := scale_ui(2);
+    footer_line.Height := 1;
+    footer_line.BevelOuter := bvNone;
+    footer_line.ParentBackground := False;
+    footer_line.ShowCaption := False;
+    footer_line.Color := c_ui_card_border;
 
-    m_btn_reset := TncModernButton.Create(Self);
-    m_btn_reset.Parent := footer_panel;
-    m_btn_reset.Left := scale_ui(18);
-    m_btn_reset.Top := scale_ui(10);
-    m_btn_reset.Width := scale_ui(96);
-    m_btn_reset.Height := scale_ui(c_footer_button_height);
-    m_btn_reset.Anchors := [akLeft, akTop];
-    m_btn_reset.Caption := SButtonDefaults;
-    m_btn_reset.OnClick := on_reset_click;
-    m_btn_reset.VisualKind := mbkSubtle;
-
-    m_btn_apply := TncModernButton.Create(Self);
-    m_btn_apply.Parent := footer_panel;
-    m_btn_apply.Left := ClientWidth - scale_ui(272);
-    m_btn_apply.Top := scale_ui(10);
-    m_btn_apply.Width := scale_ui(78);
-    m_btn_apply.Height := scale_ui(c_footer_button_height);
-    m_btn_apply.Anchors := [akTop, akRight];
-    m_btn_apply.Caption := SButtonApply;
-    m_btn_apply.OnClick := on_apply_click;
-    m_btn_apply.VisualKind := mbkSecondary;
-
-    m_btn_ok := TncModernButton.Create(Self);
-    m_btn_ok.Parent := footer_panel;
-    m_btn_ok.Left := ClientWidth - scale_ui(184);
-    m_btn_ok.Top := scale_ui(10);
-    m_btn_ok.Width := scale_ui(78);
-    m_btn_ok.Height := scale_ui(c_footer_button_height);
-    m_btn_ok.Anchors := [akTop, akRight];
-    m_btn_ok.Caption := SButtonOK;
+    // OK, Cancel and Apply at the right, as Windows orders them.
+    m_btn_ok := add_button(SButtonOK, mbkPrimary, on_ok_click);
     m_btn_ok.Default := True;
-    m_btn_ok.OnClick := on_ok_click;
-    m_btn_ok.VisualKind := mbkPrimary;
-
-    m_btn_cancel := TncModernButton.Create(Self);
-    m_btn_cancel.Parent := footer_panel;
-    m_btn_cancel.Left := ClientWidth - scale_ui(96);
-    m_btn_cancel.Top := scale_ui(10);
-    m_btn_cancel.Width := scale_ui(78);
-    m_btn_cancel.Height := scale_ui(c_footer_button_height);
-    m_btn_cancel.Anchors := [akTop, akRight];
-    m_btn_cancel.Caption := SButtonCancel;
+    m_btn_cancel := add_button(SButtonCancel, mbkSecondary, on_cancel_click);
     m_btn_cancel.Cancel := True;
-    m_btn_cancel.OnClick := on_cancel_click;
-    m_btn_cancel.VisualKind := mbkSecondary;
+    m_btn_apply := add_button(SButtonApply, mbkSecondary, on_apply_click);
+    right_edge := footer_panel.ClientWidth - scale_ui(c_section_left);
+    m_btn_apply.Left := right_edge - m_btn_apply.Width;
+    m_btn_cancel.Left := m_btn_apply.Left - scale_ui(10) - m_btn_cancel.Width;
+    m_btn_ok.Left := m_btn_cancel.Left - scale_ui(10) - m_btn_ok.Width;
+    m_btn_ok.Anchors := [akTop, akRight];
+    m_btn_cancel.Anchors := [akTop, akRight];
+    m_btn_apply.Anchors := [akTop, akRight];
 
+    m_btn_reset := add_button(SButtonDefaults, mbkSubtle, on_reset_click);
+    m_btn_reset.Left := scale_ui(c_section_left);
+    m_btn_reset.Width := scale_ui(96);
+    m_btn_reset.Anchors := [akLeft, akTop];
+end;
+
+// The top of the next row of a card: rows of the label column are
+// c_row_height high with c_general_row_gap between them.
+function next_row_top(const top: Integer): Integer;
+begin
+    Result := top + scale_ui(c_row_height + c_general_row_gap);
+end;
+
+// A check box in the control column that runs to the card's right edge.
+procedure place_in_control_column(const control: TControl; const group: TPanel);
+begin
+    control.Left := scale_ui(c_control_left);
+    control.Width := group.ClientWidth - control.Left - scale_ui(c_label_left);
+    control.Anchors := [akLeft, akTop, akRight];
+end;
+
+function create_combo(const owner: TComponent; const parent: TWinControl; const top: Integer;
+    const width: Integer): TComboBox;
+begin
+    Result := TComboBox.Create(owner);
+    Result.Parent := parent;
+    Result.Left := scale_ui(c_control_left);
+    Result.Top := top;
+    Result.Width := scale_ui(width);
+    Result.Style := csDropDownList;
 end;
 
 procedure TncSettingsForm.add_general_controls;
 var
     top: Integer;
-    section_top: Integer;
-    defaults_group: TPanel;
+    input_group: TPanel;
+    punctuation_group: TPanel;
 begin
-    section_top := scale_ui(18);
-    defaults_group := create_section_group(Self, m_scroll_general, SGroupDefaultBehavior, section_top, 308);
+    input_group := create_section_group(Self, m_scroll_general, SGroupDefaultBehavior,
+        scale_ui(c_first_section_top), 200);
 
     top := scale_ui(c_section_inner_top);
-    create_label(Self, defaults_group, SLabelInputMode, top);
-    m_combo_input_mode := TComboBox.Create(Self);
-    m_combo_input_mode.Parent := defaults_group;
-    m_combo_input_mode.Left := scale_ui(c_control_left);
-    m_combo_input_mode.Top := top;
-    m_combo_input_mode.Width := scale_ui(c_combo_width);
-    m_combo_input_mode.Style := csDropDownList;
+    create_label(Self, input_group, SLabelInputMode, top);
+    m_combo_input_mode := create_combo(Self, input_group, top, c_combo_width);
     m_combo_input_mode.Items.Add(SOptionSimplifiedChineseInput);
     m_combo_input_mode.Items.Add(SOptionTraditionalChineseInput);
     m_combo_input_mode.Items.Add(SOptionEnglishInput);
     m_combo_input_mode.OnChange := mark_dirty;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, defaults_group, SLabelPinyinInputScheme, top);
-    m_combo_pinyin_input_scheme := TComboBox.Create(Self);
-    m_combo_pinyin_input_scheme.Parent := defaults_group;
-    m_combo_pinyin_input_scheme.Left := scale_ui(c_control_left);
-    m_combo_pinyin_input_scheme.Top := top;
-    m_combo_pinyin_input_scheme.Width := scale_ui(c_combo_width);
-    m_combo_pinyin_input_scheme.Style := csDropDownList;
+    top := next_row_top(top);
+    create_label(Self, input_group, SLabelPinyinInputScheme, top);
+    m_combo_pinyin_input_scheme := create_combo(Self, input_group, top, c_combo_width);
     m_combo_pinyin_input_scheme.Items.Add(SOptionFullPinyin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionMicrosoftShuangpin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionXiaoheShuangpin);
@@ -2117,36 +2705,43 @@ begin
     m_combo_pinyin_input_scheme.Items.Add(SOptionZhinengabcShuangpin);
     m_combo_pinyin_input_scheme.OnChange := mark_dirty;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, defaults_group, SLabelPunctuationMode, top);
-    m_combo_punctuation_mode := TComboBox.Create(Self);
-    m_combo_punctuation_mode.Parent := defaults_group;
-    m_combo_punctuation_mode.Left := scale_ui(c_control_left);
-    m_combo_punctuation_mode.Top := top;
-    m_combo_punctuation_mode.Width := scale_ui(96);
-    m_combo_punctuation_mode.Style := csDropDownList;
+    top := next_row_top(top);
+    create_label(Self, input_group, SLabelInputOptions, top);
+    m_chk_full_width_mode := create_check_box(Self, input_group, top, SCheckFullWidthMode, mark_dirty);
+    m_chk_full_width_mode.Name := 'FullWidthMode';
+    place_in_control_column(m_chk_full_width_mode, input_group);
+    m_chk_auto_english := create_check_box(Self, input_group,
+        top + scale_ui(c_check_row_pitch), SCheckAutoEnglish, mark_dirty);
+    m_chk_auto_english.Name := 'AutoEnglish';
+    m_chk_auto_english.Hint := SAutoEnglishHint;
+    m_chk_auto_english.ShowHint := True;
+    place_in_control_column(m_chk_auto_english, input_group);
+    fit_section_height(input_group, m_chk_auto_english);
+
+    punctuation_group := create_section_group(Self, m_scroll_general, SGroupPunctuation,
+        input_group.Top + input_group.Height + scale_ui(c_section_gap), 200);
+    top := scale_ui(c_section_inner_top);
+    create_label(Self, punctuation_group, SLabelPunctuationMode, top);
+    m_combo_punctuation_mode := create_combo(Self, punctuation_group, top, 96);
     m_combo_punctuation_mode.Items.Add(SOptionChinese);
     m_combo_punctuation_mode.Items.Add(SOptionEnglish);
     m_combo_punctuation_mode.OnChange := mark_dirty;
 
-    m_chk_decimal_period_after_digit := create_check_box(Self, defaults_group,
+    m_chk_decimal_period_after_digit := create_check_box(Self, punctuation_group,
         top, SCheckDecimalPeriodAfterDigit, mark_dirty);
     m_chk_decimal_period_after_digit.Left := m_combo_punctuation_mode.Left +
-        m_combo_punctuation_mode.Width + scale_ui(14);
-    m_chk_decimal_period_after_digit.Width := defaults_group.ClientWidth -
+        m_combo_punctuation_mode.Width + scale_ui(18);
+    m_chk_decimal_period_after_digit.Width := punctuation_group.ClientWidth -
         m_chk_decimal_period_after_digit.Left - scale_ui(c_label_left);
     m_chk_decimal_period_after_digit.Anchors := [akLeft, akTop, akRight];
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, defaults_group, SLabelPunctuationAsciiSymbols, top);
+    top := next_row_top(top);
+    create_label(Self, punctuation_group, SLabelPunctuationAsciiSymbols, top);
     m_edit_punctuation_ascii_symbols := TEdit.Create(Self);
     m_edit_punctuation_ascii_symbols.Name := 'PunctuationAsciiSymbols';
-    m_edit_punctuation_ascii_symbols.Parent := defaults_group;
-    m_edit_punctuation_ascii_symbols.Left := scale_ui(c_control_left);
+    m_edit_punctuation_ascii_symbols.Parent := punctuation_group;
     m_edit_punctuation_ascii_symbols.Top := top;
-    m_edit_punctuation_ascii_symbols.Width := defaults_group.ClientWidth -
-        m_edit_punctuation_ascii_symbols.Left - scale_ui(c_label_left);
-    m_edit_punctuation_ascii_symbols.Anchors := [akLeft, akTop, akRight];
+    place_in_control_column(m_edit_punctuation_ascii_symbols, punctuation_group);
     m_edit_punctuation_ascii_symbols.ImeMode := imDisable;
     m_edit_punctuation_ascii_symbols.MaxLength := 128;
     m_edit_punctuation_ascii_symbols.TextHint := SPunctuationAsciiEmpty;
@@ -2154,25 +2749,17 @@ begin
     m_edit_punctuation_ascii_symbols.ShowHint := True;
     m_edit_punctuation_ascii_symbols.OnChange := mark_dirty;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    m_btn_punctuation_markdown := create_action_button(Self, defaults_group,
+    top := next_row_top(top);
+    m_btn_punctuation_markdown := create_action_button(Self, punctuation_group,
         scale_ui(c_control_left), top, SButtonPunctuationMarkdown,
         on_punctuation_markdown_click);
     m_btn_punctuation_markdown.Name := 'PunctuationMarkdownPreset';
     m_btn_punctuation_markdown.Width := scale_ui(128);
-    m_btn_punctuation_standard := create_action_button(Self, defaults_group,
-        m_btn_punctuation_markdown.Left + m_btn_punctuation_markdown.Width + scale_ui(8),
+    m_btn_punctuation_standard := create_action_button(Self, punctuation_group,
+        m_btn_punctuation_markdown.Left + m_btn_punctuation_markdown.Width + scale_ui(10),
         top, SButtonPunctuationStandard, on_punctuation_standard_click);
     m_btn_punctuation_standard.Name := 'PunctuationStandardPreset';
-
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    m_chk_full_width_mode := create_check_box(Self, defaults_group, top, SCheckFullWidthMode, mark_dirty);
-    m_chk_full_width_mode.Name := 'FullWidthMode';
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    m_chk_auto_english := create_check_box(Self, defaults_group, top, SCheckAutoEnglish, mark_dirty);
-    m_chk_auto_english.Name := 'AutoEnglish';
-    m_chk_auto_english.Hint := '全拼、半角输入时生效；中文候选的数字编号保持不变。';
-    m_chk_auto_english.ShowHint := True;
+    fit_section_height(punctuation_group, m_btn_punctuation_standard);
 end;
 
 procedure TncSettingsForm.add_fuzzy_pinyin_controls;
@@ -2183,7 +2770,6 @@ var
     rule_index: Integer;
     rule_column: Integer;
     rule_row: Integer;
-    rule_left: Integer;
     rule_width: Integer;
 const
     c_fuzzy_rule_captions: array[TncFuzzyPinyinRule] of string = (
@@ -2192,10 +2778,13 @@ const
     );
 begin
     fuzzy_group := create_section_group(Self, m_scroll_fuzzy_pinyin, '',
-        scale_ui(18), 158);
+        scale_ui(c_first_section_top), 180);
     top := scale_ui(c_untitled_section_inner_top);
     m_chk_fuzzy_pinyin_enabled := create_check_box(Self, fuzzy_group, top,
         SCheckEnableFuzzyPinyin, on_fuzzy_pinyin_enabled_click);
+    create_hint_label(Self, fuzzy_group, SFuzzyPinyinHint, scale_ui(c_label_left),
+        top + scale_ui(c_check_row_pitch), fuzzy_group.ClientWidth - scale_ui(c_label_left * 2)).Anchors :=
+        [akLeft, akTop, akRight];
 
     rule_width := (fuzzy_group.ClientWidth - scale_ui(c_label_left * 2)) div 3;
     for fuzzy_rule := Low(TncFuzzyPinyinRule) to High(TncFuzzyPinyinRule) do
@@ -2203,21 +2792,21 @@ begin
         rule_index := Ord(fuzzy_rule) - Ord(Low(TncFuzzyPinyinRule));
         rule_column := rule_index mod 3;
         rule_row := rule_index div 3;
-        rule_left := scale_ui(c_label_left) + (rule_column * rule_width);
         m_chk_fuzzy_pinyin_rules[fuzzy_rule] := create_check_box(Self,
-            fuzzy_group, top + scale_ui(28 + (rule_row * 25)),
+            fuzzy_group, top + scale_ui(c_check_row_pitch + 34 + (rule_row * c_check_row_pitch)),
             c_fuzzy_rule_captions[fuzzy_rule], mark_dirty);
-        m_chk_fuzzy_pinyin_rules[fuzzy_rule].Left := rule_left;
+        m_chk_fuzzy_pinyin_rules[fuzzy_rule].Left := scale_ui(c_label_left) + (rule_column * rule_width);
         m_chk_fuzzy_pinyin_rules[fuzzy_rule].Width := rule_width;
     end;
+    fit_section_height(fuzzy_group, m_chk_fuzzy_pinyin_rules[High(TncFuzzyPinyinRule)]);
     update_fuzzy_pinyin_controls;
 end;
 
 procedure TncSettingsForm.add_appearance_controls;
 var
     top: Integer;
-    section_top: Integer;
-    appearance_group: TPanel;
+    candidate_group: TPanel;
+    status_group: TPanel;
     label_index: Integer;
     size_label_texts: array[0..c_candidate_font_size_level_count - 1] of string;
     candidate_control_width: Integer;
@@ -2228,6 +2817,7 @@ var
     track_channel_right_inset: Integer;
     track_channel_width: Integer;
     track_label_left: Integer;
+    side_label: TLabel;
 begin
     for label_index := Low(size_label_texts) to High(size_label_texts) do
     begin
@@ -2237,64 +2827,24 @@ begin
     size_label_texts[c_default_candidate_font_size_level] := SSizeDefault;
     size_label_texts[High(size_label_texts)] := SSizeMaximum;
 
-    section_top := scale_ui(18);
-    appearance_group := create_section_group(Self, m_scroll_appearance, '',
-        section_top, c_appearance_group_height);
-
-    top := scale_ui(c_untitled_section_inner_top);
-    m_chk_show_status_widget := create_check_box(Self, appearance_group, top, SCheckShowStatusWidget, mark_dirty);
-    m_chk_show_status_widget.Width := scale_ui(c_control_left - c_label_left);
-    m_chk_input_mode_hint := create_check_box(Self, appearance_group, top, SCheckInputModeHint, mark_dirty);
-    m_chk_input_mode_hint.Name := 'InputModeHint';
-    m_chk_input_mode_hint.Left := scale_ui(c_control_left);
-    m_chk_input_mode_hint.Width := appearance_group.ClientWidth -
-        m_chk_input_mode_hint.Left - scale_ui(c_label_left);
-    m_chk_input_mode_hint.Anchors := [akLeft, akTop, akRight];
-    m_chk_input_mode_hint.Hint := SInputModeHintHint;
-    m_chk_input_mode_hint.ShowHint := True;
-
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, appearance_group, SLabelStatusWidgetTransparency, top);
-    m_track_status_widget_transparency := TTrackBar.Create(Self);
-    m_track_status_widget_transparency.Name := 'StatusWidgetTransparency';
-    m_track_status_widget_transparency.Parent := appearance_group;
-    m_track_status_widget_transparency.SetBounds(scale_ui(c_control_left - 10),
-        top - scale_ui(3), scale_ui(280), scale_ui(30));
-    m_track_status_widget_transparency.Min := 0;
-    m_track_status_widget_transparency.Max := c_max_status_widget_transparency;
-    m_track_status_widget_transparency.LineSize := 1;
-    m_track_status_widget_transparency.PageSize := 10;
-    m_track_status_widget_transparency.TickStyle := tsNone;
-    m_label_status_widget_transparency := TLabel.Create(Self);
-    m_label_status_widget_transparency.Name := 'StatusWidgetTransparencyValue';
-    m_label_status_widget_transparency.Parent := appearance_group;
-    m_label_status_widget_transparency.SetBounds(scale_ui(c_control_left + 284),
-        top + scale_ui(4), scale_ui(48), scale_ui(24));
-    m_label_status_widget_transparency.AutoSize := False;
-    m_label_status_widget_transparency.Caption := '0%';
-    m_label_status_widget_transparency.Font.Color := RGB(90, 100, 115);
-    m_track_status_widget_transparency.OnChange := on_status_widget_transparency_change;
-
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, appearance_group, SLabelCandidateFont, top);
+    candidate_group := create_section_group(Self, m_scroll_appearance, SGroupCandidateWindow,
+        scale_ui(c_first_section_top), 420);
     candidate_control_width := scale_ui(260);
-    m_combo_candidate_font := TComboBox.Create(Self);
-    m_combo_candidate_font.Parent := appearance_group;
-    m_combo_candidate_font.Left := scale_ui(c_control_left);
-    m_combo_candidate_font.Top := top;
-    m_combo_candidate_font.Width := candidate_control_width;
-    m_combo_candidate_font.Style := csDropDownList;
+
+    top := scale_ui(c_section_inner_top);
+    create_label(Self, candidate_group, SLabelCandidateFont, top);
+    m_combo_candidate_font := create_combo(Self, candidate_group, top, 260);
     populate_candidate_font_combo;
     m_combo_candidate_font.OnChange := on_candidate_appearance_change;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, appearance_group, SLabelCandidateSize, top);
+    top := next_row_top(top);
+    create_label(Self, candidate_group, SLabelCandidateSize, top);
     m_track_candidate_font_size := TTrackBar.Create(Self);
-    m_track_candidate_font_size.Parent := appearance_group;
+    m_track_candidate_font_size.Parent := candidate_group;
     m_track_candidate_font_size.Left := scale_ui(c_control_left);
     m_track_candidate_font_size.Top := top - scale_ui(3);
     m_track_candidate_font_size.Width := candidate_control_width;
-    m_track_candidate_font_size.Height := scale_ui(34);
+    m_track_candidate_font_size.Height := scale_ui(30);
     m_track_candidate_font_size.Min := 0;
     m_track_candidate_font_size.Max := High(c_candidate_font_size_levels);
     m_track_candidate_font_size.Frequency := 1;
@@ -2335,8 +2885,8 @@ begin
     for label_index := Low(m_candidate_font_size_labels) to High(m_candidate_font_size_labels) do
     begin
         m_candidate_font_size_labels[label_index] := TLabel.Create(Self);
-        m_candidate_font_size_labels[label_index].Parent := appearance_group;
-        m_candidate_font_size_labels[label_index].Top := top + scale_ui(32);
+        m_candidate_font_size_labels[label_index].Parent := candidate_group;
+        m_candidate_font_size_labels[label_index].Top := top + scale_ui(28);
         m_candidate_font_size_labels[label_index].AutoSize := False;
         m_candidate_font_size_labels[label_index].Width := label_width;
         tick_center := m_track_candidate_font_size.Left + track_channel_left +
@@ -2345,59 +2895,96 @@ begin
         track_label_left := tick_center - (label_width div 2);
         m_candidate_font_size_labels[label_index].Left := track_label_left;
         m_candidate_font_size_labels[label_index].Alignment := taCenter;
-        m_candidate_font_size_labels[label_index].Font.Color := RGB(90, 100, 115);
+        m_candidate_font_size_labels[label_index].Font.Color := c_ui_text_secondary;
+        // The labels overlap; an opaque one would erase its neighbour's text.
+        m_candidate_font_size_labels[label_index].Transparent := True;
         m_candidate_font_size_labels[label_index].Caption := size_label_texts[label_index];
     end;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap + 32));
-    create_label(Self, appearance_group, SLabelCandidatePageSize, top);
-    m_combo_candidate_page_size := TComboBox.Create(Self);
-    m_combo_candidate_page_size.Parent := appearance_group;
-    m_combo_candidate_page_size.Left := scale_ui(c_control_left);
-    m_combo_candidate_page_size.Top := top;
-    m_combo_candidate_page_size.Width := scale_ui(132);
-    m_combo_candidate_page_size.Style := csDropDownList;
+    top := next_row_top(top) + scale_ui(20);
+    create_label(Self, candidate_group, SLabelCandidatePageSize, top);
+    m_combo_candidate_page_size := create_combo(Self, candidate_group, top, 132);
     populate_candidate_page_size_combo;
     m_combo_candidate_page_size.OnChange := mark_dirty;
     m_chk_candidate_expand_on_paging := create_check_box(Self,
-        appearance_group, top, SCheckCandidateExpandOnPaging, mark_dirty);
-    m_chk_candidate_expand_on_paging.Left := scale_ui(c_control_left + 148);
+        candidate_group, top, SCheckCandidateExpandOnPaging, mark_dirty);
+    m_chk_candidate_expand_on_paging.Left := m_combo_candidate_page_size.Left +
+        m_combo_candidate_page_size.Width + scale_ui(18);
     m_chk_candidate_expand_on_paging.Width := scale_ui(230);
     m_chk_candidate_expand_on_paging.Name := 'CandidateExpandOnPaging';
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, appearance_group, SLabelCandidatePosition, top);
-    m_chk_candidate_at_input_start := create_check_box(Self, appearance_group, top,
+    top := next_row_top(top);
+    create_label(Self, candidate_group, SLabelCandidatePosition, top);
+    m_chk_candidate_at_input_start := create_check_box(Self, candidate_group, top,
         SCheckCandidateAtInputStart, mark_dirty);
     m_chk_candidate_at_input_start.Name := 'CandidateAtInputStart';
-    m_chk_candidate_at_input_start.Left := scale_ui(c_control_left);
-    m_chk_candidate_at_input_start.Width := appearance_group.ClientWidth -
-        m_chk_candidate_at_input_start.Left - scale_ui(c_label_left);
-    m_chk_candidate_at_input_start.Anchors := [akLeft, akTop, akRight];
+    place_in_control_column(m_chk_candidate_at_input_start, candidate_group);
     m_chk_candidate_at_input_start.Hint := SCandidateAtInputStartHint;
     m_chk_candidate_at_input_start.ShowHint := True;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, appearance_group, SLabelCandidateColorScheme, top);
-    m_combo_candidate_color_scheme := TComboBox.Create(Self);
-    m_combo_candidate_color_scheme.Parent := appearance_group;
-    m_combo_candidate_color_scheme.Left := scale_ui(c_control_left);
-    m_combo_candidate_color_scheme.Top := top;
-    m_combo_candidate_color_scheme.Width := candidate_control_width;
-    m_combo_candidate_color_scheme.Style := csDropDownList;
+    top := next_row_top(top);
+    create_label(Self, candidate_group, SLabelCandidateColorScheme, top);
+    m_combo_candidate_color_scheme := create_combo(Self, candidate_group, top, 260);
     populate_candidate_color_scheme_combo;
     m_combo_candidate_color_scheme.OnChange := on_candidate_appearance_change;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, appearance_group, SLabelCandidatePreview, top + scale_ui(12));
+    top := next_row_top(top);
+    create_label(Self, candidate_group, SLabelCandidatePreview, top + scale_ui(12));
     m_candidate_preview := TPaintBox.Create(Self);
-    m_candidate_preview.Parent := appearance_group;
+    m_candidate_preview.Parent := candidate_group;
     m_candidate_preview.Left := scale_ui(c_control_left);
     m_candidate_preview.Top := top;
-    m_candidate_preview.Width := appearance_group.Width - scale_ui(c_control_left + c_label_left);
+    m_candidate_preview.Width := candidate_group.ClientWidth - scale_ui(c_control_left + c_label_left);
     m_candidate_preview.Height := scale_ui(c_candidate_preview_height);
     m_candidate_preview.Anchors := [akLeft, akTop, akRight];
     m_candidate_preview.OnPaint := on_candidate_preview_paint;
+    fit_section_height(candidate_group, m_candidate_preview);
+
+    // The status window and the mode label: the first row holds the window
+    // and its transparency, the second the label beside the caret.
+    status_group := create_section_group(Self, m_scroll_appearance, SGroupStatusHints,
+        candidate_group.Top + candidate_group.Height + scale_ui(c_section_gap), 120);
+    top := scale_ui(c_section_inner_top);
+    create_label(Self, status_group, SLabelStatusDisplay, top);
+    m_chk_show_status_widget := create_check_box(Self, status_group, top, SCheckShowStatusWidget, mark_dirty);
+    m_chk_show_status_widget.Left := scale_ui(c_control_left);
+    m_chk_show_status_widget.Width := scale_ui(130);
+
+    side_label := create_side_label(Self, status_group, SLabelStatusWidgetTransparency,
+        scale_ui(c_control_left + 146), top + scale_ui(4));
+    m_track_status_widget_transparency := TTrackBar.Create(Self);
+    m_track_status_widget_transparency.Name := 'StatusWidgetTransparency';
+    m_track_status_widget_transparency.Parent := status_group;
+    // The slider runs to the value at the card's right edge.
+    m_track_status_widget_transparency.SetBounds(side_label.Left + side_label.Width + scale_ui(2),
+        top - scale_ui(2), 0, scale_ui(30));
+    m_track_status_widget_transparency.Width := status_group.ClientWidth - scale_ui(c_label_left + 40 + 4) -
+        m_track_status_widget_transparency.Left;
+    m_track_status_widget_transparency.Anchors := [akLeft, akTop, akRight];
+    m_track_status_widget_transparency.Min := 0;
+    m_track_status_widget_transparency.Max := c_max_status_widget_transparency;
+    m_track_status_widget_transparency.LineSize := 1;
+    m_track_status_widget_transparency.PageSize := 10;
+    m_track_status_widget_transparency.TickStyle := tsNone;
+    m_label_status_widget_transparency := TLabel.Create(Self);
+    m_label_status_widget_transparency.Name := 'StatusWidgetTransparencyValue';
+    m_label_status_widget_transparency.Parent := status_group;
+    m_label_status_widget_transparency.SetBounds(m_track_status_widget_transparency.Left +
+        m_track_status_widget_transparency.Width + scale_ui(4), top + scale_ui(4), scale_ui(40), scale_ui(20));
+    m_label_status_widget_transparency.Anchors := [akTop, akRight];
+    m_label_status_widget_transparency.AutoSize := False;
+    m_label_status_widget_transparency.Alignment := taRightJustify;
+    m_label_status_widget_transparency.Caption := '0%';
+    m_label_status_widget_transparency.Font.Color := c_ui_text_secondary;
+    m_track_status_widget_transparency.OnChange := on_status_widget_transparency_change;
+
+    m_chk_input_mode_hint := create_check_box(Self, status_group,
+        top + scale_ui(c_check_row_pitch), SCheckInputModeHint, mark_dirty);
+    m_chk_input_mode_hint.Name := 'InputModeHint';
+    place_in_control_column(m_chk_input_mode_hint, status_group);
+    m_chk_input_mode_hint.Hint := SInputModeHintHint;
+    m_chk_input_mode_hint.ShowHint := True;
+    fit_section_height(status_group, m_chk_input_mode_hint);
 end;
 
 function TncSettingsForm.shortcut_action_caption(const action: TncShortcutAction): string;
@@ -2501,41 +3088,140 @@ begin
     add_key(VK_DECIMAL);
 end;
 
+// A row of the keys page: after the scheme's combo box, each key's name and
+// its key cap, centred on the combo box. The caps of the rows stand in
+// columns, each name right before its cap.
+procedure layout_key_row(const combo: TComboBox; const first_label: TLabel; const first_cap: TncKeyCap;
+    const second_label: TLabel; const second_cap: TncKeyCap);
+var
+    x: Integer;
+    dpi: Integer;
+
+    procedure place(const name_label: TLabel; const cap: TncKeyCap);
+    begin
+        cap.Width := key_cap_width(cap);
+        cap.Left := x + Max(scale_ui_for_dpi(c_key_label_slot, dpi), name_label.Width) +
+            scale_ui_for_dpi(8, dpi);
+        cap.Top := combo.Top + (combo.Height - cap.Height) div 2;
+        name_label.Left := cap.Left - scale_ui_for_dpi(8, dpi) - name_label.Width;
+        name_label.Top := combo.Top + (combo.Height - name_label.Height) div 2;
+        x := cap.Left + Max(cap.Width, scale_ui_for_dpi(c_key_cap_width, dpi)) + scale_ui_for_dpi(20, dpi);
+    end;
+begin
+    if (combo = nil) or (first_label = nil) or (first_cap = nil) or (second_label = nil) or
+        (second_cap = nil) then
+    begin
+        Exit;
+    end;
+    // The combo box's own DPI: the dialog may have moved to another monitor.
+    dpi := get_control_scale_dpi(combo);
+    x := combo.Left + combo.Width + scale_ui_for_dpi(20, dpi);
+    place(first_label, first_cap);
+    place(second_label, second_cap);
+end;
+
+procedure TncSettingsForm.add_key_controls;
+var
+    top: Integer;
+    keys_group: TPanel;
+    completion_group: TPanel;
+    hint: TLabel;
+    hint_width: Integer;
+    second_label: TLabel;
+    third_label: TLabel;
+    first_character_label: TLabel;
+    last_character_label: TLabel;
+begin
+    keys_group := create_section_group(Self, m_scroll_keys, SGroupCandidateKeys,
+        scale_ui(c_first_section_top), 300);
+    hint_width := keys_group.ClientWidth - scale_ui(c_control_left + c_label_left);
+
+    // Paging.
+    top := scale_ui(c_section_inner_top);
+    create_label(Self, keys_group, SLabelCandidatePageKeys, top);
+    m_combo_candidate_page_keys := create_combo(Self, keys_group, top, 160);
+    m_combo_candidate_page_keys.Name := 'CandidatePageKeys';
+    populate_candidate_page_key_scheme_combo;
+    m_label_candidate_page_previous := create_side_label(Self, keys_group, SLabelCandidatePagePrevious, 0, top);
+    m_panel_candidate_page_previous_key := create_key_cap(Self, keys_group, 0, top);
+    m_label_candidate_page_next := create_side_label(Self, keys_group, SLabelCandidatePageNext, 0, top);
+    m_panel_candidate_page_next_key := create_key_cap(Self, keys_group, 0, top);
+    m_combo_candidate_page_keys.OnChange := candidate_page_key_scheme_changed;
+    hint := create_hint_label(Self, keys_group, SCandidatePageKeysHint, scale_ui(c_control_left),
+        top + scale_ui(c_row_height), hint_width);
+    hint.Anchors := [akLeft, akTop, akRight];
+
+    // The second and third candidate.
+    top := hint.Top + hint.Height + scale_ui(c_key_row_gap);
+    create_label(Self, keys_group, SLabelSecondThirdCandidateKeys, top);
+    m_combo_second_third_candidate_keys := create_combo(Self, keys_group, top, 160);
+    m_combo_second_third_candidate_keys.Name := 'SecondThirdCandidateKeys';
+    populate_second_third_candidate_keys_combo;
+    second_label := create_side_label(Self, keys_group, SLabelSecondCandidate, 0, top);
+    m_panel_second_candidate_key := create_key_cap(Self, keys_group, 0, top);
+    third_label := create_side_label(Self, keys_group, SLabelThirdCandidate, 0, top);
+    m_panel_third_candidate_key := create_key_cap(Self, keys_group, 0, top);
+    m_combo_second_third_candidate_keys.OnChange := second_third_candidate_keys_changed;
+    update_second_third_candidate_keys_preview;
+    layout_key_row(m_combo_second_third_candidate_keys, second_label, m_panel_second_candidate_key,
+        third_label, m_panel_third_candidate_key);
+    hint := create_hint_label(Self, keys_group, SSecondThirdCandidateKeysHint, scale_ui(c_control_left),
+        top + scale_ui(c_row_height), hint_width);
+    hint.Anchors := [akLeft, akTop, akRight];
+
+    // The first or the last character of the candidate.
+    top := hint.Top + hint.Height + scale_ui(c_key_row_gap);
+    create_label(Self, keys_group, SLabelSelectCharacterKeys, top);
+    m_combo_select_character_keys := create_combo(Self, keys_group, top, 160);
+    m_combo_select_character_keys.Name := 'SelectCharacterKeys';
+    populate_select_character_keys_combo;
+    first_character_label := create_side_label(Self, keys_group, SLabelFirstCharacter, 0, top);
+    m_panel_first_character_key := create_key_cap(Self, keys_group, 0, top);
+    last_character_label := create_side_label(Self, keys_group, SLabelLastCharacter, 0, top);
+    m_panel_last_character_key := create_key_cap(Self, keys_group, 0, top);
+    m_combo_select_character_keys.OnChange := select_character_keys_changed;
+    m_label_select_character_note := create_hint_label(Self, keys_group, SSelectCharacterKeysHint,
+        scale_ui(c_control_left), top + scale_ui(c_row_height), hint_width);
+    m_label_select_character_note.Name := 'SelectCharacterKeysNote';
+    m_label_select_character_note.Anchors := [akLeft, akTop, akRight];
+    m_label_select_character_note.Height := Max(m_label_select_character_note.Height,
+        measure_wrapped_label_height(m_label_select_character_note.Font, SSelectCharacterKeysBusy, hint_width));
+    update_candidate_page_key_scheme_preview;
+    update_select_character_keys_controls;
+    layout_key_row(m_combo_select_character_keys, first_character_label, m_panel_first_character_key,
+        last_character_label, m_panel_last_character_key);
+    fit_section_height(keys_group, m_label_select_character_note);
+
+    completion_group := create_section_group(Self, m_scroll_keys, SGroupOneKeyCompletion,
+        keys_group.Top + keys_group.Height + scale_ui(c_section_gap), 120);
+    top := scale_ui(c_section_inner_top);
+    create_label(Self, completion_group, SLabelOneKeyCompletionKey, top);
+    m_combo_one_key_completion_key := create_combo(Self, completion_group, top, 160);
+    populate_one_key_completion_key_combo;
+    m_combo_one_key_completion_key.ItemIndex := Ord(ock_tab);
+    m_combo_one_key_completion_key.OnChange := one_key_completion_key_changed;
+    hint := create_hint_label(Self, completion_group, SOneKeyCompletionHint, scale_ui(c_control_left),
+        top + scale_ui(c_row_height), completion_group.ClientWidth - scale_ui(c_control_left + c_label_left));
+    hint.Anchors := [akLeft, akTop, akRight];
+    fit_section_height(completion_group, hint);
+end;
+
 procedure TncSettingsForm.add_shortcut_controls;
 var
     action: TncShortcutAction;
     top: Integer;
-    section_top: Integer;
     shortcut_group: TPanel;
-    paging_group: TPanel;
-    completion_group: TPanel;
     header_label: TLabel;
 begin
-    section_top := scale_ui(18);
-    shortcut_group := create_section_group(Self, m_scroll_shortcuts, '', section_top, 232);
+    shortcut_group := create_section_group(Self, m_scroll_shortcuts, '', scale_ui(c_first_section_top), 240);
 
     top := scale_ui(c_untitled_section_inner_top);
-    header_label := create_label(Self, shortcut_group, SLabelShortcutAction, top);
-    header_label.Font.Style := [fsBold];
-    header_label.Font.Color := RGB(90, 100, 115);
+    create_side_label(Self, shortcut_group, SLabelShortcutAction, scale_ui(c_label_left), top);
+    create_side_label(Self, shortcut_group, SLabelShortcutModifier, scale_ui(c_control_left), top);
+    header_label := create_side_label(Self, shortcut_group, SLabelShortcutKey,
+        scale_ui(c_control_left + c_shortcut_key_offset), top);
 
-    header_label := TLabel.Create(Self);
-    header_label.Parent := shortcut_group;
-    header_label.Left := scale_ui(c_control_left);
-    header_label.Top := top + scale_ui(4);
-    header_label.Caption := SLabelShortcutModifier;
-    header_label.Font.Style := [fsBold];
-    header_label.Font.Color := RGB(90, 100, 115);
-
-    header_label := TLabel.Create(Self);
-    header_label.Parent := shortcut_group;
-    header_label.Left := scale_ui(c_control_left + 142);
-    header_label.Top := top + scale_ui(4);
-    header_label.Caption := SLabelShortcutKey;
-    header_label.Font.Style := [fsBold];
-    header_label.Font.Color := RGB(90, 100, 115);
-
-    Inc(top, scale_ui(28));
+    Inc(top, header_label.Height + scale_ui(12));
     for action := Low(TncShortcutAction) to High(TncShortcutAction) do
     begin
         m_chk_shortcut_enabled[action] := create_check_box(Self, shortcut_group,
@@ -2543,164 +3229,19 @@ begin
         m_chk_shortcut_enabled[action].Width := scale_ui(c_control_left - c_label_left - 10);
         m_chk_shortcut_enabled[action].Checked := True;
 
-        m_combo_shortcut_modifiers[action] := TComboBox.Create(Self);
-        m_combo_shortcut_modifiers[action].Parent := shortcut_group;
-        m_combo_shortcut_modifiers[action].Left := scale_ui(c_control_left);
-        m_combo_shortcut_modifiers[action].Top := top;
-        m_combo_shortcut_modifiers[action].Width := scale_ui(130);
-        m_combo_shortcut_modifiers[action].Style := csDropDownList;
+        m_combo_shortcut_modifiers[action] := create_combo(Self, shortcut_group, top, 140);
         populate_shortcut_modifier_combo(m_combo_shortcut_modifiers[action]);
         m_combo_shortcut_modifiers[action].OnChange := mark_dirty;
 
-        m_combo_shortcut_keys[action] := TComboBox.Create(Self);
-        m_combo_shortcut_keys[action].Parent := shortcut_group;
-        m_combo_shortcut_keys[action].Left := scale_ui(c_control_left + 142);
-        m_combo_shortcut_keys[action].Top := top;
-        m_combo_shortcut_keys[action].Width := scale_ui(150);
-        m_combo_shortcut_keys[action].Style := csDropDownList;
+        m_combo_shortcut_keys[action] := create_combo(Self, shortcut_group, top, 150);
+        m_combo_shortcut_keys[action].Left := scale_ui(c_control_left + c_shortcut_key_offset);
         populate_shortcut_key_combo(m_combo_shortcut_keys[action]);
         m_combo_shortcut_keys[action].OnChange := mark_dirty;
 
-        Inc(top, scale_ui(36));
+        if action < High(TncShortcutAction) then
+            top := next_row_top(top);
     end;
-
-    section_top := shortcut_group.Top + shortcut_group.Height + scale_ui(c_section_gap);
-    paging_group := create_section_group(Self, m_scroll_shortcuts,
-        SGroupCandidateKeys, section_top, 149);
-    top := scale_ui(54);
-    create_label(Self, paging_group, SLabelCandidatePageKeys, top);
-
-    header_label := TLabel.Create(Self);
-    header_label.Parent := paging_group;
-    header_label.AutoSize := False;
-    header_label.Left := scale_ui(c_control_left + 172);
-    header_label.Top := scale_ui(31);
-    header_label.Width := scale_ui(76);
-    header_label.Alignment := taCenter;
-    header_label.Caption := SLabelCandidatePagePrevious;
-    header_label.Font.Color := RGB(90, 100, 115);
-
-    header_label := TLabel.Create(Self);
-    header_label.Parent := paging_group;
-    header_label.AutoSize := False;
-    header_label.Left := scale_ui(c_control_left + 260);
-    header_label.Top := scale_ui(31);
-    header_label.Width := scale_ui(76);
-    header_label.Alignment := taCenter;
-    header_label.Caption := SLabelCandidatePageNext;
-    header_label.Font.Color := RGB(90, 100, 115);
-
-    m_combo_candidate_page_keys := TComboBox.Create(Self);
-    m_combo_candidate_page_keys.Parent := paging_group;
-    m_combo_candidate_page_keys.Left := scale_ui(c_control_left);
-    m_combo_candidate_page_keys.Top := top;
-    m_combo_candidate_page_keys.Width := scale_ui(160);
-    m_combo_candidate_page_keys.Style := csDropDownList;
-    m_combo_candidate_page_keys.Hint := SCandidatePageKeysHint;
-    m_combo_candidate_page_keys.ShowHint := True;
-    populate_candidate_page_key_scheme_combo;
-
-    m_panel_candidate_page_previous_key := TPanel.Create(Self);
-    m_panel_candidate_page_previous_key.Parent := paging_group;
-    m_panel_candidate_page_previous_key.Left := scale_ui(c_control_left + 172);
-    m_panel_candidate_page_previous_key.Top := top;
-    m_panel_candidate_page_previous_key.Width := scale_ui(76);
-    m_panel_candidate_page_previous_key.Height := scale_ui(24);
-    m_panel_candidate_page_previous_key.BevelOuter := bvNone;
-    m_panel_candidate_page_previous_key.ParentBackground := False;
-    m_panel_candidate_page_previous_key.Color := RGB(238, 240, 244);
-    m_panel_candidate_page_previous_key.Font.Color := RGB(50, 56, 66);
-
-    m_panel_candidate_page_next_key := TPanel.Create(Self);
-    m_panel_candidate_page_next_key.Parent := paging_group;
-    m_panel_candidate_page_next_key.Left := scale_ui(c_control_left + 260);
-    m_panel_candidate_page_next_key.Top := top;
-    m_panel_candidate_page_next_key.Width := scale_ui(76);
-    m_panel_candidate_page_next_key.Height := scale_ui(24);
-    m_panel_candidate_page_next_key.BevelOuter := bvNone;
-    m_panel_candidate_page_next_key.ParentBackground := False;
-    m_panel_candidate_page_next_key.Color := RGB(238, 240, 244);
-    m_panel_candidate_page_next_key.Font.Color := RGB(50, 56, 66);
-
-    m_combo_candidate_page_keys.OnChange := candidate_page_key_scheme_changed;
-    update_candidate_page_key_scheme_preview;
-
-    // The second row of the group: the keys of the second and third candidate.
-    top := scale_ui(113);
-    create_label(Self, paging_group, SLabelSecondThirdCandidateKeys, top);
-
-    header_label := TLabel.Create(Self);
-    header_label.Parent := paging_group;
-    header_label.AutoSize := False;
-    header_label.Left := scale_ui(c_control_left + 172);
-    header_label.Top := scale_ui(90);
-    header_label.Width := scale_ui(76);
-    header_label.Alignment := taCenter;
-    header_label.Caption := SLabelSecondCandidate;
-    header_label.Font.Color := RGB(90, 100, 115);
-
-    header_label := TLabel.Create(Self);
-    header_label.Parent := paging_group;
-    header_label.AutoSize := False;
-    header_label.Left := scale_ui(c_control_left + 260);
-    header_label.Top := scale_ui(90);
-    header_label.Width := scale_ui(76);
-    header_label.Alignment := taCenter;
-    header_label.Caption := SLabelThirdCandidate;
-    header_label.Font.Color := RGB(90, 100, 115);
-
-    m_combo_second_third_candidate_keys := TComboBox.Create(Self);
-    m_combo_second_third_candidate_keys.Parent := paging_group;
-    m_combo_second_third_candidate_keys.Left := scale_ui(c_control_left);
-    m_combo_second_third_candidate_keys.Top := top;
-    m_combo_second_third_candidate_keys.Width := scale_ui(160);
-    m_combo_second_third_candidate_keys.Style := csDropDownList;
-    m_combo_second_third_candidate_keys.Hint := SSecondThirdCandidateKeysHint;
-    m_combo_second_third_candidate_keys.ShowHint := True;
-    populate_second_third_candidate_keys_combo;
-
-    m_panel_second_candidate_key := TPanel.Create(Self);
-    m_panel_second_candidate_key.Parent := paging_group;
-    m_panel_second_candidate_key.Left := scale_ui(c_control_left + 172);
-    m_panel_second_candidate_key.Top := top;
-    m_panel_second_candidate_key.Width := scale_ui(76);
-    m_panel_second_candidate_key.Height := scale_ui(24);
-    m_panel_second_candidate_key.BevelOuter := bvNone;
-    m_panel_second_candidate_key.ParentBackground := False;
-    m_panel_second_candidate_key.Color := RGB(238, 240, 244);
-    m_panel_second_candidate_key.Font.Color := RGB(50, 56, 66);
-
-    m_panel_third_candidate_key := TPanel.Create(Self);
-    m_panel_third_candidate_key.Parent := paging_group;
-    m_panel_third_candidate_key.Left := scale_ui(c_control_left + 260);
-    m_panel_third_candidate_key.Top := top;
-    m_panel_third_candidate_key.Width := scale_ui(76);
-    m_panel_third_candidate_key.Height := scale_ui(24);
-    m_panel_third_candidate_key.BevelOuter := bvNone;
-    m_panel_third_candidate_key.ParentBackground := False;
-    m_panel_third_candidate_key.Color := RGB(238, 240, 244);
-    m_panel_third_candidate_key.Font.Color := RGB(50, 56, 66);
-
-    m_combo_second_third_candidate_keys.OnChange := second_third_candidate_keys_changed;
-    update_second_third_candidate_keys_preview;
-
-    section_top := paging_group.Top + paging_group.Height + scale_ui(c_section_gap);
-    completion_group := create_section_group(Self, m_scroll_shortcuts,
-        SGroupOneKeyCompletion, section_top, 90);
-    top := scale_ui(54);
-    create_label(Self, completion_group, SLabelOneKeyCompletionKey, top);
-
-    m_combo_one_key_completion_key := TComboBox.Create(Self);
-    m_combo_one_key_completion_key.Parent := completion_group;
-    m_combo_one_key_completion_key.Left := scale_ui(c_control_left);
-    m_combo_one_key_completion_key.Top := top;
-    m_combo_one_key_completion_key.Width := scale_ui(160);
-    m_combo_one_key_completion_key.Style := csDropDownList;
-    m_combo_one_key_completion_key.Hint := SOneKeyCompletionHint;
-    m_combo_one_key_completion_key.ShowHint := True;
-    populate_one_key_completion_key_combo;
-    m_combo_one_key_completion_key.ItemIndex := Ord(ock_tab);
-    m_combo_one_key_completion_key.OnChange := one_key_completion_key_changed;
+    fit_section_height(shortcut_group, m_combo_shortcut_keys[High(TncShortcutAction)]);
 end;
 
 procedure TncSettingsForm.populate_candidate_page_key_scheme_combo;
@@ -2782,12 +3323,96 @@ begin
 
     m_panel_candidate_page_previous_key.Caption := previous_key;
     m_panel_candidate_page_next_key.Caption := next_key;
+    layout_key_row(m_combo_candidate_page_keys, m_label_candidate_page_previous,
+        m_panel_candidate_page_previous_key, m_label_candidate_page_next, m_panel_candidate_page_next_key);
 end;
 
 procedure TncSettingsForm.candidate_page_key_scheme_changed(Sender: TObject);
 begin
     update_candidate_page_key_scheme_preview;
+    update_select_character_keys_controls;
     mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.populate_select_character_keys_combo;
+begin
+    if m_combo_select_character_keys = nil then
+    begin
+        Exit;
+    end;
+    m_combo_select_character_keys.Items.BeginUpdate;
+    try
+        m_combo_select_character_keys.Items.Clear;
+        m_combo_select_character_keys.Items.Add(SSelectCharacterKeysNone);
+        m_combo_select_character_keys.Items.Add(SSelectCharacterKeysBrackets);
+    finally
+        m_combo_select_character_keys.Items.EndUpdate;
+    end;
+    m_combo_select_character_keys.ItemIndex := Ord(sck_none);
+end;
+
+procedure TncSettingsForm.update_select_character_keys_controls;
+var
+    paging_takes_keys: Boolean;
+begin
+    if (m_combo_select_character_keys = nil) or (m_panel_first_character_key = nil) or
+        (m_panel_last_character_key = nil) or (m_label_select_character_note = nil) then
+    begin
+        Exit;
+    end;
+
+    // The bracket paging scheme keeps [ and ], as the configuration does.
+    paging_takes_keys := nc_select_character_keys_conflict_with_page_keys(sck_brackets,
+        get_selected_candidate_page_key_scheme);
+    if paging_takes_keys then
+    begin
+        m_combo_select_character_keys.ItemIndex := Ord(sck_none);
+        m_label_select_character_note.Caption := SSelectCharacterKeysBusy;
+    end
+    else
+    begin
+        m_label_select_character_note.Caption := SSelectCharacterKeysHint;
+    end;
+    m_combo_select_character_keys.Enabled := not paging_takes_keys;
+
+    if get_selected_select_character_keys = sck_brackets then
+    begin
+        m_panel_first_character_key.Caption := '[';
+        m_panel_last_character_key.Caption := ']';
+    end
+    else
+    begin
+        m_panel_first_character_key.Caption := c_no_key_caption;
+        m_panel_last_character_key.Caption := c_no_key_caption;
+    end;
+end;
+
+procedure TncSettingsForm.select_character_keys_changed(Sender: TObject);
+begin
+    update_select_character_keys_controls;
+    mark_dirty(Sender);
+end;
+
+function TncSettingsForm.get_selected_select_character_keys: TncSelectCharacterKeys;
+begin
+    Result := sck_none;
+    if (m_combo_select_character_keys <> nil) and
+        (m_combo_select_character_keys.ItemIndex >= Ord(Low(TncSelectCharacterKeys))) and
+        (m_combo_select_character_keys.ItemIndex <= Ord(High(TncSelectCharacterKeys))) then
+    begin
+        Result := TncSelectCharacterKeys(m_combo_select_character_keys.ItemIndex);
+    end;
+end;
+
+procedure TncSettingsForm.set_select_character_keys_combo(const keys: TncSelectCharacterKeys);
+begin
+    if m_combo_select_character_keys = nil then
+    begin
+        Exit;
+    end;
+    m_combo_select_character_keys.ItemIndex := Ord(nc_resolve_select_character_keys(keys,
+        get_selected_candidate_page_key_scheme));
+    update_select_character_keys_controls;
 end;
 
 procedure TncSettingsForm.populate_second_third_candidate_keys_combo;
@@ -2826,8 +3451,8 @@ begin
                 third_key := '''';
             end;
     else
-        second_key := '—';
-        third_key := '—';
+        second_key := c_no_key_caption;
+        third_key := c_no_key_caption;
     end;
 
     m_panel_second_candidate_key.Caption := second_key;
@@ -2871,6 +3496,7 @@ procedure TncSettingsForm.one_key_completion_key_changed(Sender: TObject);
 begin
     populate_candidate_page_key_scheme_combo;
     update_candidate_page_key_scheme_preview;
+    update_select_character_keys_controls;
     update_candidate_preview;
     mark_dirty(Sender);
 end;
@@ -2901,6 +3527,7 @@ begin
         get_selected_one_key_completion_key);
     m_combo_candidate_page_keys.ItemIndex := Ord(resolved_scheme);
     update_candidate_page_key_scheme_preview;
+    update_select_character_keys_controls;
 end;
 
 function TncSettingsForm.get_selected_one_key_completion_key:
@@ -2929,6 +3556,7 @@ begin
         nc_normalize_one_key_completion_key(completion_key));
     populate_candidate_page_key_scheme_combo;
     update_candidate_page_key_scheme_preview;
+    update_select_character_keys_controls;
 end;
 
 function TncSettingsForm.shortcut_from_controls(const action: TncShortcutAction): TncShortcut;
@@ -3039,22 +3667,23 @@ var panel: TPanel; hint: TLabel; top, idx: Integer;
 const captions: array[0..5] of string = ('新增', '删除', '上移', '下移', '导入', '导出');
 begin
     panel := create_section_group(Self, m_scroll_custom_phrases, '',
-        scale_ui(c_section_gap), 340);
+        scale_ui(c_first_section_top), 340);
     hint := create_hint_label(Self, panel, SCustomPhraseHint,
-        scale_ui(c_label_left), scale_ui(14), panel.Width - scale_ui(36));
+        scale_ui(c_label_left), scale_ui(c_untitled_section_inner_top), panel.Width - scale_ui(c_label_left * 2));
     hint.Anchors := [akLeft, akTop, akRight];
     top := hint.Top + hint.Height + scale_ui(10);
     m_custom_phrase_grid := TncCustomPhraseGrid.Create(Self);
     m_custom_phrase_grid.Name := 'CustomPhraseGrid';
     m_custom_phrase_grid.Parent := panel;
     m_custom_phrase_grid.SetBounds(scale_ui(c_label_left), top,
-        panel.Width - scale_ui(36), scale_ui(170));
+        panel.Width - scale_ui(c_label_left * 2), scale_ui(200));
     m_custom_phrase_grid.Anchors := [akLeft, akTop, akRight];
     m_custom_phrase_grid.ColCount := 2;
     m_custom_phrase_grid.RowCount := 2;
     m_custom_phrase_grid.FixedCols := 0;
     m_custom_phrase_grid.FixedRows := 1;
     m_custom_phrase_grid.DefaultRowHeight := scale_ui(26);
+    m_custom_phrase_grid.DrawingStyle := gdsThemed;
     m_custom_phrase_grid.Options := [goFixedVertLine, goFixedHorzLine,
         goVertLine, goHorzLine, goEditing, goAlwaysShowEditor, goTabs, goThumbTracking];
     m_custom_phrase_grid.Cells[0, 0] := '快捷码';
@@ -3068,8 +3697,8 @@ begin
         button := TncModernButton.Create(Self);
         button.Name := 'CustomPhraseAction' + IntToStr(idx);
         button.Parent := panel;
-        button.SetBounds(scale_ui(c_label_left + idx * 78), top,
-            scale_ui(68), scale_ui(c_button_height));
+        button.SetBounds(scale_ui(c_label_left + idx * 80), top,
+            scale_ui(70), scale_ui(c_button_height));
         button.Caption := captions[idx];
         button.Tag := idx;
         case idx of
@@ -3082,11 +3711,11 @@ begin
     end;
     m_custom_phrase_notice := create_hint_label(Self, panel,
         SCustomPhraseOrder, scale_ui(c_label_left),
-        top + scale_ui(c_button_height + 12), panel.Width - scale_ui(36));
+        top + scale_ui(c_button_height + 12), panel.Width - scale_ui(c_label_left * 2));
     m_custom_phrase_notice.Name := 'CustomPhraseNotice';
     m_custom_phrase_notice.Anchors := [akLeft, akTop, akRight];
-    m_custom_phrase_notice.Height := scale_ui(48);
-    panel.Height := m_custom_phrase_notice.Top + m_custom_phrase_notice.Height + scale_ui(12);
+    m_custom_phrase_notice.Height := scale_ui(40);
+    fit_section_height(panel, m_custom_phrase_notice);
 end;
 
 procedure TncSettingsForm.on_custom_phrase_resize(Sender: TObject);
@@ -3311,63 +3940,76 @@ var
     top: Integer;
     logging_group: TPanel;
     size_label: TLabel;
+    debug_hint: TLabel;
 begin
-    logging_group := create_section_group(Self, m_scroll_advanced, SGroupLogging, start_top, 180);
+    logging_group := create_section_group(Self, m_scroll_advanced, SGroupDebugLogging, start_top, 260);
     logging_group.Name := 'SettingsLoggingGroup';
     logging_group.Caption := '';
 
     top := scale_ui(c_section_inner_top);
+    create_label(Self, logging_group, SGroupDebug, top);
+    m_chk_debug_mode := create_check_box(Self, logging_group, top, SCheckEnableDebugMode, mark_dirty);
+    m_chk_debug_mode.Name := 'SettingsDebugMode';
+    place_in_control_column(m_chk_debug_mode, logging_group);
+    debug_hint := create_hint_label(Self, logging_group, SHintDebugMode, scale_ui(c_control_left),
+        top + scale_ui(c_check_row_pitch - 4), logging_group.ClientWidth - scale_ui(c_control_left + c_label_left));
+    debug_hint.Anchors := [akLeft, akTop, akRight];
+
+    top := debug_hint.Top + debug_hint.Height + scale_ui(c_key_row_gap);
+    create_label(Self, logging_group, SGroupLogging, top);
     m_chk_log_enabled := create_check_box(Self, logging_group, top, SCheckEnableLogging, mark_dirty);
     m_chk_log_enabled.Name := 'SettingsLoggingEnabled';
+    place_in_control_column(m_chk_log_enabled, logging_group);
 
-    // Level and size share a row, the size ending under the browse button,
-    // so that the Advanced page is no taller than the others.
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
+    // The path runs to the browse button at the card's right edge; the size
+    // ends under that button.
+    top := next_row_top(top);
+    create_label(Self, logging_group, SLabelLogPath, top + scale_ui(c_row_height + c_general_row_gap));
+    m_edit_log_path := TEdit.Create(Self);
+    m_edit_log_path.Name := 'SettingsLogPath';
+    m_edit_log_path.Parent := logging_group;
+    m_edit_log_path.Left := scale_ui(c_control_left);
+    m_edit_log_path.Top := next_row_top(top);
+    m_edit_log_path.Width := logging_group.ClientWidth - m_edit_log_path.Left - scale_ui(c_label_left) -
+        scale_ui(c_browse_button_gap + c_browse_button_width);
+    m_edit_log_path.Anchors := [akLeft, akTop, akRight];
+    configure_path_edit(m_edit_log_path, get_default_log_path);
+    m_edit_log_path.OnChange := mark_dirty;
+    m_btn_log_path := create_browse_button(Self, logging_group, m_edit_log_path.Top, on_browse_log_path);
+    m_btn_log_path.Left := m_edit_log_path.Left + m_edit_log_path.Width + scale_ui(c_browse_button_gap);
+    m_btn_log_path.Anchors := [akTop, akRight];
+
     create_label(Self, logging_group, SLabelLogLevel, top);
     m_edit_log_max_size_kb := TEdit.Create(Self);
     m_edit_log_max_size_kb.Name := 'SettingsLogMaxSize';
     m_edit_log_max_size_kb.Parent := logging_group;
     m_edit_log_max_size_kb.Width := scale_ui(c_log_size_edit_width);
-    m_edit_log_max_size_kb.Left := scale_ui(c_control_left + c_path_edit_width + c_browse_button_gap +
-        c_browse_button_width) - m_edit_log_max_size_kb.Width;
+    m_edit_log_max_size_kb.Left := m_btn_log_path.Left + m_btn_log_path.Width - m_edit_log_max_size_kb.Width;
     m_edit_log_max_size_kb.Top := top;
+    m_edit_log_max_size_kb.Anchors := [akTop, akRight];
     configure_numeric_edit(m_edit_log_max_size_kb, '64..1048576');
     m_edit_log_max_size_kb.OnChange := mark_dirty;
-    size_label := create_label(Self, logging_group, SLabelMaxLogSize, top);
+    size_label := create_side_label(Self, logging_group, SLabelMaxLogSize, 0, top + scale_ui(4));
     size_label.Left := m_edit_log_max_size_kb.Left - scale_ui(8) - size_label.Width;
+    size_label.Anchors := [akTop, akRight];
 
-    m_combo_log_level := TComboBox.Create(Self);
+    m_combo_log_level := create_combo(Self, logging_group, top, c_combo_width);
     m_combo_log_level.Name := 'SettingsLogLevel';
-    m_combo_log_level.Parent := logging_group;
-    m_combo_log_level.Left := scale_ui(c_control_left);
-    m_combo_log_level.Top := top;
     m_combo_log_level.Width := Min(scale_ui(c_combo_width),
         size_label.Left - scale_ui(16) - m_combo_log_level.Left);
-    m_combo_log_level.Style := csDropDownList;
     m_combo_log_level.Items.Add(SOptionLogDebug);
     m_combo_log_level.Items.Add(SOptionLogInfo);
     m_combo_log_level.Items.Add(SOptionLogWarn);
     m_combo_log_level.Items.Add(SOptionLogError);
     m_combo_log_level.OnChange := mark_dirty;
 
-    Inc(top, scale_ui(c_row_height + c_general_row_gap));
-    create_label(Self, logging_group, SLabelLogPath, top);
-    m_edit_log_path := TEdit.Create(Self);
-    m_edit_log_path.Name := 'SettingsLogPath';
-    m_edit_log_path.Parent := logging_group;
-    m_edit_log_path.Left := scale_ui(c_control_left);
-    m_edit_log_path.Top := top;
-    m_edit_log_path.Width := scale_ui(c_path_edit_width);
-    configure_path_edit(m_edit_log_path, get_default_log_path);
-    m_edit_log_path.OnChange := mark_dirty;
-    m_btn_log_path := create_browse_button(Self, logging_group, top, on_browse_log_path);
-
-    Inc(top, scale_ui(c_row_height + 2));
+    top := next_row_top(m_edit_log_path.Top);
     m_btn_open_log_folder := create_action_button(Self, logging_group, scale_ui(c_control_left), top,
         SButtonOpenLogFolder, on_open_log_folder);
-    m_btn_log_defaults := create_action_button(Self, logging_group, scale_ui(c_control_left + c_action_button_width + 12), top,
+    m_btn_log_defaults := create_action_button(Self, logging_group,
+        m_btn_open_log_folder.Left + m_btn_open_log_folder.Width + scale_ui(10), top,
         SButtonUseDefaultLogging, on_log_defaults_click);
-    logging_group.Height := m_btn_log_defaults.Top + m_btn_log_defaults.Height + scale_ui(12);
+    fit_section_height(logging_group, m_btn_log_defaults);
     Result := logging_group.Top + logging_group.Height + scale_ui(c_section_gap);
 end;
 
@@ -3375,43 +4017,39 @@ procedure TncSettingsForm.add_advanced_controls;
 var
     top: Integer;
     section_top: Integer;
-    debug_group: TPanel;
+    dictionary_group: TPanel;
     tools_group: TPanel;
-    debug_hint: TLabel;
 begin
-    section_top := scale_ui(18);
-    debug_group := create_section_group(Self, m_scroll_advanced, SGroupDebug, section_top, 135);
-    debug_group.Name := 'SettingsDebugGroup';
-    debug_group.Caption := '';
-
+    dictionary_group := create_section_group(Self, m_scroll_advanced, SGroupUserDictionary,
+        scale_ui(c_first_section_top), 120);
+    dictionary_group.Name := 'SettingsUserDictionaryGroup';
+    dictionary_group.Caption := '';
     top := scale_ui(c_section_inner_top);
-    m_chk_debug_mode := create_check_box(Self, debug_group, top, SCheckEnableDebugMode, mark_dirty);
-    m_chk_debug_mode.Name := 'SettingsDebugMode';
-    debug_hint := create_hint_label(Self, debug_group, SHintDebugMode, scale_ui(c_label_left),
-        top + scale_ui(c_row_height + 4), scale_ui(c_hint_width));
-    top := debug_hint.Top + debug_hint.Height + scale_ui(8);
-    m_btn_clear_user_dictionary := create_action_button(Self, debug_group, scale_ui(c_label_left), top,
-        SButtonClearUserDictionary, on_clear_user_dictionary_click);
-    m_btn_import_user_words := create_action_button(Self, debug_group,
-        scale_ui(c_label_left + c_action_button_width + 12), top,
+    m_hint_user_dictionary := create_hint_label(Self, dictionary_group, SHintUserDictionary,
+        scale_ui(c_label_left), top, dictionary_group.ClientWidth - scale_ui(c_label_left * 2));
+    m_hint_user_dictionary.Anchors := [akLeft, akTop, akRight];
+    top := m_hint_user_dictionary.Top + m_hint_user_dictionary.Height + scale_ui(8);
+    m_btn_import_user_words := create_action_button(Self, dictionary_group, scale_ui(c_label_left), top,
         SButtonImportUserWords, on_import_user_words_click);
     m_btn_import_user_words.Name := 'SettingsImportUserWords';
-    debug_group.Height := m_btn_clear_user_dictionary.Top + m_btn_clear_user_dictionary.Height + scale_ui(12);
+    m_btn_clear_user_dictionary := create_action_button(Self, dictionary_group,
+        m_btn_import_user_words.Left + m_btn_import_user_words.Width + scale_ui(10), top,
+        SButtonClearUserDictionary, on_clear_user_dictionary_click);
+    fit_section_height(dictionary_group, m_btn_clear_user_dictionary);
 
-    section_top := debug_group.Top + debug_group.Height + scale_ui(c_section_gap);
+    section_top := dictionary_group.Top + dictionary_group.Height + scale_ui(c_section_gap);
     section_top := add_logging_controls(section_top);
-    tools_group := create_section_group(Self, m_scroll_advanced, SGroupConfigTools, section_top, 104);
+
+    tools_group := create_section_group(Self, m_scroll_advanced, SGroupConfigTools, section_top, 90);
     tools_group.Name := 'SettingsConfigToolsGroup';
     tools_group.Caption := '';
-
     top := scale_ui(c_section_inner_top);
     m_btn_open_config_folder := create_action_button(Self, tools_group, scale_ui(c_label_left), top,
         SButtonOpenConfigFolder, on_open_config_folder);
-    m_btn_open_config_file := create_action_button(Self, tools_group, scale_ui(c_label_left + c_action_button_width + 12), top,
+    m_btn_open_config_file := create_action_button(Self, tools_group,
+        m_btn_open_config_folder.Left + m_btn_open_config_folder.Width + scale_ui(10), top,
         SButtonOpenConfigFile, on_open_config_file);
-
-    m_hint_advanced := create_hint_label(Self, tools_group, SHintAdvanced, scale_ui(c_label_left), top + scale_ui(c_row_height + 8), scale_ui(c_hint_width));
-    tools_group.Height := m_hint_advanced.Top + m_hint_advanced.Height + scale_ui(12);
+    fit_section_height(tools_group, m_btn_open_config_file);
 end;
 
 procedure TncSettingsForm.on_clear_user_dictionary_click(Sender: TObject);
@@ -3490,6 +4128,8 @@ procedure TncSettingsForm.on_page_change(Sender: TObject);
 begin
     if m_btn_reset <> nil then
         m_btn_reset.Enabled := m_page_control.ActivePage <> m_tab_custom_phrases;
+    if m_nav <> nil then
+        m_nav.Invalidate;
     preview_status_widget;
 end;
 
@@ -3658,15 +4298,19 @@ begin
                 fuzzy_rule in default_engine_config.fuzzy_pinyin_rules;
         end;
     end
-    else if m_page_control.ActivePage = m_tab_shortcuts then
+    else if m_page_control.ActivePage = m_tab_keys then
     begin
-        load_shortcut_controls(default_engine_config.shortcuts);
         set_one_key_completion_key_combo(
             default_engine_config.one_key_completion_key);
         set_candidate_page_key_scheme_combo(
             default_engine_config.candidate_page_key_scheme);
         set_second_third_candidate_keys_combo(
             default_engine_config.second_third_candidate_keys);
+        set_select_character_keys_combo(default_engine_config.select_character_keys);
+    end
+    else if m_page_control.ActivePage = m_tab_shortcuts then
+    begin
+        load_shortcut_controls(default_engine_config.shortcuts);
     end
     else if m_page_control.ActivePage = m_tab_custom_phrases then
     begin
@@ -4018,6 +4662,9 @@ var
     item_index: Integer;
     font_size: Integer;
     dpi: Integer;
+    stage_padding: Integer;
+    stage_radius: Integer;
+    window_top: Integer;
 begin
     if not (Sender is TPaintBox) then
     begin
@@ -4027,8 +4674,6 @@ begin
     paint_box := TPaintBox(Sender);
     canvas := paint_box.Canvas;
     bounds := paint_box.ClientRect;
-    canvas.Brush.Color := clWhite;
-    canvas.FillRect(bounds);
 
     font_size := get_candidate_font_size_from_slider;
     dpi := get_control_scale_dpi(paint_box);
@@ -4062,12 +4707,24 @@ begin
     m_candidate_preview_window.apply_appearance(
         get_selected_candidate_font_name, font_size,
         get_selected_candidate_color_scheme);
+    // The window stands on a stage of the dialog's background, as it floats
+    // over a document, in the middle of the room kept for the largest size.
+    stage_padding := MulDiv(14, dpi, c_nc_base_dpi);
+    stage_radius := MulDiv(10, dpi, c_nc_base_dpi);
+    canvas.Brush.Color := clWhite;
+    canvas.FillRect(bounds);
+    canvas.Brush.Color := c_ui_back;
+    canvas.Pen.Color := c_ui_card_border;
+    canvas.RoundRect(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom, stage_radius, stage_radius);
+
     m_candidate_preview_window.prepare_preview(dpi,
-        bounds.Right - bounds.Left);
+        bounds.Right - bounds.Left - (stage_padding * 2));
     m_candidate_preview_window.update_candidates(candidates, 0, 1, 0,
         c_preview_preedit_text, completion,
         get_selected_one_key_completion_key, False);
-    m_candidate_preview_window.PaintTo(canvas.Handle, bounds.Left, bounds.Top);
+    window_top := Max(bounds.Top, bounds.Top +
+        (bounds.Bottom - bounds.Top - m_candidate_preview_window.Height) div 2);
+    m_candidate_preview_window.PaintTo(canvas.Handle, bounds.Left + stage_padding, window_top);
 end;
 
 function TncSettingsForm.browse_for_save_file(const title: string; const filter: string; const default_ext: string;
@@ -4275,6 +4932,7 @@ begin
         m_engine_config.candidate_page_key_scheme);
     set_second_third_candidate_keys_combo(
         m_engine_config.second_third_candidate_keys);
+    set_select_character_keys_combo(m_engine_config.select_character_keys);
     if m_chk_log_enabled <> nil then
     begin
         m_chk_log_enabled.Checked := m_log_config.enabled;
@@ -4356,6 +5014,7 @@ begin
     if not read_custom_phrase_controls(next_config.custom_phrases, error_text) then
     begin
         m_page_control.ActivePage := m_tab_custom_phrases;
+        m_nav.Invalidate;
         Exit(False);
     end;
 
@@ -4452,6 +5111,8 @@ begin
         next_config.one_key_completion_key);
     next_config.second_third_candidate_keys :=
         get_selected_second_third_candidate_keys;
+    next_config.select_character_keys := nc_resolve_select_character_keys(
+        get_selected_select_character_keys, next_config.candidate_page_key_scheme);
     next_config.candidate_color_scheme := get_selected_candidate_color_scheme;
     shortcut_config := nc_default_shortcut_config;
     for action_index := Ord(Low(TncShortcutAction)) to Ord(High(TncShortcutAction)) do

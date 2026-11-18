@@ -155455,6 +155455,7 @@ end;
 
 function TncEngine.process_key(const key_code: Word; const key_state: TncKeyState): Boolean;
 var
+    last_character: Boolean;
     key_char: Char;
     display_key_char: Char;
     index: Integer;
@@ -156842,6 +156843,28 @@ begin
             if get_selected_candidate(candidate, True) then
             begin
                 Exit(apply_candidate_selection(candidate, index, True, True));
+            end;
+        end;
+        Exit(True);
+    end;
+
+    // [ and ] commit the first and the last character of the selected
+    // candidate and end the composition, the rest of the input with it (off by
+    // default; the bracket paging scheme keeps the keys). The character does
+    // not read the input, so the commit teaches nothing: it takes the path of
+    // a quick-input commit, which learns no choice, path or adjacent pair.
+    if (m_composition_text <> '') and (m_quick_input.kind = qik_none) and
+        nc_select_character_key_side(m_config.select_character_keys,
+        m_config.candidate_page_key_scheme, key_code, key_state, last_character) then
+    begin
+        if (not m_raw_input_selected) and get_selected_candidate(candidate, True) then
+        begin
+            commit_text := nc_select_character_of_text(candidate.text, last_character);
+            if commit_text <> '' then
+            begin
+                set_pending_commit(commit_text, '', False, '', False, '', False,
+                    False, '', True);
+                m_quick_input.pending_commit := True;
             end;
         end;
         Exit(True);
@@ -189289,6 +189312,7 @@ end;
 
 function TncEngine.should_handle_key(const key_code: Word; const key_state: TncKeyState): Boolean;
 var
+    last_character: Boolean;
     key_char: Char;
     display_key_char: Char;
     punct_char: Char;
@@ -189348,6 +189372,15 @@ begin
         nc_second_third_candidate_key_index(
         m_config.second_third_candidate_keys, key_code, key_state,
         selection_index) then
+    begin
+        Result := True;
+        Exit;
+    end;
+
+    if (m_composition_text <> '') and (m_quick_input.kind = qik_none) and
+        nc_select_character_key_side(m_config.select_character_keys,
+        m_config.candidate_page_key_scheme, key_code, key_state,
+        last_character) then
     begin
         Result := True;
         Exit;

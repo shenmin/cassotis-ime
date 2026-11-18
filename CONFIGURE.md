@@ -125,8 +125,11 @@ Codes contain 1–32 ASCII letters and are case-insensitive. Full Pinyin and Dou
 | `candidate_page_keys` | Candidate paging key scheme | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | Represents `-/=`, `[/]`, `,/.`, or `Shift+Tab/Tab`. |
 | `one_key_completion_key` | One-key completion trigger | `tab` / `backtick` | `tab` | Accepts the single result in the one-key completion area. An exact custom-phrase match takes priority over automatic completion and has no syllable-count requirement. Otherwise, the existing predictive completion applies. `backtick` means the `` ` `` key. |
 | `second_third_candidate_keys` | Keys for the second and third candidate | `none` / `semicolon-quote` | `none` | `semicolon-quote`: while pinyin is being typed, `;` picks the second candidate and `'` the third; the digit keys still work. Without a composition both keys type punctuation as before. With the keys on, `'` no longer separates syllables; in Microsoft, Sogou and Ziguang double pinyin a `;` after an initial is still the final ing. With Shift (`:` and `"`) they stay punctuation. |
+| `select_character_keys` | Keys for a character of the candidate | `none` / `brackets` | `none` | `brackets`: while pinyin is being typed, `[` commits the first character of the selected candidate and `]` its last (type ciku, press `[`, get 词); the rest of the input is dropped, and the character is not learned. Without a composition both keys type punctuation as before. With Shift (`{` and `}`) they stay punctuation. |
 
 When `one_key_completion_key=tab`, `candidate_page_keys=shift-tab` conflicts with completion. Settings therefore hides that paging option, and an INI file containing both values is normalized to `minus-plus`.
+
+When `candidate_page_keys=brackets`, the brackets page through the candidates: Settings disables `select_character_keys`, and an INI file setting both to `brackets` is normalized to `select_character_keys=none`. The keys for paging, the second and third candidate, a character of the candidate and one-key completion can also be changed in **Settings > 按键** (Keys).
 
 ---
 
@@ -150,7 +153,7 @@ Development builds, which have no `base_dict` beside the program, and earlier in
 
 ## `[log]`
 
-Logging options are in **Settings > 高级** (Advanced), below Debug and above Configuration tools.
+Logging options are in **Settings > 高级 > 调试与日志** (Advanced > Debugging and logging), below the user dictionary and above Configuration tools.
 
 | Key | Meaning | Allowed values | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -209,6 +212,7 @@ open_settings=Ctrl+Shift+F10
 candidate_page_keys=minus-plus
 one_key_completion_key=tab
 second_third_candidate_keys=none
+select_character_keys=none
 
 [log]
 enabled=false
