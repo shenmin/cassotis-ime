@@ -26,7 +26,11 @@ type
         // pinyin-conditioned model corrects it). Ablated, the page is what
         // the dictionary paths left; short_phrase_draft alone takes the first
         // draft without asking the shared LM.
-        la_short_phrase, la_short_phrase_draft);
+        la_short_phrase, la_short_phrase_draft,
+        // The long repair's gate (nc_long_repair_gate_gbdt). Ablated, a pass
+        // takes its text when the two gains add up to 1.0 nats, as before
+        // 2026-11-18.
+        la_repair_gate);
 
 function nc_long_ablated(const stage: TncLongAblation): Boolean;
 
@@ -40,7 +44,7 @@ const
         'pool_ranker', 'exact_edge_lattice',
         'short_nocontext', 'short_empty_context',
         'keystroke_whole_decode', 'second_slot_choice',
-        'short_phrase', 'short_phrase_draft');
+        'short_phrase', 'short_phrase_draft', 'repair_gate');
 
 var
     g_ablated: array[TncLongAblation] of Boolean;

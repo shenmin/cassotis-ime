@@ -1474,6 +1474,8 @@ uses
 {$ENDIF}
     nc_tab_repair_projection,
     nc_tab_exact_fallback,
+    nc_word_frequency_evidence,
+    nc_long_repair_gate_gbdt,
     nc_log;
 
 const
@@ -1482,12 +1484,14 @@ const
     c_long_sentence_complete_candidate_display_limit = 2;
     c_long_postprocess_emergency_budget_ms = 320;
     c_fast_repair_promote_margin = 6000;
-    // A long correction replaces the draft when the two models' log-probability
-    // gains over it (the correction's, the shared LM's without a context, as the
-    // long choice scores) add up to this many nats. The correction alone needed
-    // 1.0 of its own: the shared LM now overrules a rewrite it rates far below
-    // the draft and carries one it rates above it.
+    // A pass of the long repair weighs texts by two models' log-probability
+    // gains over its draft (the correction's, the shared LM's without a
+    // context, as the long choice scores). Until 2026-11-18 the text with the
+    // largest sum replaced the draft when the sum reached this many nats; it
+    // still does with CASSOTIS_LONG_ABLATE=repair_gate. Now the gate decides
+    // (nc_long_repair_gate_gbdt), and takes the text at a score of this or more.
     c_long_repair_joint_gain = 1.0;
+    c_long_repair_gate_threshold = 0.0;
     // Beside the correction's own rewrite, the draft with one word replaced by
     // another of the same syllables (two to four characters, the heaviest
     // c_long_repair_swaps_per_key of the key) competes: the correction scores
@@ -139152,14 +139156,37 @@ var
         end;
     end;
     // One pass of both models over a text: the correction's rewrite and the
-    // text with one word replaced, weighed against it.
-    function weighed_rewrite(const corrector: IncLongLocalCorrector; const draft: string): string;
+    // text with one word replaced, weighed against it. The text with the
+    // largest sum of the two gains is the candidate, and the gate
+    // (nc_long_repair_gate_gbdt) decides whether it replaces the draft: the
+    // gains, the shape of the edit and the word-frequency evidence of both.
+    function weighed_rewrite(const corrector: IncLongLocalCorrector; const draft: string;
+        const pass_no: Integer): string;
     var
         swaps, texts: TArray<string>;
         gains, text_gains, scores: TArray<Single>;
-        corrected: string;
-        gain, best: Single;
-        i: Integer;
+        kinds, corrected: string;
+        gain, lm_gain, best_sum: Single;
+        joint, best: Double;
+        features: array[0..c_long_repair_gate_feature_count - 1] of Double;
+        draft_evidence, text_evidence: TncWordFrequencyEvidence;
+        i, top, changed, runs: Integer;
+        function evidence_of(const value: string): TncWordFrequencyEvidence;
+        begin
+            Result := nc_build_word_frequency_evidence(value,
+                function(const word: string): Integer
+                begin
+                    Result := m_dictionary.get_word_frequency_score(word);
+                end);
+        end;
+        function evidence_text(const evidence: TncWordFrequencyEvidence): string;
+        var
+            k: Integer;
+        begin
+            Result := '';
+            for k := 0 to High(evidence) do
+                Result := Result + #9 + FloatToStr(evidence[k], TFormatSettings.Invariant);
+        end;
     begin
         Result := draft;
         swaps := homophone_word_swaps(draft, corrector.align_long(repair_query, draft));
@@ -139168,27 +139195,99 @@ var
             gains) < 0 then Exit;
         texts := [draft];
         text_gains := [0];
+        kinds := 'd';
         if (corrected <> '') and (corrected <> draft) then
         begin
             texts := texts + [corrected];
             text_gains := text_gains + [gain];
+            kinds := kinds + 'c';
         end;
         for i := 0 to High(swaps) do
             if (i < Length(gains)) and not IsNan(gains[i]) and (swaps[i] <> corrected) then
             begin
                 texts := texts + [swaps[i]];
                 text_gains := text_gains + [gains[i]];
+                kinds := kinds + 's';
             end;
+        if Assigned(nc_char_lm_long_trace) then
+            nc_char_lm_long_trace('REPAIR_P'#9 + IntToStr(pass_no) + #9 + draft + #9 +
+                IntToStr(Length(texts) - 1));
         if (Length(texts) < 2) or
             (m_char_lm.score_texts('', texts, Length(texts), 0, scores) <> Length(texts)) then
             Exit;
-        best := c_long_repair_joint_gain;
-        for i := 1 to High(texts) do
-            if text_gains[i] + scores[i] - scores[0] >= best then
+        // Every weighed text, for refitting the gate
+        // (tools/train_long_repair_gate_gbdt.py).
+        if Assigned(nc_char_lm_long_trace) then
+        begin
+            draft_evidence := evidence_of(draft);
+            for i := 1 to High(texts) do
             begin
-                best := text_gains[i] + scores[i] - scores[0];
-                Result := texts[i];
+                lm_gain := scores[i] - scores[0];
+                nc_char_lm_long_trace('REPAIR_G'#9 + IntToStr(pass_no) + #9 + draft + #9 +
+                    texts[i] + #9 + kinds[i + 1] + #9 +
+                    FloatToStr(text_gains[i], TFormatSettings.Invariant) + #9 +
+                    FloatToStr(lm_gain, TFormatSettings.Invariant) + #9 +
+                    IntToStr(Ord(build_repair_path(m_dictionary, texts[i], aligned_pinyin).exact_path)) +
+                    evidence_text(draft_evidence) + evidence_text(evidence_of(texts[i])));
             end;
+        end;
+        if nc_long_ablated(la_repair_gate) then
+        begin
+            // The rule before 2026-11-18: the two gains add up to 1.0 nats.
+            best_sum := c_long_repair_joint_gain;
+            for i := 1 to High(texts) do
+                if text_gains[i] + scores[i] - scores[0] >= best_sum then
+                begin
+                    best_sum := text_gains[i] + scores[i] - scores[0];
+                    Result := texts[i];
+                end;
+            Exit;
+        end;
+        // The candidate: the largest sum, the first of equals.
+        top := 1;
+        best := -MaxDouble;
+        for i := 1 to High(texts) do
+        begin
+            lm_gain := scores[i] - scores[0];
+            joint := Double(text_gains[i]) + Double(lm_gain);
+            if joint > best then
+            begin
+                best := joint;
+                top := i;
+            end;
+        end;
+        if Length(texts[top]) <> Length(draft) then
+            Exit;
+        lm_gain := scores[top] - scores[0];
+        changed := 0;
+        runs := 0;
+        for i := 1 to Length(draft) do
+            if draft[i] <> texts[top][i] then
+            begin
+                Inc(changed);
+                if (i = 1) or (draft[i - 1] = texts[top][i - 1]) then
+                    Inc(runs);
+            end;
+        draft_evidence := evidence_of(draft);
+        text_evidence := evidence_of(texts[top]);
+        features[0] := text_gains[top];
+        features[1] := lm_gain;
+        features[2] := Double(text_gains[top]) + Double(lm_gain);
+        features[3] := Min(Double(text_gains[top]), Double(lm_gain));
+        features[4] := Ord(kinds[top + 1] = 'c');
+        features[5] := Ord(kinds[top + 1] = 's');
+        features[6] := changed;
+        features[7] := runs;
+        features[8] := Length(draft);
+        features[9] := Length(texts) - 1;
+        for i := 0 to c_long_repair_gate_evidence_count - 1 do
+        begin
+            features[10 + i] := text_evidence[i] - draft_evidence[i];
+            features[10 + c_long_repair_gate_evidence_count + i] := text_evidence[i];
+        end;
+        features[10 + 2 * c_long_repair_gate_evidence_count] := Ord(pass_no = 2);
+        if nc_long_repair_gate_score(features) >= c_long_repair_gate_threshold then
+            Result := texts[top];
     end;
     // The correction of the draft, or the draft itself. A text the first pass
     // chose goes through one more: a sentence with two wrong words gets the
@@ -139202,10 +139301,10 @@ var
         if (m_char_lm <> nil) and m_char_lm_long_enabled and m_char_lm.char_lm_ready and
             Supports(m_long_local_repair, IncLongLocalCorrector, corrector) then
         begin
-            Result := weighed_rewrite(corrector, draft);
+            Result := weighed_rewrite(corrector, draft, 1);
             if Result = draft then Exit;
             first_pinyin := aligned_pinyin;
-            second := weighed_rewrite(corrector, Result);
+            second := weighed_rewrite(corrector, Result, 2);
             if second <> Result then
                 Result := second
             else
