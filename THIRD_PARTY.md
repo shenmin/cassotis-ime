@@ -53,11 +53,20 @@ This file lists third-party software/data used by Cassotis IME and the related l
   - The model was trained by this project on separately licensed corpora, for
     both plain text and pinyin-conditioned correction; it does not contain or
     redistribute training documents.
+  - Its architecture and training code come from nc-GPT
+    (<https://github.com/shenmin/nc-gpt>, by the author of this project,
+    Apache License 2.0), which is not redistributed here. nc-GPT's own 1.2B
+    models served only as offline references while the size of this model
+    was chosen; their weights are not published and are not part of the
+    IME.
   - Its training continued on a selection of everyday dialogues from LCCC
     (Wang et al., "A Large-Scale Chinese Short-Text Conversation Dataset",
     NLPCC 2020; <https://github.com/thu-coai/CDial-GPT>), released under the
     MIT License, Copyright (c) 2020 lemon234071. The model does not contain
     or redistribute the dialogues.
+  - From `v2.9.0` it also learned the preferences of Qwen3.5-9B-Base over
+    whole sentences and continuations (item 8); the larger model is a
+    training teacher only and is not shipped.
   - It is the only neural model shipped from `v2.0.0`. It replaces the
     RBT3-derived short-word context model (no longer shipped from `v1.30.0`),
     the pinyin parallel generator and the MacBERT-derived local correction
@@ -115,6 +124,25 @@ This file lists third-party software/data used by Cassotis IME and the related l
     顯著), not OpenCC's other phrase tables or program code.
   - The license text is in `third_party/opencc/LICENSE`.
 
+## 8) Qwen3.5-9B-Base (Training Teacher, Not Redistributed)
+
+- Component: Qwen3.5-9B-Base, a subword-tokenized base language model by
+  the Qwen team (Alibaba).
+- Used for: offline training of the character language model (item 4) from
+  `v2.9.0`. The teacher scored candidate sentences and continuations drawn
+  from the project's training data (no benchmark cases), and the character
+  model learned its preferences by cross-tokenizer sequence-level
+  distillation; the first four positions of each text stayed anchored to
+  the previous character model, and the result was averaged equally with
+  that model.
+- Source: https://huggingface.co/Qwen/Qwen3.5-9B-Base
+- License: Apache License 2.0
+  (https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/main/LICENSE)
+- Notes:
+  - Neither the teacher's weights nor its tokenizer is shipped or needed at
+    run time; the IME contains only the character model trained with its
+    scores.
+
 ## GPL-3.0 Notice
 
 This project is licensed under GPL-3.0. The redistributed third-party items listed above are generally GPL-compatible:
@@ -123,5 +151,8 @@ This project is licensed under GPL-3.0. The redistributed third-party items list
 - ONNX Runtime (MIT)
 - 12Dicts English word-list data (public domain)
 - OpenCC character tables (Apache License 2.0, compatible with GPL-3.0)
+
+nc-GPT's training code and Qwen3.5-9B-Base were used only to train the
+character language model and are not redistributed.
 
 This file is engineering documentation and not legal advice.
