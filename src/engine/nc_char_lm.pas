@@ -304,6 +304,8 @@ const
     // nc_conversation_keeps_first: 100 is ten times as often.
     c_conversation_first_lead = 150;
     c_conversation_general_deficit = 40;
+    c_conversation_strong_lead = 250;
+    c_conversation_strong_general_deficit = 60;
 
 { Without a context the page's first word keeps its place over the short-word
   choice where three of the signals take its side against the general text:
@@ -311,8 +313,12 @@ const
   scores of the conversation frequency table, LCCC), the general text writes
   the choice at most about 2.5 times as often (40), and the dictionary weighs
   it half again as much or more. zhezhou: 这周 7,602 times in LCCC and 褶皱
-  229, the general text 2,647 and 5,181, weights 1000 and 546. LCCC filtered
-  sensitive words, so a word it lacks (a score of 0) is no evidence. }
+  229, the general text 2,647 and 5,181, weights 1000 and 546. Where
+  conversation writes it 300 times as often or more (250), the general text
+  may write the choice up to 4 times as often (60): shuiba, 睡吧 23,315 times
+  in LCCC and 水坝 37, the general text 3.1 times as often 水坝, weights 700
+  and 408. LCCC filtered sensitive words, so a word it lacks (a score of 0)
+  is no evidence. }
 function nc_conversation_keeps_first(const first_weight, choice_weight,
     first_frequency, choice_frequency, first_conversation,
     choice_conversation: Integer): Boolean;
@@ -1386,10 +1392,14 @@ end;
 function nc_conversation_keeps_first(const first_weight, choice_weight,
     first_frequency, choice_frequency, first_conversation,
     choice_conversation: Integer): Boolean;
+var
+    lead, deficit: Integer;
 begin
+    lead := first_conversation - choice_conversation;
+    deficit := choice_frequency - first_frequency;
     Result := (first_conversation > 0) and (choice_conversation > 0) and
-        (first_conversation - choice_conversation >= c_conversation_first_lead) and
-        (first_frequency - choice_frequency >= -c_conversation_general_deficit) and
+        (((lead >= c_conversation_first_lead) and (deficit <= c_conversation_general_deficit)) or
+        ((lead >= c_conversation_strong_lead) and (deficit <= c_conversation_strong_general_deficit))) and
         (Int64(Max(0, first_weight)) * 2 >= Int64(Max(1, choice_weight)) * 3);
 end;
 

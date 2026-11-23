@@ -138525,8 +138525,9 @@ begin
     if (context = '') and (choices[0].word_frequency - choices[best].word_frequency >=
         c_short_word_frequency_floor) then
         Exit;
-    // Nor where conversation, the dictionary weight and a near tie in the
-    // general text take its side (这周 over 褶皱 for zhezhou).
+    // Nor where conversation and the dictionary weight take its side and the
+    // general text does not lean far the other way (这周 over 褶皱 for
+    // zhezhou, 睡吧 over 水坝 for shuiba).
     if (context = '') and choices[0].has_dict_weight and nc_conversation_keeps_first(
         choices[0].dict_weight, IfThen(choices[best].has_dict_weight, choices[best].dict_weight, 0),
         choices[0].word_frequency, choices[best].word_frequency,
