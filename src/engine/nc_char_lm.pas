@@ -306,6 +306,8 @@ const
     c_conversation_general_deficit = 40;
     c_conversation_strong_lead = 250;
     c_conversation_strong_general_deficit = 60;
+    c_conversation_level_lead = 70;
+    c_conversation_level_general_deficit = 10;
 
 { Without a context the page's first word keeps its place over the short-word
   choice where three of the signals take its side against the general text:
@@ -317,8 +319,12 @@ const
   conversation writes it 300 times as often or more (250), the general text
   may write the choice up to 4 times as often (60): shuiba, 睡吧 23,315 times
   in LCCC and 水坝 37, the general text 3.1 times as often 水坝, weights 700
-  and 408. LCCC filtered sensitive words, so a word it lacks (a score of 0)
-  is no evidence. }
+  and 408. Where the general text holds the two about level (the choice at
+  most about 1.26 times as often, 10), conversation writing the first word 5
+  times as often (70) is enough: shibei, 十倍 and 石碑 scored 381 and 385 by
+  the general text, 256 and 177 by conversation, weights 454 and 144. LCCC
+  filtered sensitive words, so a word it lacks (a score of 0) is no
+  evidence. }
 function nc_conversation_keeps_first(const first_weight, choice_weight,
     first_frequency, choice_frequency, first_conversation,
     choice_conversation: Integer): Boolean;
@@ -1399,7 +1405,8 @@ begin
     deficit := choice_frequency - first_frequency;
     Result := (first_conversation > 0) and (choice_conversation > 0) and
         (((lead >= c_conversation_first_lead) and (deficit <= c_conversation_general_deficit)) or
-        ((lead >= c_conversation_strong_lead) and (deficit <= c_conversation_strong_general_deficit))) and
+        ((lead >= c_conversation_strong_lead) and (deficit <= c_conversation_strong_general_deficit)) or
+        ((lead >= c_conversation_level_lead) and (deficit <= c_conversation_level_general_deficit))) and
         (Int64(Max(0, first_weight)) * 2 >= Int64(Max(1, choice_weight)) * 3);
 end;
 
