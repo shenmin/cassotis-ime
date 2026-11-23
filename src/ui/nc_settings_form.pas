@@ -30,6 +30,7 @@ uses
     nc_custom_phrases,
     nc_candidate_theme,
     nc_candidate_window,
+    nc_user_word_import,
     nc_log;
 
 type
@@ -206,6 +207,10 @@ type
     TncClearUserDictionaryProc = reference to function: Boolean;
     TncImportUserWordsProc = reference to function(const path: string;
         out entries, imported: Integer): Boolean;
+    TncExportUserWordsProc = reference to function(const path: string;
+        out exported: Integer): Boolean;
+    TncForgetUserWordsProc = reference to function(const entries: TncUserWordImportEntries;
+        out removed: Integer): Boolean;
 
     TncSettingsForm = class(TForm)
     private
@@ -253,7 +258,7 @@ type
         m_candidate_font_size_labels:
             array[0..c_candidate_font_size_level_count - 1] of TLabel;
         m_combo_candidate_page_size: TComboBox;
-        m_chk_candidate_expand_on_paging: TncModernCheckBox;
+        m_combo_candidate_layout: TComboBox;
         m_chk_candidate_at_input_start: TncModernCheckBox;
         m_combo_candidate_color_scheme: TComboBox;
         m_candidate_preview: TPaintBox;
@@ -287,6 +292,8 @@ type
         m_chk_debug_mode: TncModernCheckBox;
         m_btn_clear_user_dictionary: TncModernButton;
         m_btn_import_user_words: TncModernButton;
+        m_btn_export_user_words: TncModernButton;
+        m_btn_manage_user_words: TncModernButton;
         m_btn_open_config_folder: TncModernButton;
         m_btn_open_config_file: TncModernButton;
         m_hint_user_dictionary: TLabel;
@@ -299,6 +306,8 @@ type
         m_apply_proc: TncApplySettingsProc;
         m_clear_user_dictionary_proc: TncClearUserDictionaryProc;
         m_import_user_words_proc: TncImportUserWordsProc;
+        m_export_user_words_proc: TncExportUserWordsProc;
+        m_forget_user_words_proc: TncForgetUserWordsProc;
         m_dirty: Boolean;
         m_applied: Boolean;
         procedure configure_form;
@@ -401,6 +410,8 @@ type
         procedure on_punctuation_standard_click(Sender: TObject);
         procedure on_clear_user_dictionary_click(Sender: TObject);
         procedure on_import_user_words_click(Sender: TObject);
+        procedure on_export_user_words_click(Sender: TObject);
+        procedure on_manage_user_words_click(Sender: TObject);
         procedure on_open_config_folder(Sender: TObject);
         procedure on_open_config_file(Sender: TObject);
         procedure on_website_link_click(Sender: TObject);
@@ -424,8 +435,15 @@ type
             const on_apply: TncApplySettingsProc;
             const on_clear_user_dictionary: TncClearUserDictionaryProc;
             const on_preview_status_widget: TncPreviewStatusWidgetProc;
-            const on_import_user_words: TncImportUserWordsProc = nil): Boolean; static;
+            const on_import_user_words: TncImportUserWordsProc = nil;
+            const on_export_user_words: TncExportUserWordsProc = nil;
+            const on_forget_user_words: TncForgetUserWordsProc = nil): Boolean; static;
     end;
+
+// The list of learned words that 管理学到的词 opens (the tests and a render
+// probe make it without the host).
+function nc_create_user_words_form(const owner: TComponent; const entries: TncUserWordImportEntries;
+    const forget_proc: TncForgetUserWordsProc): TForm;
 
 implementation
 
@@ -436,6 +454,32 @@ type
     TncCustomPhraseGrid = class(TStringGrid)
     published
         property OnResize;
+    end;
+
+    { The learned words of the user dictionary: a list to search, and the
+      selected words to forget. The words come from the export. }
+    TncUserWordsForm = class(TForm)
+    private
+        m_entries: TncUserWordImportEntries;
+        m_shown: TArray<Integer>;
+        m_search: TEdit;
+        m_count_label: TLabel;
+        m_list: TListView;
+        m_btn_delete: TncModernButton;
+        m_btn_close: TncModernButton;
+        m_forget_proc: TncForgetUserWordsProc;
+        procedure apply_filter;
+        procedure update_buttons;
+        procedure on_search_change(Sender: TObject);
+        procedure on_list_data(Sender: TObject; Item: TListItem);
+        procedure on_list_change(Sender: TObject; Item: TListItem; Change: TItemChange);
+        procedure on_list_key_down(Sender: TObject; var Key: Word; Shift: TShiftState);
+        procedure on_delete_click(Sender: TObject);
+        procedure on_close_click(Sender: TObject);
+        procedure on_form_key_down(Sender: TObject; var Key: Word; Shift: TShiftState);
+    public
+        constructor CreateWith(const owner: TComponent; const entries: TncUserWordImportEntries;
+            const forget_proc: TncForgetUserWordsProc);
     end;
 
 const
@@ -552,7 +596,10 @@ resourcestring
     SLabelCandidateFont = '候选字体';
     SLabelCandidateSize = '大小';
     SLabelCandidatePageSize = '每页候选';
-    SCheckCandidateExpandOnPaging = '翻页时展开多行候选';
+    SLabelCandidateLayout = '排列';
+    SOptionCandidateLayoutHorizontal = '横排';
+    SOptionCandidateLayoutExpanding = '横排，翻页时展开多行';
+    SOptionCandidateLayoutVertical = '竖排';
     SLabelCandidatePosition = '候选位置';
     SCheckCandidateAtInputStart = '对齐输入的起点，打字时不随光标左右移动';
     SCandidateAtInputStartHint = '候选窗口的左边对齐正在输入的文字的开头，一次输入中位置不变；关闭后候选窗口跟随光标。';
@@ -637,6 +684,31 @@ resourcestring
         '继续并选择要导入的文件吗？';
     SImportUserWordsSucceeded = '已导入 %d 个词（文件中共 %d 个），并已立即生效。';
     SImportUserWordsFailed = '导入失败：文件中没有可识别的词，或输入法服务暂时不可用。';
+    SButtonExportUserWords = '导出用户词库';
+    SDialogExportUserWordsFile = '导出用户词库';
+    SFilterExportUserWordsFiles = 'CSV 文件|*.csv|文本文件|*.txt';
+    SExportUserWordsFileName = '言泉用户词库_%s.csv';
+    SExportUserWordsSucceeded = '已导出 %d 个词。' + #13#10#13#10 +
+        '文件里是学到的词和选用次数（两个字以上的词），每行“词,拼音,次数”。' +
+        '换电脑或重装后，在设置中点击“导入输入频次”选这个文件，就能原样导回去。' + #13#10#13#10 +
+        '上下文里的选词习惯和删除过的词不在其中。';
+    SExportUserWordsEmpty = '用户词库里还没有学到的词（两个字以上的词），没有可导出的内容。';
+    SExportUserWordsFailed = '导出失败：无法写入所选的文件，或输入法服务暂时不可用。';
+    SButtonManageUserWords = '管理学到的词';
+    SUserWordsTitle = '学到的词';
+    SUserWordsSearchHint = '搜索词或拼音';
+    SUserWordsCount = '共 %d 个词';
+    SUserWordsFilteredCount = '%d 个词（共 %d 个）';
+    SUserWordsColumnText = '词';
+    SUserWordsColumnPinyin = '拼音';
+    SUserWordsColumnCount = '选用次数';
+    SButtonDeleteUserWords = '删除所选';
+    SButtonCloseUserWords = '关闭';
+    SConfirmDeleteUserWords = '确定删除所选的 %d 个词吗？' + #13#10#13#10 +
+        '删除后，输入法忘记这些词和它们的选用记录：词库里有的词回到词库原来的位置，' +
+        '词库里没有的词不再出现在候选中。此操作无法撤销。';
+    SDeleteUserWordsFailed = '删除失败，输入法服务暂时不可用，请稍后重试。';
+    SLoadUserWordsFailed = '读取用户词库失败，输入法服务暂时不可用，请稍后重试。';
     SLabelSimplifiedDictionary = '简体词库';
     SLabelTraditionalDictionary = '繁体词库';
     SLabelUserDictionary = '用户词库';
@@ -644,7 +716,8 @@ resourcestring
     SButtonOpenDictionaryFolder = '打开词库目录';
     SButtonOpenConfigFolder = '打开配置目录';
     SButtonOpenConfigFile = '打开配置文件';
-    SHintUserDictionary = '导入其他输入法导出的输入频次，或清空本机打字积累的学习记录。';
+    SHintUserDictionary = '查看和删除学到的词；导出用户词库，换电脑或重装后再导入；' +
+        '导入其他输入法导出的输入频次；或清空本机打字积累的学习记录。';
     SPathEditHint = '留空表示使用内置默认路径。';
     SPathEmpty = '%s为空。';
     SPathMissing = '%s不存在。';
@@ -2065,7 +2138,9 @@ class function TncSettingsForm.ExecuteDialog(const owner: TComponent; var config
     var log_config: TncLogConfig; var status_widget_visible: Boolean; var status_widget_transparency: Integer;
     const on_apply: TncApplySettingsProc; const on_clear_user_dictionary: TncClearUserDictionaryProc;
     const on_preview_status_widget: TncPreviewStatusWidgetProc;
-    const on_import_user_words: TncImportUserWordsProc): Boolean;
+    const on_import_user_words: TncImportUserWordsProc;
+    const on_export_user_words: TncExportUserWordsProc;
+    const on_forget_user_words: TncForgetUserWordsProc): Boolean;
 var
     form: TncSettingsForm;
 begin
@@ -2079,6 +2154,8 @@ begin
         form.m_apply_proc := on_apply;
         form.m_clear_user_dictionary_proc := on_clear_user_dictionary;
         form.m_import_user_words_proc := on_import_user_words;
+        form.m_export_user_words_proc := on_export_user_words;
+        form.m_forget_user_words_proc := on_forget_user_words;
         form.load_from_config;
         form.ShowModal;
         config := form.m_engine_config;
@@ -2651,6 +2728,16 @@ begin
     control.Anchors := [akLeft, akTop, akRight];
 end;
 
+function candidate_layout_index(const config: TncEngineConfig): Integer;
+begin
+    if config.candidate_vertical then
+        Result := 2
+    else if config.candidate_expand_on_paging then
+        Result := 1
+    else
+        Result := 0;
+end;
+
 function create_combo(const owner: TComponent; const parent: TWinControl; const top: Integer;
     const width: Integer): TComboBox;
 begin
@@ -2893,12 +2980,20 @@ begin
     m_combo_candidate_page_size := create_combo(Self, candidate_group, top, 132);
     populate_candidate_page_size_combo;
     m_combo_candidate_page_size.OnChange := mark_dirty;
-    m_chk_candidate_expand_on_paging := create_check_box(Self,
-        candidate_group, top, SCheckCandidateExpandOnPaging, mark_dirty);
-    m_chk_candidate_expand_on_paging.Left := m_combo_candidate_page_size.Left +
-        m_combo_candidate_page_size.Width + scale_ui(18);
-    m_chk_candidate_expand_on_paging.Width := scale_ui(230);
-    m_chk_candidate_expand_on_paging.Name := 'CandidateExpandOnPaging';
+    // Horizontal, horizontal with more rows on paging, or vertical: the
+    // two ways of showing more than a row exclude each other.
+    side_label := create_side_label(Self, candidate_group, SLabelCandidateLayout,
+        m_combo_candidate_page_size.Left + m_combo_candidate_page_size.Width + scale_ui(18), top + scale_ui(4));
+    m_combo_candidate_layout := create_combo(Self, candidate_group, top, 200);
+    m_combo_candidate_layout.Left := side_label.Left + side_label.Width + scale_ui(10);
+    // It ends where the row's controls end (the expansion's check box did).
+    m_combo_candidate_layout.Width := side_label.Left + scale_ui(226) - m_combo_candidate_layout.Left;
+    m_combo_candidate_layout.Name := 'CandidateLayout';
+    m_combo_candidate_layout.Items.Add(SOptionCandidateLayoutHorizontal);
+    m_combo_candidate_layout.Items.Add(SOptionCandidateLayoutExpanding);
+    m_combo_candidate_layout.Items.Add(SOptionCandidateLayoutVertical);
+    m_combo_candidate_layout.ItemIndex := 0;
+    m_combo_candidate_layout.OnChange := on_candidate_appearance_change;
 
     top := next_row_top(top);
     create_label(Self, candidate_group, SLabelCandidatePosition, top);
@@ -4016,7 +4111,15 @@ begin
         scale_ui(c_label_left), top, dictionary_group.ClientWidth - scale_ui(c_label_left * 2));
     m_hint_user_dictionary.Anchors := [akLeft, akTop, akRight];
     top := m_hint_user_dictionary.Top + m_hint_user_dictionary.Height + scale_ui(8);
-    m_btn_import_user_words := create_action_button(Self, dictionary_group, scale_ui(c_label_left), top,
+    m_btn_manage_user_words := create_action_button(Self, dictionary_group, scale_ui(c_label_left), top,
+        SButtonManageUserWords, on_manage_user_words_click);
+    m_btn_manage_user_words.Name := 'SettingsManageUserWords';
+    m_btn_export_user_words := create_action_button(Self, dictionary_group,
+        m_btn_manage_user_words.Left + m_btn_manage_user_words.Width + scale_ui(10), top,
+        SButtonExportUserWords, on_export_user_words_click);
+    m_btn_export_user_words.Name := 'SettingsExportUserWords';
+    m_btn_import_user_words := create_action_button(Self, dictionary_group,
+        m_btn_export_user_words.Left + m_btn_export_user_words.Width + scale_ui(10), top,
         SButtonImportUserWords, on_import_user_words_click);
     m_btn_import_user_words.Name := 'SettingsImportUserWords';
     m_btn_clear_user_dictionary := create_action_button(Self, dictionary_group,
@@ -4091,6 +4194,325 @@ begin
             MessageBox(Handle, PChar(SImportUserWordsFailed), PChar(Caption), MB_OK or MB_ICONERROR);
     finally
         dialog.Free;
+    end;
+end;
+
+procedure TncSettingsForm.on_export_user_words_click(Sender: TObject);
+var
+    dialog: TSaveDialog;
+    exported: Integer;
+    done: Boolean;
+begin
+    if not Assigned(m_export_user_words_proc) then
+        Exit;
+    dialog := TSaveDialog.Create(Self);
+    try
+        dialog.Title := SDialogExportUserWordsFile;
+        dialog.Filter := SFilterExportUserWordsFiles;
+        dialog.DefaultExt := 'csv';
+        dialog.FileName := Format(SExportUserWordsFileName, [FormatDateTime('yyyymmdd', Now)]);
+        dialog.Options := [ofOverwritePrompt, ofPathMustExist, ofEnableSizing];
+        if not dialog.Execute then
+            Exit;
+        Screen.Cursor := crHourGlass;
+        try
+            done := m_export_user_words_proc(dialog.FileName, exported);
+        finally
+            Screen.Cursor := crDefault;
+        end;
+        if not done then
+            MessageBox(Handle, PChar(SExportUserWordsFailed), PChar(Caption), MB_OK or MB_ICONERROR)
+        else if exported = 0 then
+            MessageBox(Handle, PChar(SExportUserWordsEmpty), PChar(Caption), MB_OK or MB_ICONINFORMATION)
+        else
+            MessageBox(Handle, PChar(Format(SExportUserWordsSucceeded, [exported])), PChar(Caption),
+                MB_OK or MB_ICONINFORMATION);
+    finally
+        dialog.Free;
+    end;
+end;
+
+procedure TncSettingsForm.on_manage_user_words_click(Sender: TObject);
+var
+    path, content: string;
+    guid: TGUID;
+    exported, skipped: Integer;
+    entries: TncUserWordImportEntries;
+    loaded: Boolean;
+    form: TncUserWordsForm;
+begin
+    if (not Assigned(m_export_user_words_proc)) or (not Assigned(m_forget_user_words_proc)) then
+        Exit;
+    // The host writes the words where this process can read them.
+    CreateGUID(guid);
+    path := TPath.Combine(TPath.GetTempPath, 'cassotis_user_words_' +
+        StringReplace(StringReplace(GUIDToString(guid), '{', '', [rfReplaceAll]), '}', '', [rfReplaceAll]) +
+        '.csv');
+    entries := nil;
+    Screen.Cursor := crHourGlass;
+    try
+        loaded := m_export_user_words_proc(path, exported) and nc_read_user_word_import_file(path, content);
+        if loaded and (exported > 0) then
+            nc_parse_user_word_import(content, entries, skipped);
+    finally
+        Screen.Cursor := crDefault;
+        if FileExists(path) then
+            System.SysUtils.DeleteFile(path);
+    end;
+    if not loaded then
+    begin
+        MessageBox(Handle, PChar(SLoadUserWordsFailed), PChar(Caption), MB_OK or MB_ICONERROR);
+        Exit;
+    end;
+    form := TncUserWordsForm.CreateWith(Self, entries, m_forget_user_words_proc);
+    try
+        form.ShowModal;
+    finally
+        form.Free;
+    end;
+end;
+
+function nc_create_user_words_form(const owner: TComponent; const entries: TncUserWordImportEntries;
+    const forget_proc: TncForgetUserWordsProc): TForm;
+begin
+    Result := TncUserWordsForm.CreateWith(owner, entries, forget_proc);
+end;
+
+constructor TncUserWordsForm.CreateWith(const owner: TComponent; const entries: TncUserWordImportEntries;
+    const forget_proc: TncForgetUserWordsProc);
+var
+    margin, gap, top, bottom_top: Integer;
+    column: TListColumn;
+begin
+    inherited CreateNew(owner);
+    m_entries := entries;
+    m_forget_proc := forget_proc;
+    BorderStyle := bsSizeable;
+    BorderIcons := [biSystemMenu];
+    Caption := SUserWordsTitle;
+    ClientWidth := scale_ui(560);
+    ClientHeight := scale_ui(520);
+    Constraints.MinWidth := scale_ui(420);
+    Constraints.MinHeight := scale_ui(320);
+    Position := poOwnerFormCenter;
+    if (Application.Icon <> nil) and (Application.Icon.Handle <> 0) then
+        Icon.Assign(Application.Icon);
+    Font.Name := 'Microsoft YaHei UI';
+    Font.Size := 9;
+    Color := c_ui_back;
+    margin := scale_ui(16);
+    gap := scale_ui(10);
+
+    top := margin;
+    m_search := TEdit.Create(Self);
+    m_search.Parent := Self;
+    m_search.Name := 'UserWordsSearch';
+    m_search.Text := '';
+    m_search.SetBounds(margin, top, scale_ui(240), scale_ui(c_button_height));
+    m_search.TextHint := SUserWordsSearchHint;
+    m_search.OnChange := on_search_change;
+
+    m_count_label := TLabel.Create(Self);
+    m_count_label.Parent := Self;
+    m_count_label.Name := 'UserWordsCount';
+    m_count_label.AutoSize := False;
+    m_count_label.Alignment := taRightJustify;
+    m_count_label.Layout := tlCenter;
+    m_count_label.Font.Color := c_ui_text_secondary;
+    m_count_label.SetBounds(m_search.Left + m_search.Width + gap, top,
+        ClientWidth - margin - (m_search.Left + m_search.Width + gap), m_search.Height);
+    m_count_label.Anchors := [akLeft, akTop, akRight];
+
+    bottom_top := ClientHeight - margin - scale_ui(c_footer_button_height);
+    m_btn_close := TncModernButton.Create(Self);
+    m_btn_close.Parent := Self;
+    m_btn_close.Name := 'UserWordsClose';
+    m_btn_close.Caption := SButtonCloseUserWords;
+    m_btn_close.VisualKind := mbkSecondary;
+    m_btn_close.Cancel := True;
+    m_btn_close.SetBounds(ClientWidth - margin - scale_ui(c_action_button_width), bottom_top,
+        scale_ui(c_action_button_width), scale_ui(c_footer_button_height));
+    m_btn_close.Anchors := [akRight, akBottom];
+    m_btn_close.OnClick := on_close_click;
+
+    m_btn_delete := TncModernButton.Create(Self);
+    m_btn_delete.Parent := Self;
+    m_btn_delete.Name := 'UserWordsDelete';
+    m_btn_delete.Caption := SButtonDeleteUserWords;
+    m_btn_delete.VisualKind := mbkSecondary;
+    m_btn_delete.SetBounds(margin, bottom_top, scale_ui(c_action_button_width),
+        scale_ui(c_footer_button_height));
+    m_btn_delete.Anchors := [akLeft, akBottom];
+    m_btn_delete.OnClick := on_delete_click;
+
+    m_list := TListView.Create(Self);
+    m_list.Parent := Self;
+    m_list.Name := 'UserWordsList';
+    m_list.ViewStyle := vsReport;
+    m_list.OwnerData := True;
+    m_list.ReadOnly := True;
+    m_list.RowSelect := True;
+    m_list.MultiSelect := True;
+    m_list.HideSelection := False;
+    m_list.SetBounds(margin, top + m_search.Height + gap, ClientWidth - margin * 2,
+        bottom_top - gap - (top + m_search.Height + gap));
+    m_list.Anchors := [akLeft, akTop, akRight, akBottom];
+    column := m_list.Columns.Add;
+    column.Caption := SUserWordsColumnText;
+    column.Width := scale_ui(220);
+    column := m_list.Columns.Add;
+    column.Caption := SUserWordsColumnPinyin;
+    column.Width := scale_ui(180);
+    column := m_list.Columns.Add;
+    column.Caption := SUserWordsColumnCount;
+    column.Alignment := taRightJustify;
+    column.Width := scale_ui(96);
+    m_list.OnData := on_list_data;
+    m_list.OnChange := on_list_change;
+    m_list.OnKeyDown := on_list_key_down;
+    KeyPreview := True;
+    OnKeyDown := on_form_key_down;
+    ActiveControl := m_search;
+    apply_filter;
+end;
+
+procedure TncUserWordsForm.apply_filter;
+var
+    query, compact: string;
+    idx, count: Integer;
+begin
+    query := LowerCase(Trim(m_search.Text));
+    compact := StringReplace(StringReplace(query, '''', '', [rfReplaceAll]), ' ', '', [rfReplaceAll]);
+    SetLength(m_shown, Length(m_entries));
+    count := 0;
+    for idx := 0 to High(m_entries) do
+        // A word holds the query, or its pinyin begins with the letters.
+        if (query = '') or (Pos(query, m_entries[idx].text) > 0) or
+            ((compact <> '') and
+            StringReplace(m_entries[idx].pinyin, '''', '', [rfReplaceAll]).StartsWith(compact)) then
+        begin
+            m_shown[count] := idx;
+            Inc(count);
+        end;
+    SetLength(m_shown, count);
+    m_list.Items.BeginUpdate;
+    try
+        m_list.ClearSelection;
+        m_list.Items.Count := count;
+    finally
+        m_list.Items.EndUpdate;
+    end;
+    m_list.Invalidate;
+    if count = Length(m_entries) then
+        m_count_label.Caption := Format(SUserWordsCount, [Length(m_entries)])
+    else
+        m_count_label.Caption := Format(SUserWordsFilteredCount, [count, Length(m_entries)]);
+    update_buttons;
+end;
+
+procedure TncUserWordsForm.update_buttons;
+begin
+    m_btn_delete.Enabled := (m_list <> nil) and (m_list.SelCount > 0);
+end;
+
+procedure TncUserWordsForm.on_search_change(Sender: TObject);
+begin
+    apply_filter;
+end;
+
+procedure TncUserWordsForm.on_list_data(Sender: TObject; Item: TListItem);
+var
+    entry: TncUserWordImportEntry;
+begin
+    if (Item.Index < 0) or (Item.Index >= Length(m_shown)) then
+        Exit;
+    entry := m_entries[m_shown[Item.Index]];
+    Item.Caption := entry.text;
+    Item.SubItems.Add(entry.pinyin);
+    Item.SubItems.Add(IntToStr(entry.count));
+end;
+
+procedure TncUserWordsForm.on_list_change(Sender: TObject; Item: TListItem; Change: TItemChange);
+begin
+    update_buttons;
+end;
+
+procedure TncUserWordsForm.on_list_key_down(Sender: TObject; var Key: Word; Shift: TShiftState);
+begin
+    if Key = VK_DELETE then
+    begin
+        Key := 0;
+        on_delete_click(Sender);
+    end
+    else if (Key = Ord('A')) and (ssCtrl in Shift) then
+    begin
+        Key := 0;
+        m_list.SelectAll;
+        update_buttons;
+    end;
+end;
+
+procedure TncUserWordsForm.on_delete_click(Sender: TObject);
+var
+    item: TListItem;
+    picked, kept: TncUserWordImportEntries;
+    gone: TArray<Boolean>;
+    idx, count, removed: Integer;
+begin
+    SetLength(gone, Length(m_entries));
+    SetLength(picked, m_list.SelCount);
+    count := 0;
+    item := m_list.Selected;
+    while (item <> nil) and (count < Length(picked)) do
+    begin
+        if (item.Index >= 0) and (item.Index < Length(m_shown)) and not gone[m_shown[item.Index]] then
+        begin
+            picked[count] := m_entries[m_shown[item.Index]];
+            gone[m_shown[item.Index]] := True;
+            Inc(count);
+        end;
+        item := m_list.GetNextItem(item, sdAll, [isSelected]);
+    end;
+    SetLength(picked, count);
+    if count = 0 then
+        Exit;
+    if MessageBox(Handle, PChar(Format(SConfirmDeleteUserWords, [Length(picked)])), PChar(Caption),
+        MB_YESNO or MB_ICONWARNING or MB_DEFBUTTON2) <> IDYES then
+        Exit;
+    Screen.Cursor := crHourGlass;
+    try
+        if not m_forget_proc(picked, removed) then
+        begin
+            MessageBox(Handle, PChar(SDeleteUserWordsFailed), PChar(Caption), MB_OK or MB_ICONERROR);
+            Exit;
+        end;
+    finally
+        Screen.Cursor := crDefault;
+    end;
+    SetLength(kept, Length(m_entries));
+    count := 0;
+    for idx := 0 to High(m_entries) do
+        if not gone[idx] then
+        begin
+            kept[count] := m_entries[idx];
+            Inc(count);
+        end;
+    SetLength(kept, count);
+    m_entries := kept;
+    apply_filter;
+end;
+
+procedure TncUserWordsForm.on_close_click(Sender: TObject);
+begin
+    ModalResult := mrClose;
+end;
+
+procedure TncUserWordsForm.on_form_key_down(Sender: TObject; var Key: Word; Shift: TShiftState);
+begin
+    if Key = VK_ESCAPE then
+    begin
+        Key := 0;
+        ModalResult := mrClose;
     end;
 end;
 
@@ -4268,8 +4690,7 @@ begin
         end;
         set_candidate_font_size_slider(default_engine_config.candidate_font_size);
         set_candidate_page_size_combo(default_engine_config.candidate_page_size);
-        m_chk_candidate_expand_on_paging.Checked :=
-            default_engine_config.candidate_expand_on_paging;
+        m_combo_candidate_layout.ItemIndex := candidate_layout_index(default_engine_config);
         m_chk_candidate_at_input_start.Checked :=
             default_engine_config.candidate_at_input_start;
         set_candidate_color_scheme_combo(default_engine_config.candidate_color_scheme);
@@ -4652,6 +5073,7 @@ var
     stage_padding: Integer;
     stage_radius: Integer;
     window_top: Integer;
+    vertical: Boolean;
 begin
     if not (Sender is TPaintBox) then
     begin
@@ -4691,9 +5113,10 @@ begin
     completion.text := c_preview_completion_text;
     completion.full_pinyin := 'luoxiayuguwuqifei';
 
+    vertical := (m_combo_candidate_layout <> nil) and (m_combo_candidate_layout.ItemIndex = 2);
     m_candidate_preview_window.apply_appearance(
         get_selected_candidate_font_name, font_size,
-        get_selected_candidate_color_scheme);
+        get_selected_candidate_color_scheme, vertical);
     // The window stands on a stage of the dialog's background, as it floats
     // over a document, in the middle of the room kept for the largest size.
     stage_padding := MulDiv(14, dpi, c_nc_base_dpi);
@@ -4704,8 +5127,12 @@ begin
     canvas.Pen.Color := c_ui_card_border;
     canvas.RoundRect(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom, stage_radius, stage_radius);
 
-    m_candidate_preview_window.prepare_preview(dpi,
-        bounds.Right - bounds.Left - (stage_padding * 2));
+    // A vertical list keeps its own width, as it does over a document.
+    if vertical then
+        m_candidate_preview_window.prepare_preview(dpi)
+    else
+        m_candidate_preview_window.prepare_preview(dpi,
+            bounds.Right - bounds.Left - (stage_padding * 2));
     m_candidate_preview_window.update_candidates(candidates, 0, 1, 0,
         c_preview_preedit_text, completion,
         get_selected_one_key_completion_key, False);
@@ -4907,8 +5334,7 @@ begin
     end;
     set_candidate_font_size_slider(m_engine_config.candidate_font_size);
     set_candidate_page_size_combo(m_engine_config.candidate_page_size);
-    m_chk_candidate_expand_on_paging.Checked :=
-        m_engine_config.candidate_expand_on_paging;
+    m_combo_candidate_layout.ItemIndex := candidate_layout_index(m_engine_config);
     m_chk_candidate_at_input_start.Checked :=
         m_engine_config.candidate_at_input_start;
     set_candidate_color_scheme_combo(m_engine_config.candidate_color_scheme);
@@ -5086,8 +5512,8 @@ begin
     next_config.candidate_font_name := get_selected_candidate_font_name;
     next_config.candidate_font_size := get_candidate_font_size_from_slider;
     next_config.candidate_page_size := get_selected_candidate_page_size;
-    next_config.candidate_expand_on_paging :=
-        m_chk_candidate_expand_on_paging.Checked;
+    next_config.candidate_expand_on_paging := m_combo_candidate_layout.ItemIndex = 1;
+    next_config.candidate_vertical := m_combo_candidate_layout.ItemIndex = 2;
     next_config.candidate_at_input_start :=
         m_chk_candidate_at_input_start.Checked;
     next_config.one_key_completion_key :=

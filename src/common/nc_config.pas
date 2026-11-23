@@ -922,6 +922,7 @@ begin
     Result.candidate_font_size := c_default_candidate_font_size;
     Result.candidate_page_size := c_default_candidate_page_size;
     Result.candidate_expand_on_paging := False;
+    Result.candidate_vertical := False;
     Result.candidate_page_key_scheme := cpks_minus_plus;
     Result.one_key_completion_key := ock_tab;
     Result.second_third_candidate_keys := stck_none;
@@ -1195,8 +1196,11 @@ begin
         Result.candidate_page_size := clamp_candidate_page_size(
             safe_ini_read_integer(ini, 'appearance', 'candidate_page_size',
             c_default_candidate_page_size));
+        Result.candidate_vertical := safe_ini_read_bool(ini,
+            'appearance', 'candidate_vertical', False);
+        // A vertical list shows the current page alone.
         Result.candidate_expand_on_paging := safe_ini_read_bool(ini,
-            'appearance', 'candidate_expand_on_paging', False);
+            'appearance', 'candidate_expand_on_paging', False) and not Result.candidate_vertical;
         Result.candidate_color_scheme := parse_candidate_color_scheme_text(safe_ini_read_string(ini, 'appearance',
             'candidate_color_scheme', candidate_color_scheme_to_text(c_default_candidate_color_scheme)),
             c_default_candidate_color_scheme);
@@ -1382,7 +1386,8 @@ begin
         ini.WriteInteger('appearance', 'candidate_page_size',
             clamp_candidate_page_size(config.candidate_page_size));
         ini.WriteBool('appearance', 'candidate_expand_on_paging',
-            config.candidate_expand_on_paging);
+            config.candidate_expand_on_paging and not config.candidate_vertical);
+        ini.WriteBool('appearance', 'candidate_vertical', config.candidate_vertical);
         ini.WriteString('appearance', 'candidate_color_scheme',
             candidate_color_scheme_to_text(config.candidate_color_scheme));
         ini.WriteBool('appearance', 'input_mode_hint', config.input_mode_hint);

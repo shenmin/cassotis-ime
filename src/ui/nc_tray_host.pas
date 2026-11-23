@@ -36,6 +36,7 @@ uses
     nc_tray_icon_appearance,
     nc_tray_menu,
     nc_settings_form,
+    nc_user_word_import,
     nc_types;
 
 const
@@ -172,6 +173,8 @@ type
         function reload_host_config: Boolean;
         function clear_user_dictionary: Boolean;
         function import_user_words(const path: string; out entries, imported: Integer): Boolean;
+        function export_user_words(const path: string; out exported: Integer): Boolean;
+        function forget_user_words(const entries: TncUserWordImportEntries; out removed: Integer): Boolean;
         procedure show_settings_dialog;
         procedure update_menu;
         procedure status_mouse_down(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X: Integer; Y: Integer);
@@ -2511,6 +2514,20 @@ begin
         m_ipc_client.import_user_words(m_session_id, path, entries, imported);
 end;
 
+function TncTrayHost.export_user_words(const path: string; out exported: Integer): Boolean;
+begin
+    exported := 0;
+    Result := (m_ipc_client <> nil) and (m_session_id <> '') and
+        m_ipc_client.export_user_words(m_session_id, path, exported);
+end;
+
+function TncTrayHost.forget_user_words(const entries: TncUserWordImportEntries; out removed: Integer): Boolean;
+begin
+    removed := 0;
+    Result := (m_ipc_client <> nil) and (m_session_id <> '') and
+        m_ipc_client.forget_user_words(m_session_id, entries, removed);
+end;
+
 procedure TncTrayHost.show_settings_dialog;
 var
     next_config: TncEngineConfig;
@@ -2548,6 +2565,14 @@ begin
             function(const path: string; out entries, imported: Integer): Boolean
             begin
                 Result := Self.import_user_words(path, entries, imported);
+            end,
+            function(const path: string; out exported: Integer): Boolean
+            begin
+                Result := Self.export_user_words(path, exported);
+            end,
+            function(const entries: TncUserWordImportEntries; out removed: Integer): Boolean
+            begin
+                Result := Self.forget_user_words(entries, removed);
             end);
     finally
         m_status_widget_preview := False;

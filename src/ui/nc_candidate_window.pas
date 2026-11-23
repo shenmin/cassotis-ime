@@ -50,6 +50,8 @@ type
         m_candidate_slots: TArray<Integer>;
         m_candidate_selection_keys: string;
         m_row_count: Integer;
+        // One candidate a row, the current page only.
+        m_vertical: Boolean;
         m_active_page_index: Integer;
         m_horizontal_placement: TncCandidateHorizontalPlacement;
         m_generation: UInt64;
@@ -157,7 +159,7 @@ type
         procedure prepare_for_anchor(const anchor: TPoint);
         destructor Destroy; override;
         procedure apply_appearance(const font_name: string; const font_size: Integer;
-            const color_scheme: Integer);
+            const color_scheme: Integer; const vertical: Boolean = False);
         procedure prepare_preview(const dpi: Integer;
             const minimum_client_width: Integer = 0);
         procedure update_candidates(const candidates: TncCandidateList; const page_index: Integer; const page_count: Integer;
@@ -1135,7 +1137,7 @@ begin
 end;
 
 procedure TncCandidateWindow.apply_appearance(const font_name: string; const font_size: Integer;
-    const color_scheme: Integer);
+    const color_scheme: Integer; const vertical: Boolean);
 var
     effective_font_name: string;
     effective_font_size: Integer;
@@ -1157,7 +1159,7 @@ begin
     end;
 
     if SameText(m_list_font.Name, effective_font_name) and (m_base_list_font_size = effective_font_size) and
-        (m_color_scheme = effective_color_scheme) and
+        (m_vertical = vertical) and (m_color_scheme = effective_color_scheme) and
         (Color = effective_color_theme.background_color) and
         (m_border_color = effective_color_theme.border_color) and
         (m_list_font.Color = effective_color_theme.text_color) and
@@ -1167,6 +1169,7 @@ begin
         Exit;
     end;
 
+    m_vertical := vertical;
     m_color_scheme := effective_color_scheme;
     m_color_theme := effective_color_theme;
     m_border_color := m_color_theme.border_color;
@@ -1639,6 +1642,16 @@ begin
     begin
         row_width := nc_scale_for_dpi(120, m_current_dpi);
     end;
+    if m_vertical then
+    begin
+        // A vertical list is a column: every row as wide as the widest, so the
+        // selection and the remove buttons line up.
+        for i := 0 to item_count - 1 do
+        begin
+            m_candidate_offsets[i] := 0;
+            m_candidate_widths[i] := row_width;
+        end;
+    end;
     edge_padding := m_list_padding;
     max_width := row_width + (edge_padding * 2);
     meta_vertical_padding := nc_scale_for_dpi(8, m_current_dpi);
@@ -1745,6 +1758,15 @@ begin
     inner_left := Padding.Left;
     inner_top := Padding.Top;
     inner_width := ClientWidth - Padding.Left - Padding.Right;
+    if m_vertical then
+    begin
+        // The rows of a column reach across the window, whatever widened it
+        // (the completion, the pinyin, the page text).
+        for i := 0 to item_count - 1 do
+        begin
+            m_candidate_widths[i] := Max(m_candidate_widths[i], inner_width - (edge_padding * 2));
+        end;
+    end;
     current_top := inner_top;
     m_preedit_rect := Rect(0, 0, 0, 0);
     m_page_rect := Rect(0, 0, 0, 0);
@@ -2005,7 +2027,7 @@ begin
     corner_radius := nc_scale_for_dpi(6, m_current_dpi);
     edge_padding := m_list_padding;
     active_row := -1;
-    if (m_row_count > 1) and (m_selected_index >= 0) and
+    if (m_row_count > 1) and (not m_vertical) and (m_selected_index >= 0) and
         (m_selected_index < Length(m_candidate_rows)) then
     begin
         active_row := m_candidate_rows[m_selected_index];
@@ -2176,6 +2198,7 @@ var
     row, slot, offset, active_slot: Integer;
     displayed: TncCandidateList;
     show_raw: Boolean;
+    shown_pages: TncCandidatePages;
 begin
     m_generation := generation;
     m_candidate_selection_keys := selection_keys;
@@ -2196,14 +2219,27 @@ begin
         m_candidate_weight_lines.Clear;
         m_row_count := 1;
         if Length(pages) > 0 then m_row_count := Min(c_candidate_viewport_rows, Length(pages));
+        // A vertical list shows the current page alone.
+        shown_pages := pages;
+        if m_vertical and (Length(pages) > 1) then
+        begin
+            shown_pages := [pages[0]];
+            for row := 0 to m_row_count - 1 do
+                if pages[row].page_index = page_index then
+                begin
+                    shown_pages := [pages[row]];
+                    Break;
+                end;
+            m_row_count := 1;
+        end;
         count := Length(candidates);
-        if Length(pages) > 0 then
+        if Length(shown_pages) > 0 then
         begin
             count := 0;
-            for row := 0 to m_row_count - 1 do Inc(count, Length(pages[row].candidates));
+            for row := 0 to m_row_count - 1 do Inc(count, Length(shown_pages[row].candidates));
         end;
         show_raw := raw_input_text <> '';
-        if Length(pages) > 0 then show_raw := show_raw and (pages[0].page_index = 0)
+        if Length(shown_pages) > 0 then show_raw := show_raw and (shown_pages[0].page_index = 0)
         else show_raw := show_raw and (page_index = 0);
         if show_raw then Inc(count);
         SetLength(displayed, count);
@@ -2226,17 +2262,17 @@ begin
         active_slot := Max(0, selected_index);
         for row := 0 to m_row_count - 1 do
         begin
-            if Length(pages) > 0 then
+            if Length(shown_pages) > 0 then
             begin
-                for slot := 0 to High(pages[row].candidates) do
+                for slot := 0 to High(shown_pages[row].candidates) do
                 begin
-                    displayed[offset] := pages[row].candidates[slot];
+                    displayed[offset] := shown_pages[row].candidates[slot];
                     m_candidate_rows[offset] := row;
-                    m_candidate_pages[offset] := pages[row].page_index;
+                    m_candidate_pages[offset] := shown_pages[row].page_index;
                     m_candidate_slots[offset] := slot;
                     if not (show_raw and raw_input_selected) and
-                        (pages[row].page_index = page_index) and
-                        (slot = Min(active_slot, High(pages[row].candidates))) then
+                        (shown_pages[row].page_index = page_index) and
+                        (slot = Min(active_slot, High(shown_pages[row].candidates))) then
                         m_selected_index := offset;
                     Inc(offset);
                 end;
@@ -2260,6 +2296,13 @@ begin
                     m_selected_index := i;
                     Break;
                 end;
+        if m_vertical then
+        begin
+            // Every candidate, the letters typed as such too, on a row of its own.
+            for i := 0 to count - 1 do
+                m_candidate_rows[i] := i;
+            m_row_count := Max(1, count);
+        end;
         m_show_weight_row := m_debug_mode and (count > 0);
         SetLength(m_candidate_sources, count);
         SetLength(m_candidate_display_kinds, count);
@@ -2418,7 +2461,7 @@ begin
         target_window := 0;
         target_rect := Rect(0, 0, 0, 0);
     end;
-    target_x := m_horizontal_placement.update(m_row_count > 1, anchor,
+    target_x := m_horizontal_placement.update((m_row_count > 1) and not m_vertical, anchor,
         Width, m_current_dpi, work_area, NativeUInt(target_window), target_rect);
 
     if get_shell_search_overlay_rect(overlay_rect) then

@@ -185,6 +185,16 @@ type
           is the number of words the user dictionary took. }
         function import_user_choices(const entries: TncUserWordImportEntries;
             out imported: Integer): Boolean; virtual;
+        { The words the user dictionary has learned, with how often each was
+          chosen, as import_user_choices takes them back: words of two
+          characters or more under full pinyin, in the script of the active
+          variant, the most frequent first. }
+        function export_user_choices(out entries: TncUserWordImportEntries): Boolean; virtual;
+        { Forgets each word under its pinyin: its user entry, its choices and
+          the latest choice of its input, with no penalty (the word keeps the
+          dictionary's place). removed is the number of words found. }
+        function forget_user_choices(const entries: TncUserWordImportEntries;
+            out removed: Integer): Boolean; virtual;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; virtual;
     end;
 
@@ -733,6 +743,19 @@ function TncDictionaryProvider.import_user_choices(const entries: TncUserWordImp
     out imported: Integer): Boolean;
 begin
     imported := 0;
+    Result := False;
+end;
+
+function TncDictionaryProvider.export_user_choices(out entries: TncUserWordImportEntries): Boolean;
+begin
+    entries := nil;
+    Result := False;
+end;
+
+function TncDictionaryProvider.forget_user_choices(const entries: TncUserWordImportEntries;
+    out removed: Integer): Boolean;
+begin
+    removed := 0;
     Result := False;
 end;
 

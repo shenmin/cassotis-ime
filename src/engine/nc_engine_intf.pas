@@ -1440,6 +1440,11 @@ type
           (nc_user_word_import) as their own choices; entries is how many
           words the file held, imported how many the user dictionary took. }
         function import_user_words(const path: string; out entries, imported: Integer): Boolean;
+        { Writes the learned words with how often each was chosen to a file
+          that import_user_words takes back as it is; exported is how many. }
+        function export_user_words(const path: string; out exported: Integer): Boolean;
+        { Forgets the learned words (pinyin and text), with no penalty. }
+        function forget_user_words(const entries: TncUserWordImportEntries; out removed: Integer): Boolean;
         procedure notify_user_dictionary_cleared;
         property config: TncEngineConfig read m_config write update_config;
     end;
@@ -190664,6 +190669,24 @@ begin
     entries := Length(items);
     Result := m_dictionary.import_user_choices(items, imported);
     // The pages and caches of the session were built without these words.
+    if Result then
+        notify_user_dictionary_cleared;
+end;
+
+function TncEngine.export_user_words(const path: string; out exported: Integer): Boolean;
+var
+    items: TncUserWordImportEntries;
+begin
+    exported := 0;
+    Result := (m_dictionary <> nil) and m_dictionary.export_user_choices(items) and
+        nc_write_user_word_export_file(path, items, exported);
+end;
+
+function TncEngine.forget_user_words(const entries: TncUserWordImportEntries; out removed: Integer): Boolean;
+begin
+    removed := 0;
+    Result := (m_dictionary <> nil) and m_dictionary.forget_user_choices(entries, removed);
+    // The pages and caches of the session were built with these words.
     if Result then
         notify_user_dictionary_cleared;
 end;

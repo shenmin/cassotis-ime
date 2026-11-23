@@ -27,7 +27,8 @@ uses
     nc_one_key_rerank_host,
     nc_char_lm,
     nc_char_lm_host,
-    nc_char_lm_traditional;
+    nc_char_lm_traditional,
+    nc_user_word_import;
 
 type
     TncEngineHost = class;
@@ -260,6 +261,11 @@ type
           entries is how many words the file held, imported how many it took. }
         function import_user_words(const session_id, path: string;
             out entries, imported: Integer): Boolean;
+        { Writes the learned words to a file in the form the import reads. }
+        function export_user_words(const session_id, path: string; out exported: Integer): Boolean;
+        { Forgets learned words (pinyin and text) and refreshes every session. }
+        function forget_user_words(const session_id: string; const entries: TncUserWordImportEntries;
+            out removed: Integer): Boolean;
         procedure update_caret(const session_id: string; const caret_point: TPoint; const has_caret: Boolean;
             const line_height: Integer; const terminal_like_target: Boolean; const comless_target: Boolean;
             const source: TncCaretAnchorSource; const anchor_score: Integer;
@@ -886,7 +892,8 @@ begin
     if m_engine <> nil then
     begin
         m_candidate_window.apply_appearance(m_engine.config.candidate_font_name,
-            m_engine.config.candidate_font_size, m_engine.config.candidate_color_scheme);
+            m_engine.config.candidate_font_size, m_engine.config.candidate_color_scheme,
+            m_engine.config.candidate_vertical);
     end;
 end;
 
@@ -1024,7 +1031,7 @@ begin
     if m_candidate_window <> nil then
     begin
         m_candidate_window.apply_appearance(config.candidate_font_name, config.candidate_font_size,
-            config.candidate_color_scheme);
+            config.candidate_color_scheme, config.candidate_vertical);
         m_candidate_dirty := True;
     end;
 end;
@@ -3709,6 +3716,45 @@ begin
         host_log(Format('[INFO] user words imported: %d of %d', [imported, entries]));
 end;
 
+function TncEngineHost.export_user_words(const session_id, path: string; out exported: Integer): Boolean;
+var
+    session: TncHostSession;
+begin
+    Result := False;
+    exported := 0;
+    if (session_id = '') or (path = '') then
+        Exit;
+    session := get_or_create_session(session_id);
+    m_lock.Acquire;
+    try
+        if (session = nil) or (not m_sessions.TryGetValue(session_id, session)) then
+            Exit;
+        Result := session.engine.export_user_words(path, exported);
+    finally
+        m_lock.Release;
+    end;
+    if Result then
+        host_log(Format('[INFO] user words exported: %d', [exported]));
+end;
+
+function TncEngineHost.forget_user_words(const session_id: string; const entries: TncUserWordImportEntries;
+    out removed: Integer): Boolean;
+var
+    items: TncUserWordImportEntries;
+    removed_count: Integer;
+begin
+    items := entries;
+    removed_count := 0;
+    Result := change_user_dictionary(session_id,
+        function(engine: TncEngine): Boolean
+        begin
+            Result := engine.forget_user_words(items, removed_count);
+        end);
+    removed := removed_count;
+    if Result then
+        host_log(Format('[INFO] user words forgotten: %d of %d', [removed, Length(entries)]));
+end;
+
 function TncEngineHost.change_user_dictionary(const session_id: string;
     const change: TFunc<TncEngine, Boolean>): Boolean;
 var
@@ -4319,6 +4365,9 @@ var
     punctuation_preceding_char: Integer;
     import_entries: Integer;
     import_imported: Integer;
+    forget_items: TncUserWordImportEntries;
+    forget_line: string;
+    forget_parts: TArray<string>;
     mode_hint_reason: TncModeHintReason;
 begin
     Result := 'ERROR'#9'bad_request';
@@ -4502,6 +4551,47 @@ begin
                 import_imported) then
             begin
                 Result := Format('OK'#9'%d'#9'%d', [import_entries, import_imported]);
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
+        if SameText(cmd, 'EXPORT_USER_WORDS') then
+        begin
+            if (Length(fields) >= 3) and
+                m_host.export_user_words(session_id, decode_ipc_text(fields[2]), import_imported) then
+            begin
+                Result := Format('OK'#9'%d', [import_imported]);
+            end
+            else
+            begin
+                Result := 'ERROR'#9'failed';
+            end;
+            Exit;
+        end;
+
+        if SameText(cmd, 'FORGET_USER_WORDS') then
+        begin
+            // Lines of pinyin and text separated by a tab.
+            forget_items := nil;
+            if Length(fields) >= 3 then
+                for forget_line in decode_ipc_text(fields[2]).Split([#10]) do
+                begin
+                    forget_parts := forget_line.Split([#9]);
+                    if Length(forget_parts) <> 2 then
+                        Continue;
+                    SetLength(forget_items, Length(forget_items) + 1);
+                    forget_items[High(forget_items)].pinyin := forget_parts[0];
+                    forget_items[High(forget_items)].text := forget_parts[1];
+                    forget_items[High(forget_items)].count := 1;
+                end;
+            if (Length(forget_items) > 0) and
+                m_host.forget_user_words(session_id, forget_items, import_imported) then
+            begin
+                Result := Format('OK'#9'%d', [import_imported]);
             end
             else
             begin

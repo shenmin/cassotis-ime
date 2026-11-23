@@ -8,7 +8,8 @@ uses
     System.Types,
     nc_types,
     nc_caret_anchor_policy,
-    nc_mode_hint_policy;
+    nc_mode_hint_policy,
+    nc_user_word_import;
 
 const
     // Upper bound for one request/reply exchange. The pipe availability wait
@@ -86,6 +87,11 @@ type
         function clear_user_dictionary(const session_id: string): Boolean;
         function import_user_words(const session_id, path: string;
             out entries, imported: Integer): Boolean;
+        function export_user_words(const session_id, path: string; out exported: Integer): Boolean;
+        { Forgets learned words, a request of at most 150 at a time (the
+          host reads 64 KiB a request). }
+        function forget_user_words(const session_id: string; const entries: TncUserWordImportEntries;
+            out removed: Integer): Boolean;
         function reset_session(const session_id: string;
             const preserve_document_context: Boolean = False;
             const input_epoch: UInt64 = 0): Boolean;
@@ -109,6 +115,7 @@ function try_parse_shortcut_config_response(const response_text: string;
 implementation
 
 uses
+    System.Math,
     nc_ipc_common,
     nc_runtime_location,
     nc_shortcut;
@@ -1085,6 +1092,63 @@ begin
         entries := StrToIntDef(fields[1], 0);
         imported := StrToIntDef(fields[2], 0);
     end;
+end;
+
+function TncIpcClient.export_user_words(const session_id, path: string; out exported: Integer): Boolean;
+var
+    response_text: string;
+    fields: TArray<string>;
+begin
+    exported := 0;
+    Result := False;
+    if (session_id = '') or (path = '') then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Exit;
+    end;
+    if not call_pipe('EXPORT_USER_WORDS'#9 + session_id + #9 + encode_ipc_text(path), response_text) then
+        Exit;
+    fields := response_text.Split([#9], TStringSplitOptions.None);
+    Result := (Length(fields) >= 2) and SameText(fields[0], 'OK');
+    if Result then
+        exported := StrToIntDef(fields[1], 0);
+end;
+
+function TncIpcClient.forget_user_words(const session_id: string; const entries: TncUserWordImportEntries;
+    out removed: Integer): Boolean;
+const
+    c_chunk = 150;
+var
+    response_text, payload: string;
+    fields: TArray<string>;
+    start, idx: Integer;
+begin
+    removed := 0;
+    Result := False;
+    if (session_id = '') or (Length(entries) = 0) then
+    begin
+        m_last_error := ERROR_INVALID_PARAMETER;
+        Exit;
+    end;
+    start := 0;
+    while start < Length(entries) do
+    begin
+        payload := '';
+        for idx := start to Min(start + c_chunk, Length(entries)) - 1 do
+        begin
+            if payload <> '' then
+                payload := payload + #10;
+            payload := payload + entries[idx].pinyin + #9 + entries[idx].text;
+        end;
+        Inc(start, c_chunk);
+        if not call_pipe('FORGET_USER_WORDS'#9 + session_id + #9 + encode_ipc_text(payload), response_text) then
+            Exit;
+        fields := response_text.Split([#9], TStringSplitOptions.None);
+        if (Length(fields) < 2) or not SameText(fields[0], 'OK') then
+            Exit;
+        Inc(removed, StrToIntDef(fields[1], 0));
+    end;
+    Result := True;
 end;
 
 function TncIpcClient.reset_session(const session_id: string;

@@ -9,7 +9,10 @@ unit nc_user_word_import;
     text, its pinyin and optionally the count, in any order (the pinyin is
     the field of Latin letters, the count the field of digits).
   Blank lines and lines starting with # are no entries; any other line that
-  is not one counts as skipped. }
+  is not one counts as skipped.
+  The user dictionary's export is written in the comma form, one word a
+  line ("text,pinyin,count"), and only lines that read back as they were
+  written: the file imports as it is. }
 
 interface
 
@@ -31,6 +34,16 @@ function nc_parse_user_word_import(const content: string;
 { The text of such a file: by its byte order mark, else UTF-8 when the bytes
   are valid UTF-8, else the system code page (GBK on a Chinese system). }
 function nc_read_user_word_import_file(const path: string; out content: string): Boolean;
+
+{ The line of an entry in the comma form, when it reads back as the same
+  entry (a text with Latin letters, a comma or a quote does not). }
+function nc_format_user_word_line(const entry: TncUserWordImportEntry; out line: string): Boolean;
+
+{ The export file: a comment line that names it, then the entries that read
+  back, in UTF-8 with a byte order mark (spreadsheet programs take the file
+  for ANSI without it) and Windows line breaks. }
+function nc_write_user_word_export_file(const path: string; const entries: TncUserWordImportEntries;
+    out written: Integer): Boolean;
 
 implementation
 
@@ -196,6 +209,56 @@ begin
         content := TEncoding.UTF8.GetString(bytes)
     else
         content := TEncoding.Default.GetString(bytes);
+    Result := True;
+end;
+
+function nc_format_user_word_line(const entry: TncUserWordImportEntry; out line: string): Boolean;
+var
+    parsed: TncUserWordImportEntries;
+    skipped: Integer;
+begin
+    line := '';
+    Result := False;
+    if (entry.text = '') or (entry.pinyin = '') or (entry.count <= 0) then
+        Exit;
+    line := entry.text + ',' + entry.pinyin + ',' + IntToStr(entry.count);
+    Result := nc_parse_user_word_import(line, parsed, skipped) and (Length(parsed) = 1) and
+        (parsed[0].text = entry.text) and (parsed[0].pinyin = entry.pinyin) and
+        (parsed[0].count = entry.count);
+    if not Result then
+        line := '';
+end;
+
+function nc_write_user_word_export_file(const path: string; const entries: TncUserWordImportEntries;
+    out written: Integer): Boolean;
+var
+    builder: TStringBuilder;
+    entry: TncUserWordImportEntry;
+    line: string;
+    bytes, preamble: TBytes;
+begin
+    written := 0;
+    Result := False;
+    builder := TStringBuilder.Create;
+    try
+        builder.Append('# Cassotis IME user words, ').Append(FormatDateTime('yyyy-mm-dd hh:nn', Now))
+            .Append(': text,pinyin,count').Append(#13#10);
+        for entry in entries do
+            if nc_format_user_word_line(entry, line) then
+            begin
+                builder.Append(line).Append(#13#10);
+                Inc(written);
+            end;
+        preamble := TEncoding.UTF8.GetPreamble;
+        bytes := TEncoding.UTF8.GetBytes(builder.ToString);
+        try
+            TFile.WriteAllBytes(path, preamble + bytes);
+        except
+            Exit;
+        end;
+    finally
+        builder.Free;
+    end;
     Result := True;
 end;
 

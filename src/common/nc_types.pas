@@ -258,6 +258,8 @@ type
         candidate_font_size: Integer;
         candidate_page_size: Integer;
         candidate_expand_on_paging: Boolean;
+        // One candidate a line, the current page only; no expansion on paging.
+        candidate_vertical: Boolean;
         candidate_page_key_scheme: TncCandidatePageKeyScheme;
         one_key_completion_key: TncOneKeyCompletionKey;
         second_third_candidate_keys: TncSecondThirdCandidateKeys;
