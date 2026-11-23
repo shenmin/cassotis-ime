@@ -161,10 +161,11 @@ const
       tree before it was overturned in 2 of 30,000 held-out fiction cases. }
     c_char_lm_short_plain_lead = 6.0;
     { Tab continuation: show the most probable candidate when P(correct) is at
-      least this. Chosen on the 7,996-sentence fiction Tab dev set (5-fold CV
-      on the policy's own features) as the most hits whose prompt precision is
-      not below the previous round's, and among equal hits the fewest prompts. }
-    c_char_lm_tab_min_probability = 0.02;
+      least this. Chosen by real runs on the 7,996-sentence fiction Tab dev set
+      (after 5-fold CV over thresholds from 0.008 to 0.03 above the precision
+      floor) for saved keys and whole-sentence hits as well as local hits, and
+      among equal outcomes the fewest prompts. }
+    c_char_lm_tab_min_probability = 0.03;
     { The shown continuation is followed by the LM's greedy continuation while
       each character has at least this probability (after an LM next
       character, after a dictionary word), up to this many characters, so that

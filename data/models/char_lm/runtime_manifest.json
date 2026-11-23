@@ -5,7 +5,7 @@
   "task": "shared character LM and pinyin-conditioned draft correction",
   "quantization": "int8_static",
   "static_quantization": {
-    "file_sha256": "59015f2e19c34feeed5cca4174f68ea11c9a3b545edaef98782c5f505c21a469",
+    "file_sha256": "07ceb911be89e67c691780bfad36b2bb019623f8ca5e9833dac0a81c4fd20fb8",
     "alpha": 0.8,
     "quantile": 0.999,
     "position_span": 64,
@@ -57,9 +57,9 @@
   "vocab_size": 12017,
   "bos_id": 0,
   "unk_id": 1,
-  "source_checkpoint_sha256": "9f6db147357c13db45913566532a14f40f12f921a12a5fc44eb1ac1f75f46cea",
+  "source_checkpoint_sha256": "c0357d5bad273a9c0dd844bb8c0d95d72b6a735ff45e5ffa47d8aef2943edde6",
   "files": {
-    "char_lm.onnx": "15dfeb8f116cbab8af6875198468d27b1affca372e138b5a912d9ab043a1117e",
+    "char_lm.onnx": "fdd4f8e9bf3c069bd95f5a3e2ae873f8472e96e621e8a193e6e9e259c2b64897",
     "char_lm_vocab.bin": "376c19b415024a2350083ca7c229bbe9f1d11191e562ef8ee174fd3afe7ec120",
     "pinyin_readings.json": "77a7cb4bc2b4159d78af78d25032f30de0f22376f3dfb961c85fe16f05877433"
   },
