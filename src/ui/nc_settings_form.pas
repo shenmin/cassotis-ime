@@ -2793,6 +2793,8 @@ begin
     m_combo_pinyin_input_scheme.Items.Add(SOptionZhinengabcShuangpin);
     // After every pinyin scheme: c_wubi_mixed_scheme_item.
     m_combo_pinyin_input_scheme.Items.Add(SOptionWubiMixed);
+    // Every scheme without scrolling: the default of eight rows hid the last.
+    m_combo_pinyin_input_scheme.DropDownCount := m_combo_pinyin_input_scheme.Items.Count;
     m_combo_pinyin_input_scheme.OnChange := on_input_scheme_change;
     // Beside the list, as the period after digits stands beside the
     // punctuation mode: the page does not grow.
