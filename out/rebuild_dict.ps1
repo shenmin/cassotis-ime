@@ -542,6 +542,17 @@ try {
             $base_db_tc_path, $schema_path, '--require-conversation-frequency')
     }
 
+    # The code table of the Wubi/pinyin mixed scheme goes beside the base
+    # dictionaries as the lexicon writes it; only that scheme reads it, and
+    # without it the scheme quietly types pinyin alone.
+    $lexicon_wubi_table = Join-Path $lexicon_root 'data\generated\wubi86_table.txt'
+    if (-not (Test-Path -LiteralPath $lexicon_wubi_table)) {
+        throw ("Wubi table not found: " + $lexicon_wubi_table + ". Update the lexicon " +
+            "(scripts/build_wubi86_table.py).")
+    }
+    Copy-Item -LiteralPath $lexicon_wubi_table -Destination (Join-Path $runtime_data_dir 'wubi86_table.txt') -Force
+    Write-Host ("Copied the Wubi table from: " + $lexicon_wubi_table)
+
     # Setup keeps a development build where it removes the base dictionaries
     # an earlier installer left in a profile.
     Write-CassotisDevDictionaryMarker -DataDir $runtime_data_dir

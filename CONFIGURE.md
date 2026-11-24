@@ -35,6 +35,8 @@ Notes:
 | --- | --- | --- | --- | --- | --- |
 | `input_mode` | Initial input mode | `0` = Chinese, `1` = English | `0` | `input_mode=0` | Any value other than `1` defaults to Chinese. Can be toggled at runtime with the Shift key. |
 | `pinyin_scheme` | Pinyin input scheme | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` / `zhinengabc-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | Selects Full Pinyin or one of seven Double Pinyin layouts. Unknown values fall back to Full Pinyin. |
+| `wubi_mixed` | Wubi mixed input | `true` / `false` | `false` | `wubi_mixed=true` | Wubi 86 codes and Full Pinyin typed in one mode; `pinyin_scheme` is read as Full Pinyin meanwhile. Simplified only: together with `variant=traditional` in `[dictionary]` the scheme wins and the variant goes back to simplified. Also under Settings > General > Input > Input scheme (五笔混输（86）). |
+| `wubi_context_order` | Order a Wubi code's entries by the context | `true` / `false` | `true` | `wubi_context_order=false` | In the Wubi mixed scheme only: after a context the language model puts the entry that fits it best first, the others keep the table's order; off, the table's order always. The check box beside the input scheme in the settings. |
 | `full_width_mode` | Full-width output | `true` / `false` | `false` | `full_width_mode=false` | When enabled, ASCII characters are mapped to full-width forms. Toggle at runtime with Shift+Space. |
 | `punctuation_full_width` | Chinese punctuation style | `true` / `false` | `true` | `punctuation_full_width=true` | Uses Chinese punctuation, except for the half-width symbols in `[punctuation]`. Toggle at runtime with Ctrl+Period. |
 | `decimal_period_after_digit` | Decimal point after consecutively typed digits | `true` / `false` | `true` | `decimal_period_after_digit=true` | In Chinese punctuation mode, pressing the period key immediately after typing a digit produces `.` rather than `。`. Existing or pasted text is not considered; moving the caret or pressing another key cancels the conversion. The checkbox is disabled in English punctuation mode without clearing the saved preference. |
@@ -56,7 +58,17 @@ Double Pinyin follows these rules:
 - Candidate lookup and user learning use decoded canonical Full Pinyin, so all Pinyin schemes share ranking and user data.
 - An apostrophe explicitly separates syllables. In Microsoft, Sogou, and Ziguang Double Pinyin, semicolon represents the `ing` final only as the second key of a pair; elsewhere it remains punctuation.
 - Zhineng ABC Double Pinyin puts `zh`, `ch`, and `sh` on `a`, `e`, and `v`, and every zero-initial syllable begins with `o` (`ol` = ai, `or` = er). `üe` shares the `m` key with `ue` (`lm` = lüe, `lv` = lü).
-- The status widget uses `拼`, `微`, `鹤`, `自`, `搜`, `紫`, `加`, and `智` for Full Pinyin, Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, Pinyin Jiajia, and Zhineng ABC respectively.
+- The status widget uses `拼`, `微`, `鹤`, `自`, `搜`, `紫`, `加`, and `智` for Full Pinyin, Microsoft, Xiaohe, Ziranma, Sogou, Ziguang, Pinyin Jiajia, and Zhineng ABC respectively, and `五` for Wubi mixed input.
+
+Wubi mixed input follows these rules:
+
+- The code table is SUN Haifeng's Wubi 86 table, kept apart as `wubi86_table.txt` in the base dictionary folder and loaded only in this scheme; the Pinyin dictionaries and the other schemes are not affected.
+- Letters that read as no Full Pinyin show Wubi entries only; with one to three keys, the first entry of each code one key longer follows, with that key. A code of four keys with one entry commits at once, and a fifth key after which the letters no longer read as Full Pinyin commits the first entry and starts the next code.
+- Letters that also read as Full Pinyin show the code's common characters and words before Pinyin's candidates and its other entries after Pinyin's first candidate; the fifth key commits only the former or an entry the user selected. An apostrophe in the input keeps it Pinyin.
+- An empty code is Pinyin's, abbreviations included; one of initials alone shows the Pinyin abbreviation first and the hints of the codes one key longer after it, and the completion key still finishes a Wubi word.
+- With two or three keys the completion key finishes a word whose code begins with them (chosen by the language model with the context); the first Pinyin candidate shows the Wubi code that types it.
+- Text committed by Wubi codes is the context of what follows and is not learned.
+- In the scheme the status widget's variant button and the tray's variant item are unavailable.
 
 ---
 
@@ -174,6 +186,8 @@ version=16
 [engine]
 input_mode=0
 pinyin_scheme=full-pinyin
+wubi_mixed=false
+wubi_context_order=true
 full_width_mode=false
 punctuation_full_width=true
 decimal_period_after_digit=true

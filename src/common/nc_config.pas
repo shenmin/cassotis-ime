@@ -30,6 +30,7 @@ type
         procedure ensure_config_directory;
         procedure write_config_version(const ini: TMemIniFile;
             const candidate_font_size_migrated: Boolean = False);
+        procedure save_normalized_engine_config(const config: TncEngineConfig);
     public
         constructor create(const config_path: string;
             const lock_mode: TncConfigLockMode = clmRequired);
@@ -51,6 +52,13 @@ function nc_select_base_dictionary_path(const module_directory,
     user_data_directory, file_name: string): string;
 function get_default_dictionary_path_simplified: string;
 function get_default_dictionary_path_traditional: string;
+// The Wubi 86 code table of the Wubi/pinyin mixed scheme, beside the base
+// dictionaries (the lexicon's data/generated/wubi86_table.txt).
+function get_default_wubi_table_path: string;
+// The mixed scheme types full pinyin and only simplified Chinese: a
+// configuration that has it on together with another pinyin scheme or the
+// traditional variant gets full pinyin and the simplified variant.
+procedure nc_normalize_wubi_mixed_config(var config: TncEngineConfig);
 function get_default_user_dictionary_path: string;
 function nc_default_engine_config: TncEngineConfig;
 function nc_normalize_punctuation_ascii_symbols(const value: string): string;
@@ -933,6 +941,8 @@ begin
     Result.debug_mode := False;
     Result.dictionary_variant := dv_simplified;
     Result.shortcuts := nc_default_shortcut_config;
+    Result.wubi_mixed := False;
+    Result.wubi_context_order := True;
 end;
 
 constructor TncConfigManager.create(const config_path: string;
@@ -1211,6 +1221,10 @@ begin
         Result.debug_mode := safe_ini_read_integer(ini, 'engine', 'debug', 0) <> 0;
         variant_text := safe_ini_read_string(ini, 'dictionary', 'variant', 'simplified');
         Result.dictionary_variant := parse_variant_text(variant_text);
+        Result.wubi_mixed := safe_ini_read_bool(ini, 'engine', 'wubi_mixed', False);
+        Result.wubi_context_order := safe_ini_read_bool(ini, 'engine',
+            'wubi_context_order', True);
+        nc_normalize_wubi_mixed_config(Result);
         shortcut_values_valid := True;
         Result.shortcuts := nc_default_shortcut_config;
         read_shortcut_value('input_mode_toggle', sa_input_mode_toggle);
@@ -1329,6 +1343,15 @@ end;
 
 procedure TncConfigManager.save_engine_config(const config: TncEngineConfig);
 var
+    stored: TncEngineConfig;
+begin
+    stored := config;
+    nc_normalize_wubi_mixed_config(stored);
+    save_normalized_engine_config(stored);
+end;
+
+procedure TncConfigManager.save_normalized_engine_config(const config: TncEngineConfig);
+var
     ini: TMemIniFile;
     candidate_font_name: string;
     shortcut_config: TncShortcutConfig;
@@ -1393,6 +1416,8 @@ begin
         ini.WriteBool('appearance', 'input_mode_hint', config.input_mode_hint);
         ini.WriteBool('appearance', 'candidate_at_input_start', config.candidate_at_input_start);
         ini.WriteString('dictionary', 'variant', variant_to_text(config.dictionary_variant));
+        ini.WriteBool('engine', 'wubi_mixed', config.wubi_mixed);
+        ini.WriteBool('engine', 'wubi_context_order', config.wubi_context_order);
         ini.WriteString('shortcuts', 'input_mode_toggle',
             nc_shortcut_to_text(shortcut_config.input_mode_toggle));
         ini.WriteString('shortcuts', 'punctuation_toggle',
@@ -1428,6 +1453,8 @@ var
     debug_mode: Boolean;
     decimal_period_after_digit: Boolean;
     pinyin_input_scheme: TncPinyinInputScheme;
+    wubi_mixed: Boolean;
+    wubi_context_order: Boolean;
 begin
     if (m_config_path = '') or (not m_config_mutex_owned) then
     begin
@@ -1447,10 +1474,14 @@ begin
             'decimal_period_after_digit', True);
         pinyin_input_scheme := parse_pinyin_input_scheme_text(
             safe_ini_read_string(ini, 'engine', 'pinyin_scheme', 'full-pinyin'));
+        wubi_mixed := safe_ini_read_bool(ini, 'engine', 'wubi_mixed', False);
+        wubi_context_order := safe_ini_read_bool(ini, 'engine', 'wubi_context_order', True);
         ini.EraseSection('engine');
         ini.WriteInteger('engine', 'input_mode', Ord(input_mode));
         ini.WriteString('engine', 'pinyin_scheme',
             pinyin_input_scheme_to_text(pinyin_input_scheme));
+        ini.WriteBool('engine', 'wubi_mixed', wubi_mixed);
+        ini.WriteBool('engine', 'wubi_context_order', wubi_context_order);
         ini.WriteBool('engine', 'full_width_mode', full_width_mode);
         ini.WriteBool('engine', 'punctuation_full_width', punctuation_full_width);
         ini.WriteBool('engine', 'decimal_period_after_digit', decimal_period_after_digit);
@@ -1481,7 +1512,10 @@ begin
     end;
     try
         ini.EraseSection('dictionary');
-        ini.WriteString('dictionary', 'variant', variant_to_text(variant));
+        if (variant = dv_traditional) and safe_ini_read_bool(ini, 'engine', 'wubi_mixed', False) then
+            ini.WriteString('dictionary', 'variant', variant_to_text(dv_simplified))
+        else
+            ini.WriteString('dictionary', 'variant', variant_to_text(variant));
         write_config_version(ini);
         ini.UpdateFile;
     finally
@@ -1605,6 +1639,19 @@ function get_default_dictionary_path_traditional: string;
 begin
     Result := nc_select_base_dictionary_path(get_module_directory,
         get_runtime_data_directory, 'dict_tc.db');
+end;
+
+function get_default_wubi_table_path: string;
+begin
+    Result := nc_select_base_dictionary_path(get_module_directory,
+        get_runtime_data_directory, 'wubi86_table.txt');
+end;
+
+procedure nc_normalize_wubi_mixed_config(var config: TncEngineConfig);
+begin
+    if not config.wubi_mixed then Exit;
+    config.pinyin_input_scheme := pis_full_pinyin;
+    config.dictionary_variant := dv_simplified;
 end;
 
 function get_default_user_dictionary_path: string;

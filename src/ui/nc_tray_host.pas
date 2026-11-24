@@ -1018,7 +1018,7 @@ begin
     if (source = m_status_label_variant) and status_point_in_control(m_status_label_variant, cursor_point) then
     begin
         if nc_status_widget_control_enabled(m_engine_config.input_mode,
-            swc_dictionary_variant) then
+            swc_dictionary_variant, m_engine_config.wubi_mixed) then
         begin
             on_dictionary_variant_click(m_status_label_variant);
         end;
@@ -1863,6 +1863,7 @@ var
     scheme_hint: string;
     full_width_text: string;
     chinese_controls_enabled: Boolean;
+    variant_enabled: Boolean;
 begin
     if m_status_form = nil then
     begin
@@ -1930,6 +1931,11 @@ begin
             scheme_hint := '拼音方案：全拼';
         end;
     end;
+    if m_engine_config.wubi_mixed then
+    begin
+        scheme_text := '五';
+        scheme_hint := '输入方案：五笔混输（五笔86，兼容全拼）';
+    end;
     if m_engine_config.input_mode = im_english then
     begin
         scheme_text := '-';
@@ -1950,7 +1956,13 @@ begin
     m_status_label_scheme.Hint := scheme_hint;
     chinese_controls_enabled := nc_status_widget_control_enabled(
         m_engine_config.input_mode, swc_dictionary_variant);
-    m_status_label_variant.Enabled := chinese_controls_enabled;
+    variant_enabled := nc_status_widget_control_enabled(
+        m_engine_config.input_mode, swc_dictionary_variant, m_engine_config.wubi_mixed);
+    m_status_label_variant.Enabled := variant_enabled;
+    if m_engine_config.wubi_mixed then
+        m_status_label_variant.Hint := '五笔混输只用简体'
+    else
+        m_status_label_variant.Hint := '切换简体/繁体';
     m_status_label_scheme.Enabled := nc_status_widget_control_enabled(
         m_engine_config.input_mode, swc_pinyin_scheme);
     m_status_label_punct.Enabled := nc_status_widget_control_enabled(
@@ -1961,6 +1973,11 @@ begin
         m_status_label_punct.Cursor := crHandPoint;
         m_status_label_variant.Font.Color := RGB(70, 78, 92);
         m_status_label_scheme.Font.Color := RGB(48, 89, 94);
+        if not variant_enabled then
+        begin
+            m_status_label_variant.Cursor := crDefault;
+            m_status_label_variant.Font.Color := RGB(132, 139, 148);
+        end;
     end
     else
     begin
@@ -2650,6 +2667,8 @@ begin
     begin
         m_item_dictionary_variant.Caption := '词库：简体中文';
     end;
+    // The Wubi/pinyin mixed scheme types simplified Chinese only.
+    m_item_dictionary_variant.Enabled := not m_engine_config.wubi_mixed;
 
     m_item_full_width.Caption := '全角模式';
     m_item_full_width.Checked := m_engine_config.full_width_mode;
@@ -2881,6 +2900,7 @@ procedure TncTrayHost.on_dictionary_variant_click(Sender: TObject);
 var
     next_variant: TncDictionaryVariant;
 begin
+    if m_engine_config.wubi_mixed then Exit;
     if m_engine_config.dictionary_variant = dv_traditional then
     begin
         next_variant := dv_simplified;

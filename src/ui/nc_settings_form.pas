@@ -249,6 +249,7 @@ type
         m_btn_punctuation_standard: TncModernButton;
         m_chk_full_width_mode: TncModernCheckBox;
         m_chk_auto_english: TncModernCheckBox;
+        m_chk_wubi_context_order: TncModernCheckBox;
         m_chk_show_status_widget: TncModernCheckBox;
         m_chk_input_mode_hint: TncModernCheckBox;
         m_track_status_widget_transparency: TTrackBar;
@@ -341,12 +342,15 @@ type
         procedure add_advanced_controls;
         procedure update_scaled_control_metrics;
         procedure mark_dirty(Sender: TObject);
+        procedure on_input_scheme_change(Sender: TObject);
+        procedure on_input_mode_change(Sender: TObject);
         procedure on_status_widget_transparency_change(Sender: TObject);
         procedure on_page_change(Sender: TObject);
         procedure preview_status_widget;
         procedure update_apply_button;
         procedure update_logging_controls;
         procedure update_punctuation_controls;
+        procedure update_wubi_controls;
         procedure update_fuzzy_pinyin_controls;
         procedure on_fuzzy_pinyin_enabled_click(Sender: TObject);
         procedure load_from_config;
@@ -483,6 +487,8 @@ type
     end;
 
 const
+    // The scheme list's item of 五笔混输, after every pinyin scheme.
+    c_wubi_mixed_scheme_item = Ord(High(TncPinyinInputScheme)) + 1;
     c_dialog_width = 780;
     c_dialog_height = 560;
     c_nav_width = 176;
@@ -567,7 +573,7 @@ resourcestring
     SOptionSimplifiedChineseInput = '简体中文输入';
     SOptionTraditionalChineseInput = '繁体中文输入';
     SOptionEnglishInput = '英文输入';
-    SLabelPinyinInputScheme = '拼音方案';
+    SLabelPinyinInputScheme = '输入方案';
     SOptionFullPinyin = '全拼';
     SOptionMicrosoftShuangpin = '微软双拼';
     SOptionXiaoheShuangpin = '小鹤双拼';
@@ -576,6 +582,8 @@ resourcestring
     SOptionZiguangShuangpin = '紫光双拼';
     SOptionPinyinJiajiaShuangpin = '拼音加加';
     SOptionZhinengabcShuangpin = '智能ABC双拼';
+    // Wubi 86 with full pinyin beside it (simplified Chinese only).
+    SOptionWubiMixed = '五笔混输（86）';
     SCheckEnableFuzzyPinyin = '启用模糊拼音';
     SLabelPunctuationMode = '中英文标点';
     SCheckDecimalPeriodAfterDigit = '连续输入数字后面的“。”转为“.”';
@@ -588,6 +596,9 @@ resourcestring
     SCheckFullWidthMode = '使用全角输入';
     SCheckAutoEnglish = '识别英文单词，空格直接上屏';
     SAutoEnglishHint = '全拼、半角输入时生效；中文候选的数字编号保持不变。';
+    SCheckWubiContextOrder = '重码按上下文排序';
+    SWubiContextOrderHint = '五笔混输时生效：有前文时，语言模型把最合前文的重码排到首位，' +
+        '其余保持码表顺序；不选则始终按码表顺序。';
     SFuzzyPinyinHint = '勾选的每组读音可以互相代替，例如勾选 z / zh 后，输入 zi 也能找到“知”。';
     SCheckShowStatusWidget = '显示状态浮窗';
     SCheckInputModeHint = '光标旁提示中英文状态';
@@ -2484,6 +2495,7 @@ begin
     m_scaled_dpi := dpi;
     update_check_box_metrics(m_chk_full_width_mode);
     update_check_box_metrics(m_chk_auto_english);
+    update_check_box_metrics(m_chk_wubi_context_order);
     update_check_box_metrics(m_chk_decimal_period_after_digit);
     update_check_box_metrics(m_chk_fuzzy_pinyin_enabled);
     for fuzzy_rule := Low(TncFuzzyPinyinRule) to
@@ -2761,14 +2773,16 @@ begin
     top := scale_ui(c_section_inner_top);
     create_label(Self, input_group, SLabelInputMode, top);
     m_combo_input_mode := create_combo(Self, input_group, top, c_combo_width);
+    m_combo_input_mode.Name := 'InputMode';
     m_combo_input_mode.Items.Add(SOptionSimplifiedChineseInput);
     m_combo_input_mode.Items.Add(SOptionTraditionalChineseInput);
     m_combo_input_mode.Items.Add(SOptionEnglishInput);
-    m_combo_input_mode.OnChange := mark_dirty;
+    m_combo_input_mode.OnChange := on_input_mode_change;
 
     top := next_row_top(top);
     create_label(Self, input_group, SLabelPinyinInputScheme, top);
     m_combo_pinyin_input_scheme := create_combo(Self, input_group, top, c_combo_width);
+    m_combo_pinyin_input_scheme.Name := 'InputScheme';
     m_combo_pinyin_input_scheme.Items.Add(SOptionFullPinyin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionMicrosoftShuangpin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionXiaoheShuangpin);
@@ -2777,7 +2791,21 @@ begin
     m_combo_pinyin_input_scheme.Items.Add(SOptionZiguangShuangpin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionPinyinJiajiaShuangpin);
     m_combo_pinyin_input_scheme.Items.Add(SOptionZhinengabcShuangpin);
-    m_combo_pinyin_input_scheme.OnChange := mark_dirty;
+    // After every pinyin scheme: c_wubi_mixed_scheme_item.
+    m_combo_pinyin_input_scheme.Items.Add(SOptionWubiMixed);
+    m_combo_pinyin_input_scheme.OnChange := on_input_scheme_change;
+    // Beside the list, as the period after digits stands beside the
+    // punctuation mode: the page does not grow.
+    m_chk_wubi_context_order := create_check_box(Self, input_group, top,
+        SCheckWubiContextOrder, mark_dirty);
+    m_chk_wubi_context_order.Name := 'WubiContextOrder';
+    m_chk_wubi_context_order.Hint := SWubiContextOrderHint;
+    m_chk_wubi_context_order.ShowHint := True;
+    m_chk_wubi_context_order.Left := m_combo_pinyin_input_scheme.Left +
+        m_combo_pinyin_input_scheme.Width + scale_ui(18);
+    m_chk_wubi_context_order.Width := input_group.ClientWidth -
+        m_chk_wubi_context_order.Left - scale_ui(c_label_left);
+    m_chk_wubi_context_order.Anchors := [akLeft, akTop, akRight];
 
     top := next_row_top(top);
     create_label(Self, input_group, SLabelInputOptions, top);
@@ -4516,11 +4544,37 @@ begin
     end;
 end;
 
+// 五笔混输 types simplified Chinese only: choosing it leaves traditional, and
+// choosing traditional leaves it for full pinyin.
+procedure TncSettingsForm.on_input_scheme_change(Sender: TObject);
+begin
+    if (m_combo_pinyin_input_scheme.ItemIndex = c_wubi_mixed_scheme_item) and
+        (m_combo_input_mode.ItemIndex = 1) then
+        m_combo_input_mode.ItemIndex := 0;
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.on_input_mode_change(Sender: TObject);
+begin
+    if (m_combo_input_mode.ItemIndex = 1) and
+        (m_combo_pinyin_input_scheme.ItemIndex = c_wubi_mixed_scheme_item) then
+        m_combo_pinyin_input_scheme.ItemIndex := Ord(pis_full_pinyin);
+    mark_dirty(Sender);
+end;
+
+procedure TncSettingsForm.update_wubi_controls;
+begin
+    if (m_chk_wubi_context_order <> nil) and (m_combo_pinyin_input_scheme <> nil) then
+        m_chk_wubi_context_order.Enabled :=
+            m_combo_pinyin_input_scheme.ItemIndex = c_wubi_mixed_scheme_item;
+end;
+
 procedure TncSettingsForm.mark_dirty(Sender: TObject);
 begin
     m_dirty := True;
     update_logging_controls;
     update_punctuation_controls;
+    update_wubi_controls;
     update_apply_button;
 end;
 
@@ -4672,6 +4726,8 @@ begin
         m_edit_punctuation_ascii_symbols.Text := default_engine_config.punctuation_ascii_symbols;
         m_chk_full_width_mode.Checked := default_engine_config.full_width_mode;
         m_chk_auto_english.Checked := default_engine_config.auto_english;
+        m_chk_wubi_context_order.Checked := default_engine_config.wubi_context_order;
+        update_wubi_controls;
     end
     else if m_page_control.ActivePage = m_tab_appearance then
     begin
@@ -5266,6 +5322,8 @@ begin
         begin
             m_combo_pinyin_input_scheme.ItemIndex := Ord(pis_full_pinyin);
         end;
+        if m_engine_config.wubi_mixed then
+            m_combo_pinyin_input_scheme.ItemIndex := c_wubi_mixed_scheme_item;
     end;
     if m_chk_fuzzy_pinyin_enabled <> nil then
     begin
@@ -5298,6 +5356,9 @@ begin
         m_edit_punctuation_ascii_symbols.Text := m_engine_config.punctuation_ascii_symbols;
     if m_chk_auto_english <> nil then
         m_chk_auto_english.Checked := m_engine_config.auto_english;
+    if m_chk_wubi_context_order <> nil then
+        m_chk_wubi_context_order.Checked := m_engine_config.wubi_context_order;
+    update_wubi_controls;
     load_custom_phrase_controls(m_engine_config.custom_phrases);
     if m_chk_show_status_widget <> nil then
     begin
@@ -5474,6 +5535,8 @@ begin
     else
         next_config.pinyin_input_scheme := pis_full_pinyin;
     end;
+    next_config.wubi_mixed := m_combo_pinyin_input_scheme.ItemIndex = c_wubi_mixed_scheme_item;
+    nc_normalize_wubi_mixed_config(next_config);
 
     next_config.fuzzy_pinyin_enabled :=
         m_chk_fuzzy_pinyin_enabled.Checked;
@@ -5489,6 +5552,7 @@ begin
 
     next_config.full_width_mode := m_chk_full_width_mode.Checked;
     next_config.auto_english := m_chk_auto_english.Checked;
+    next_config.wubi_context_order := m_chk_wubi_context_order.Checked;
     next_config.input_mode_hint := m_chk_input_mode_hint.Checked;
     next_config.punctuation_full_width := m_combo_punctuation_mode.ItemIndex <> 1;
     next_config.decimal_period_after_digit := m_chk_decimal_period_after_digit.Checked;

@@ -14,6 +14,8 @@ uses
     nc_custom_phrases,
     nc_user_word_import,
     nc_quick_input,
+    nc_wubi_table,
+    nc_wubi_input,
     nc_english_input,
     nc_candidate_presentation,
     nc_prefix_completion_policy,
@@ -643,6 +645,33 @@ type
         m_config: TncEngineConfig;
         m_composition_text: string;
         m_quick_input: TncQuickInputState;
+        // The Wubi/pinyin mixed scheme: the code table (shared, not owned),
+        // whether m_candidates are a page of Wubi entries alone, the code
+        // whose entries stand before pinyin's page, and the letters left in
+        // the composition when a Wubi commit comes from the key after a code.
+        m_wubi_table: TncWubiTable;
+        m_wubi_table_tried: Boolean;
+        m_wubi_page: Boolean;
+        m_wubi_code: string;
+        m_wubi_additions: TncCandidateList;
+        // Entries of such a code that follow pinyin's first candidate instead
+        // (build_wubi_candidates), and whether the key left behind by a commit
+        // was Shift+U, I or V, which begins a command.
+        m_wubi_followers: TncCandidateList;
+        // An empty code of initials: pinyin's abbreviation, the hints after
+        // its first candidate, and the Wubi completion.
+        m_wubi_abbreviation: Boolean;
+        m_wubi_commit_remaining: string;
+        m_wubi_commit_explicit: Boolean;
+        // What the shared LM said of a duplicate code's entries after a
+        // context (order_wubi_entries_by_lm), for the context and entries of
+        // key.
+        m_wubi_lm_key: string;
+        // The Tab completion of a Wubi code (try_refresh_wubi_completion), for
+        // the context and code of key; '' when it has none.
+        m_wubi_completion_key: string;
+        m_wubi_completion_text: string;
+        m_wubi_lm_logp: TArray<Single>;
         m_composition_display_text: string;
         m_candidates: TncCandidateList;
         m_whole_key_readings: TncCandidateList;
@@ -1201,6 +1230,23 @@ type
             const secondary_candidates: TncCandidateList; const max_candidates: Integer): TncCandidateList;
         procedure build_candidates;
         function build_quick_input_candidates: Boolean;
+        function get_wubi_table: TncWubiTable;
+        function wubi_active: Boolean;
+        function get_wubi_code: string;
+        function wubi_code_candidates(const code: string; const with_hints: Boolean): TncCandidateList;
+        procedure set_wubi_page(const entries: TncCandidateList);
+        function build_wubi_candidates: Boolean;
+        procedure insert_wubi_additions(var candidates: TncCandidateList;
+            var sources: TArray<Integer>);
+        function try_wubi_key(const key_char, display_char: Char;
+            const explicit_key: Boolean): Boolean;
+        function wubi_entries_of_kinds(const code: string;
+            const entries: TncCandidateList; const leading: Boolean): TncCandidateList;
+        function try_wubi_auto_commit: Boolean;
+        function wubi_lm_context: string;
+        function order_wubi_entries_by_lm(const context: string;
+            var entries: TncCandidateList): Boolean;
+        function try_refresh_wubi_completion: Boolean;
         procedure clear_keystroke_decode_state;
         function composition_reuses_earlier_keys: Boolean;
         procedure build_candidates_core;
@@ -1309,6 +1355,14 @@ type
         procedure set_long_local_repair(const repair: IncLongLocalRepair);
         procedure set_char_lm(const model: IncCharLm; const long_enabled: Boolean;
             const short_enabled: Boolean = False);
+        // The Wubi 86 code table of the mixed scheme, instead of the one beside
+        // the base dictionaries (tests); not owned.
+        procedure set_wubi_table(const table: TncWubiTable);
+        // The Wubi codes that type a text in the mixed scheme ('' outside it,
+        // and for a text the table does not hold): a character's full code,
+        // after its shortest code where that is shorter; a word's code where
+        // the table holds the word under it.
+        function wubi_code_hint(const text: string): string;
         function detach_dictionary_provider: TncDictionaryProvider;
         procedure adopt_ready_dictionary_provider(
             const dictionary: TncDictionaryProvider);
@@ -4867,6 +4921,13 @@ begin
     m_raw_input_candidate := '';
     set_raw_input_selected_by_user(False);
     m_quick_input.clear;
+    m_wubi_page := False;
+    m_wubi_code := '';
+    m_wubi_additions := nil;
+    m_wubi_followers := nil;
+    m_wubi_abbreviation := False;
+    m_wubi_commit_remaining := '';
+    m_wubi_commit_explicit := False;
     clear_one_key_completion;
     clear_one_key_completion_feedback_target;
     m_composition_text := '';
@@ -5265,6 +5326,13 @@ procedure TncEngine.debug_set_composition_text(const text: string);
 begin
     reload_dictionary_if_needed;
     m_quick_input.clear;
+    m_wubi_page := False;
+    m_wubi_code := '';
+    m_wubi_additions := nil;
+    m_wubi_followers := nil;
+    m_wubi_abbreviation := False;
+    m_wubi_commit_remaining := '';
+    m_wubi_commit_explicit := False;
     m_quick_input.explicit_entry := (text <> '') and CharInSet(text[1], ['U', 'I', 'V']);
     m_composition_built_incrementally := False;
     m_composition_display_text := text;
@@ -5302,6 +5370,13 @@ function TncEngine.debug_query_one_key_completion(const query_text: string;
 begin
     reload_dictionary_if_needed;
     m_quick_input.clear;
+    m_wubi_page := False;
+    m_wubi_code := '';
+    m_wubi_additions := nil;
+    m_wubi_followers := nil;
+    m_wubi_abbreviation := False;
+    m_wubi_commit_remaining := '';
+    m_wubi_commit_explicit := False;
     m_composition_built_incrementally := False;
     m_composition_display_text := LowerCase(Trim(query_text));
     m_composition_text := m_composition_display_text;
@@ -5494,7 +5569,8 @@ begin
     previous_config := m_config;
     previous_page_size := get_candidate_page_size;
     dictionary_changed := m_config.dictionary_variant <> config.dictionary_variant;
-    input_scheme_changed := m_config.pinyin_input_scheme <> config.pinyin_input_scheme;
+    input_scheme_changed := (m_config.pinyin_input_scheme <> config.pinyin_input_scheme) or
+        (m_config.wubi_mixed <> config.wubi_mixed);
     fuzzy_pinyin_changed :=
         (m_config.fuzzy_pinyin_enabled <> config.fuzzy_pinyin_enabled) or
         (m_config.fuzzy_pinyin_rules <> config.fuzzy_pinyin_rules);
@@ -5514,6 +5590,9 @@ begin
     begin
         reset;
     end;
+    // The Wubi table is read when the mixed scheme comes on, not on a key.
+    if m_config.wubi_mixed then
+        get_wubi_table;
     if (previous_page_size <> get_candidate_page_size) or
         (previous_config.candidate_expand_on_paging <>
         m_config.candidate_expand_on_paging) then
@@ -5632,6 +5711,8 @@ begin
     SetLength(m_char_lm_long_pool_ranks, 0);
     SetLength(m_char_lm_long_pool_evidence, 0);
     m_single_char_lm_key := '';
+    m_wubi_lm_key := '';
+    m_wubi_completion_key := '';
 end;
 
 procedure TncEngine.set_long_local_repair(const repair: IncLongLocalRepair);
@@ -9405,6 +9486,21 @@ var
     completion_pinyin: string;
     completion: TncOneKeyCompletion;
 begin
+    // A Wubi completion commits as the code's entries do: it becomes the
+    // context and teaches nothing.
+    if m_one_key_completion.source = okcs_wubi then
+    begin
+        Result := m_one_key_completion.text <> '';
+        if not Result then Exit;
+        clear_one_key_completion_feedback_target;
+        set_pending_commit(m_one_key_completion.text, '', False, '', False, '', False,
+            False, '', True);
+        m_quick_input.pending_commit := True;
+        m_wubi_commit_remaining := '';
+        m_wubi_commit_explicit := False;
+        clear_one_key_completion;
+        Exit;
+    end;
     completion := get_one_key_completion_for_commit;
     if completion.source = okcs_custom_phrase then
     begin
@@ -9503,7 +9599,9 @@ begin
     was_explicit := m_quick_input.explicit_mode;
     if m_composition_display_text = '' then m_quick_input.explicit_entry := False;
     kind := qik_none;
-    if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') then
+    // u, i and v begin Wubi codes: in the mixed scheme a command takes Shift.
+    if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') and
+        (m_quick_input.explicit_entry or not wubi_active) then
         kind := nc_quick_input_kind(m_composition_display_text,
             m_config.pinyin_input_scheme, m_quick_input.explicit_entry);
     m_quick_input.explicit_mode := m_quick_input.explicit_entry and
@@ -9554,6 +9652,542 @@ begin
         m_long_visible_candidate_pool_source_indices_cache[idx] := idx;
 end;
 
+function TncEngine.get_wubi_table: TncWubiTable;
+begin
+    if (m_wubi_table = nil) and (not m_wubi_table_tried) and m_config.wubi_mixed then
+    begin
+        m_wubi_table_tried := True;
+        m_wubi_table := nc_wubi_shared_table(get_default_wubi_table_path);
+    end;
+    Result := m_wubi_table;
+end;
+
+procedure TncEngine.set_wubi_table(const table: TncWubiTable);
+begin
+    m_wubi_table := table;
+    m_wubi_table_tried := True;
+end;
+
+function TncEngine.wubi_active: Boolean;
+begin
+    // The mixed scheme types full pinyin beside Wubi and only simplified
+    // Chinese; the host keeps the configuration so, and the engine checks.
+    Result := m_config.wubi_mixed and (m_config.input_mode = im_chinese) and
+        (m_config.pinyin_input_scheme = pis_full_pinyin) and
+        (m_config.dictionary_variant = dv_simplified) and
+        (get_wubi_table <> nil);
+end;
+
+function TncEngine.wubi_code_hint(const text: string): string;
+var
+    chars: TArray<string>;
+    code, shortest: string;
+    entries: TncWubiEntries;
+    idx: Integer;
+begin
+    Result := '';
+    if (text = '') or (not wubi_active) then Exit;
+    chars := nc_wubi_text_chars(text);
+    if Length(chars) = 1 then
+    begin
+        code := m_wubi_table.full_code(chars[0]);
+        if code = '' then Exit;
+        shortest := m_wubi_table.shortest_code(chars[0]);
+        if (shortest <> '') and (Length(shortest) < Length(code)) then
+            Result := shortest + ' ' + code
+        else
+            Result := code;
+        Exit;
+    end;
+    code := m_wubi_table.word_code(text);
+    if code = '' then Exit;
+    entries := m_wubi_table.lookup(code);
+    for idx := 0 to High(entries) do
+        if entries[idx].text = text then
+            Exit(code);
+end;
+
+function TncEngine.get_wubi_code: string;
+begin
+    // One to four of the keys a to y, nothing confirmed before them and no
+    // quick-input command.
+    Result := '';
+    if (m_confirmed_text <> '') or m_quick_input.explicit_mode or
+        (m_quick_input.kind <> qik_none) or
+        (not nc_is_wubi_code_text(m_composition_display_text)) or
+        (not wubi_active) then Exit;
+    Result := m_composition_display_text;
+end;
+
+function TncEngine.wubi_code_candidates(const code: string;
+    const with_hints: Boolean): TncCandidateList;
+const
+    c_keys = 'abcdefghijklmnopqrstuvwxy';
+var
+    entries, longer: TncWubiEntries;
+    seen: TDictionary<string, Boolean>;
+    idx, count: Integer;
+    list: TncCandidateList;
+
+    procedure add(const text, comment: string);
+    begin
+        if seen.ContainsKey(text) then Exit;
+        seen.Add(text, True);
+        if count >= Length(list) then SetLength(list, count * 2 + 8);
+        list[count] := Default(TncCandidate);
+        list[count].text := text;
+        list[count].comment := comment;
+        list[count].source := cs_wubi;
+        Inc(count);
+    end;
+begin
+    Result := nil;
+    list := nil;
+    count := 0;
+    if m_wubi_table = nil then Exit;
+    seen := TDictionary<string, Boolean>.Create;
+    try
+        entries := m_wubi_table.lookup(code);
+        for idx := 0 to High(entries) do
+            add(entries[idx].text, '');
+        // A code of one to three keys also shows the first entry of each code
+        // one key longer, with that key as its comment, as Wubi input methods
+        // do. Not before pinyin's page, which they would push off the screen.
+        if with_hints and (Length(code) < 4) then
+            for idx := 1 to Length(c_keys) do
+            begin
+                longer := m_wubi_table.lookup(code + c_keys[idx]);
+                if (Length(longer) > 0) and
+                    (longer[0].kind in [wek_common_char, wek_word, wek_char]) then
+                    add(longer[0].text, c_keys[idx]);
+            end;
+    finally
+        seen.Free;
+    end;
+    SetLength(list, count);
+    Result := list;
+end;
+
+procedure TncEngine.set_wubi_page(const entries: TncCandidateList);
+var
+    idx: Integer;
+begin
+    clear_keystroke_decode_state;
+    clear_one_key_completion;
+    clear_one_key_completion_feedback_target;
+    m_wubi_page := True;
+    m_wubi_additions := nil;
+    m_wubi_followers := nil;
+    m_wubi_abbreviation := False;
+    m_composition_decoded_as_whole := False;
+    m_last_lookup_key := m_composition_text;
+    m_candidates := Copy(entries);
+    m_page_index := 0;
+    m_selected_index := 0;
+    m_candidate_navigation_started := False;
+    m_candidate_paging_expanded := False;
+    // As quick input does: the page snapshots and click checks, none of the
+    // pinyin presentation filters.
+    m_long_visible_candidate_pool_cache := Copy(m_candidates);
+    SetLength(m_long_visible_candidate_pool_source_indices_cache, Length(m_candidates));
+    for idx := 0 to High(m_candidates) do
+        m_long_visible_candidate_pool_source_indices_cache[idx] := idx;
+end;
+
+function TncEngine.build_wubi_candidates: Boolean;
+var
+    code: string;
+    reads_pinyin: Boolean;
+    entries: TncCandidateList;
+begin
+    Result := False;
+    m_wubi_page := False;
+    m_wubi_code := '';
+    m_wubi_additions := nil;
+    m_wubi_followers := nil;
+    m_wubi_abbreviation := False;
+    code := get_wubi_code;
+    if code = '' then Exit;
+    reads_pinyin := nc_wubi_reads_full_pinyin(code);
+    entries := wubi_code_candidates(code, not reads_pinyin);
+    // An empty code is pinyin's, abbreviations among it.
+    if Length(entries) = 0 then Exit;
+    order_wubi_entries_by_lm(wubi_lm_context, entries);
+    m_wubi_code := code;
+    // An empty code of initials alone, nhm or wsm, is pinyin's abbreviation
+    // first: its page has only the hints of codes one key longer, which follow
+    // pinyin's first candidate (the user, 2026-11-24, after a review: 4,390 of
+    // the 8,000 triples of initials are such codes, and a Wubi typist
+    // completed 4,678 of 17,943 four-key words after three such keys, which
+    // the completion key keeps doing).
+    if (not reads_pinyin) and nc_wubi_letters_are_initials(code) and
+        (Length(m_wubi_table.lookup(code)) = 0) then
+    begin
+        m_wubi_abbreviation := True;
+        m_wubi_followers := entries;
+        Exit;
+    end;
+    if reads_pinyin then
+    begin
+        // Pinyin's page follows the code's common characters and the table's
+        // words (get_candidates). A rare character, a tolerant code and a
+        // dictionary word on an empty code follow pinyin's first candidate:
+        // such letters are pinyin far more often (dian, qian and yige gave a
+        // rare character, a word of a catalogue and one of the dictionary
+        // there; of the official short set's inputs that are such codes, 947
+        // of 1,455 had one of them first, and a Wubi typist's code meant it on
+        // 84 of 39,625 codes; out/wubi_mixed_20261123/typist, mixed_kinds.py).
+        m_wubi_additions := wubi_entries_of_kinds(code, entries, True);
+        m_wubi_followers := wubi_entries_of_kinds(code, entries, False);
+        Exit;
+    end;
+    set_wubi_page(entries);
+    Result := True;
+end;
+
+function TncEngine.wubi_entries_of_kinds(const code: string;
+    const entries: TncCandidateList; const leading: Boolean): TncCandidateList;
+var
+    rows: TncWubiEntries;
+    idx, row, count: Integer;
+    lead: Boolean;
+begin
+    // The entries of a code that are common characters or words of the table
+    // (leading), or the others, in the order given.
+    Result := nil;
+    if m_wubi_table = nil then Exit;
+    rows := m_wubi_table.lookup(code);
+    SetLength(Result, Length(entries));
+    count := 0;
+    for idx := 0 to High(entries) do
+    begin
+        lead := False;
+        for row := 0 to High(rows) do
+            if rows[row].text = entries[idx].text then
+            begin
+                lead := rows[row].kind in [wek_common_char, wek_word];
+                Break;
+            end;
+        if lead = leading then
+        begin
+            Result[count] := entries[idx];
+            Inc(count);
+        end;
+    end;
+    SetLength(Result, count);
+end;
+
+procedure TncEngine.insert_wubi_additions(var candidates: TncCandidateList;
+    var sources: TArray<Integer>);
+var
+    texts: TDictionary<string, Boolean>;
+    idx, at: Integer;
+begin
+    if (Length(m_wubi_additions) = 0) and (Length(m_wubi_followers) = 0) then Exit;
+    for idx := 0 to High(candidates) do
+        if candidates[idx].source = cs_wubi then Exit;
+    texts := TDictionary<string, Boolean>.Create;
+    try
+        for idx := 0 to High(m_wubi_additions) do
+            texts.AddOrSetValue(m_wubi_additions[idx].text, True);
+        for idx := 0 to High(m_wubi_followers) do
+            texts.AddOrSetValue(m_wubi_followers[idx].text, True);
+        // A pinyin candidate that repeats an entry goes; the entry stays.
+        for idx := High(candidates) downto 0 do
+            if (Trim(candidates[idx].comment) = '') and texts.ContainsKey(candidates[idx].text) then
+            begin
+                Delete(candidates, idx, 1);
+                if idx <= High(sources) then Delete(sources, idx, 1);
+            end;
+    finally
+        texts.Free;
+    end;
+    at := Min(1, Length(candidates));
+    Insert(m_wubi_followers, candidates, at);
+    for idx := 0 to High(m_wubi_followers) do Insert(-1, sources, Min(at, Length(sources)));
+    Insert(m_wubi_additions, candidates, 0);
+    for idx := 0 to High(m_wubi_additions) do Insert(-1, sources, 0);
+end;
+
+function TncEngine.try_wubi_key(const key_char, display_char: Char;
+    const explicit_key: Boolean): Boolean;
+var
+    letters, rest, shown, commit, code: string;
+    entries: TncWubiEntries;
+    page: TncCandidateList;
+    idx: Integer;
+begin
+    // The key after a code of four keys commits the code's entry when the
+    // letters with it no longer read as full pinyin; while they read so, the
+    // keys stay pinyin's, and a code followed by keys that end that reading
+    // later commits then, the keys behind the code staying in the composition.
+    // The lower-case key decides (Shift+G after a code commits it as g would,
+    // and leaves G as typed); a composition holding anything but the letters
+    // a to z, such as an apostrophe the user typed, is pinyin's.
+    Result := False;
+    if (m_confirmed_text <> '') or (m_quick_input.kind <> qik_none) or
+        m_quick_input.explicit_mode or (not wubi_active) then Exit;
+    for idx := 1 to Length(m_composition_display_text) do
+        if not CharInSet(m_composition_display_text[idx], ['a'..'z']) then Exit;
+    letters := m_composition_display_text + key_char;
+    if (Length(letters) < 5) or (nc_wubi_pinyin_reading(letters) <> wpr_none) then Exit;
+    commit := '';
+    rest := letters;
+    shown := m_composition_display_text + display_char;
+    while (Length(rest) >= 5) and (nc_wubi_pinyin_reading(rest) = wpr_none) do
+    begin
+        code := Copy(rest, 1, 4);
+        if not nc_is_wubi_code_text(code) then Break;
+        entries := m_wubi_table.lookup(code);
+        // A dictionary word on an empty code never commits itself.
+        if (Length(entries) = 0) or (entries[0].kind = wek_lexicon_word) then Break;
+        // The code on the page: the entry selected there; another code: the
+        // first entry, as its page would show it after the text before it.
+        page := nil;
+        if (commit = '') and (code = m_wubi_code) then
+            page := get_candidates;
+        if (m_selected_index >= 0) and (m_selected_index < Length(page)) and
+            (page[m_selected_index].source = cs_wubi) and
+            (page[m_selected_index].comment = '') then
+            commit := page[m_selected_index].text
+        else
+        begin
+            page := wubi_code_candidates(code, False);
+            order_wubi_entries_by_lm(wubi_lm_context + commit, page);
+            // Letters that read as pinyin commit only an entry that stands
+            // before pinyin's page; the others follow pinyin's first candidate
+            // and commit when selected (dian with a mistyped fifth key is
+            // pinyin, not its rare character).
+            if nc_wubi_reads_full_pinyin(code) then
+                page := wubi_entries_of_kinds(code, page, True);
+            if Length(page) = 0 then Break;
+            commit := commit + page[0].text;
+        end;
+        Delete(rest, 1, 4);
+        Delete(shown, 1, 4);
+    end;
+    // Keys left that are a unique code of four keys commit with it, as they
+    // would on their own page (try_wubi_auto_commit).
+    if (commit <> '') and (Length(rest) = 4) and nc_is_wubi_code_text(shown) and
+        (nc_wubi_pinyin_reading(rest) = wpr_none) then
+    begin
+        entries := m_wubi_table.lookup(rest);
+        if (Length(entries) = 1) and (entries[0].kind <> wek_lexicon_word) then
+        begin
+            commit := commit + entries[0].text;
+            rest := '';
+            shown := '';
+        end;
+    end;
+    if commit = '' then Exit;
+    set_pending_commit(commit, '', False, '', False, '', False, False, '', True);
+    m_quick_input.pending_commit := True;
+    m_wubi_commit_remaining := shown;
+    m_wubi_commit_explicit := explicit_key and (shown = display_char);
+    Result := True;
+end;
+
+function TncEngine.wubi_lm_context: string;
+begin
+    // The text the shared LM reads before the input, as for a syllable's
+    // characters (order_single_chars_by_lm).
+    if m_segment_left_context <> '' then
+        Result := m_segment_left_context
+    else if m_external_left_context <> '' then
+        Result := m_external_left_context
+    else
+        Result := m_left_context;
+end;
+
+function TncEngine.order_wubi_entries_by_lm(const context: string;
+    var entries: TncCandidateList): Boolean;
+const
+    // The entries of a code the LM reads (the code's first ones; the hints of
+    // longer codes behind them are not among them).
+    c_wubi_lm_entries = 10;
+    // The LM's score less this a place in the table, and the table's first
+    // entry gives way only when another leads it by c_wubi_lm_margin. Tuned on
+    // held-out general text, fiction and chat (out/wubi_lm_20261123,
+    // wubi_grid.py, the codes typed after a context): within 2% of the best
+    // gain, the fewest first entries lost. Without a context the LM gained
+    // nothing at any setting.
+    c_wubi_lm_place_nats = 1.0;
+    c_wubi_lm_margin = 0.75;
+    c_wubi_lm_max_nodes = 512;
+var
+    texts: TArray<string>;
+    logp: TArray<Single>;
+    key: string;
+    count, idx, best: Integer;
+    score, best_score: Double;
+    chosen: TncCandidate;
+begin
+    // Only the first place changes: the rest keep the table's order, which a
+    // Wubi typist knows. Without a context the table decides.
+    Result := False;
+    if (not m_config.wubi_context_order) or (not m_char_lm_short_enabled) or
+        (m_char_lm = nil) or (Trim(context) = '') then
+        Exit;
+    count := 0;
+    while (count < Length(entries)) and (count < c_wubi_lm_entries) and
+        (entries[count].comment = '') do
+        Inc(count);
+    if count < 2 then Exit;
+    SetLength(texts, count);
+    for idx := 0 to count - 1 do
+        texts[idx] := entries[idx].text;
+    // A page built again on the same key makes no second call.
+    key := context + #1 + string.Join(#2, texts);
+    if key <> m_wubi_lm_key then
+    begin
+        if not m_char_lm.char_lm_ready then Exit;
+        if (m_char_lm.score_texts(context, texts, count, c_wubi_lm_max_nodes, logp) < count) or
+            (Length(logp) < count) then
+            Exit;
+        m_wubi_lm_key := key;
+        m_wubi_lm_logp := Copy(logp, 0, count);
+    end;
+    best := 0;
+    best_score := m_wubi_lm_logp[0];
+    for idx := 1 to count - 1 do
+    begin
+        score := m_wubi_lm_logp[idx] - c_wubi_lm_place_nats * idx;
+        if score > best_score then
+        begin
+            best := idx;
+            best_score := score;
+        end;
+    end;
+    if (best = 0) or (best_score - m_wubi_lm_logp[0] < c_wubi_lm_margin) then Exit;
+    chosen := entries[best];
+    Delete(entries, best, 1);
+    Insert(chosen, entries, 0);
+    Result := True;
+end;
+
+function TncEngine.try_refresh_wubi_completion: Boolean;
+const
+    // Codes of two and three keys; the pool is the most frequent words whose
+    // codes go on from the keys, not the entries of the keys themselves: the
+    // table's words and the dictionary's words on its empty codes. Typed in the
+    // engine on held-out text (out/wubi_mixed_20261123/typist, four-key words
+    // of general text, fiction and chat), the dictionary's words gained 124 /
+    // 172 / 120 completions after two keys and lost 29 / 49 / 40 of the
+    // table's words, after three keys +325 / +448 / +332 and -25 / -38 / -33;
+    // the key 1 to 2 ms slower.
+    c_wubi_completion_min_keys = 2;
+    c_wubi_completion_max_keys = 3;
+    c_wubi_completion_pool = 32;
+    // A prior of half a nat a log10 of the word's occurrences in the general
+    // text (the table's score is 100 times that). Measured on held-out general
+    // text, fiction and chat (out/wubi_lm_20261123): after two keys the first
+    // word was the word typed 21,319 / 15,443 / 10,774 times of 36,292 /
+    // 30,381 / 23,034 where the most frequent word was 7,772 / 5,137 / 5,459;
+    // without the prior about as often.
+    c_wubi_completion_count_nats = 0.005;
+    c_wubi_completion_max_nodes = 512;
+var
+    context, key, text: string;
+    entries, own: TncWubiEntries;
+    pool: TList<TncWubiEntry>;
+    seen: TDictionary<string, Boolean>;
+    texts: TArray<string>;
+    logp: TArray<Single>;
+    idx, best, count: Integer;
+    score, best_score: Double;
+begin
+    Result := False;
+    if (m_wubi_table = nil) or (Length(m_wubi_code) < c_wubi_completion_min_keys) or
+        (Length(m_wubi_code) > c_wubi_completion_max_keys) then Exit;
+    context := wubi_lm_context;
+    key := context + #1 + m_wubi_code;
+    if key <> m_wubi_completion_key then
+    begin
+        text := '';
+        pool := TList<TncWubiEntry>.Create;
+        seen := TDictionary<string, Boolean>.Create;
+        try
+            own := m_wubi_table.lookup(m_wubi_code);
+            for idx := 0 to High(own) do
+                seen.AddOrSetValue(own[idx].text, True);
+            entries := m_wubi_table.lookup_longer(m_wubi_code);
+            for idx := 0 to High(entries) do
+                if (entries[idx].kind in [wek_word, wek_lexicon_word]) and
+                    (not seen.ContainsKey(entries[idx].text)) then
+                begin
+                    seen.Add(entries[idx].text, True);
+                    pool.Add(entries[idx]);
+                end;
+            // By the general text's counts, the table's order among equals.
+            for idx := 1 to pool.Count - 1 do
+            begin
+                best := idx;
+                while (best > 0) and (pool[best - 1].score < pool[idx].score) do
+                    Dec(best);
+                if best < idx then
+                    pool.Move(idx, best);
+            end;
+            count := Min(pool.Count, c_wubi_completion_pool);
+            if count > 0 then
+            begin
+                if (not m_char_lm_short_enabled) or (m_char_lm = nil) or
+                    (not m_char_lm.char_lm_ready) then
+                    Exit;
+                SetLength(texts, count);
+                for idx := 0 to count - 1 do
+                    texts[idx] := pool[idx].text;
+                if (m_char_lm.score_texts(context, texts, count,
+                    c_wubi_completion_max_nodes, logp) < count) or
+                    (Length(logp) < count) then
+                    Exit;
+                best := 0;
+                best_score := logp[0] + c_wubi_completion_count_nats * pool[0].score;
+                for idx := 1 to count - 1 do
+                begin
+                    score := logp[idx] + c_wubi_completion_count_nats * pool[idx].score;
+                    if score > best_score then
+                    begin
+                        best := idx;
+                        best_score := score;
+                    end;
+                end;
+                text := texts[best];
+            end;
+        finally
+            seen.Free;
+            pool.Free;
+        end;
+        m_wubi_completion_key := key;
+        m_wubi_completion_text := text;
+    end;
+    if m_wubi_completion_text = '' then Exit;
+    if (m_one_key_completion.source <> okcs_wubi) or
+        (m_one_key_completion.text <> m_wubi_completion_text) then
+    begin
+        clear_one_key_completion;
+        clear_one_key_completion_feedback_target;
+        m_one_key_completion.text := m_wubi_completion_text;
+        m_one_key_completion.source := okcs_wubi;
+        m_one_key_completion_query_prefix := m_wubi_code;
+    end;
+    Result := True;
+end;
+
+function TncEngine.try_wubi_auto_commit: Boolean;
+var
+    entries: TncWubiEntries;
+begin
+    // A code of four keys with one entry commits it at once, unless the
+    // letters read as full pinyin (no page of Wubi entries alone then).
+    Result := False;
+    if (not m_wubi_page) or (Length(m_wubi_code) <> 4) or (m_wubi_table = nil) then Exit;
+    entries := m_wubi_table.lookup(m_wubi_code);
+    if (Length(entries) <> 1) or (entries[0].kind = wek_lexicon_word) then Exit;
+    set_pending_commit(entries[0].text, '', False, '', False, '', False, False, '', True);
+    m_quick_input.pending_commit := True;
+    Result := True;
+end;
+
 procedure TncEngine.refresh_raw_input_candidate;
 const
     // With a Chinese reading of the whole input on the page, the letters go
@@ -9598,7 +10232,7 @@ begin
     m_raw_input_debug := '';
     if (not m_config.auto_english) or (m_config.input_mode <> im_chinese) or
         m_config.full_width_mode or is_shuangpin_input or
-        (m_quick_input.kind <> qik_none) then Exit;
+        (m_quick_input.kind <> qik_none) or (m_wubi_code <> '') then Exit;
     raw := get_composition_text;
     if (Length(raw) < 2) or (Length(raw) > 32) then Exit;
     for ch in raw do
@@ -9828,6 +10462,12 @@ begin
         try_refresh_custom_phrase;
         Exit;
     end;
+    if build_wubi_candidates then
+    begin
+        set_raw_input_selected_by_user(False);
+        try_refresh_custom_phrase;
+        Exit;
+    end;
     build_started_at := GetTickCount64;
     // A fresh page may promote a different reading; let Tab follow it again.
     m_visible_completion_key := '';
@@ -9848,6 +10488,16 @@ begin
     build_candidates_core;
     append_whole_key_readings;
     append_split_syllable_partials;
+    // A code that reads as pinyin where pinyin has nothing.
+    if ((Length(m_wubi_additions) > 0) or (Length(m_wubi_followers) > 0)) and
+        (Length(m_candidates) = 0) then
+    begin
+        // A copy: set_wubi_page clears the fields.
+        set_wubi_page(m_wubi_additions + m_wubi_followers);
+        set_raw_input_selected_by_user(False);
+        try_refresh_custom_phrase;
+        Exit;
+    end;
     refresh_raw_input_candidate;
 
     // Once a decimal stops being a quick command, pinyin lookup may have no
@@ -154889,6 +155539,8 @@ end;
 procedure TncEngine.clear_pending_commit;
 begin
     m_quick_input.pending_commit := False;
+    m_wubi_commit_remaining := '';
+    m_wubi_commit_explicit := False;
     if not m_has_pending_commit then
     begin
         Exit;
@@ -156662,6 +157314,13 @@ var
                 m_dictionary.is_user_entry(head_key_local, head_text_local));
         end;
     begin
+        if selected.source = cs_wubi then
+        begin
+            set_pending_commit(selected.text, '', False, '', False, '', False,
+                False, '', True);
+            m_quick_input.pending_commit := True;
+            Exit(True);
+        end;
         if selected.source = cs_quick_input then
         begin
             if (m_quick_input.kind = qik_symbols) and
@@ -156901,6 +157560,8 @@ begin
         if (m_quick_input.kind <> qik_none) and
             (m_quick_input.kind <> qik_date_alias) and
             (Length(m_composition_display_text) >= c_quick_input_max_length) then Exit(True);
+        if try_wubi_key(key_char, display_key_char, key_state.shift_down and
+            not key_state.caps_lock and CharInSet(key_char, ['u', 'i', 'v'])) then Exit(True);
         if is_shuangpin_input and not m_quick_input.explicit_mode then
         begin
             m_composition_display_text := m_composition_display_text + display_key_char;
@@ -156912,6 +157573,7 @@ begin
             m_composition_display_text := m_composition_display_text + display_key_char;
         end;
         build_candidates;
+        try_wubi_auto_commit;
         Result := True;
         Exit;
     end;
@@ -157024,7 +157686,7 @@ begin
     if get_punctuation_char(key_code, key_state, punct_char) then
     begin
         if (key_code <> VK_OEM_7) or (m_composition_text = '') or
-            m_quick_input.explicit_mode or m_quick_input.exclusive then
+            m_quick_input.explicit_mode or m_quick_input.exclusive or m_wubi_page then
         begin
             if (key_code = VK_ADD) or (key_code = VK_SUBTRACT) or
                 (key_code = VK_MULTIPLY) then
@@ -157048,6 +157710,13 @@ begin
                         Exit(True);
                     end;
                     get_selected_candidate(candidate, m_quick_input.kind <> qik_none);
+                    if candidate.source = cs_wubi then
+                    begin
+                        set_pending_commit(candidate.text + punct_text,
+                            '', False, '', False, '', False, False, '', True);
+                        m_quick_input.pending_commit := True;
+                        Exit(True);
+                    end;
                     if candidate.source = cs_quick_input then
                     begin
                         if (m_quick_input.kind = qik_symbols) and
@@ -187064,9 +187733,11 @@ var
             end;
             // A sparse first page must not change when navigating back to it.
             // Aliases add their date/time choices to this pool before the page
-            // is published, so freeze their entire filtered tail even if sparse.
+            // is published, and so do the entries of a Wubi code that reads as
+            // pinyin, so freeze their entire filtered tail even if sparse.
             if (Length(Result) < visible_page_size) and (count > Length(Result)) and
-                (m_quick_input.kind <> qik_date_alias) then Exit;
+                (m_quick_input.kind <> qik_date_alias) and
+                (Length(m_wubi_additions) = 0) and (Length(m_wubi_followers) = 0) then Exit;
             SetLength(pool, count);
             SetLength(sources, count);
             m_long_visible_candidate_pool_cache := pool;
@@ -187471,6 +188142,25 @@ var
                     m_long_visible_candidate_pool_source_indices_cache, 0,
                     visible_page_size, Result, visible_source_indices);
             end;
+            // A Wubi code that also reads as pinyin: its entries come first.
+            if ((Length(m_wubi_additions) > 0) or (Length(m_wubi_followers) > 0)) and
+                (m_page_index = 0) then
+            begin
+                if not long_visible_candidate_pool_cache_is_current(visible_page_size) then
+                begin
+                    m_long_visible_candidate_pool_cache := Copy(Result);
+                    m_long_visible_candidate_pool_source_indices_cache := Copy(visible_source_indices);
+                end;
+                insert_wubi_additions(m_long_visible_candidate_pool_cache,
+                    m_long_visible_candidate_pool_source_indices_cache);
+                m_long_visible_candidate_pool_cache_key :=
+                    get_long_visible_candidate_pool_cache_key(visible_page_size);
+                m_long_visible_candidate_pool_source_signature := get_candidate_state_signature;
+                m_long_visible_candidate_pool_cache_valid := True;
+                nc_copy_candidate_page(m_long_visible_candidate_pool_cache,
+                    m_long_visible_candidate_pool_source_indices_cache, 0,
+                    visible_page_size, Result, visible_source_indices);
+            end;
             cache_visible_candidate_page(Result, visible_source_indices, visible_page_size);
         finally
             emitted_visible_texts.Free;
@@ -187764,7 +188454,7 @@ var
 begin
     display_phase_tick := GetTickCount64;
     single_chars_lm_ordered := False;
-    if m_quick_input.exclusive then
+    if m_quick_input.exclusive or m_wubi_page then
     begin
         nc_copy_candidate_page(m_candidates,
             m_long_visible_candidate_pool_source_indices_cache,
@@ -188365,6 +189055,16 @@ begin
     if try_refresh_custom_phrase then Exit(m_one_key_completion);
     if m_one_key_completion.source = okcs_custom_phrase then
         clear_one_key_completion;
+    // A page of Wubi entries alone has the Wubi completion or none, and so
+    // has an empty code of initials (pinyin's otherwise); a code whose letters
+    // read as pinyin has pinyin's.
+    if m_wubi_page or m_wubi_abbreviation then
+    begin
+        if try_refresh_wubi_completion then Exit(m_one_key_completion);
+        if m_wubi_page then Exit(Default(TncOneKeyCompletion));
+    end;
+    if m_one_key_completion.source = okcs_wubi then
+        clear_one_key_completion;
     if m_quick_input.exclusive then Exit(Default(TncOneKeyCompletion));
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
     carry_validated_prefix_completion;
@@ -188828,7 +189528,7 @@ begin
     page_size := get_candidate_page_size;
     if (page_index = m_page_index) and visible_candidates_cache_is_current(page_size) then
         Exit(Copy(m_visible_candidates_cache));
-    if m_quick_input.exclusive then
+    if m_quick_input.exclusive or m_wubi_page then
     begin
         nc_copy_candidate_page(m_candidates,
             m_long_visible_candidate_pool_source_indices_cache, page_index,
@@ -188850,7 +189550,7 @@ begin
         page := Copy(m_visible_candidates_cache)
     else
     begin
-        if (not m_quick_input.exclusive) and
+        if (not m_quick_input.exclusive) and (not m_wubi_page) and
             not long_visible_candidate_pool_cache_is_current(page_size) then Exit;
         nc_copy_candidate_page(m_long_visible_candidate_pool_cache,
             m_long_visible_candidate_pool_source_indices_cache, page_index,
@@ -188954,7 +189654,8 @@ end;
 
 function TncEngine.quick_input_active: Boolean;
 begin
-    Result := m_quick_input.exclusive;
+    // Also a Wubi code: its letters are no pinyin to check in the preedit.
+    Result := m_quick_input.exclusive or (m_wubi_code <> '');
 end;
 
 function TncEngine.candidate_selection_keys: string;
@@ -189569,6 +190270,8 @@ end;
 
 function TncEngine.commit_text_raw(out out_text: string): Boolean;
 var
+    wubi_remaining: string;
+    wubi_explicit: Boolean;
     normalized_pinyin: string;
     remaining_pinyin: string;
     remaining_input_code: string;
@@ -190044,12 +190747,25 @@ begin
     if m_quick_input.pending_commit then
     begin
         out_text := m_confirmed_text + m_pending_commit_text;
+        wubi_remaining := m_wubi_commit_remaining;
+        wubi_explicit := m_wubi_commit_explicit;
         update_left_context(out_text);
         m_prev_committed_text := '';
         m_prev_committed_pinyin := '';
         m_last_committed_text := '';
         m_last_committed_pinyin := '';
         reset(False);
+        if wubi_remaining <> '' then
+        begin
+            // The keys behind the code as typed; the composition's letters
+            // are lower case, and Shift+U, I or V begins a command as it does
+            // in an empty composition.
+            m_composition_text := LowerCase(wubi_remaining);
+            m_composition_display_text := wubi_remaining;
+            m_quick_input.explicit_entry := wubi_explicit;
+            m_page_index := 0;
+            build_candidates;
+        end;
         Exit(True);
     end;
 
@@ -190720,6 +191436,15 @@ begin
         // These candidates do not depend on the user dictionary. Rebuild their
         // source mapping together with the pool, retaining the active page.
         build_quick_input_candidates;
+        m_page_index := saved_page;
+        m_selected_index := saved_selection;
+        m_candidate_navigation_started := saved_navigation;
+        m_candidate_paging_expanded := saved_expanded;
+        normalize_page_and_selection;
+    end
+    else if m_wubi_page then
+    begin
+        build_wubi_candidates;
         m_page_index := saved_page;
         m_selected_index := saved_selection;
         m_candidate_navigation_started := saved_navigation;

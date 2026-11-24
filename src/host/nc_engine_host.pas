@@ -87,6 +87,7 @@ type
         m_debug_context_reported: Boolean;
         procedure ensure_candidate_window;
         procedure update_window_debug_context;
+        function candidate_code_hint: TFunc<string, string>;
         procedure handle_remove_user_candidate(const candidate_index: Integer);
         procedure handle_candidate_context_menu;
         function handle_prepare_candidate(const page_index, candidate_index: Integer;
@@ -897,6 +898,21 @@ begin
     end;
 end;
 
+function TncHostSession.candidate_code_hint: TFunc<string, string>;
+var
+    engine: TncEngine;
+begin
+    // The Wubi codes beside pinyin's candidates, in the mixed scheme only.
+    Result := nil;
+    if (m_engine = nil) or (not m_engine.config.wubi_mixed) then Exit;
+    engine := m_engine;
+    Result :=
+        function(text: string): string
+        begin
+            Result := engine.wubi_code_hint(text);
+        end;
+end;
+
 procedure TncHostSession.update_window_debug_context;
 begin
     // Debug mode shows the text before the input that ranked the candidates.
@@ -1262,7 +1278,8 @@ begin
             m_engine.config.one_key_completion_key,
             m_engine.config.debug_mode, m_engine.config.pinyin_input_scheme,
             m_candidate_pages, m_candidate_selection_generation, m_quick_input_active,
-            m_candidate_selection_keys, m_raw_input_candidate, m_raw_input_selected);
+            m_candidate_selection_keys, m_raw_input_candidate, m_raw_input_selected,
+            candidate_code_hint());
         m_last_candidate_debug_mode := m_engine.config.debug_mode;
     end;
     if candidate_generation = m_candidate_generation then
@@ -1315,7 +1332,8 @@ begin
             m_engine.config.one_key_completion_key,
             m_engine.config.debug_mode, m_engine.config.pinyin_input_scheme,
             m_candidate_pages, m_candidate_selection_generation, m_quick_input_active,
-            m_candidate_selection_keys, m_raw_input_candidate, m_raw_input_selected);
+            m_candidate_selection_keys, m_raw_input_candidate, m_raw_input_selected,
+            candidate_code_hint());
         m_last_candidate_debug_mode := m_engine.config.debug_mode;
     end;
 
@@ -3502,7 +3520,10 @@ begin
         session := get_or_create_session(session_id);
         m_lock.Acquire;
         try
-            global_variant_changed := m_config.dictionary_variant <> dictionary_variant;
+            // The Wubi/pinyin mixed scheme types simplified Chinese only: a
+            // switch to traditional (shortcut, tray, status window) is refused.
+            global_variant_changed := (m_config.dictionary_variant <> dictionary_variant) and
+                not (m_config.wubi_mixed and (dictionary_variant = dv_traditional));
             if global_variant_changed then
             begin
                 m_config.dictionary_variant := dictionary_variant;

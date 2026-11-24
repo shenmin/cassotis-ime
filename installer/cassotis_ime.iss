@@ -85,11 +85,14 @@ Source: "{#RuntimeDir}\char_lm\runtime_manifest.json"; DestDir: "{#InstallRuntim
 Source: "{#SourceRoot}\third_party\onnxruntime\LICENSE"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 Source: "{#SourceRoot}\third_party\onnxruntime\ThirdPartyNotices.txt"; DestDir: "{app}\licenses\onnxruntime"; Flags: ignoreversion
 Source: "{#SourceRoot}\third_party\opencc\LICENSE"; DestDir: "{app}\licenses\opencc"; Flags: ignoreversion
+Source: "{#SourceRoot}\third_party\wubi_haifeng\LICENSE"; DestDir: "{app}\licenses\wubi_haifeng"; Flags: ignoreversion
 
 ; Immutable base dictionaries are readable by every Windows account. Only
 ; learned words and configuration belong in an individual user's profile.
 Source: "{#RuntimeDataSourceDir}\dict_sc.db"; DestDir: "{#InstallRuntimeDir}\base_dict"; Flags: ignoreversion onlyifdoesntexist; BeforeInstall: BeforeDictionaryInstall
 Source: "{#RuntimeDataSourceDir}\dict_tc.db"; DestDir: "{#InstallRuntimeDir}\base_dict"; Flags: ignoreversion onlyifdoesntexist; BeforeInstall: BeforeDictionaryInstall
+; The Wubi 86 code table of the Wubi/pinyin mixed scheme, read only in that scheme.
+Source: "{#RuntimeDataSourceDir}\wubi86_table.txt"; DestDir: "{#InstallRuntimeDir}\base_dict"; Flags: ignoreversion onlyifdoesntexist; BeforeInstall: BeforeDictionaryInstall
 [Run]
 Filename: "{#InstallRuntimeDir}\cassotis_ime_profile_reg.exe"; \
     Parameters: "register_tsf -dll_path ""{#InstallRuntimeDir}\cassotis_ime_svr.dll"" -skip_profile"; \

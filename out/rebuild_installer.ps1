@@ -93,7 +93,8 @@ $requiredFiles = @(
 ) + $runtimePayloadFiles + @(
     'third_party\onnxruntime\LICENSE',
     'third_party\onnxruntime\ThirdPartyNotices.txt',
-    'third_party\opencc\LICENSE'
+    'third_party\opencc\LICENSE',
+    'third_party\wubi_haifeng\LICENSE'
 )
 
 foreach ($relativePath in $requiredFiles) {
@@ -102,6 +103,8 @@ foreach ($relativePath in $requiredFiles) {
 
 require-path (Join-Path $runtimeDataSourceDir 'dict_sc.db')
 require-path (Join-Path $runtimeDataSourceDir 'dict_tc.db')
+# The Wubi/pinyin mixed scheme's code table (rebuild_dict.ps1 copies it).
+require-path (Join-Path $runtimeDataSourceDir 'wubi86_table.txt')
 
 # The runtime reads short-word promotions from the dictionary instead of a
 # model, and the word frequencies of the general text and of conversation for

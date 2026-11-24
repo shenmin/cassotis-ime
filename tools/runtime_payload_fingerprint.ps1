@@ -8,7 +8,7 @@ function Get-CassotisRuntimeBuildId {
     $lines = @($RuntimePayloadFiles | ForEach-Object {
         $_ + ':' + (Get-FileHash -LiteralPath (Join-Path $SourceRoot $_) -Algorithm SHA256 -ErrorAction Stop).Hash
     })
-    foreach ($name in @('dict_sc.db', 'dict_tc.db')) {
+    foreach ($name in @('dict_sc.db', 'dict_tc.db', 'wubi86_table.txt')) {
         $lines += 'base_dict\' + $name + ':' + (Get-FileHash -LiteralPath (Join-Path $RuntimeDataSourceDir $name) -Algorithm SHA256 -ErrorAction Stop).Hash
     }
     $hasher = [Security.Cryptography.SHA256]::Create()

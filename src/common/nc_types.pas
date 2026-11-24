@@ -39,7 +39,9 @@ type
     );
     TncFuzzyPinyinRules = set of TncFuzzyPinyinRule;
 
-    TncCandidateSource = (cs_rule, cs_user, cs_quick_input);
+    // cs_wubi: an entry of the Wubi 86 code table (the Wubi/pinyin mixed
+    // scheme); it commits as typed and teaches nothing.
+    TncCandidateSource = (cs_rule, cs_user, cs_quick_input, cs_wubi);
     TncCandidateDisplayKind = (cdk_default, cdk_lm_compound, cdk_sentence_prefix);
     TncLogLevel = (ll_debug, ll_info, ll_warn, ll_error);
 
@@ -77,7 +79,10 @@ type
         okcs_long_neural,
         okcs_document_copy,
         okcs_exact_tail_fallback,
-        okcs_custom_phrase
+        okcs_custom_phrase,
+        // A word of the Wubi table whose code goes on from the keys typed
+        // (the Wubi/pinyin mixed scheme). Appended last.
+        okcs_wubi
     );
 
     TncOneKeyCompletion = record
@@ -274,6 +279,12 @@ type
         debug_mode: Boolean;
         dictionary_variant: TncDictionaryVariant;
         shortcuts: TncShortcutConfig;
+        // The Wubi/pinyin mixed scheme (Wubi 86 with full pinyin). The pinyin
+        // side is full pinyin and the variant simplified while it is on.
+        wubi_mixed: Boolean;
+        // In that scheme, a code's entries are ordered by the text before the
+        // input; off keeps the table's order.
+        wubi_context_order: Boolean;
     end;
 
 implementation

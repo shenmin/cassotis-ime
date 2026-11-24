@@ -143,6 +143,23 @@ This file lists third-party software/data used by Cassotis IME and the related l
     run time; the IME contains only the character model trained with its
     scores.
 
+## 9) SUN Haifeng's Wubi 86 Tables
+
+- Component: the Wubi 86 character and word tables of SUN Haifeng
+  (海峰五笔), `GBK.tab` and `Word.tab` as packaged by ibus-table-chinese.
+- Used for: the code table of the Wubi/pinyin mixed scheme
+  (`base_dict\wubi86_table.txt`), which the lexicon builds from them
+  (`scripts/build_wubi86_table.py` of cassotis-lexicon) and the IME reads only
+  in that scheme.
+- Source: https://github.com/mike-fabian/ibus-table-chinese/tree/e0dd8bfdff9e0d2194c8e57f1ded606fb53e29c1/tables/wubi-haifeng
+- License: BSD 3-Clause License, Copyright (c) 2010, SUN Haifeng
+- Notes:
+  - The table keeps the codes and the order of Haifeng's tables. Codes the
+    tables leave empty take the characters' tolerant codes from the same
+    tables and dictionary words of the lexicon, coded by the Wubi 86
+    word-code rule.
+  - The license text is in `third_party/wubi_haifeng/LICENSE`.
+
 ## GPL-3.0 Notice
 
 This project is licensed under GPL-3.0. The redistributed third-party items listed above are generally GPL-compatible:
@@ -151,6 +168,7 @@ This project is licensed under GPL-3.0. The redistributed third-party items list
 - ONNX Runtime (MIT)
 - 12Dicts English word-list data (public domain)
 - OpenCC character tables (Apache License 2.0, compatible with GPL-3.0)
+- SUN Haifeng's Wubi 86 tables (BSD 3-Clause)
 
 nc-GPT's training code and Qwen3.5-9B-Base were used only to train the
 character language model and are not redistributed.

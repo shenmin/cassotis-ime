@@ -40,7 +40,7 @@ function nc_completion_text_color(const theme: TncCandidateColorTheme;
     const source: TncOneKeyCompletionSource): TColor;
 begin
     if source in [okcs_user_exact, okcs_base_exact, okcs_transition,
-        okcs_long_transition, okcs_long_neural, okcs_document_copy] then
+        okcs_long_transition, okcs_long_neural, okcs_document_copy, okcs_wubi] then
         Result := theme.lm_compound_text_color
     else
         Result := theme.text_color;

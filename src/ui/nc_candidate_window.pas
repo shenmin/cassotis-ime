@@ -37,6 +37,9 @@ type
     TncCandidateWindow = class(TForm)
     private
         m_candidate_lines: TStringList;
+        // Drawn after a line in the muted color: the key of a Wubi hint, the
+        // Wubi codes beside pinyin's candidates ('' elsewhere).
+        m_candidate_suffixes: TArray<string>;
         m_candidate_weight_lines: TStringList;
         m_candidate_sources: TArray<TncCandidateSource>;
         m_candidate_display_kinds: TArray<TncCandidateDisplayKind>;
@@ -171,12 +174,15 @@ type
             const pages: TncCandidatePages = nil; const generation: UInt64 = 0;
             const quick_input_active: Boolean = False;
             const selection_keys: string = '123456789';
-            const raw_input_text: string = ''; const raw_input_selected: Boolean = False);
+            const raw_input_text: string = ''; const raw_input_selected: Boolean = False;
+            const code_hint: TFunc<string, string> = nil);
         // Debug mode shows it in the completion row in place of the brand,
         // within the row's width: the window keeps its size.
         procedure set_debug_context(const text: string; const source: TncLeftContextSource;
             const document_reported: Boolean);
         function candidate_selection_label(const candidate_index: Integer): string;
+        // The text the window shows for a candidate of the page (tests).
+        function shown_candidate_text(const candidate_index: Integer): string;
         procedure show_at(const x: Integer; const y: Integer;
             const prefer_above: Boolean = False; const clearance: Integer = 0);
         procedure hide_window;
@@ -216,6 +222,8 @@ var
 
 const
     c_candidate_text_height_sample = 'Hg' + WideChar($56FD);
+    // Between a candidate's text and its suffix, at 96 DPI.
+    c_suffix_gap = 5;
     c_candidate_brand_font_name = 'Microsoft YaHei UI';
     c_candidate_brand_font_size = 8;
     c_candidate_brand_icon_size = 18;
@@ -1534,6 +1542,7 @@ end;
 procedure TncCandidateWindow.update_size;
 var
     i: Integer;
+    suffix_gap: Integer;
     text_width: Integer;
     main_text_width: Integer;
     weight_text_width: Integer;
@@ -1600,6 +1609,7 @@ begin
     m_list_item_height := dynamic_item_height;
 
     row_width := 0;
+    suffix_gap := nc_scale_for_dpi(c_suffix_gap, m_current_dpi);
     SetLength(m_candidate_widths, item_count);
     SetLength(m_candidate_number_widths, item_count);
     SetLength(m_candidate_offsets, item_count);
@@ -1609,6 +1619,11 @@ begin
         // Reserve numbering on every row so changing the active page cannot shift text.
         m_candidate_number_widths[i] := Canvas.TextWidth(candidate_selection_label(i));
         main_text_width := m_candidate_number_widths[i] + Canvas.TextWidth(m_candidate_lines[i]);
+        if (i < Length(m_candidate_suffixes)) and (m_candidate_suffixes[i] <> '') then
+        begin
+            assign_list_font_for_text(m_candidate_suffixes[i], m_list_font.Color);
+            Inc(main_text_width, suffix_gap + Canvas.TextWidth(m_candidate_suffixes[i]));
+        end;
         weight_text_width := 0;
         if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
         begin
@@ -1825,6 +1840,7 @@ var
     user_candidate: Boolean;
     text_rect: TRect;
     number_rect: TRect;
+    suffix_rect: TRect;
     weight_text_rect: TRect;
     corner_radius: Integer;
     edge_padding: Integer;
@@ -2143,6 +2159,19 @@ begin
         text_rect.Left := number_rect.Right;
         draw_canvas_text(Canvas, m_candidate_lines[i], text_rect,
             DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+        if (i < Length(m_candidate_suffixes)) and (m_candidate_suffixes[i] <> '') then
+        begin
+            suffix_rect := text_rect;
+            suffix_rect.Left := text_rect.Left + Canvas.TextWidth(m_candidate_lines[i]) +
+                nc_scale_for_dpi(c_suffix_gap, m_current_dpi);
+            if i = m_selected_index then
+                assign_list_font_for_text(m_candidate_suffixes[i],
+                    m_color_theme.selected_weight_text_color)
+            else
+                assign_list_font_for_text(m_candidate_suffixes[i], m_color_theme.muted_text_color);
+            draw_canvas_text(Canvas, m_candidate_suffixes[i], suffix_rect,
+                DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+        end;
 
         if m_show_weight_row and (i < Length(m_candidate_show_weight)) and m_candidate_show_weight[i] then
         begin
@@ -2180,6 +2209,16 @@ begin
         Result := m_candidate_selection_keys[key_index] + '. ';
 end;
 
+function TncCandidateWindow.shown_candidate_text(const candidate_index: Integer): string;
+begin
+    Result := '';
+    if (candidate_index >= 0) and (candidate_index < m_candidate_lines.Count) then
+        Result := m_candidate_lines[candidate_index];
+    if (candidate_index >= 0) and (candidate_index < Length(m_candidate_suffixes)) and
+        (m_candidate_suffixes[candidate_index] <> '') then
+        Result := Result + ' ' + m_candidate_suffixes[candidate_index];
+end;
+
 procedure TncCandidateWindow.update_candidates(const candidates: TncCandidateList; const page_index: Integer;
     const page_count: Integer; const selected_index: Integer;
     const preedit_text: string;
@@ -2189,7 +2228,8 @@ procedure TncCandidateWindow.update_candidates(const candidates: TncCandidateLis
     const pinyin_scheme: TncPinyinInputScheme;
     const pages: TncCandidatePages; const generation: UInt64;
     const quick_input_active: Boolean; const selection_keys: string;
-    const raw_input_text: string; const raw_input_selected: Boolean);
+    const raw_input_text: string; const raw_input_selected: Boolean;
+    const code_hint: TFunc<string, string>);
 const
     c_show_page_label = False;
 var
@@ -2199,6 +2239,7 @@ var
     displayed: TncCandidateList;
     show_raw: Boolean;
     shown_pages: TncCandidatePages;
+    hint: string;
 begin
     m_generation := generation;
     m_candidate_selection_keys := selection_keys;
@@ -2308,6 +2349,7 @@ begin
         SetLength(m_candidate_display_kinds, count);
         SetLength(m_candidate_is_user, count);
         SetLength(m_candidate_show_weight, count);
+        SetLength(m_candidate_suffixes, count);
 
         for i := 0 to count - 1 do
         begin
@@ -2334,6 +2376,17 @@ begin
             begin
                 m_candidate_weight_lines.Add('');
             end;
+            // The Wubi mixed scheme: the key that types a hint after the keys
+            // typed, and the codes that type the first candidate of pinyin's
+            // page, a whole reading (the host gives the function in that scheme
+            // only). Codes beside every candidate made the window long.
+            hint := '';
+            if displayed[i].source = cs_wubi then
+                hint := Trim(displayed[i].comment)
+            else if Assigned(code_hint) and (m_candidate_pages[i] = 0) and
+                (m_candidate_slots[i] = 0) and (not candidate_has_pinyin_tail(displayed[i])) then
+                hint := code_hint(displayed[i].text);
+            m_candidate_suffixes[i] := hint;
             m_candidate_lines.Add(format_candidate_text(displayed[i]));
         end;
     finally

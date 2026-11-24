@@ -35,6 +35,8 @@
 | --- | --- | --- | --- | --- | --- |
 | `input_mode` | 初始输入模式 | `0`=中文, `1`=英文 | `0` | `input_mode=0` | 非 `1` 的值均回退为中文模式。运行时可按 Shift 键切换。 |
 | `pinyin_scheme` | 拼音输入方案 | `full-pinyin` / `microsoft-shuangpin` / `xiaohe-shuangpin` / `ziranma-shuangpin` / `sogou-shuangpin` / `ziguang-shuangpin` / `pinyinjiajia-shuangpin` / `zhinengabc-shuangpin` | `full-pinyin` | `pinyin_scheme=microsoft-shuangpin` | 可选择全拼或七种双拼方案，无法识别的值回退为全拼。 |
+| `wubi_mixed` | 五笔混输 | `true` / `false` | `false` | `wubi_mixed=true` | 开启后五笔 86 编码与全拼在同一模式下混打，`pinyin_scheme` 按全拼处理。只用简体：与 `[dictionary]` 的 `variant=traditional` 同时出现时以五笔混输为准、改回简体。也可在“设置 > 常规 > 输入 > 输入方案”中选“五笔混输（86）”。 |
+| `wubi_context_order` | 五笔重码按上下文排序 | `true` / `false` | `true` | `wubi_context_order=false` | 仅在五笔混输下生效：有前文时，语言模型把最合前文的重码排到首位，其余保持码表顺序；关闭后始终按码表顺序。对应设置中“输入方案”右侧的“重码按上下文排序”。 |
 | `full_width_mode` | 全角输出模式 | `true` / `false` | `false` | `full_width_mode=false` | 开启后 ASCII 字符映射为全角形式。运行时可按 Shift+Space 切换。 |
 | `punctuation_full_width` | 中文标点风格 | `true` / `false` | `true` | `punctuation_full_width=true` | 开启后标点键按中文习惯输出，半角例外见 `[punctuation]` 段。运行时可按 Ctrl+句号 切换。 |
 | `decimal_period_after_digit` | 连续输入数字后使用小数点 | `true` / `false` | `true` | `decimal_period_after_digit=true` | 中文标点模式下，连续键入数字后紧接着按句号键，输出 `.` 而不是 `。`；不根据光标前已有或粘贴的文本判断，移动光标或输入其他按键后不再转换。设置中选为英文标点时，此选项不可操作，但保留勾选状态。 |
@@ -56,7 +58,17 @@
 - 候选查询和用户学习统一使用解码后的标准全拼，因此所有拼音方案共享候选排序和用户数据。
 - 单引号可显式分隔音节。微软、搜狗和紫光双拼中的分号仅在作为双拼码第二键时表示 `ing`，其他位置仍作为标点。
 - 智能ABC双拼的 `zh`、`ch`、`sh` 在 `a`、`e`、`v` 键，零声母音节固定以 `o` 开头（`ol` = ai，`or` = er）。`üe` 与 `ue` 同在 `m` 键（`lm` = lüe，`lv` = lü）。
-- 状态浮窗以 `拼`、`微`、`鹤`、`自`、`搜`、`紫`、`加`、`智` 分别表示全拼、微软、小鹤、自然码、搜狗、紫光、拼音加加和智能ABC。
+- 状态浮窗以 `拼`、`微`、`鹤`、`自`、`搜`、`紫`、`加`、`智` 分别表示全拼、微软、小鹤、自然码、搜狗、紫光、拼音加加和智能ABC，以 `五` 表示五笔混输。
+
+五笔混输遵循以下规则：
+
+- 码表为孙海峰的五笔 86 码表，单独存放在基础词库目录的 `wubi86_table.txt`，只在五笔混输下载入；拼音词库与其他方案不受影响。
+- 读不成全拼的字母只出五笔候选，一到三码时附出多一键的各编码的首选及该键；四码唯一即上屏，第五键使字母读不成全拼时顶出首选并开始下一码。
+- 同时读得成全拼的字母，五笔的常用字和词排在拼音候选之前，其余五笔候选排在拼音首选之后，第五键只顶出前者或用户选中的候选；输入中有隔音符时不顶字。
+- 空码按拼音处理（含简拼）；全是声母的空码以拼音简拼为首选，多一键的提示排在其后，补全键仍补五笔词。
+- 两三码时补全键可补全以这几码开头的词（由语言模型结合前文选出）；拼音的首选旁显示打出它的五笔编码。
+- 五笔上屏的文字作为前文，不写入用户学习数据。
+- 五笔混输时状态浮窗的简繁按钮与托盘菜单的简繁切换不可用。
 
 ---
 
@@ -174,6 +186,8 @@ version=16
 [engine]
 input_mode=0
 pinyin_scheme=full-pinyin
+wubi_mixed=false
+wubi_context_order=true
 full_width_mode=false
 punctuation_full_width=true
 decimal_period_after_digit=true
