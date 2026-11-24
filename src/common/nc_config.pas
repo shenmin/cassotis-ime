@@ -1240,15 +1240,18 @@ begin
             nc_one_key_completion_key_to_text(ock_tab)));
         Result.candidate_page_key_scheme := nc_resolve_candidate_page_key_scheme(
             Result.candidate_page_key_scheme, Result.one_key_completion_key);
-        Result.second_third_candidate_keys := nc_parse_second_third_candidate_keys(
-            safe_ini_read_string(ini, 'shortcuts', 'second_third_candidate_keys',
-            nc_second_third_candidate_keys_to_text(stck_none)));
-        // [ and ] page through the candidates under the bracket scheme, which
-        // keeps them; the keys that commit a character are then off.
+        // Paging, the second and third candidate and a character of the
+        // candidate share four pairs of keys in that order: a pair paging
+        // takes is off for the other two, one the second and third candidate
+        // take is off for a character of the candidate.
+        Result.second_third_candidate_keys := nc_resolve_second_third_candidate_keys(
+            nc_parse_second_third_candidate_keys(safe_ini_read_string(ini, 'shortcuts',
+            'second_third_candidate_keys', nc_second_third_candidate_keys_to_text(stck_none))),
+            Result.candidate_page_key_scheme);
         Result.select_character_keys := nc_resolve_select_character_keys(
             nc_parse_select_character_keys(safe_ini_read_string(ini, 'shortcuts',
             'select_character_keys', nc_select_character_keys_to_text(sck_none))),
-            Result.candidate_page_key_scheme);
+            Result.candidate_page_key_scheme, Result.second_third_candidate_keys);
         shortcut_values_valid := shortcut_values_valid and
             (not nc_shortcut_config_has_duplicates(Result.shortcuts));
         nc_normalize_shortcut_config(Result.shortcuts);
@@ -1434,11 +1437,12 @@ begin
         ini.WriteString('shortcuts', 'one_key_completion_key',
             nc_one_key_completion_key_to_text(completion_key));
         ini.WriteString('shortcuts', 'second_third_candidate_keys',
-            nc_second_third_candidate_keys_to_text(
-            config.second_third_candidate_keys));
+            nc_second_third_candidate_keys_to_text(nc_resolve_second_third_candidate_keys(
+            config.second_third_candidate_keys, candidate_page_key_scheme)));
         ini.WriteString('shortcuts', 'select_character_keys',
             nc_select_character_keys_to_text(nc_resolve_select_character_keys(
-            config.select_character_keys, candidate_page_key_scheme)));
+            config.select_character_keys, candidate_page_key_scheme,
+            config.second_third_candidate_keys)));
         write_config_version(ini, True);
         ini.UpdateFile;
     finally

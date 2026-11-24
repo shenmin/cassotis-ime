@@ -135,14 +135,14 @@
 | `dictionary_variant_toggle` | 简繁词库切换 | 快捷键文本 | `Ctrl+Shift+T` | 在简体与繁体词库之间切换。 |
 | `full_width_toggle` | 全角模式切换 | 快捷键文本 | `Shift+Space` | 切换 ASCII 半角与全角输出。 |
 | `open_settings` | 打开设置 | 快捷键文本 | `Ctrl+Shift+F10` | 打开设置窗口。 |
-| `candidate_page_keys` | 候选翻页按键方案 | `minus-plus` / `brackets` / `comma-period` / `shift-tab` | `minus-plus` | 分别表示 `-/=`、`[/]`、`,/.`、`Shift+Tab/Tab`。 |
+| `candidate_page_keys` | 候选翻页按键方案 | `minus-plus` / `brackets` / `comma-period` / `semicolon-quote` / `shift-tab` | `minus-plus` | 分别表示 `-/=`、`[/]`、`,/.`、`;/'`、`Shift+Tab/Tab`。 |
 | `one_key_completion_key` | 一键补全触发按键 | `tab` / `backtick` | `tab` | 接受候选窗底部一键补全区的唯一结果。完整匹配的自定义短语优先于自动补全，不受音节数限制；未匹配时使用原有预测补全。`backtick` 表示反引号键 `` ` ``。 |
-| `second_third_candidate_keys` | 第二、第三候选的按键 | `none` / `semicolon-quote` | `none` | `semicolon-quote`：输入拼音时，`;` 选第二个候选，`'` 选第三个候选，数字键照常可用；没有正在输入的拼音时，两个键照常输入标点。使用时 `'` 不再分隔音节；微软、搜狗、紫光双拼中，声母后的 `;` 仍是韵母 ing。按住 Shift（`:` 和 `"`）时仍是标点。 |
-| `select_character_keys` | 以词定字的按键 | `none` / `brackets` | `none` | `brackets`：输入拼音时，`[` 上屏当前候选词的第一个字，`]` 上屏最后一个字（如输入 ciku 按 `[` 得到“词”），其余拼音一并清除，这样上屏的字不计入学习；没有正在输入的拼音时，两个键照常输入标点。按住 Shift（`{` 和 `}`）时仍是标点。 |
+| `second_third_candidate_keys` | 第二、第三候选的按键 | `none` / `semicolon-quote` / `minus-plus` / `brackets` / `comma-period` | `none` | 输入拼音时，一组按键的左键选第二个候选，右键选第三个候选（如 `semicolon-quote`：`;` 选第二个，`'` 选第三个），数字键照常可用；没有正在输入的拼音时，两个键照常输入标点。用 `semicolon-quote` 时 `'` 不再分隔音节；微软、搜狗、紫光双拼中，声母后的 `;` 仍是韵母 ing。按住 Shift 时仍是标点。 |
+| `select_character_keys` | 以词定字的按键 | `none` / `brackets` / `minus-plus` / `comma-period` / `semicolon-quote` | `none` | 输入拼音时，一组按键的左键上屏当前候选词的第一个字，右键上屏最后一个字（如 `brackets`：输入 ciku 按 `[` 得到“词”），其余拼音一并清除，这样上屏的字不计入学习；没有正在输入的拼音时，两个键照常输入标点。按住 Shift 时仍是标点。 |
 
 当 `one_key_completion_key=tab` 时，`candidate_page_keys=shift-tab` 会与一键补全冲突，因此该翻页方案在设置界面不可选；若 INI 中同时配置这两个值，翻页方案会自动规范化为 `minus-plus`。
 
-当 `candidate_page_keys=brackets` 时，左右中括号用于翻页，`select_character_keys` 在设置界面不可选；若 INI 中两者同时为 `brackets`，以词定字会自动规范化为 `none`。翻页、二三候选、以词定字和一键补全的按键也可在“设置 > 按键”中修改。
+翻页、二三候选、以词定字共用四组按键（`-/=`、`[/]`、`,/.`、`;/'`），按此顺序优先：翻页用掉的一组，二三候选和以词定字不能再用；二三候选用掉的一组，以词定字不能再用。设置界面只列出上面各项留下的按键；若 INI 中两项选了同一组，排在后面的一项自动规范化为 `none`。用 `,/.` 时，输入拼音中逗号、句号不再随首选上屏标点；用 `;/'` 时 `'` 不再分隔音节。翻页、二三候选、以词定字和一键补全的按键也可在“设置 > 按键”中修改。
 
 ---
 

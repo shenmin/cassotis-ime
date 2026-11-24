@@ -188,11 +188,13 @@ type
         pis_zhinengabc_shuangpin
     );
     TncDictionaryVariant = (dv_simplified, dv_traditional);
+    // A new scheme is appended last.
     TncCandidatePageKeyScheme = (
         cpks_minus_plus,
         cpks_brackets,
         cpks_comma_period,
-        cpks_shift_tab
+        cpks_shift_tab,
+        cpks_semicolon_quote
     );
     TncOneKeyCompletionKey = (
         ock_tab,
@@ -202,13 +204,30 @@ type
     // digits 2 and 3 (issue #34). A new scheme is appended last.
     TncSecondThirdCandidateKeys = (
         stck_none,
-        stck_semicolon_quote
+        stck_semicolon_quote,
+        stck_minus_plus,
+        stck_brackets,
+        stck_comma_period
     );
     // Keys that commit the first and the last character of the selected
     // candidate instead of the whole word. A new scheme is appended last.
     TncSelectCharacterKeys = (
         sck_none,
-        sck_brackets
+        sck_brackets,
+        sck_minus_plus,
+        sck_comma_period,
+        sck_semicolon_quote
+    );
+    // The four pairs of keys that paging, the second and third candidate and
+    // a character of the candidate share out: - =, [ ], , . and ; '. Paging
+    // chooses first, the second and third candidate among the pairs it left,
+    // a character of the candidate among the rest.
+    TncCandidateKeyPair = (
+        ckp_none,
+        ckp_minus_plus,
+        ckp_brackets,
+        ckp_comma_period,
+        ckp_semicolon_quote
     );
 
     TncShortcutAction = (

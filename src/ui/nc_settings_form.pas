@@ -278,6 +278,8 @@ type
         m_panel_first_character_key: TncKeyCap;
         m_panel_last_character_key: TncKeyCap;
         m_label_select_character_note: TLabel;
+        m_label_candidate_page_note: TLabel;
+        m_label_second_third_note: TLabel;
         m_label_candidate_page_previous: TLabel;
         m_label_candidate_page_next: TLabel;
         m_custom_phrase_grid: TStringGrid;
@@ -367,6 +369,8 @@ type
         procedure populate_second_third_candidate_keys_combo;
         procedure update_second_third_candidate_keys_preview;
         procedure second_third_candidate_keys_changed(Sender: TObject);
+        procedure refresh_lower_key_combos;
+        procedure set_key_hint(const hint: TLabel; const caption: string);
         procedure populate_select_character_keys_combo;
         procedure update_select_character_keys_controls;
         procedure select_character_keys_changed(Sender: TObject);
@@ -633,26 +637,23 @@ resourcestring
     SPageKeysMinusPlus = '减号等号';
     SPageKeysBrackets = '左右中括号';
     SPageKeysCommaPeriod = '逗号句号';
+    SPageKeysSemicolonQuote = '分号单引号';
     SPageKeysShiftTab = 'Shift+Tab / Tab';
-    SCandidatePageKeysHint = '仅在候选窗口打开时生效。';
+    SKeyPairNone = '不使用';
+    SCandidatePageKeysHint = '仅在候选窗口打开时生效；翻页用掉的按键，下面两项不再列出。';
+    SKeyPairCommaPeriodNote = '输入拼音时，逗号句号不再随首选上屏标点。';
+    SKeyPairSemicolonQuoteNote = '单引号不再分隔音节；微软、搜狗、紫光双拼中，声母后的分号仍是韵母 ing。';
     SGroupOneKeyCompletion = '一键补全';
     SLabelOneKeyCompletionKey = '触发按键';
     SOneKeyCompletionHint = '输入至少两个完整音节，并存在可继续补全的精确词库词时生效。';
     SLabelSecondThirdCandidateKeys = '二三候选';
     SLabelSecondCandidate = '第二个';
     SLabelThirdCandidate = '第三个';
-    SSecondThirdKeysNone = '不使用';
-    SSecondThirdKeysSemicolonQuote = '分号单引号';
-    SSecondThirdCandidateKeysHint = '输入拼音时，分号选第二个候选，单引号选第三个候选，数字键照常可用。' +
-        '使用时单引号不再分隔音节；微软、搜狗、紫光双拼中，声母后的分号仍是韵母 ing。';
+    SSecondThirdCandidateKeysHint = '输入拼音时选第二、第三个候选，数字键照常可用；这里用掉的按键，以词定字不再列出。';
     SLabelSelectCharacterKeys = '以词定字';
     SLabelFirstCharacter = '首字';
     SLabelLastCharacter = '末字';
-    SSelectCharacterKeysNone = '不使用';
-    SSelectCharacterKeysBrackets = '左右中括号';
-    SSelectCharacterKeysHint = '输入拼音时，左中括号上屏当前候选词的第一个字，右中括号上屏最后一个字，' +
-        '如输入 ciku 按 [ 得到“词”。';
-    SSelectCharacterKeysBusy = '翻页已使用左右中括号，换用其他翻页键后可选。';
+    SSelectCharacterKeysHint = '输入拼音时上屏当前候选词的第一个或最后一个字，如输入 ciku 按首字键得到“词”。';
     SShortcutMissingKey = '“%s”尚未选择按键。';
     SShortcutInvalidModifierKey = '“%s”的快捷键无效：单独的修饰键仅支持 Shift，且不能再叠加其他修饰键。';
     SShortcutNeedsModifier = '“%s”不能使用未带修饰键的 %s，因为这会占用正常输入。请添加 Ctrl、Shift 或 Alt；无修饰键时仅支持 Shift 或 F1-F24。';
@@ -3232,6 +3233,108 @@ begin
     place(second_label, second_cap);
 end;
 
+// The four pairs of keys, in the order every list shows them.
+function key_pair_caption(const pair: TncCandidateKeyPair): string;
+begin
+    case pair of
+        ckp_minus_plus:
+            Result := SPageKeysMinusPlus;
+        ckp_brackets:
+            Result := SPageKeysBrackets;
+        ckp_comma_period:
+            Result := SPageKeysCommaPeriod;
+        ckp_semicolon_quote:
+            Result := SPageKeysSemicolonQuote;
+    else
+        Result := SKeyPairNone;
+    end;
+end;
+
+procedure key_pair_key_captions(const pair: TncCandidateKeyPair; out left_key: string;
+    out right_key: string);
+begin
+    case pair of
+        ckp_minus_plus:
+            begin
+                left_key := '-';
+                right_key := '=';
+            end;
+        ckp_brackets:
+            begin
+                left_key := '[';
+                right_key := ']';
+            end;
+        ckp_comma_period:
+            begin
+                left_key := ',';
+                right_key := '.';
+            end;
+        ckp_semicolon_quote:
+            begin
+                left_key := ';';
+                right_key := '''';
+            end;
+    else
+        left_key := c_no_key_caption;
+        right_key := c_no_key_caption;
+    end;
+end;
+
+// A row's hint and what its pair costs while the row takes it.
+function key_pair_hint(const hint: string; const pair: TncCandidateKeyPair): string;
+begin
+    case pair of
+        ckp_comma_period:
+            Result := hint + SKeyPairCommaPeriodNote;
+        ckp_semicolon_quote:
+            Result := hint + SKeyPairSemicolonQuoteNote;
+    else
+        Result := hint;
+    end;
+end;
+
+// The pairs in the order a list shows them: the row's own pair first (the one
+// it had before the rows shared them: - = for paging, ; ' for the second and
+// third candidate, [ ] for a character of the candidate), then the others.
+function key_pairs_from(const first: TncCandidateKeyPair): TArray<TncCandidateKeyPair>;
+var
+    pair: TncCandidateKeyPair;
+begin
+    Result := [first];
+    for pair := Succ(ckp_none) to High(TncCandidateKeyPair) do
+    begin
+        if pair <> first then
+        begin
+            Result := Result + [pair];
+        end;
+    end;
+end;
+
+// The lists keep each item's scheme as its object.
+function combo_value(const combo: TComboBox; const default_value: Integer): Integer;
+begin
+    Result := default_value;
+    if (combo <> nil) and (combo.ItemIndex >= 0) and (combo.ItemIndex < combo.Items.Count) then
+    begin
+        Result := Integer(NativeInt(combo.Items.Objects[combo.ItemIndex]));
+    end;
+end;
+
+procedure select_combo_value(const combo: TComboBox; const value: Integer);
+var
+    idx: Integer;
+begin
+    for idx := 0 to combo.Items.Count - 1 do
+    begin
+        if Integer(NativeInt(combo.Items.Objects[idx])) = value then
+        begin
+            combo.ItemIndex := idx;
+            Exit;
+        end;
+    end;
+    combo.ItemIndex := 0;
+end;
+
 procedure TncSettingsForm.add_key_controls;
 var
     top: Integer;
@@ -3262,6 +3365,7 @@ begin
     hint := create_hint_label(Self, keys_group, SCandidatePageKeysHint, scale_ui(c_control_left),
         top + scale_ui(c_row_height), hint_width);
     hint.Anchors := [akLeft, akTop, akRight];
+    m_label_candidate_page_note := hint;
 
     // The second and third candidate.
     top := hint.Top + hint.Height + scale_ui(c_key_row_gap);
@@ -3280,6 +3384,7 @@ begin
     hint := create_hint_label(Self, keys_group, SSecondThirdCandidateKeysHint, scale_ui(c_control_left),
         top + scale_ui(c_row_height), hint_width);
     hint.Anchors := [akLeft, akTop, akRight];
+    m_label_second_third_note := hint;
 
     // The first or the last character of the candidate.
     top := hint.Top + hint.Height + scale_ui(c_key_row_gap);
@@ -3296,10 +3401,8 @@ begin
         scale_ui(c_control_left), top + scale_ui(c_row_height), hint_width);
     m_label_select_character_note.Name := 'SelectCharacterKeysNote';
     m_label_select_character_note.Anchors := [akLeft, akTop, akRight];
-    m_label_select_character_note.Height := Max(m_label_select_character_note.Height,
-        measure_wrapped_label_height(m_label_select_character_note.Font, SSelectCharacterKeysBusy, hint_width));
     update_candidate_page_key_scheme_preview;
-    update_select_character_keys_controls;
+    refresh_lower_key_combos;
     layout_key_row(m_combo_select_character_keys, first_character_label, m_panel_first_character_key,
         last_character_label, m_panel_last_character_key);
     fit_section_height(keys_group, m_label_select_character_note);
@@ -3359,29 +3462,39 @@ end;
 procedure TncSettingsForm.populate_candidate_page_key_scheme_combo;
 var
     selected_scheme: TncCandidatePageKeyScheme;
+    scheme: TncCandidatePageKeyScheme;
+    pair: TncCandidateKeyPair;
 begin
     if m_combo_candidate_page_keys = nil then
     begin
         Exit;
     end;
 
-    selected_scheme := get_selected_candidate_page_key_scheme;
-    selected_scheme := nc_resolve_candidate_page_key_scheme(selected_scheme,
+    selected_scheme := nc_resolve_candidate_page_key_scheme(get_selected_candidate_page_key_scheme,
         get_selected_one_key_completion_key);
     m_combo_candidate_page_keys.Items.BeginUpdate;
     try
         m_combo_candidate_page_keys.Items.Clear;
-        m_combo_candidate_page_keys.Items.Add(SPageKeysMinusPlus);
-        m_combo_candidate_page_keys.Items.Add(SPageKeysBrackets);
-        m_combo_candidate_page_keys.Items.Add(SPageKeysCommaPeriod);
+        for pair in key_pairs_from(ckp_minus_plus) do
+        begin
+            for scheme := Low(TncCandidatePageKeyScheme) to High(TncCandidatePageKeyScheme) do
+            begin
+                if (scheme <> cpks_shift_tab) and (nc_candidate_page_key_pair(scheme) = pair) then
+                begin
+                    m_combo_candidate_page_keys.Items.AddObject(key_pair_caption(pair),
+                        TObject(NativeInt(Ord(scheme))));
+                end;
+            end;
+        end;
         if get_selected_one_key_completion_key <> ock_tab then
         begin
-            m_combo_candidate_page_keys.Items.Add(SPageKeysShiftTab);
+            m_combo_candidate_page_keys.Items.AddObject(SPageKeysShiftTab,
+                TObject(NativeInt(Ord(cpks_shift_tab))));
         end;
     finally
         m_combo_candidate_page_keys.Items.EndUpdate;
     end;
-    m_combo_candidate_page_keys.ItemIndex := Ord(selected_scheme);
+    select_combo_value(m_combo_candidate_page_keys, Ord(selected_scheme));
 end;
 
 procedure TncSettingsForm.populate_one_key_completion_key_combo;
@@ -3403,6 +3516,7 @@ end;
 
 procedure TncSettingsForm.update_candidate_page_key_scheme_preview;
 var
+    scheme: TncCandidatePageKeyScheme;
     previous_key: string;
     next_key: string;
 begin
@@ -3412,60 +3526,142 @@ begin
         Exit;
     end;
 
-    case get_selected_candidate_page_key_scheme of
-        cpks_brackets:
-            begin
-                previous_key := '[';
-                next_key := ']';
-            end;
-        cpks_comma_period:
-            begin
-                previous_key := ',';
-                next_key := '.';
-            end;
-        cpks_shift_tab:
-            begin
-                previous_key := 'Shift+Tab';
-                next_key := 'Tab';
-            end;
+    scheme := get_selected_candidate_page_key_scheme;
+    if scheme = cpks_shift_tab then
+    begin
+        previous_key := 'Shift+Tab';
+        next_key := 'Tab';
+    end
     else
-        previous_key := '-';
-        next_key := '=';
+    begin
+        key_pair_key_captions(nc_candidate_page_key_pair(scheme), previous_key, next_key);
     end;
 
     m_panel_candidate_page_previous_key.Caption := previous_key;
     m_panel_candidate_page_next_key.Caption := next_key;
     layout_key_row(m_combo_candidate_page_keys, m_label_candidate_page_previous,
         m_panel_candidate_page_previous_key, m_label_candidate_page_next, m_panel_candidate_page_next_key);
+    if m_label_candidate_page_note <> nil then
+    begin
+        set_key_hint(m_label_candidate_page_note, key_pair_hint(SCandidatePageKeysHint,
+            nc_candidate_page_key_pair(scheme)));
+    end;
+end;
+
+// A hint takes the lines its text needs (a pair's note adds one or two); the
+// controls below it in its card, the card and the cards below the card move
+// by the difference.
+procedure TncSettingsForm.set_key_hint(const hint: TLabel; const caption: string);
+var
+    card: TWinControl;
+    old_bottom: Integer;
+    delta: Integer;
+    idx: Integer;
+    control: TControl;
+begin
+    if hint = nil then
+    begin
+        Exit;
+    end;
+    hint.Caption := caption;
+    delta := measure_wrapped_label_height(hint.Font, caption, hint.Width) - hint.Height;
+    if delta = 0 then
+    begin
+        Exit;
+    end;
+    card := hint.Parent;
+    old_bottom := hint.Top + hint.Height;
+    for idx := 0 to card.ControlCount - 1 do
+    begin
+        control := card.Controls[idx];
+        if (control <> hint) and (control.Top >= old_bottom) then
+        begin
+            control.Top := control.Top + delta;
+        end;
+    end;
+    hint.Height := hint.Height + delta;
+    old_bottom := card.Top + card.Height;
+    card.Height := card.Height + delta;
+    if card.Parent = nil then
+    begin
+        Exit;
+    end;
+    for idx := 0 to card.Parent.ControlCount - 1 do
+    begin
+        control := card.Parent.Controls[idx];
+        if (control <> card) and (control.Top >= old_bottom) then
+        begin
+            control.Top := control.Top + delta;
+        end;
+    end;
+end;
+
+// Paging chooses first, the second and third candidate among the pairs it
+// left, a character of the candidate among the rest: a list below a changed
+// one shows what is left, and a choice that was taken goes back to none.
+procedure TncSettingsForm.refresh_lower_key_combos;
+begin
+    populate_second_third_candidate_keys_combo;
+    update_second_third_candidate_keys_preview;
+    populate_select_character_keys_combo;
+    update_select_character_keys_controls;
 end;
 
 procedure TncSettingsForm.candidate_page_key_scheme_changed(Sender: TObject);
 begin
     update_candidate_page_key_scheme_preview;
-    update_select_character_keys_controls;
+    refresh_lower_key_combos;
     mark_dirty(Sender);
 end;
 
 procedure TncSettingsForm.populate_select_character_keys_combo;
+var
+    page_scheme: TncCandidatePageKeyScheme;
+    second_third: TncSecondThirdCandidateKeys;
+    selected_keys: TncSelectCharacterKeys;
+    keys: TncSelectCharacterKeys;
+    pair: TncCandidateKeyPair;
 begin
     if m_combo_select_character_keys = nil then
     begin
         Exit;
     end;
+    page_scheme := get_selected_candidate_page_key_scheme;
+    second_third := nc_resolve_second_third_candidate_keys(get_selected_second_third_candidate_keys,
+        page_scheme);
+    selected_keys := nc_resolve_select_character_keys(get_selected_select_character_keys,
+        page_scheme, second_third);
     m_combo_select_character_keys.Items.BeginUpdate;
     try
         m_combo_select_character_keys.Items.Clear;
-        m_combo_select_character_keys.Items.Add(SSelectCharacterKeysNone);
-        m_combo_select_character_keys.Items.Add(SSelectCharacterKeysBrackets);
+        m_combo_select_character_keys.Items.AddObject(SKeyPairNone, TObject(NativeInt(Ord(sck_none))));
+        for pair in key_pairs_from(ckp_brackets) do
+        begin
+            if (pair = nc_candidate_page_key_pair(page_scheme)) or
+                (pair = nc_second_third_candidate_key_pair(second_third)) then
+            begin
+                Continue;
+            end;
+            for keys := Low(TncSelectCharacterKeys) to High(TncSelectCharacterKeys) do
+            begin
+                if nc_select_character_key_pair(keys) = pair then
+                begin
+                    m_combo_select_character_keys.Items.AddObject(key_pair_caption(pair),
+                        TObject(NativeInt(Ord(keys))));
+                end;
+            end;
+        end;
     finally
         m_combo_select_character_keys.Items.EndUpdate;
     end;
-    m_combo_select_character_keys.ItemIndex := Ord(sck_none);
+    select_combo_value(m_combo_select_character_keys, Ord(selected_keys));
 end;
 
 procedure TncSettingsForm.update_select_character_keys_controls;
 var
-    paging_takes_keys: Boolean;
+    pair: TncCandidateKeyPair;
+    first_key: string;
+    last_key: string;
 begin
     if (m_combo_select_character_keys = nil) or (m_panel_first_character_key = nil) or
         (m_panel_last_character_key = nil) or (m_label_select_character_note = nil) then
@@ -3473,30 +3669,11 @@ begin
         Exit;
     end;
 
-    // The bracket paging scheme keeps [ and ], as the configuration does.
-    paging_takes_keys := nc_select_character_keys_conflict_with_page_keys(sck_brackets,
-        get_selected_candidate_page_key_scheme);
-    if paging_takes_keys then
-    begin
-        m_combo_select_character_keys.ItemIndex := Ord(sck_none);
-        m_label_select_character_note.Caption := SSelectCharacterKeysBusy;
-    end
-    else
-    begin
-        m_label_select_character_note.Caption := SSelectCharacterKeysHint;
-    end;
-    m_combo_select_character_keys.Enabled := not paging_takes_keys;
-
-    if get_selected_select_character_keys = sck_brackets then
-    begin
-        m_panel_first_character_key.Caption := '[';
-        m_panel_last_character_key.Caption := ']';
-    end
-    else
-    begin
-        m_panel_first_character_key.Caption := c_no_key_caption;
-        m_panel_last_character_key.Caption := c_no_key_caption;
-    end;
+    pair := nc_select_character_key_pair(get_selected_select_character_keys);
+    key_pair_key_captions(pair, first_key, last_key);
+    m_panel_first_character_key.Caption := first_key;
+    m_panel_last_character_key.Caption := last_key;
+    set_key_hint(m_label_select_character_note, key_pair_hint(SSelectCharacterKeysHint, pair));
 end;
 
 procedure TncSettingsForm.select_character_keys_changed(Sender: TObject);
@@ -3506,47 +3683,76 @@ begin
 end;
 
 function TncSettingsForm.get_selected_select_character_keys: TncSelectCharacterKeys;
+var
+    value: Integer;
 begin
-    Result := sck_none;
-    if (m_combo_select_character_keys <> nil) and
-        (m_combo_select_character_keys.ItemIndex >= Ord(Low(TncSelectCharacterKeys))) and
-        (m_combo_select_character_keys.ItemIndex <= Ord(High(TncSelectCharacterKeys))) then
+    value := combo_value(m_combo_select_character_keys, Ord(sck_none));
+    if (value < Ord(Low(TncSelectCharacterKeys))) or (value > Ord(High(TncSelectCharacterKeys))) then
     begin
-        Result := TncSelectCharacterKeys(m_combo_select_character_keys.ItemIndex);
+        value := Ord(sck_none);
     end;
+    Result := TncSelectCharacterKeys(value);
 end;
 
 procedure TncSettingsForm.set_select_character_keys_combo(const keys: TncSelectCharacterKeys);
+var
+    page_scheme: TncCandidatePageKeyScheme;
 begin
     if m_combo_select_character_keys = nil then
     begin
         Exit;
     end;
-    m_combo_select_character_keys.ItemIndex := Ord(nc_resolve_select_character_keys(keys,
-        get_selected_candidate_page_key_scheme));
+    populate_select_character_keys_combo;
+    page_scheme := get_selected_candidate_page_key_scheme;
+    select_combo_value(m_combo_select_character_keys, Ord(nc_resolve_select_character_keys(keys,
+        page_scheme, get_selected_second_third_candidate_keys)));
     update_select_character_keys_controls;
 end;
 
 procedure TncSettingsForm.populate_second_third_candidate_keys_combo;
+var
+    page_scheme: TncCandidatePageKeyScheme;
+    selected_keys: TncSecondThirdCandidateKeys;
+    keys: TncSecondThirdCandidateKeys;
+    pair: TncCandidateKeyPair;
 begin
     if m_combo_second_third_candidate_keys = nil then
     begin
         Exit;
     end;
 
+    page_scheme := get_selected_candidate_page_key_scheme;
+    selected_keys := nc_resolve_second_third_candidate_keys(get_selected_second_third_candidate_keys,
+        page_scheme);
     m_combo_second_third_candidate_keys.Items.BeginUpdate;
     try
         m_combo_second_third_candidate_keys.Items.Clear;
-        m_combo_second_third_candidate_keys.Items.Add(SSecondThirdKeysNone);
-        m_combo_second_third_candidate_keys.Items.Add(SSecondThirdKeysSemicolonQuote);
+        m_combo_second_third_candidate_keys.Items.AddObject(SKeyPairNone,
+            TObject(NativeInt(Ord(stck_none))));
+        for pair in key_pairs_from(ckp_semicolon_quote) do
+        begin
+            if pair = nc_candidate_page_key_pair(page_scheme) then
+            begin
+                Continue;
+            end;
+            for keys := Low(TncSecondThirdCandidateKeys) to High(TncSecondThirdCandidateKeys) do
+            begin
+                if nc_second_third_candidate_key_pair(keys) = pair then
+                begin
+                    m_combo_second_third_candidate_keys.Items.AddObject(key_pair_caption(pair),
+                        TObject(NativeInt(Ord(keys))));
+                end;
+            end;
+        end;
     finally
         m_combo_second_third_candidate_keys.Items.EndUpdate;
     end;
-    m_combo_second_third_candidate_keys.ItemIndex := Ord(stck_none);
+    select_combo_value(m_combo_second_third_candidate_keys, Ord(selected_keys));
 end;
 
 procedure TncSettingsForm.update_second_third_candidate_keys_preview;
 var
+    pair: TncCandidateKeyPair;
     second_key: string;
     third_key: string;
 begin
@@ -3556,40 +3762,36 @@ begin
         Exit;
     end;
 
-    case get_selected_second_third_candidate_keys of
-        stck_semicolon_quote:
-            begin
-                second_key := ';';
-                third_key := '''';
-            end;
-    else
-        second_key := c_no_key_caption;
-        third_key := c_no_key_caption;
-    end;
-
+    pair := nc_second_third_candidate_key_pair(get_selected_second_third_candidate_keys);
+    key_pair_key_captions(pair, second_key, third_key);
     m_panel_second_candidate_key.Caption := second_key;
     m_panel_third_candidate_key.Caption := third_key;
+    if m_label_second_third_note <> nil then
+    begin
+        set_key_hint(m_label_second_third_note, key_pair_hint(SSecondThirdCandidateKeysHint, pair));
+    end;
 end;
 
 procedure TncSettingsForm.second_third_candidate_keys_changed(Sender: TObject);
 begin
     update_second_third_candidate_keys_preview;
+    populate_select_character_keys_combo;
+    update_select_character_keys_controls;
     mark_dirty(Sender);
 end;
 
 function TncSettingsForm.get_selected_second_third_candidate_keys:
     TncSecondThirdCandidateKeys;
+var
+    value: Integer;
 begin
-    Result := stck_none;
-    if (m_combo_second_third_candidate_keys <> nil) and
-        (m_combo_second_third_candidate_keys.ItemIndex >=
-        Ord(Low(TncSecondThirdCandidateKeys))) and
-        (m_combo_second_third_candidate_keys.ItemIndex <=
-        Ord(High(TncSecondThirdCandidateKeys))) then
+    value := combo_value(m_combo_second_third_candidate_keys, Ord(stck_none));
+    if (value < Ord(Low(TncSecondThirdCandidateKeys))) or
+        (value > Ord(High(TncSecondThirdCandidateKeys))) then
     begin
-        Result := TncSecondThirdCandidateKeys(
-            m_combo_second_third_candidate_keys.ItemIndex);
+        value := Ord(stck_none);
     end;
+    Result := TncSecondThirdCandidateKeys(value);
 end;
 
 procedure TncSettingsForm.set_second_third_candidate_keys_combo(
@@ -3599,47 +3801,48 @@ begin
     begin
         Exit;
     end;
-    m_combo_second_third_candidate_keys.ItemIndex :=
-        Ord(nc_normalize_second_third_candidate_keys(keys));
+    populate_second_third_candidate_keys_combo;
+    select_combo_value(m_combo_second_third_candidate_keys, Ord(nc_resolve_second_third_candidate_keys(
+        keys, get_selected_candidate_page_key_scheme)));
     update_second_third_candidate_keys_preview;
+    populate_select_character_keys_combo;
+    update_select_character_keys_controls;
 end;
 
 procedure TncSettingsForm.one_key_completion_key_changed(Sender: TObject);
 begin
     populate_candidate_page_key_scheme_combo;
     update_candidate_page_key_scheme_preview;
-    update_select_character_keys_controls;
+    refresh_lower_key_combos;
     update_candidate_preview;
     mark_dirty(Sender);
 end;
 
 function TncSettingsForm.get_selected_candidate_page_key_scheme:
     TncCandidatePageKeyScheme;
+var
+    value: Integer;
 begin
-    Result := cpks_minus_plus;
-    if (m_combo_candidate_page_keys <> nil) and
-        (m_combo_candidate_page_keys.ItemIndex >= Ord(Low(TncCandidatePageKeyScheme))) and
-        (m_combo_candidate_page_keys.ItemIndex <= Ord(High(TncCandidatePageKeyScheme))) then
+    value := combo_value(m_combo_candidate_page_keys, Ord(cpks_minus_plus));
+    if (value < Ord(Low(TncCandidatePageKeyScheme))) or
+        (value > Ord(High(TncCandidatePageKeyScheme))) then
     begin
-        Result := TncCandidatePageKeyScheme(
-            m_combo_candidate_page_keys.ItemIndex);
+        value := Ord(cpks_minus_plus);
     end;
+    Result := TncCandidatePageKeyScheme(value);
 end;
 
 procedure TncSettingsForm.set_candidate_page_key_scheme_combo(
     const scheme: TncCandidatePageKeyScheme);
-var
-    resolved_scheme: TncCandidatePageKeyScheme;
 begin
     if m_combo_candidate_page_keys = nil then
     begin
         Exit;
     end;
-    resolved_scheme := nc_resolve_candidate_page_key_scheme(scheme,
-        get_selected_one_key_completion_key);
-    m_combo_candidate_page_keys.ItemIndex := Ord(resolved_scheme);
+    select_combo_value(m_combo_candidate_page_keys, Ord(nc_resolve_candidate_page_key_scheme(scheme,
+        get_selected_one_key_completion_key)));
     update_candidate_page_key_scheme_preview;
-    update_select_character_keys_controls;
+    refresh_lower_key_combos;
 end;
 
 function TncSettingsForm.get_selected_one_key_completion_key:
@@ -3668,7 +3871,7 @@ begin
         nc_normalize_one_key_completion_key(completion_key));
     populate_candidate_page_key_scheme_combo;
     update_candidate_page_key_scheme_preview;
-    update_select_character_keys_controls;
+    refresh_lower_key_combos;
 end;
 
 function TncSettingsForm.shortcut_from_controls(const action: TncShortcutAction): TncShortcut;
@@ -5588,10 +5791,11 @@ begin
         nc_resolve_candidate_page_key_scheme(
         get_selected_candidate_page_key_scheme,
         next_config.one_key_completion_key);
-    next_config.second_third_candidate_keys :=
-        get_selected_second_third_candidate_keys;
+    next_config.second_third_candidate_keys := nc_resolve_second_third_candidate_keys(
+        get_selected_second_third_candidate_keys, next_config.candidate_page_key_scheme);
     next_config.select_character_keys := nc_resolve_select_character_keys(
-        get_selected_select_character_keys, next_config.candidate_page_key_scheme);
+        get_selected_select_character_keys, next_config.candidate_page_key_scheme,
+        next_config.second_third_candidate_keys);
     next_config.candidate_color_scheme := get_selected_candidate_color_scheme;
     shortcut_config := nc_default_shortcut_config;
     for action_index := Ord(Low(TncShortcutAction)) to Ord(High(TncShortcutAction)) do

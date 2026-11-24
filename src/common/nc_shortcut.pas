@@ -77,10 +77,26 @@ function nc_second_third_candidate_keys_to_text(
     const keys: TncSecondThirdCandidateKeys): string;
 function nc_parse_second_third_candidate_keys(
     const value: string): TncSecondThirdCandidateKeys;
-// The place on the page (1 or 2) a key picks under the scheme; False for any
-// other key or with a modifier down.
+// The pair of keys a scheme takes; ckp_none for none and for Shift+Tab / Tab.
+function nc_candidate_page_key_pair(
+    const scheme: TncCandidatePageKeyScheme): TncCandidateKeyPair;
+function nc_second_third_candidate_key_pair(
+    const keys: TncSecondThirdCandidateKeys): TncCandidateKeyPair;
+function nc_select_character_key_pair(
+    const keys: TncSelectCharacterKeys): TncCandidateKeyPair;
+// Which key of the pair a key is: 0 the left one (-, [, the comma, ;), 1 the
+// right one (=, ], the period, '); -1 for any other key or with a modifier down.
+function nc_candidate_key_pair_side(const pair: TncCandidateKeyPair;
+    const key_code: Word; const key_state: TncKeyState): Integer;
+// Paging chooses its pair first: the second and third candidate leave it.
+function nc_resolve_second_third_candidate_keys(
+    const keys: TncSecondThirdCandidateKeys;
+    const page_scheme: TncCandidatePageKeyScheme): TncSecondThirdCandidateKeys;
+// The place on the page (1 or 2) a key picks under the scheme (the paging
+// scheme taken into account); False for any other key or with a modifier down.
 function nc_second_third_candidate_key_index(
-    const keys: TncSecondThirdCandidateKeys; const key_code: Word;
+    const keys: TncSecondThirdCandidateKeys;
+    const page_scheme: TncCandidatePageKeyScheme; const key_code: Word;
     const key_state: TncKeyState; out index: Integer): Boolean;
 function nc_normalize_select_character_keys(
     const keys: TncSelectCharacterKeys): TncSelectCharacterKeys;
@@ -88,19 +104,19 @@ function nc_select_character_keys_to_text(
     const keys: TncSelectCharacterKeys): string;
 function nc_parse_select_character_keys(
     const value: string): TncSelectCharacterKeys;
-// [ and ] page through the candidates under the bracket paging scheme, and
-// that scheme keeps them.
-function nc_select_character_keys_conflict_with_page_keys(
-    const keys: TncSelectCharacterKeys;
-    const page_scheme: TncCandidatePageKeyScheme): Boolean;
+// A character of the candidate leaves the pairs paging and the second and
+// third candidate take.
 function nc_resolve_select_character_keys(
     const keys: TncSelectCharacterKeys;
-    const page_scheme: TncCandidatePageKeyScheme): TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme;
+    const second_third: TncSecondThirdCandidateKeys): TncSelectCharacterKeys;
 // Whether a key commits a character of the selected candidate under the
-// scheme (the paging scheme taken into account), and which: the first, or
-// the last when last is True. False for any other key or with a modifier down.
+// scheme (paging and the second and third candidate taken into account), and
+// which: the first, or the last when last is True. False for any other key or
+// with a modifier down.
 function nc_select_character_key_side(const keys: TncSelectCharacterKeys;
-    const page_scheme: TncCandidatePageKeyScheme; const key_code: Word;
+    const page_scheme: TncCandidatePageKeyScheme;
+    const second_third: TncSecondThirdCandidateKeys; const key_code: Word;
     const key_state: TncKeyState; out last: Boolean): Boolean;
 // The first or the last character of a candidate's text (a surrogate pair
 // counts as one); '' for an empty text.
@@ -119,12 +135,14 @@ begin
     Result := False;
     if key_state.shift_down or key_state.ctrl_down or key_state.alt_down then Exit;
     // During a composition these punctuation keys are consumed even when they
-    // are not the configured paging pair. Tab is different: it still requires
-    // a completion or an explicit paging binding, so it must not be included.
+    // are not the configured paging pair (; pages, picks, commits with its
+    // punctuation or is a final of double pinyin). Tab is different: it still
+    // requires a completion or an explicit paging binding, so it must not be
+    // included.
     case key_code of
         VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN,
         VK_OEM_MINUS, VK_OEM_PLUS, VK_OEM_4, VK_OEM_6,
-        VK_OEM_COMMA, VK_OEM_PERIOD:
+        VK_OEM_COMMA, VK_OEM_PERIOD, VK_OEM_1:
             Result := True;
     end;
 end;
@@ -169,6 +187,8 @@ begin
             Result := 'comma-period';
         cpks_shift_tab:
             Result := 'shift-tab';
+        cpks_semicolon_quote:
+            Result := 'semicolon-quote';
     else
         Result := 'minus-plus';
     end;
@@ -191,6 +211,10 @@ begin
     if normalized_value = 'shift-tab' then
     begin
         Exit(cpks_shift_tab);
+    end;
+    if normalized_value = 'semicolon-quote' then
+    begin
+        Exit(cpks_semicolon_quote);
     end;
     Result := cpks_minus_plus;
 end;
@@ -277,29 +301,12 @@ begin
         Exit;
     end;
 
-    case nc_normalize_candidate_page_key_scheme(scheme) of
-        cpks_brackets:
-            begin
-                Result := (not key_state.shift_down) and
-                    (((not next_page) and (key_code = VK_OEM_4)) or
-                    (next_page and (key_code = VK_OEM_6)));
-            end;
-        cpks_comma_period:
-            begin
-                Result := (not key_state.shift_down) and
-                    (((not next_page) and (key_code = VK_OEM_COMMA)) or
-                    (next_page and (key_code = VK_OEM_PERIOD)));
-            end;
-        cpks_shift_tab:
-            begin
-                Result := (key_code = VK_TAB) and
-                    (key_state.shift_down <> next_page);
-            end;
-    else
-        Result := (not key_state.shift_down) and
-            (((not next_page) and (key_code = VK_OEM_MINUS)) or
-            (next_page and (key_code = VK_OEM_PLUS)));
+    if nc_normalize_candidate_page_key_scheme(scheme) = cpks_shift_tab then
+    begin
+        Exit((key_code = VK_TAB) and (key_state.shift_down <> next_page));
     end;
+    Result := nc_candidate_key_pair_side(nc_candidate_page_key_pair(scheme),
+        key_code, key_state) = Ord(next_page);
 end;
 
 function nc_candidate_page_key_matches_previous(
@@ -327,42 +334,172 @@ begin
     Result := keys;
 end;
 
-function nc_second_third_candidate_keys_to_text(
-    const keys: TncSecondThirdCandidateKeys): string;
+const
+    c_candidate_key_pair_names: array[TncCandidateKeyPair] of string = (
+        'none', 'minus-plus', 'brackets', 'comma-period', 'semicolon-quote');
+
+function parse_candidate_key_pair(const value: string): TncCandidateKeyPair;
+var
+    pair: TncCandidateKeyPair;
+    normalized_value: string;
+begin
+    normalized_value := LowerCase(Trim(value));
+    for pair := Low(TncCandidateKeyPair) to High(TncCandidateKeyPair) do
+    begin
+        if c_candidate_key_pair_names[pair] = normalized_value then
+        begin
+            Exit(pair);
+        end;
+    end;
+    Result := ckp_none;
+end;
+
+function nc_candidate_page_key_pair(
+    const scheme: TncCandidatePageKeyScheme): TncCandidateKeyPair;
+begin
+    case nc_normalize_candidate_page_key_scheme(scheme) of
+        cpks_brackets:
+            Result := ckp_brackets;
+        cpks_comma_period:
+            Result := ckp_comma_period;
+        cpks_semicolon_quote:
+            Result := ckp_semicolon_quote;
+        cpks_shift_tab:
+            Result := ckp_none;
+    else
+        Result := ckp_minus_plus;
+    end;
+end;
+
+function nc_second_third_candidate_key_pair(
+    const keys: TncSecondThirdCandidateKeys): TncCandidateKeyPair;
 begin
     case nc_normalize_second_third_candidate_keys(keys) of
         stck_semicolon_quote:
-            Result := 'semicolon-quote';
+            Result := ckp_semicolon_quote;
+        stck_minus_plus:
+            Result := ckp_minus_plus;
+        stck_brackets:
+            Result := ckp_brackets;
+        stck_comma_period:
+            Result := ckp_comma_period;
     else
-        Result := 'none';
+        Result := ckp_none;
     end;
+end;
+
+function nc_select_character_key_pair(
+    const keys: TncSelectCharacterKeys): TncCandidateKeyPair;
+begin
+    case nc_normalize_select_character_keys(keys) of
+        sck_brackets:
+            Result := ckp_brackets;
+        sck_minus_plus:
+            Result := ckp_minus_plus;
+        sck_comma_period:
+            Result := ckp_comma_period;
+        sck_semicolon_quote:
+            Result := ckp_semicolon_quote;
+    else
+        Result := ckp_none;
+    end;
+end;
+
+function nc_candidate_key_pair_side(const pair: TncCandidateKeyPair;
+    const key_code: Word; const key_state: TncKeyState): Integer;
+var
+    left_key: Word;
+    right_key: Word;
+begin
+    Result := -1;
+    if key_state.shift_down or key_state.ctrl_down or key_state.alt_down then
+    begin
+        Exit;
+    end;
+    case pair of
+        ckp_minus_plus:
+            begin
+                left_key := VK_OEM_MINUS;
+                right_key := VK_OEM_PLUS;
+            end;
+        ckp_brackets:
+            begin
+                left_key := VK_OEM_4;
+                right_key := VK_OEM_6;
+            end;
+        ckp_comma_period:
+            begin
+                left_key := VK_OEM_COMMA;
+                right_key := VK_OEM_PERIOD;
+            end;
+        ckp_semicolon_quote:
+            begin
+                left_key := VK_OEM_1;
+                right_key := VK_OEM_7;
+            end;
+    else
+        Exit;
+    end;
+    if key_code = left_key then
+    begin
+        Result := 0;
+    end
+    else if key_code = right_key then
+    begin
+        Result := 1;
+    end;
+end;
+
+function nc_second_third_candidate_keys_to_text(
+    const keys: TncSecondThirdCandidateKeys): string;
+begin
+    Result := c_candidate_key_pair_names[nc_second_third_candidate_key_pair(keys)];
 end;
 
 function nc_parse_second_third_candidate_keys(
     const value: string): TncSecondThirdCandidateKeys;
+var
+    pair: TncCandidateKeyPair;
+    keys: TncSecondThirdCandidateKeys;
 begin
-    if SameText(Trim(value), 'semicolon-quote') then
+    pair := parse_candidate_key_pair(value);
+    for keys := Low(TncSecondThirdCandidateKeys) to High(TncSecondThirdCandidateKeys) do
     begin
-        Exit(stck_semicolon_quote);
+        if nc_second_third_candidate_key_pair(keys) = pair then
+        begin
+            Exit(keys);
+        end;
     end;
     Result := stck_none;
 end;
 
-function nc_second_third_candidate_key_index(
-    const keys: TncSecondThirdCandidateKeys; const key_code: Word;
-    const key_state: TncKeyState; out index: Integer): Boolean;
+function nc_resolve_second_third_candidate_keys(
+    const keys: TncSecondThirdCandidateKeys;
+    const page_scheme: TncCandidatePageKeyScheme): TncSecondThirdCandidateKeys;
 begin
-    index := -1;
-    if (not key_state.shift_down) and (not key_state.ctrl_down) and
-        (not key_state.alt_down) and
-        (nc_normalize_second_third_candidate_keys(keys) = stck_semicolon_quote) then
+    Result := nc_normalize_second_third_candidate_keys(keys);
+    if nc_second_third_candidate_key_pair(Result) = nc_candidate_page_key_pair(page_scheme) then
     begin
-        case key_code of
-            VK_OEM_1:
-                index := 1;
-            VK_OEM_7:
-                index := 2;
-        end;
+        Result := stck_none;
+    end;
+end;
+
+function nc_second_third_candidate_key_index(
+    const keys: TncSecondThirdCandidateKeys;
+    const page_scheme: TncCandidatePageKeyScheme; const key_code: Word;
+    const key_state: TncKeyState; out index: Integer): Boolean;
+var
+    side: Integer;
+begin
+    side := nc_candidate_key_pair_side(nc_second_third_candidate_key_pair(
+        nc_resolve_second_third_candidate_keys(keys, page_scheme)), key_code, key_state);
+    if side >= 0 then
+    begin
+        index := side + 1;
+    end
+    else
+    begin
+        index := -1;
     end;
     Result := index >= 0;
 end;
@@ -381,63 +518,55 @@ end;
 function nc_select_character_keys_to_text(
     const keys: TncSelectCharacterKeys): string;
 begin
-    case nc_normalize_select_character_keys(keys) of
-        sck_brackets:
-            Result := 'brackets';
-    else
-        Result := 'none';
-    end;
+    Result := c_candidate_key_pair_names[nc_select_character_key_pair(keys)];
 end;
 
 function nc_parse_select_character_keys(
     const value: string): TncSelectCharacterKeys;
+var
+    pair: TncCandidateKeyPair;
+    keys: TncSelectCharacterKeys;
 begin
-    if SameText(Trim(value), 'brackets') then
+    pair := parse_candidate_key_pair(value);
+    for keys := Low(TncSelectCharacterKeys) to High(TncSelectCharacterKeys) do
     begin
-        Exit(sck_brackets);
+        if nc_select_character_key_pair(keys) = pair then
+        begin
+            Exit(keys);
+        end;
     end;
     Result := sck_none;
 end;
 
-function nc_select_character_keys_conflict_with_page_keys(
-    const keys: TncSelectCharacterKeys;
-    const page_scheme: TncCandidatePageKeyScheme): Boolean;
-begin
-    Result := (nc_normalize_select_character_keys(keys) = sck_brackets) and
-        (nc_normalize_candidate_page_key_scheme(page_scheme) = cpks_brackets);
-end;
-
 function nc_resolve_select_character_keys(
     const keys: TncSelectCharacterKeys;
-    const page_scheme: TncCandidatePageKeyScheme): TncSelectCharacterKeys;
+    const page_scheme: TncCandidatePageKeyScheme;
+    const second_third: TncSecondThirdCandidateKeys): TncSelectCharacterKeys;
+var
+    pair: TncCandidateKeyPair;
 begin
     Result := nc_normalize_select_character_keys(keys);
-    if nc_select_character_keys_conflict_with_page_keys(Result, page_scheme) then
+    pair := nc_select_character_key_pair(Result);
+    if (pair = nc_candidate_page_key_pair(page_scheme)) or
+        (pair = nc_second_third_candidate_key_pair(
+        nc_resolve_second_third_candidate_keys(second_third, page_scheme))) then
     begin
         Result := sck_none;
     end;
 end;
 
 function nc_select_character_key_side(const keys: TncSelectCharacterKeys;
-    const page_scheme: TncCandidatePageKeyScheme; const key_code: Word;
+    const page_scheme: TncCandidatePageKeyScheme;
+    const second_third: TncSecondThirdCandidateKeys; const key_code: Word;
     const key_state: TncKeyState; out last: Boolean): Boolean;
+var
+    side: Integer;
 begin
-    last := False;
-    Result := False;
-    if key_state.shift_down or key_state.ctrl_down or key_state.alt_down or
-        (nc_resolve_select_character_keys(keys, page_scheme) <> sck_brackets) then
-    begin
-        Exit;
-    end;
-    case key_code of
-        VK_OEM_4:
-            Result := True;
-        VK_OEM_6:
-            begin
-                last := True;
-                Result := True;
-            end;
-    end;
+    side := nc_candidate_key_pair_side(nc_select_character_key_pair(
+        nc_resolve_select_character_keys(keys, page_scheme, second_third)),
+        key_code, key_state);
+    last := side = 1;
+    Result := side >= 0;
 end;
 
 function nc_select_character_of_text(const text: string;
