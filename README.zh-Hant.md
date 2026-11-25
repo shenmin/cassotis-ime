@@ -24,7 +24,7 @@
 
 **[官方網站 www.yanquan.org](https://www.yanquan.org)** | [English](README.md) | [簡體中文](README.zh-Hans.md) | 繁體中文 | [Linux 版](https://github.com/shenmin/cassotis-ime-linux) | [macOS 版](https://github.com/shenmin/cassotis-ime-mac)
 
-Cassotis IME（言泉輸入法）是一款適用於 Windows 10/11 的開源中文拼音輸入法，基於 Delphi 與 TSF（Text Services Framework）建構。候選排序、同音校正與聯想補全皆在本機 CPU 上執行，核心為專案自研的本機字元級語言模型。無廣告、不綑綁軟體、不上傳輸入記錄，詞庫、設定與個人學習資料均保存在本機。
+Cassotis IME（言泉輸入法）是一款適用於 Windows 10/11 的開源中文拼音輸入法，同時支援五筆混輸，基於 Delphi 與 TSF（Text Services Framework）建構。候選排序、同音校正與聯想補全皆在本機 CPU 上執行，核心為專案自研的本機字元級語言模型。無廣告、不綑綁軟體、不上傳輸入記錄，詞庫、設定與個人學習資料均保存在本機。
 
 核心設計目標：
 - 建立穩定可靠的原生 TSF 文字服務架構；

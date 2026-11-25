@@ -24,7 +24,7 @@
 
 **[Website: www.yanquan.org](https://www.yanquan.org)** | English | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Linux version](https://github.com/shenmin/cassotis-ime-linux) | [macOS version](https://github.com/shenmin/cassotis-ime-mac)
 
-Cassotis IME (言泉输入法) is an open-source Chinese Pinyin input method for Windows 10/11, built primarily in Delphi on top of TSF (Text Services Framework). Candidate ranking, homophone correction, and completion run entirely on the local CPU, centered on a character-level language model trained by the project. There are no ads, bundled programs, or cloud telemetry—dictionaries, settings, and user-learning data remain strictly on the local machine.
+Cassotis IME (言泉输入法) is an open-source Chinese Pinyin input method for Windows 10/11 that also supports Wubi mixed input. It is built primarily in Delphi on top of TSF (Text Services Framework). Candidate ranking, homophone correction, and completion run entirely on the local CPU, centered on a character-level language model trained by the project. There are no ads, bundled programs, or cloud telemetry—dictionaries, settings, and user-learning data remain strictly on the local machine.
 
 Core design goals:
 - maintain a reliable native TSF text service architecture,
