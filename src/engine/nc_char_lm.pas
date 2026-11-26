@@ -198,14 +198,27 @@ const
       and 9520 -> 9583 without one (+206 / -143); run in turns, the final
       display took 3.9 -> 4.4 ms (P95 19.3 -> 22.5 ms) and the key itself the
       same (P95 1.7 ms), and document replay was the same row for row
-      (out/onekey_keep_20261126). The trainer copies these numbers. }
+      (out/onekey_keep_20261126). Adding each candidate's conditional
+      log-probability past its best shorter prefix in the group and the best
+      continuation log-probability among its longer extensions in the group
+      (c_char_lm_completion_no_extension_logp when none is present) at a gap of
+      0.90 gave 2750 -> 2759 and 6059 -> 6068 held out at seed 11 (2762 and
+      6055 at seed 7; second call 6.6% and 6.4%), 5938.4 -> 5945.2 across five
+      seeds on held-out chat, 10594 -> 10599 (+101 / -96) with a context and
+      9583 -> 9586 (+97 / -94) without one on the official set; run in turns,
+      the final display's P95 went 22.5 / 23.6 -> 21.2 / 22.7 ms with a
+      context and 15.3 / 15.5 -> 12.7 / 13.4 ms without one, and document
+      replay was the same row for row (out/bench_push_20261126,
+      out/evo_review_20261126/final). The trainer's seed is 11 since then. The
+      trainer copies these numbers. }
     c_char_lm_completion_head = 8;
     c_char_lm_completion_first = 18;
-    c_char_lm_completion_wide_gap = 1.15;
+    c_char_lm_completion_wide_gap = 0.90;
     c_char_lm_completion_pick_popularity = 1.5;
     c_char_lm_completion_pick_corpus = 0.5;
     c_char_lm_completion_pick_anchored = 120.0;
     c_char_lm_completion_pick_rank = 12.0;
+    c_char_lm_completion_no_extension_logp = -10.0;
 
 { Chooses the long-sentence top1 from the final complete pool and the visible
   top1. pool holds the final ranking's candidates in their original order with
@@ -797,17 +810,20 @@ var
     var
         features: array[0..c_one_key_gbdt_feature_count - 1] of Double;
         per_char: TArray<Double>;
+        units_of: TArray<Integer>;
         at, other, units, candidate, lm_rank: Integer;
         is_incumbent, lm_max, per_char_max, score, best_score, top, next: Double;
-        found: Boolean;
+        shorter_max, longer_max, tail_cond_lp, best_ext_lp: Double;
+        found, has_shorter, has_longer: Boolean;
     begin
         SetLength(per_char, Length(order));
+        SetLength(units_of, Length(order));
         lm_max := -MaxDouble;
         per_char_max := -MaxDouble;
         for at := 0 to High(order) do
         begin
-            per_char[at] := scored[at] /
-                Max(1, nc_char_lm_code_point_count(candidates[order[at]].text));
+            units_of[at] := Max(1, nc_char_lm_code_point_count(candidates[order[at]].text));
+            per_char[at] := scored[at] / units_of[at];
             lm_max := Max(lm_max, scored[at]);
             per_char_max := Max(per_char_max, per_char[at]);
         end;
@@ -819,13 +835,41 @@ var
         for at := 0 to High(order) do
         begin
             candidate := order[at];
-            units := Max(1, nc_char_lm_code_point_count(candidates[candidate].text));
+            units := units_of[at];
             is_incumbent := Ord(candidate = incumbent_index);
-            // Rank by LM within the group, earlier entries first on ties.
+            // Rank by LM within the group, earlier entries first on ties, and
+            // conditional log-probabilities along any shorter prefix or longer
+            // extension present in the scored group.
             lm_rank := 0;
+            has_shorter := False;
+            shorter_max := -MaxDouble;
+            has_longer := False;
+            longer_max := -MaxDouble;
             for other := 0 to High(order) do
+            begin
                 if (scored[other] > scored[at]) or ((scored[other] = scored[at]) and (other < at)) then
                     Inc(lm_rank);
+                if (units_of[other] < units) and
+                    candidates[candidate].text.StartsWith(candidates[order[other]].text, False) then
+                begin
+                    if (not has_shorter) or (scored[other] > shorter_max) then
+                        shorter_max := scored[other];
+                    has_shorter := True;
+                end
+                else if (units_of[other] > units) and
+                    candidates[order[other]].text.StartsWith(candidates[candidate].text, False) then
+                begin
+                    if (not has_longer) or (scored[other] - scored[at] > longer_max) then
+                        longer_max := scored[other] - scored[at];
+                    has_longer := True;
+                end;
+            end;
+            tail_cond_lp := 0.0;
+            if has_shorter then
+                tail_cond_lp := scored[at] - shorter_max;
+            best_ext_lp := c_char_lm_completion_no_extension_logp;
+            if has_longer then
+                best_ext_lp := longer_max;
             features[0] := scored[at];
             features[1] := per_char[at];
             features[2] := Ln(candidates[candidate].pool_rank);
@@ -846,6 +890,8 @@ var
             features[17] := has_context;
             features[18] := Length(order);
             features[19] := typed_units;
+            features[20] := tail_cond_lp;
+            features[21] := best_ext_lp;
             score := nc_one_key_gbdt_score(features);
             if score > top then
             begin
