@@ -181,12 +181,31 @@ const
       in 7.5% of the opportunities of the fiction one-key dev set the target
       was a dictionary word outside the pool. }
     c_char_lm_completion_limit = 48;
-    { The rerank scores the first entries, as it did before the extras, and
-      the rest only when the ranker's best score leads the next by less than
-      this: one rerank in twelve on held-out fiction. A wider gap finds more
-      (2.5: one in five, 0.9 points more hits) for a second LM call each. }
-    c_char_lm_completion_first = 12;
-    c_char_lm_completion_wide_gap = 1.0;
+    { The rerank's first call scores the pool's first entries
+      (c_char_lm_completion_head), the incumbent, and the entries of the rest
+      of the pool that a look without the LM rates best, up to
+      c_char_lm_completion_first in all: the engine's n-gram score per
+      character, the popularity prior, the corpus score, a prefix anchor and
+      the pool rank, weighed as below. A second call scores the rest of the
+      pool only when the ranker's best score leads the next by less than
+      c_char_lm_completion_wide_gap. Until 2026-11-26 the first call took the
+      first 12 entries and the gap was 1.0. With the tree refit on the new
+      views (train_one_key_completion_gbdt.py, the same pools and mix), held
+      out as its heldout mode judges (each part of the fiction dev set fit on
+      the other with the chat pools) 2731 -> 2750 of 3,135 and 6009 -> 6059 of
+      7,004, the second call on 7.7% of them instead of 9.1%; the
+      official one-key set gave 10561 -> 10594 with a context (+190 / -157)
+      and 9520 -> 9583 without one (+206 / -143); run in turns, the final
+      display took 3.9 -> 4.4 ms (P95 19.3 -> 22.5 ms) and the key itself the
+      same (P95 1.7 ms), and document replay was the same row for row
+      (out/onekey_keep_20261126). The trainer copies these numbers. }
+    c_char_lm_completion_head = 8;
+    c_char_lm_completion_first = 18;
+    c_char_lm_completion_wide_gap = 1.15;
+    c_char_lm_completion_pick_popularity = 1.5;
+    c_char_lm_completion_pick_corpus = 0.5;
+    c_char_lm_completion_pick_anchored = 120.0;
+    c_char_lm_completion_pick_rank = 12.0;
 
 { Chooses the long-sentence top1 from the final complete pool and the visible
   top1. pool holds the final ranking's candidates in their original order with
@@ -742,8 +761,9 @@ function nc_char_lm_choose_completion(const model: IncCharLm; const context: str
 var
     order: TArray<Integer>;
     scored: TArray<Double>;
-    has_context, gap: Double;
-    idx: Integer;
+    has_context, gap, pre_score, best_pre_score: Double;
+    idx, pool_cap, first_cap, head_cap, taken, best_cand: Integer;
+    selected: TArray<Boolean>;
     more: TArray<Integer>;
 
     // One LM call for the listed candidates, appended to those scored so far.
@@ -857,13 +877,50 @@ begin
     if (model = nil) or (Length(candidates) < 2) or (not model.char_lm_ready) then
         Exit;
     has_context := Ord(Trim(context) <> '');
-    // First the leading pool entries, and the incumbent when it lies beyond.
+    // First the leading pool entries, the incumbent, and the entries of the
+    // rest that the look without the LM rates best, the earlier one on a tie.
+    pool_cap := Min(c_char_lm_completion_limit, Length(candidates));
+    first_cap := Min(c_char_lm_completion_first, pool_cap);
+    head_cap := Min(c_char_lm_completion_head, first_cap);
+    SetLength(selected, Length(candidates));
+    for idx := 0 to head_cap - 1 do
+        selected[idx] := True;
+    taken := head_cap;
+    if (incumbent_index >= head_cap) and (incumbent_index < Length(candidates)) then
+    begin
+        selected[incumbent_index] := True;
+        if incumbent_index < pool_cap then
+            Inc(taken);
+    end;
+    while taken < first_cap do
+    begin
+        best_cand := -1;
+        best_pre_score := -MaxDouble;
+        for idx := head_cap to pool_cap - 1 do
+        begin
+            if selected[idx] then
+                Continue;
+            pre_score := (candidates[idx].engine_lm_score /
+                Max(1, nc_char_lm_code_point_count(candidates[idx].text))) +
+                c_char_lm_completion_pick_popularity * Max(0, candidates[idx].popularity_prior) +
+                c_char_lm_completion_pick_corpus * Max(0, candidates[idx].corpus_score) +
+                c_char_lm_completion_pick_anchored * Ord(candidates[idx].prefix_anchored) -
+                c_char_lm_completion_pick_rank * Ln(Max(1, candidates[idx].pool_rank));
+            if (best_cand < 0) or (pre_score > best_pre_score) then
+            begin
+                best_cand := idx;
+                best_pre_score := pre_score;
+            end;
+        end;
+        if best_cand < 0 then
+            Break;
+        selected[best_cand] := True;
+        Inc(taken);
+    end;
     SetLength(more, 0);
-    for idx := 0 to Min(c_char_lm_completion_first, Length(candidates)) - 1 do
-        more := more + [idx];
-    if (incumbent_index >= c_char_lm_completion_first) and
-        (incumbent_index < Length(candidates)) then
-        more := more + [incumbent_index];
+    for idx := 0 to High(candidates) do
+        if selected[idx] then
+            more := more + [idx];
     if not score_more(more) then
         Exit;
     choose(gap);
@@ -873,9 +930,8 @@ begin
     if gap >= c_char_lm_completion_wide_gap then
         Exit;
     SetLength(more, 0);
-    for idx := c_char_lm_completion_first to
-        Min(c_char_lm_completion_limit, Length(candidates)) - 1 do
-        if idx <> incumbent_index then
+    for idx := 0 to pool_cap - 1 do
+        if not selected[idx] then
             more := more + [idx];
     if (Length(more) = 0) or not score_more(more) then
         Exit;
