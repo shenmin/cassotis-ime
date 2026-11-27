@@ -268,13 +268,13 @@ function nc_char_lm_choose_short(const model: IncCharLm; const context: string;
   always scored; candidates only while the scored texts fit
   c_tab_tail_node_budget, best ranks first, and the rest are ignored. When the
   model implements IncCharLmNext, the LM's next characters after the decoded
-  texts (not for phonetic-only requests) and after the best re-read typed
-  tails join the pool, so it works without any candidate. Returns False when
+  texts and after the best re-read typed tails join the pool, so it works
+  without any candidate. Returns False when
   nothing was scored; otherwise chosen is the most probable continuation (ties
   keep the earlier one), best_index its index in candidates (-1 for an LM next
   character) and probability its estimate. }
 function nc_char_lm_choose_continuation(const model: IncCharLm; const context: string;
-    const candidates: TArray<TncCharLmContinuation>; const phonetic_only: Boolean;
+    const candidates: TArray<TncCharLmContinuation>;
     const decoded_texts: TArray<string>; out chosen: TncCharLmContinuation;
     out best_index: Integer; out probability: Double): Boolean;
 
@@ -393,7 +393,7 @@ begin
 end;
 
 function nc_char_lm_choose_continuation(const model: IncCharLm; const context: string;
-    const candidates: TArray<TncCharLmContinuation>; const phonetic_only: Boolean;
+    const candidates: TArray<TncCharLmContinuation>;
     const decoded_texts: TArray<string>; out chosen: TncCharLmContinuation;
     out best_index: Integer; out probability: Double): Boolean;
 type
@@ -565,7 +565,7 @@ begin
     // Texts to expand: the decoded top1 and top2, then the re-read tails with
     // the best log-probability.
     SetLength(prefixes, 0);
-    if (Length(next_texts) > 0) and (not phonetic_only) then
+    if Length(next_texts) > 0 then
         for rank := 1 to 2 do
             if (top_idx[rank - 1] >= 0) and (top_idx[rank - 1] < scored) and
                 (nc_char_lm_code_point_count(decoded_texts[rank - 1]) = typed) then

@@ -942,6 +942,12 @@ type
         // (scored without the comma), when it is not the first phrase shown:
         // the start of a Tab continuation.
         m_short_phrase_tab_text, m_short_phrase_tab_path: string;
+        // The draft the LM prefers next without the comma: a second text the
+        // Tab may continue (the request's top2 where the page has none). Its
+        // path is built when a Tab request first asks for it.
+        m_short_phrase_tab_second, m_short_phrase_tab_second_reading: string;
+        m_short_phrase_tab_second_path: string;
+        m_short_phrase_tab_second_checked: Boolean;
         m_repaired_completion_query_key: string;
         // The input whose long completion was rebuilt from the settled page.
         m_visible_completion_key: string;
@@ -1199,6 +1205,8 @@ type
         function get_query_prefix_for_segment_path(const encoded_path: string): string;
         // The text a Tab continuation starts from for a first visible text.
         function get_tab_start_text(const visible_text: string): string;
+        // The short-phrase stage's second start for that text, or ''.
+        function get_tab_second_text(const visible_text: string; out path: string): string;
         function get_segment_path_for_candidate(const candidate: TncCandidate;
             const candidate_index: Integer = -1): string;
         function infer_segment_path_for_query_text_with_score(
@@ -4123,6 +4131,34 @@ begin
         (visible_text = m_short_phrase_texts[0]) and
         (Pos(m_composition_text + #0 + m_last_lookup_key + #0, m_short_phrase_key) = 1) then
         Result := m_short_phrase_tab_text;
+end;
+
+function TncEngine.get_tab_second_text(const visible_text: string; out path: string): string;
+var
+    validated: TncValidatedRepairPath;
+begin
+    Result := '';
+    path := '';
+    if (m_short_phrase_tab_second = '') or (Length(m_short_phrase_texts) = 0) or
+        (visible_text <> m_short_phrase_texts[0]) or
+        (Pos(m_composition_text + #0 + m_last_lookup_key + #0, m_short_phrase_key) <> 1) then
+        Exit;
+    if not m_short_phrase_tab_second_checked then
+    begin
+        m_short_phrase_tab_second_checked := True;
+        m_short_phrase_tab_second_path := '';
+        if m_dictionary <> nil then
+        begin
+            validated := build_repair_path(m_dictionary, m_short_phrase_tab_second,
+                m_short_phrase_tab_second_reading);
+            if validated.exact_path then
+                m_short_phrase_tab_second_path := validated.segment_path;
+        end;
+    end;
+    if m_short_phrase_tab_second_path = '' then
+        Exit;
+    Result := m_short_phrase_tab_second;
+    path := m_short_phrase_tab_second_path;
 end;
 
 function TncEngine.get_segment_path_for_candidate(const candidate: TncCandidate;
@@ -7343,6 +7379,7 @@ var
     top1_uncontested: Boolean;
     whole_entry: Boolean;
     request_phonetic_only: Boolean;
+    tab_second_text, tab_second_path: string;
     context_lm_ok: Boolean;
     anchor_segment_count: Integer;
     anchor_idx: Integer;
@@ -7789,6 +7826,9 @@ begin
     begin
         completion_candidates := m_visible_candidates_cache;
         completion_sources := Copy(m_visible_candidate_source_indices_cache);
+        if Trim(completion_candidates[0].comment) = '' then
+            tab_second_text := get_tab_second_text(Trim(completion_candidates[0].text),
+                tab_second_path);
         // The short-phrase stage's first phrase is a clause the user may
         // commit; a continuation starts from its draft for the beginning of
         // a sentence.
@@ -7898,7 +7938,9 @@ begin
     query_syllable_text := build_query_syllable_text;
     // Text continuation needs a stable exact suffix.  Phonetic repair is
     // specifically intended for cases where that suffix was decoded
-    // incorrectly, so it may run without one while keeping text recall off.
+    // incorrectly, so it may run without one; the decoded texts are then
+    // continued by the LM's next characters as well, which the Tab tree
+    // weighs like any other.
     request_phonetic_only := False;
     if (top1_anchor_path = '') and (query_syllable_text <> '') and
         (Length(syllables) >= 5) then
@@ -7946,6 +7988,15 @@ begin
             m_long_neural_completion_request.top2_path := second_path;
             m_long_neural_completion_request.top2_anchor_path :=
                 top2_anchor_path;
+        end
+        else if (tab_second_text <> '') and (tab_second_path <> '') and
+            (tab_second_text <> m_long_neural_completion_request.top1_text) then
+        begin
+            // A short phrase without a second complete reading on the page:
+            // the stage's next draft is the other start.
+            m_long_neural_completion_request.top2_text := tab_second_text;
+            m_long_neural_completion_request.top2_path := tab_second_path;
+            m_long_neural_completion_request.top2_anchor_path := tab_second_path;
         end;
         if (m_char_lm <> nil) and m_char_lm_long_enabled and (not corrected_prefix) then
         begin
@@ -140332,6 +140383,8 @@ var
     context, lm_context, key, draft, corrected, aligned, spelled, top_text: string;
     longer_text, longer_reading: string;
     longer_weight: Integer;
+    tab_start: string;
+    tab_second: Integer;
     validated: TncValidatedRepairPath;
     gain, lead, corrected_gap, behind: Single;
     alternatives: string;
@@ -141393,6 +141446,10 @@ begin
         // from the draft the LM prefers without it.
         m_short_phrase_tab_text := '';
         m_short_phrase_tab_path := '';
+        m_short_phrase_tab_second := '';
+        m_short_phrase_tab_second_reading := '';
+        m_short_phrase_tab_second_path := '';
+        m_short_phrase_tab_second_checked := False;
         if scored > 0 then
         begin
             other := 0;
@@ -141407,6 +141464,25 @@ begin
                     m_short_phrase_tab_text := drafts[other];
                     m_short_phrase_tab_path := validated.segment_path;
                 end;
+            end;
+            // The Tab may also start from the draft the LM prefers next
+            // without the comma: a start that is wrong is often the second
+            // of two drafts close together.
+            if m_short_phrase_tab_text <> '' then
+                tab_start := m_short_phrase_tab_text
+            else
+                tab_start := shown[0];
+            tab_second := -1;
+            for index := 0 to High(drafts) do
+                if (drafts[index] <> tab_start) and
+                    (nc_char_lm_code_point_count(drafts[index]) =
+                    nc_char_lm_code_point_count(tab_start)) and
+                    ((tab_second < 0) or (plain_scores[index] > plain_scores[tab_second])) then
+                    tab_second := index;
+            if tab_second >= 0 then
+            begin
+                m_short_phrase_tab_second := drafts[tab_second];
+                m_short_phrase_tab_second_reading := reading_pinyin(draft_readings[tab_second]);
             end;
         end;
         m_short_phrase_key := key;
@@ -189162,8 +189238,10 @@ var
             right_value.top2_anchor_path);
     end;
 
-    // Phonetic-only requests keep the model's text recall off, but a next word
-    // the engine itself offered from the dictionary may continue top1.
+    // Phonetic-only requests keep the model's text recall off: a suffix that
+    // continues a decoded text as it stands is either the LM's next character
+    // (which the Tab tree weighs like any other) or a next word the engine
+    // itself offered from the dictionary.
     function is_dictionary_next_word: Boolean;
     var
         candidate_idx: Integer;
@@ -189356,6 +189434,7 @@ begin
         (completion_result.replace_units > 6) or
         (request.phonetic_only and
         (completion_result.replace_units = 0) and
+        (not completion_result.lm_next) and
         (not is_dictionary_next_word)) then
     begin
         Exit;

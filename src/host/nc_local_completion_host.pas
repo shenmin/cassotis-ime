@@ -255,8 +255,8 @@ begin
     end;
     if ((Length(candidates) = 0) and (task.request.top1_text = '')) or
         not nc_char_lm_choose_continuation(char_lm, task.request.context_text,
-        candidates, task.request.phonetic_only,
-        [task.request.top1_text, task.request.top2_text], chosen, best, probability) then
+        candidates, [task.request.top1_text, task.request.top2_text], chosen, best,
+        probability) then
         Exit;
     completion_result.confidence := probability;
     if probability < c_char_lm_tab_min_probability then
