@@ -16,6 +16,12 @@ type
         kind: TncQuickInputKind;
         generated: TncCandidateList;
         pending_commit: Boolean;
+        // An address of the document before the input, which the input goes
+        // on with (123456@ before gmail): it is not committed again.
+        address_before: string;
+        // The address began at a dot after letters that read as no pinyin,
+        // right after an @ of the document (@ gmail .).
+        address_after_at: Boolean;
         procedure clear;
         function exclusive: Boolean;
     end;
@@ -27,6 +33,9 @@ function nc_quick_input_kind(const text: string; const scheme: TncPinyinInputSch
     const explicit_mode: Boolean = False): TncQuickInputKind;
 function nc_quick_input_candidates(const text: string; const traditional: Boolean;
     const timestamp: TDateTime): TncCandidateList;
+// The address as typed, then its completions; after an address of the
+// document (before), those of the text that goes on with it.
+function nc_quick_address_candidates(const text, before: string): TncCandidateList;
 function nc_quick_number_key(const key_code: Word; const state: TncKeyState;
     out ch: Char): Boolean;
 function nc_quick_input_command(const text: string): string;
@@ -202,13 +211,8 @@ var
 
 begin
     Result := nil;
-    // The address as typed, then its completions.
     if nc_is_address_input(text) then
-    begin
-        add(text);
-        for body in nc_address_input_completions(text) do add(body);
-        Exit;
-    end;
+        Exit(nc_quick_address_candidates(text, ''));
     if (text = '') or (Length(text) > c_quick_input_max_length) then Exit;
     key := nc_quick_input_command(text);
     if key = '' then
@@ -350,6 +354,33 @@ begin
                 digit_text := digit_text + lower_digits[Ord(integer_part[idx]) - Ord('0') + 1];
             add(digit_text);
         end;
+    end;
+end;
+
+function nc_quick_address_candidates(const text, before: string): TncCandidateList;
+var
+    values: TArray<string>;
+    value: string;
+    existing, item: TncCandidate;
+    seen: Boolean;
+begin
+    Result := nil;
+    if before = '' then
+        values := nc_address_input_completions(text)
+    else
+        values := nc_address_completions_after(before, text);
+    values := [text] + values;
+    for value in values do
+    begin
+        if value = '' then Continue;
+        seen := False;
+        for existing in Result do
+            if existing.text = value then seen := True;
+        if seen then Continue;
+        item := Default(TncCandidate);
+        item.text := value;
+        item.source := cs_quick_input;
+        Result := Result + [item];
     end;
 end;
 

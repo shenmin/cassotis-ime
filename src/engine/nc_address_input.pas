@@ -4,7 +4,10 @@ unit nc_address_input;
 // kept as typed while it is being written. Only a key that cannot begin
 // Chinese text starts one: @ after letters, . after www, : after http, https,
 // ftp or mailto. A period after an English word does not, since a Chinese
-// sentence ends so after one as often as not.
+// sentence ends so after one as often as not. The input also goes on with an
+// address the document holds before it (123456@ typed with the digits in the
+// document, then gmail), which the engine reads from the text before the
+// caret.
 
 interface
 
@@ -26,6 +29,18 @@ function nc_is_address_char(const ch: Char): Boolean;
 // Completions of an address being typed: common mail domains after @, common
 // suffixes after a dot of a host name. The address itself is not among them.
 function nc_address_input_completions(const text: string): TArray<string>;
+// The address at the end of the text before the input that the input goes on
+// with: a local part, its @ and as much of the domain as ends at a dot
+// (123456@, zhangsan@163.). An @ with no local part before it (after a space,
+// a Chinese character or at the start: a mention) is none, and so is a domain
+// that does not end at its @ or a dot (zhangsan@qq.com with Chinese typed after it).
+function nc_address_before_input(const left_text: string): string;
+// Whether a composition's text goes on with such an address: the characters
+// of addresses, and no @ of its own.
+function nc_is_address_continuation(const text: string): Boolean;
+// Completions of the text typed after such an address, as the text the input
+// commits (gmail.com for gm after 123456@).
+function nc_address_completions_after(const before, text: string): TArray<string>;
 
 implementation
 
@@ -181,6 +196,66 @@ begin
     end;
     if Length(Result) > c_address_input_max_completions then
         SetLength(Result, c_address_input_max_completions);
+end;
+
+function is_local_part_char(const ch: Char): Boolean;
+begin
+    Result := is_ascii_letter(ch) or ((ch >= '0') and (ch <= '9')) or
+        CharInSet(ch, ['.', '_', '%', '+', '-']);
+end;
+
+function is_domain_char(const ch: Char): Boolean;
+begin
+    Result := is_ascii_letter(ch) or ((ch >= '0') and (ch <= '9')) or
+        CharInSet(ch, ['.', '-']);
+end;
+
+function nc_address_before_input(const left_text: string): string;
+var
+    at, start: Integer;
+begin
+    Result := '';
+    at := Length(left_text);
+    while (at > 0) and is_domain_char(left_text[at]) do
+        Dec(at);
+    if (at = 0) or (left_text[at] <> '@') then
+        Exit;
+    // The domain so far: nothing, or labels each ended by its dot.
+    if (at < Length(left_text)) and (left_text[Length(left_text)] <> '.') then
+        Exit;
+    start := at;
+    while (start > 1) and is_local_part_char(left_text[start - 1]) do
+        Dec(start);
+    if start = at then
+        Exit;
+    Result := Copy(left_text, start, MaxInt);
+end;
+
+function nc_is_address_continuation(const text: string): Boolean;
+var
+    ch: Char;
+begin
+    Result := (text <> '') and (Length(text) <= c_address_input_max_length);
+    if not Result then
+        Exit;
+    for ch in text do
+        if (ch = '@') or not nc_is_address_char(ch) then
+            Exit(False);
+end;
+
+function nc_address_completions_after(const before, text: string): TArray<string>;
+var
+    at: Integer;
+    head, item: string;
+begin
+    Result := nil;
+    at := LastDelimiter('@', before);
+    if (at = 0) or not nc_is_address_continuation(text) then
+        Exit;
+    // A local part of its own: the completions do not depend on it.
+    head := 'a' + Copy(before, at, MaxInt);
+    for item in nc_address_input_completions(head + text) do
+        Result := Result + [Copy(item, Length(head) + 1, MaxInt)];
 end;
 
 end.

@@ -735,6 +735,9 @@ type
         m_left_context: string;
         m_punctuation_preceding_char: Char;
         m_external_left_context: string;
+        // The end of the text before the caret as reported, untrimmed: where
+        // an address of the document ends (issue #39).
+        m_external_left_tail: string;
         // The host has reported the text before the caret in this session, so
         // an empty report means an empty context, not an unreadable one.
         m_external_context_reported: Boolean;
@@ -1266,6 +1269,10 @@ type
         function get_address_key_char(const key_code: Word; const key_state: TncKeyState;
             out ch: Char): Boolean;
         function try_refresh_address_completion: Boolean;
+        function continues_document_address: Boolean;
+        function address_begins_after_at(const ch: Char): Boolean;
+        function period_after_english(const text: string; const punct_char: Char;
+            const punct_text: string): string;
         procedure clear_keystroke_decode_state;
         function composition_reuses_earlier_keys: Boolean;
         procedure build_candidates_core;
@@ -2149,6 +2156,7 @@ begin
     m_last_dictionary_reload_check_tick := 0;
     m_left_context := '';
     m_external_left_context := '';
+    m_external_left_tail := '';
     m_punctuation_preceding_char := #0;
     m_external_context_reported := False;
     m_left_context_document_key := '';
@@ -5003,6 +5011,7 @@ begin
     m_confirmed_text := '';
     m_confirmed_explicit_choice := False;
     m_external_left_context := '';
+    m_external_left_tail := '';
     m_punctuation_preceding_char := #0;
     if (m_document_context_model <> nil) and
         (not preserve_document_context) then
@@ -6556,6 +6565,8 @@ begin
                 m_document_context_model.semantic_tail);
         end;
     end;
+    m_external_left_tail := Copy(left_context,
+        Max(1, Length(left_context) - c_address_input_max_length + 1), MaxInt);
     next_context := trim_left_context_to_sentence(left_context,
         c_left_context_max_len);
     if m_external_left_context <> next_context then
@@ -9712,13 +9723,19 @@ var
     was_explicit: Boolean;
 begin
     was_explicit := m_quick_input.explicit_mode;
-    if m_composition_display_text = '' then m_quick_input.explicit_entry := False;
+    if m_composition_display_text = '' then
+    begin
+        m_quick_input.explicit_entry := False;
+        m_quick_input.address_after_at := False;
+    end;
     kind := qik_none;
+    m_quick_input.address_before := '';
     // An address is kept as typed in every scheme, Wubi's too (issue #39).
     // u, i and v begin Wubi codes: in the mixed scheme a command takes Shift.
     if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') then
     begin
-        if nc_is_address_input(m_composition_display_text) then
+        if nc_is_address_input(m_composition_display_text) or
+            continues_document_address then
             kind := qik_address
         else if m_quick_input.explicit_entry or not wubi_active then
             kind := nc_quick_input_kind(m_composition_display_text,
@@ -9752,7 +9769,10 @@ begin
     end;
     m_quick_input.kind := kind;
     m_quick_input.generated := nil;
-    if kind <> qik_none then
+    if kind = qik_address then
+        m_quick_input.generated := nc_quick_address_candidates(
+            m_composition_display_text, m_quick_input.address_before)
+    else if kind <> qik_none then
         m_quick_input.generated := nc_quick_input_candidates(m_composition_display_text,
             m_config.dictionary_variant = dv_traditional, Now);
     // Aliases only decorate the final ordinary pool. They never replace the
@@ -10310,7 +10330,11 @@ var
     completions: TArray<string>;
 begin
     Result := False;
-    completions := nc_address_input_completions(m_composition_display_text);
+    if m_quick_input.address_before <> '' then
+        completions := nc_address_completions_after(m_quick_input.address_before,
+            m_composition_display_text)
+    else
+        completions := nc_address_input_completions(m_composition_display_text);
     if Length(completions) = 0 then
     begin
         if m_one_key_completion.source = okcs_address then
@@ -10326,6 +10350,80 @@ begin
         m_one_key_completion.source := okcs_address;
     end;
     Result := True;
+end;
+
+// The composition goes on with an address the document holds before it
+// (issue #39): one that ends at its @ or a dot of its domain (123456@ with the
+// digits typed into the document, then gmail), or the @ before letters that
+// began an address at their dot (address_after_at). Only the document's text
+// counts, as the host last read it: the engine's own commits miss what was
+// typed into the document around them.
+function TncEngine.continues_document_address: Boolean;
+var
+    before: string;
+begin
+    Result := False;
+    if not nc_is_address_continuation(m_composition_display_text) then
+        Exit;
+    if m_quick_input.address_after_at then
+    begin
+        // Backspace past the dot gives the keys back to pinyin.
+        if Pos('.', m_composition_display_text) = 0 then
+            Exit;
+        before := '@';
+    end
+    else
+        before := nc_address_before_input(m_external_left_tail);
+    if before = '' then
+        Exit;
+    m_quick_input.address_before := before;
+    Result := True;
+end;
+
+// A dot after letters that read as no pinyin begins an address where the
+// document has an @ right before them (@ then gmail or qq, then the dot). A
+// mention's name reads as pinyin (@ zhangsan) and stays Chinese.
+function TncEngine.address_begins_after_at(const ch: Char): Boolean;
+var
+    letters: string;
+    idx: Integer;
+begin
+    Result := False;
+    if (ch <> '.') or (m_external_left_tail = '') or
+        (m_external_left_tail[Length(m_external_left_tail)] <> '@') then
+        Exit;
+    letters := LowerCase(m_composition_display_text);
+    if letters = '' then
+        Exit;
+    for idx := 1 to Length(letters) do
+        if (letters[idx] < 'a') or (letters[idx] > 'z') then
+            Exit;
+    Result := not nc_wubi_reads_full_pinyin(letters);
+end;
+
+// The period after English typed in the composition is the English one
+// (dot.tang@gmail.com): only the composition's text before the mark counts,
+// and a period typed without a composition keeps its rules.
+function TncEngine.period_after_english(const text: string; const punct_char: Char;
+    const punct_text: string): string;
+var
+    idx: Integer;
+    has_letter: Boolean;
+begin
+    Result := punct_text;
+    if (punct_char <> '.') or (text = '') or (m_confirmed_text <> '') or
+        m_config.full_width_mode then
+        Exit;
+    has_letter := False;
+    for idx := 1 to Length(text) do
+        case text[idx] of
+            'a'..'z', 'A'..'Z': has_letter := True;
+            '0'..'9': ;
+        else
+            Exit;
+        end;
+    if has_letter then
+        Result := '.';
 end;
 
 // The character a key adds to an address being typed: a letter as typed, a
@@ -157976,9 +158074,14 @@ begin
     end
     else if (m_composition_display_text <> '') and (m_confirmed_text = '') and
         get_punctuation_char(key_code, key_state, punct_char) and
-        nc_address_input_begins(m_composition_display_text, punct_char) then
+        (nc_address_input_begins(m_composition_display_text, punct_char) or
+        address_begins_after_at(punct_char)) then
     begin
-        // @ after letters, . after www, : after http, https, ftp or mailto.
+        // @ after letters, . after www, : after http, https, ftp or mailto;
+        // or . after letters that read as no pinyin, an @ of the document
+        // before them.
+        if not nc_address_input_begins(m_composition_display_text, punct_char) then
+            m_quick_input.address_after_at := True;
         clear_pending_commit;
         m_composition_display_text := m_composition_display_text + punct_char;
         m_composition_text := m_composition_display_text;
@@ -158150,7 +158253,9 @@ begin
                     if m_raw_input_selected then
                     begin
                         note_raw_input_choice;
-                        set_pending_commit(get_raw_composition_commit_text + punct_text,
+                        commit_text := get_raw_composition_commit_text;
+                        set_pending_commit(commit_text + period_after_english(
+                            commit_text, punct_char, punct_text),
                             '', False, '', False, '', False, False, '', True);
                         Exit(True);
                     end;
@@ -158194,7 +158299,8 @@ begin
                     end
                     else
                     begin
-                        commit_text := candidate.text + punct_text;
+                        commit_text := candidate.text + period_after_english(
+                            candidate.text, punct_char, punct_text);
                         set_pending_commit(commit_text, '',
                             ((not is_fuzzy_pinyin_active) or
                             (candidate.fuzzy_cost <= 0)) and
