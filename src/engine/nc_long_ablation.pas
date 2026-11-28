@@ -30,7 +30,15 @@ type
         // The long repair's gate (nc_long_repair_gate_gbdt). Ablated, a pass
         // takes its text when the two gains add up to 1.0 nats, as before
         // 2026-11-18.
-        la_repair_gate);
+        la_repair_gate,
+        // A rare entry of the input's length that yields to the short-phrase
+        // stage (c_yielding_entry_frequency). Ablated, every such entry keeps
+        // the page, as before 2026-11-27.
+        la_short_phrase_rare_entry,
+        // A Tab continuation that rereads a typed character
+        // (text_rereads_typed_syllables). Ablated, the continuations are
+        // not checked, as before 2026-11-27.
+        la_tab_typed_reading);
 
 function nc_long_ablated(const stage: TncLongAblation): Boolean;
 
@@ -44,7 +52,8 @@ const
         'pool_ranker', 'exact_edge_lattice',
         'short_nocontext', 'short_empty_context',
         'keystroke_whole_decode', 'second_slot_choice',
-        'short_phrase', 'short_phrase_draft', 'repair_gate');
+        'short_phrase', 'short_phrase_draft', 'repair_gate', 'short_phrase_rare_entry',
+        'tab_typed_reading');
 
 var
     g_ablated: array[TncLongAblation] of Boolean;

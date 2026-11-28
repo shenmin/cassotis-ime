@@ -180,6 +180,14 @@ type
         { The same for everyday conversation (LCCC,
           dict_base_conversation_frequency). }
         function get_conversation_frequency_score(const text: string): Integer; virtual;
+        { Whether a word that crosses the end of the text's first Length(typed)
+          characters, which read the typed syllables, reads one of them
+          otherwise, where the typed syllable is a reading of the character
+          but not its heaviest, and no word that reads it as typed is as
+          frequent: such a continuation rereads what was typed (就得到了 for
+          "jiudei", 得到 reads dedao). False where nothing tells. }
+        function text_rereads_typed_syllables(const text: string;
+            const typed: TArray<string>): Boolean; virtual;
         { Records each word as the user's own choice, as often as its count says
           (a word's learning bonus grows with the log of its commits); imported
           is the number of words the user dictionary took. }
@@ -737,6 +745,12 @@ end;
 function TncDictionaryProvider.get_conversation_frequency_score(const text: string): Integer;
 begin
     Result := 0;
+end;
+
+function TncDictionaryProvider.text_rereads_typed_syllables(const text: string;
+    const typed: TArray<string>): Boolean;
+begin
+    Result := False;
 end;
 
 function TncDictionaryProvider.import_user_choices(const entries: TncUserWordImportEntries;

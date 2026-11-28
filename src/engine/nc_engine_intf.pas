@@ -7352,6 +7352,8 @@ type
         score: Integer;
     end;
 var
+    typed_texts: TArray<string>;
+    rereads: TArray<Boolean>;
     completion_candidates: TncCandidateList;
     completion_sources: TArray<Integer>;
     corrected_prefix: Boolean;
@@ -8161,12 +8163,26 @@ begin
         capture_scored_completion_pool;
     end;
 
+    // A continuation keeps the reading of the characters typed
+    // (text_rereads_typed_syllables).
+    typed_texts := nil;
+    for item_idx := 0 to High(syllables) do
+        typed_texts := typed_texts + [syllables[item_idx].text];
+    SetLength(rereads, Length(items));
+    if Length(Trim(completion_candidates[top_index].text)) = Length(typed_texts) then
+        for item_idx := 0 to High(items) do
+            rereads[item_idx] := m_dictionary.text_rereads_typed_syllables(
+                Trim(completion_candidates[top_index].text) + items[item_idx].value.suffix_text,
+                typed_texts);
+
     best_idx := -1;
     second_best_idx := -1;
     best_score := Low(Integer);
     second_best_score := Low(Integer);
     for item_idx := 0 to High(items) do
     begin
+        if rereads[item_idx] then
+            Continue;
         if (best_idx < 0) or (items[item_idx].score > best_score) then
         begin
             second_best_idx := best_idx;
@@ -140342,6 +140358,25 @@ const
     // much above it (see the check of the completion below).
     c_yielding_completion_frequency = 200;
     c_yielding_completion_lead = 150;
+    // An entry of the input's length keeps the page only where someone writes
+    // it: "buheshi" kept 不合式 (one occurrence as a word in the general text)
+    // and 不/合适 (7,059) was not on the page. Where every such entry scores
+    // this little in the word frequencies of the general text and of
+    // conversation, and the keys spell a word that scores c_yielding_entry_lead
+    // above it, the stage runs with the page's first entry among its drafts.
+    // Its phrase goes first, the entry second, only when it is no such entry,
+    // holds such a word, and the corpus transitions hold the phrase's path
+    // and not the entry's. Without the transitions the novel of the official
+    // short set lost its own terms to pieced phrases (运维组 to 韵味足, 竞态条件
+    // to 静态条件: 31 and 22 cases), and with an LM lead of 3 nats instead the
+    // census still lost 64 keys, idioms typed whole among them (养痈遗患 to
+    // 仰泳一换, 惩一儆百 to 诚意敬拜), none of them a phrase the transitions
+    // hold. Of 1,099 keys of a census of such entries (out/rare_entry_20261127,
+    // judged by the general text's counts) 130 yield so, 128 to the more
+    // frequent text.
+    c_yielding_entry_frequency = 132;
+    c_yielding_entry_conversation = 100;
+    c_yielding_entry_lead = 150;
     // The parser keeps one reading of the letters; where they also read as
     // the same number of syllables another way ("henganjing": heng an jing,
     // and hen gan jing for 很干净), the drafts of that reading join the
@@ -140395,6 +140430,9 @@ var
     top_complete, context_free: Boolean;
     yielding_completion, typed_boundary: Boolean;
     completion_frequency: Integer;
+    yielding_entry, entry_vouched, phrase_vouched: Boolean;
+    entry_frequency: Integer;
+    rare_entries: TArray<string>;
 
     function span_key(const start, count: Integer): string;
     var k: Integer;
@@ -140616,6 +140654,89 @@ var
                 (m_dictionary.get_word_frequency_score(tail_text) >=
                 completion_frequency + c_yielding_completion_lead) then
                 Exit(True);
+        end;
+    end;
+
+    // Whether an entry of the input's length is one hardly anyone writes.
+    function is_rare_entry(const text: string): Boolean;
+    begin
+        Result := (m_dictionary.get_word_frequency_score(text) <= c_yielding_entry_frequency) and
+            (m_dictionary.get_conversation_frequency_score(text) <= c_yielding_entry_conversation);
+    end;
+
+    // Whether the keys spell, in one of the readings, a word of two characters
+    // or more, no part of the rare entry, that scores c_yielding_entry_lead
+    // above it: without one no phrase of the stage could take the page, and
+    // the model is not asked (nor is it without the word frequency table).
+    function word_in_input_above_entry: Boolean;
+    var r, start, count, k: Integer;
+        span, text: string;
+        span_items: TncCandidateList;
+    begin
+        Result := False;
+        for r := 0 to High(readings) do
+            for count := units downto 2 do
+                for start := 0 to units - count do
+                begin
+                    span := '';
+                    for k := start to start + count - 1 do span := span + readings[r][k];
+                    if not m_dictionary.lookup_isolated_exact_component(span, span_items) then
+                        Continue;
+                    for k := 0 to High(span_items) do
+                    begin
+                        text := Trim(span_items[k].text);
+                        if (Trim(span_items[k].comment) = '') and
+                            (get_candidate_text_unit_count(text) = count) and
+                            (Pos(text, top_text) = 0) and
+                            (m_dictionary.get_word_frequency_score(text) >=
+                            entry_frequency + c_yielding_entry_lead) then
+                            Exit(True);
+                    end;
+                end;
+    end;
+
+    // Whether a phrase holds a word of two characters or more, no part of the
+    // rare entry, that scores c_yielding_entry_lead above it (不合适 holds 合适).
+    function phrase_holds_word_above_entry(const text: string): Boolean;
+    var start, size: Integer;
+        part: string;
+    begin
+        Result := False;
+        for size := 2 to Length(text) do
+            for start := 1 to Length(text) - size + 1 do
+            begin
+                part := Copy(text, start, size);
+                if (Pos(part, top_text) = 0) and
+                    (m_dictionary.get_word_frequency_score(part) >=
+                    entry_frequency + c_yielding_entry_lead) then
+                    Exit(True);
+            end;
+    end;
+
+    // Whether the corpus transitions hold a path of the input that could take
+    // the rare entry's place (no entry, holding such a word) and not the
+    // entry's own: without one the stage keeps the entry whatever the model
+    // says, and the model is not asked.
+    function transitions_hold_phrase_above_entry: Boolean;
+    var paths: TncPairPathEvidenceList;
+        k, r: Integer;
+        text: string;
+        rare: Boolean;
+    begin
+        Result := False;
+        if not m_dictionary.get_exact_pair_path_evidence(query, paths) then
+            Exit;
+        for k := 0 to High(paths) do
+        begin
+            text := StringReplace(StringReplace(paths[k].encoded_path, #3, '',
+                [rfReplaceAll]), '|', '', [rfReplaceAll]);
+            if text = top_text then
+                Exit(False);
+            rare := False;
+            for r := 0 to High(rare_entries) do
+                if rare_entries[r] = text then rare := True;
+            if (not rare) and phrase_holds_word_above_entry(text) then
+                Result := True;
         end;
     end;
 
@@ -141004,12 +141125,24 @@ begin
     end;
     longer_text := '';
     longer_weight := 0;
+    yielding_entry := False;
+    entry_frequency := 0;
+    rare_entries := nil;
     if m_dictionary.lookup_isolated_exact_component(query, items) then
         for index := 0 to High(items) do
             if Trim(items[index].comment) <> '' then
                 Continue
             else if get_candidate_text_unit_count(Trim(items[index].text)) = units then
             begin
+                if not nc_long_ablated(la_short_phrase_rare_entry) and
+                    is_rare_entry(Trim(items[index].text)) then
+                begin
+                    yielding_entry := True;
+                    rare_entries := rare_entries + [Trim(items[index].text)];
+                    entry_frequency := Max(entry_frequency,
+                        m_dictionary.get_word_frequency_score(Trim(items[index].text)));
+                    Continue;
+                end;
                 if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=entry]';
                 Exit;
             end
@@ -141047,6 +141180,21 @@ begin
         if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=top]';
         Exit;
     end;
+    // Rare entries yield from the first place of the page only, and the
+    // stage then writes no longer word read another way.
+    if yielding_entry then
+    begin
+        longer_text := '';
+        other := -1;
+        if top_complete then
+            for index := 0 to High(rare_entries) do
+                if rare_entries[index] = top_text then other := index;
+        if other < 0 then
+        begin
+            if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=entry]';
+            Exit;
+        end;
+    end;
     // The keys spell a dictionary word of one syllable more, read another
     // way: "shujuanquan" as shu ju an quan (数据安全) where the parser reads
     // shu juan quan. The word goes first, as an entry of the input's length
@@ -141066,6 +141214,12 @@ begin
     // pinyin spells every syllable with its own two keys).
     readings := [keys];
     if m_config.pinyin_input_scheme = pis_full_pinyin then collect_readings(0, nil);
+    if yielding_entry and not (word_in_input_above_entry and
+        transitions_hold_phrase_above_entry) then
+    begin
+        if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=entry]';
+        Exit;
+    end;
     // A word of the input's length that reads the last syllable as a longer
     // one stays as well: the word the dictionary completes while the user is
     // still typing it (体重秤 at "ti zhong chen", on the way to "cheng"; 我感觉 at
@@ -141103,6 +141257,11 @@ begin
     if yielding_completion and (key = m_short_phrase_refused_key) then
     begin
         if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=completion]';
+        Exit;
+    end;
+    if yielding_entry and (key = m_short_phrase_refused_key) then
+    begin
+        if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=entry]';
         Exit;
     end;
     if (key = m_short_phrase_key) and (Length(m_short_phrase_texts) > 0) then
@@ -141437,6 +141596,40 @@ begin
             m_short_phrase_refused_key := key;
             if m_config.debug_mode then m_short_phrase_debug := '[sphrase skip=completion]';
             Exit;
+        end;
+        // The rare entry keeps the page unless the stage's phrase is none of
+        // the input's entries and holds a common word; the entry follows it.
+        if yielding_entry then
+        begin
+            // Whether the corpus transitions hold the paths of the phrase and
+            // of the entry, both drafts.
+            entry_vouched := True;
+            phrase_vouched := False;
+            for index := 0 to High(drafts) do
+            begin
+                if drafts[index] = top_text then
+                    entry_vouched := vouched[index];
+                if drafts[index] = shown[0] then
+                    phrase_vouched := vouched[index];
+            end;
+            if m_config.debug_mode then
+                m_short_phrase_debug := m_short_phrase_debug +
+                    Format('[sphrase vouched=%d/%d]', [Ord(phrase_vouched), Ord(entry_vouched)]);
+            other := -1;
+            for index := 0 to High(rare_entries) do
+                if rare_entries[index] = shown[0] then other := index;
+            if (other >= 0) or entry_vouched or (not phrase_vouched) or
+                not phrase_holds_word_above_entry(shown[0]) then
+            begin
+                m_short_phrase_refused_key := key;
+                if m_config.debug_mode then
+                    m_short_phrase_debug := m_short_phrase_debug + '[sphrase entry=kept]';
+                Exit;
+            end;
+            shown := [shown[0], top_text];
+            shown_paths := [shown_paths[0], ''];
+            if m_config.debug_mode then
+                m_short_phrase_debug := m_short_phrase_debug + '[sphrase entry=yields]';
         end;
         // A Tab continuation goes on from the input as the beginning of a
         // sentence, where the comma is wrong: without it the Tab benchmark
@@ -189198,6 +189391,7 @@ const
     c_static_challenge_min_confidence: Single = -2.5;
     c_static_single_character_min_confidence: Single = 0.0;
 var
+    typed_syllables: TArray<string>;
     suffix_segments: TArray<string>;
     pinyin_segments: TArray<string>;
     base_text: string;
@@ -189565,6 +189759,14 @@ begin
     if trimmed_anchor_path = '' then
     begin
         trimmed_anchor_path := trimmed_base_path;
+    end;
+    // A continuation keeps the reading of the characters typed
+    // (text_rereads_typed_syllables): after 就得 for "jiudei" the LM writes 到.
+    typed_syllables := request.query_syllables.Split([''''], TStringSplitOptions.ExcludeEmpty);
+    if (Length(base_text) = Length(typed_syllables)) and
+        m_dictionary.text_rereads_typed_syllables(trimmed_base_text + suffix_text, typed_syllables) then
+    begin
+        Exit;
     end;
     if SameText(m_one_key_completion.text,
         trimmed_base_text + suffix_text) and

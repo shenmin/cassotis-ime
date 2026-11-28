@@ -17,6 +17,7 @@ uses
     nc_fuzzy_pinyin,
     nc_pinyin_parser,
     nc_exact_component_sort,
+    nc_long_ablation,
     nc_sqlite;
 
 type
@@ -36,6 +37,13 @@ type
     TncRecentChoiceTimes = record
         last_used: Int64;
         previous_used: Int64;
+    end;
+
+    // A text's readings in the base dictionary, the heaviest first, with the
+    // heaviest weight of each.
+    TncTextReadings = record
+        readings: TArray<string>;
+        weights: TArray<Integer>;
     end;
 
     TncSqliteDictionary = class(TncDictionaryProvider)
@@ -194,6 +202,7 @@ type
         m_conversation_frequency_missing: Boolean;
         m_stmt_conversation_frequency: Psqlite3_stmt;
         m_single_char_readings_cache: TDictionary<string, TArray<string>>;
+        m_text_readings_cache: TDictionary<string, TncTextReadings>;
         m_explicit_user_entry_cache: TDictionary<string, Boolean>;
         m_literal_user_entry_cache: TDictionary<string, Boolean>;
         m_admin_place_longer_prefix_cache: TDictionary<string, TArray<string>>;
@@ -481,6 +490,10 @@ type
             out removed: Integer): Boolean; override;
         function get_word_frequency_score(const text: string): Integer; override;
         function get_conversation_frequency_score(const text: string): Integer; override;
+        function text_rereads_typed_syllables(const text: string;
+            const typed: TArray<string>): Boolean; override;
+        function get_text_readings(const text: string): TArray<string>;
+        function get_text_readings_weighted(const text: string): TncTextReadings;
         function get_candidate_penalty(const pinyin: string; const text: string): Integer; override;
         function get_last_lookup_debug_hint: string;
         property db_path: string read m_base_db_path;
@@ -2785,6 +2798,7 @@ begin
     m_conversation_frequency_missing := False;
     m_stmt_conversation_frequency := nil;
     m_single_char_readings_cache := TDictionary<string, TArray<string>>.Create;
+    m_text_readings_cache := TDictionary<string, TncTextReadings>.Create;
     m_explicit_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_literal_user_entry_cache := TDictionary<string, Boolean>.Create;
     m_admin_place_longer_prefix_cache :=
@@ -3093,6 +3107,7 @@ begin
         m_single_char_readings_cache.Free;
         m_single_char_readings_cache := nil;
     end;
+    FreeAndNil(m_text_readings_cache);
     if m_explicit_user_entry_cache <> nil then
     begin
         m_explicit_user_entry_cache.Free;
@@ -4570,6 +4585,35 @@ var
         Result := Length(candidate_syllables) > Length(prefix_syllables);
     end;
 
+    // A transition row's path is cut from corpus text, and the cut can read a
+    // typed character otherwise than typed: 就得|到了 under jiudei, which the
+    // text reads as 就|得到|了. The characters typed are those whose syllables
+    // (one a character in the row's reading) spell the typed keys.
+    function transition_rereads_typed_keys(const candidate_pinyin,
+        candidate_text: string): Boolean;
+    var
+        syllables, typed: TArray<string>;
+        spelled: string;
+        syllable_idx: Integer;
+    begin
+        Result := False;
+        syllables := candidate_pinyin.Split([''''], TStringSplitOptions.ExcludeEmpty);
+        if Length(syllables) <> Length(candidate_text) then
+            Exit;
+        spelled := '';
+        typed := nil;
+        for syllable_idx := 0 to High(syllables) do
+        begin
+            if Length(spelled) + Length(syllables[syllable_idx]) > Length(compact_prefix) then
+                Break;
+            spelled := spelled + LowerCase(syllables[syllable_idx]);
+            typed := typed + [LowerCase(syllables[syllable_idx])];
+        end;
+        if (typed = nil) or not SameText(spelled, Copy(compact_prefix, 1, Length(spelled))) then
+            Exit;
+        Result := text_rereads_typed_syllables(candidate_text, typed);
+    end;
+
     function transition_prefix_is_exact_boundary(
         const candidate_path: string): Boolean;
     var
@@ -5174,6 +5218,11 @@ var
                         m_base_connection.column_text(stmt, 1));
                     candidate_path := m_base_connection.column_text(stmt, 2);
                     evidence := m_base_connection.column_int(stmt, 3);
+                    if transition_rereads_typed_keys(candidate_pinyin, candidate_text) then
+                    begin
+                        step_result := m_base_connection.step(stmt);
+                        Continue;
+                    end;
                     consider_candidate(transition_items, candidate_pinyin,
                         candidate_text, evidence, okcs_transition,
                         candidate_path,
@@ -11983,6 +12032,8 @@ begin
     begin
         m_single_char_readings_cache.Clear;
     end;
+    if m_text_readings_cache <> nil then
+        m_text_readings_cache.Clear;
     if m_explicit_user_entry_cache <> nil then
     begin
         m_explicit_user_entry_cache.Clear;
@@ -19930,6 +19981,190 @@ end;
 
 // Asked for two words of a short-word choice without a context at most, so
 // no cache. A dictionary without the table gives every word 0.
+// The readings of a text in the base dictionary, the heaviest first (a
+// character's first reading is the one it is typed with most).
+function TncSqliteDictionary.get_text_readings(const text: string): TArray<string>;
+begin
+    Result := get_text_readings_weighted(text).readings;
+end;
+
+function TncSqliteDictionary.get_text_readings_weighted(const text: string): TncTextReadings;
+const
+    select_sql = 'SELECT pinyin, MAX(weight) AS heaviest FROM dict_base WHERE text = ?1 ' +
+        'AND weight > 0 GROUP BY pinyin ORDER BY heaviest DESC, pinyin ASC LIMIT 16';
+    c_cache_limit = 16384;
+var
+    stmt: Psqlite3_stmt;
+    reading: string;
+    seen: Boolean;
+    k: Integer;
+begin
+    Result.readings := nil;
+    Result.weights := nil;
+    if (text = '') or (not ensure_open) or (not m_base_ready) or (m_base_connection = nil) then
+        Exit;
+    if (m_text_readings_cache <> nil) and m_text_readings_cache.TryGetValue(text, Result) then
+        Exit;
+    stmt := nil;
+    try
+        if m_base_connection.prepare(select_sql, stmt) and
+            m_base_connection.bind_text(stmt, 1, text) then
+            while m_base_connection.step(stmt) = SQLITE_ROW do
+            begin
+                reading := normalize_compact_pinyin_key(m_base_connection.column_text(stmt, 0));
+                if (reading = '') or not is_full_pinyin_key(reading) then
+                    Continue;
+                // Rows of one reading spelled two ways count as one, by the
+                // heavier (the rows come heaviest first).
+                seen := False;
+                for k := 0 to High(Result.readings) do
+                    if Result.readings[k] = reading then
+                        seen := True;
+                if not seen then
+                begin
+                    Result.readings := Result.readings + [reading];
+                    Result.weights := Result.weights + [m_base_connection.column_int(stmt, 1)];
+                end;
+            end;
+    finally
+        if stmt <> nil then
+            m_base_connection.finalize(stmt);
+    end;
+    if m_text_readings_cache <> nil then
+    begin
+        if m_text_readings_cache.Count >= c_cache_limit then
+            m_text_readings_cache.Clear;
+        m_text_readings_cache.AddOrSetValue(text, Result);
+    end;
+end;
+
+// A continuation goes on from the characters typed, and a common word across
+// the end of them can read one of them otherwise: 就得到了 for "jiudei" reads
+// 得到, which reads dedao alone, where 就得看 reads 得看 (deikan). Only a
+// syllable typed as a chosen reading counts, one the character reads but not
+// its heaviest (dei for 得, huan for 还): the heaviest is also how many type a
+// character whatever it reads (de for 得 in 也得花, as the official cases
+// spell it), so the continuation may read it either way there. The text
+// rereads the keys where such a word is far more frequent than every word
+// that reads the character as typed, in the keys or across their end, each
+// by its typed reading's share of the word's readings by weight (就得 reads
+// jiude as often as jiudei): 得到 (561) and 得不到 (439) against 就得 (432,
+// 402 for jiudei), but not 行的 (465) against 银行 (546) for 银行的, nor 嚼着
+// (281) against 咀嚼 (398). The crossing word alone (no word of the keys
+// weighed) took three hits of the official long Tab cases: 银行的 and 咀嚼着,
+// which this keeps, and 一行人, which the lexicon reads yixingren where the
+// case read yihang (corrected since).
+function TncSqliteDictionary.text_rereads_typed_syllables(const text: string;
+    const typed: TArray<string>): Boolean;
+const
+    // About 300 occurrences in the general text.
+    c_rereading_word_frequency = 250;
+    c_longest_word = 4;
+var
+    typed_count, first, stop, idx, score, best_misread, best_typed: Integer;
+    share: Double;
+    chosen: TArray<Boolean>;
+    any_chosen, covers: Boolean;
+    readings: TArray<string>;
+    word, reading, syllable: string;
+    parser: TncPinyinParser;
+
+    // The share by weight of the word's readings that, read from position at
+    // on, spell the typed syllables it covers, the rest of a reading fitting
+    // its characters after them (0: none does).
+    function typed_share(const word: string; const at: Integer): Double;
+    var
+        word_readings: TncTextReadings;
+        spelled: string;
+        k, typed_weight, total_weight: Integer;
+        as_typed: Boolean;
+    begin
+        spelled := '';
+        for k := at to Min(typed_count, at + Length(word)) - 1 do
+            spelled := spelled + LowerCase(Trim(typed[k]));
+        word_readings := get_text_readings_weighted(word);
+        typed_weight := 0;
+        total_weight := 0;
+        for k := 0 to High(word_readings.readings) do
+        begin
+            Inc(total_weight, Max(1, word_readings.weights[k]));
+            if at + Length(word) <= typed_count then
+                as_typed := word_readings.readings[k] = spelled
+            else
+            begin
+                as_typed := word_readings.readings[k].StartsWith(spelled);
+                if as_typed then
+                begin
+                    if parser = nil then
+                        parser := TncPinyinParser.create;
+                    as_typed := nc_word_completion_remainder_fits(parser,
+                        Copy(word_readings.readings[k], Length(spelled) + 1, MaxInt),
+                        at + Length(word) - typed_count);
+                end;
+            end;
+            if as_typed then
+                Inc(typed_weight, Max(1, word_readings.weights[k]));
+        end;
+        if total_weight = 0 then
+            Exit(0);
+        Result := typed_weight / total_weight;
+    end;
+begin
+    Result := False;
+    typed_count := Length(typed);
+    if (typed_count = 0) or (Length(text) <= typed_count) or nc_long_ablated(la_tab_typed_reading) then
+        Exit;
+    for idx := 1 to Length(text) do
+        if not (((text[idx] >= #$4E00) and (text[idx] <= #$9FFF)) or
+            ((text[idx] >= #$3400) and (text[idx] <= #$4DBF))) then
+            Exit;
+    // The characters a word across the end can reach that were typed as a
+    // chosen reading.
+    SetLength(chosen, typed_count);
+    any_chosen := False;
+    for idx := Max(0, typed_count - (c_longest_word - 1)) to typed_count - 1 do
+    begin
+        readings := get_text_readings(text[idx + 1]);
+        if Length(readings) < 2 then
+            Continue;
+        syllable := LowerCase(Trim(typed[idx]));
+        for reading in readings do
+            if (reading = syllable) and (reading <> readings[0]) then
+                chosen[idx] := True;
+        any_chosen := any_chosen or chosen[idx];
+    end;
+    if not any_chosen then
+        Exit;
+    best_misread := 0;
+    best_typed := 0;
+    parser := nil;
+    try
+        // Every word of two to four characters that holds such a character.
+        for first := Max(0, typed_count - 2 * (c_longest_word - 1)) to typed_count - 1 do
+            for stop := first + 2 to Min(Length(text), first + c_longest_word) do
+            begin
+                covers := False;
+                for idx := first to Min(stop, typed_count) - 1 do
+                    covers := covers or chosen[idx];
+                if not covers then
+                    Continue;
+                word := Copy(text, first + 1, stop - first);
+                score := get_word_frequency_score(word);
+                if (score <= 0) or (Length(get_text_readings(word)) = 0) then
+                    Continue;
+                share := typed_share(word, first);
+                if share > 0 then
+                    // The score is 100 * log10(1 + occurrences).
+                    best_typed := Max(best_typed, score + Round(100 * Log10(share)))
+                else if (stop > typed_count) and (score >= c_rereading_word_frequency) then
+                    best_misread := Max(best_misread, score);
+            end;
+    finally
+        parser.Free;
+    end;
+    Result := best_misread > best_typed;
+end;
+
 function TncSqliteDictionary.get_conversation_frequency_score(const text: string): Integer;
 const
     select_sql = 'SELECT score FROM dict_base_conversation_frequency WHERE text = ?1 LIMIT 1';
