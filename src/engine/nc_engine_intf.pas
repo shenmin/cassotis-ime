@@ -14,6 +14,7 @@ uses
     nc_custom_phrases,
     nc_user_word_import,
     nc_quick_input,
+    nc_address_input,
     nc_wubi_table,
     nc_wubi_input,
     nc_english_input,
@@ -1255,6 +1256,9 @@ type
         function order_wubi_entries_by_lm(const context: string;
             var entries: TncCandidateList): Boolean;
         function try_refresh_wubi_completion: Boolean;
+        function get_address_key_char(const key_code: Word; const key_state: TncKeyState;
+            out ch: Char): Boolean;
+        function try_refresh_address_completion: Boolean;
         procedure clear_keystroke_decode_state;
         function composition_reuses_earlier_keys: Boolean;
         procedure build_candidates_core;
@@ -9568,6 +9572,18 @@ begin
         clear_one_key_completion;
         Exit;
     end;
+    // An address commits as completed and teaches nothing.
+    if m_one_key_completion.source = okcs_address then
+    begin
+        Result := m_one_key_completion.text <> '';
+        if not Result then Exit;
+        clear_one_key_completion_feedback_target;
+        set_pending_commit(m_one_key_completion.text, '', False, '', False, '', False,
+            False, '', True);
+        m_quick_input.pending_commit := True;
+        clear_one_key_completion;
+        Exit;
+    end;
     completion := get_one_key_completion_for_commit;
     if completion.source = okcs_custom_phrase then
     begin
@@ -9666,22 +9682,38 @@ begin
     was_explicit := m_quick_input.explicit_mode;
     if m_composition_display_text = '' then m_quick_input.explicit_entry := False;
     kind := qik_none;
+    // An address is kept as typed in every scheme, Wubi's too (issue #39).
     // u, i and v begin Wubi codes: in the mixed scheme a command takes Shift.
-    if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') and
-        (m_quick_input.explicit_entry or not wubi_active) then
-        kind := nc_quick_input_kind(m_composition_display_text,
-            m_config.pinyin_input_scheme, m_quick_input.explicit_entry);
+    if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') then
+    begin
+        if nc_is_address_input(m_composition_display_text) then
+            kind := qik_address
+        else if m_quick_input.explicit_entry or not wubi_active then
+            kind := nc_quick_input_kind(m_composition_display_text,
+                m_config.pinyin_input_scheme, m_quick_input.explicit_entry);
+    end;
     m_quick_input.explicit_mode := m_quick_input.explicit_entry and
         (kind in [qik_symbols, qik_number, qik_symbol_prefix]);
-    if m_quick_input.explicit_mode then
+    if kind = qik_address then
+    begin
+        m_composition_text := m_composition_display_text;
+        // A code typed before the @ leaves no Wubi page behind.
+        m_wubi_page := False;
+        m_wubi_code := '';
+        m_wubi_additions := nil;
+        m_wubi_followers := nil;
+        m_wubi_abbreviation := False;
+    end
+    else if m_quick_input.explicit_mode then
         m_composition_text := m_composition_display_text
     else if was_explicit and is_shuangpin_input then
     begin
         // Incomplete commands such as Uj remain ordinary double-pinyin syllables.
         rebuild_shuangpin_composition_from_input_code;
     end;
+    // Entering an address clears pinyin's completion: Tab must not commit it.
     if m_quick_input.exclusive or
-        (kind in [qik_symbols, qik_number, qik_symbol_prefix]) then
+        (kind in [qik_symbols, qik_number, qik_symbol_prefix, qik_address]) then
     begin
         clear_keystroke_decode_state;
         clear_one_key_completion;
@@ -10238,6 +10270,55 @@ begin
         m_one_key_completion_query_prefix := m_wubi_code;
     end;
     Result := True;
+end;
+
+// The first completion of an address being typed is its Tab completion.
+function TncEngine.try_refresh_address_completion: Boolean;
+var
+    completions: TArray<string>;
+begin
+    Result := False;
+    completions := nc_address_input_completions(m_composition_display_text);
+    if Length(completions) = 0 then
+    begin
+        if m_one_key_completion.source = okcs_address then
+            clear_one_key_completion;
+        Exit;
+    end;
+    if (m_one_key_completion.source <> okcs_address) or
+        (m_one_key_completion.text <> completions[0]) then
+    begin
+        clear_one_key_completion;
+        clear_one_key_completion_feedback_target;
+        m_one_key_completion.text := completions[0];
+        m_one_key_completion.source := okcs_address;
+    end;
+    Result := True;
+end;
+
+// The character a key adds to an address being typed: a letter as typed, a
+// digit (the row's or the keypad's) or one of the marks of addresses.
+function TncEngine.get_address_key_char(const key_code: Word;
+    const key_state: TncKeyState; out ch: Char): Boolean;
+var
+    normalized_char: Char;
+begin
+    ch := #0;
+    if key_state.ctrl_down or key_state.alt_down then
+        Exit(False);
+    if is_alpha_key(key_code, key_state, normalized_char, ch) then
+        Exit(True);
+    if (key_code >= Ord('0')) and (key_code <= Ord('9')) and not key_state.shift_down then
+        ch := Char(key_code)
+    else if (key_code >= VK_NUMPAD0) and (key_code <= VK_NUMPAD9) then
+        ch := Char(Ord('0') + key_code - VK_NUMPAD0)
+    else if key_code = VK_DECIMAL then
+        ch := '.'
+    else if key_code = VK_DIVIDE then
+        ch := '/'
+    else if not get_punctuation_char(key_code, key_state, ch) then
+        Exit(False);
+    Result := nc_is_address_char(ch);
 end;
 
 function TncEngine.try_wubi_auto_commit: Boolean;
@@ -157814,6 +157895,57 @@ begin
         Exit(True);
     end;
 
+    // An address being typed (issue #39) takes its characters as typed, and
+    // Enter and Backspace act on what was typed; Space, a click and Tab commit
+    // the selected candidate or the completion as for quick input, and any
+    // other mark commits it with the mark.
+    if m_quick_input.kind = qik_address then
+    begin
+        if get_address_key_char(key_code, key_state, key_char) then
+        begin
+            clear_pending_commit;
+            if Length(m_composition_display_text) < c_address_input_max_length then
+            begin
+                m_composition_display_text := m_composition_display_text + key_char;
+                m_composition_text := m_composition_display_text;
+                build_candidates;
+            end;
+            Exit(True);
+        end;
+        if key_code = VK_RETURN then
+        begin
+            set_pending_commit(m_composition_display_text, '', False, '', False, '',
+                False, False, '', True);
+            m_quick_input.pending_commit := True;
+            Exit(True);
+        end;
+        if key_code = VK_BACK then
+        begin
+            clear_pending_commit;
+            Delete(m_composition_display_text, Length(m_composition_display_text), 1);
+            if nc_is_address_input(m_composition_display_text) then
+                m_composition_text := m_composition_display_text
+            else if is_shuangpin_input and not m_quick_input.explicit_mode then
+                rebuild_shuangpin_composition_from_input_code
+            else
+                // The keys as pinyin again (the letters' case is the display's).
+                m_composition_text := LowerCase(m_composition_display_text);
+            build_candidates;
+            Exit(True);
+        end;
+    end
+    else if (m_composition_display_text <> '') and (m_confirmed_text = '') and
+        get_punctuation_char(key_code, key_state, punct_char) and
+        nc_address_input_begins(m_composition_display_text, punct_char) then
+    begin
+        // @ after letters, . after www, : after http, https, ftp or mailto.
+        clear_pending_commit;
+        m_composition_display_text := m_composition_display_text + punct_char;
+        m_composition_text := m_composition_display_text;
+        build_candidates;
+        Exit(True);
+    end;
+
     if m_composition_text <> '' then
     begin
         normalize_page_and_selection;
@@ -189328,6 +189460,13 @@ begin
     if try_refresh_custom_phrase then Exit(m_one_key_completion);
     if m_one_key_completion.source = okcs_custom_phrase then
         clear_one_key_completion;
+    if m_quick_input.kind = qik_address then
+    begin
+        if try_refresh_address_completion then Exit(m_one_key_completion);
+        Exit(Default(TncOneKeyCompletion));
+    end;
+    if m_one_key_completion.source = okcs_address then
+        clear_one_key_completion;
     // A page of Wubi entries alone has the Wubi completion or none, and so
     // has an empty code of initials (pinyin's otherwise); a code whose letters
     // read as pinyin has pinyin's.
@@ -189950,7 +190089,10 @@ begin
     begin
         Result := '';
         if Length(m_quick_input.generated) > 1 then Result := 'abcd';
-    end;
+    end
+    // Letters and digits go into an address: its candidates have no keys.
+    else if m_quick_input.kind = qik_address then
+        Result := '';
 end;
 
 function TncEngine.get_last_lookup_key: string;
@@ -190443,6 +190585,9 @@ begin
 
     if (m_quick_input.kind = qik_number) and
         nc_quick_number_key(key_code, key_state, key_char) then Exit(True);
+
+    if (m_quick_input.kind = qik_address) and
+        get_address_key_char(key_code, key_state, key_char) then Exit(True);
 
     if is_alpha_key(key_code, key_state, key_char, display_key_char) then
     begin

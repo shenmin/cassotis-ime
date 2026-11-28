@@ -6,8 +6,9 @@ uses
     System.SysUtils, nc_types;
 
 type
+    // qik_address: an e-mail address or a URL kept as typed (nc_address_input).
     TncQuickInputKind = (qik_none, qik_symbols, qik_number, qik_date_alias,
-        qik_symbol_prefix, qik_literal);
+        qik_symbol_prefix, qik_literal, qik_address);
     TncQuickInputState = record
         // Retain the Shift entry while editing an invalid command back to valid.
         explicit_entry: Boolean;
@@ -38,7 +39,7 @@ procedure nc_insert_quick_candidates(var candidates: TncCandidateList;
 implementation
 
 uses
-    System.Math, Winapi.Windows;
+    System.Math, Winapi.Windows, nc_address_input;
 
 procedure TncQuickInputState.clear;
 begin
@@ -47,7 +48,7 @@ end;
 
 function TncQuickInputState.exclusive: Boolean;
 begin
-    Result := kind in [qik_symbols, qik_number, qik_symbol_prefix, qik_literal];
+    Result := kind in [qik_symbols, qik_number, qik_symbol_prefix, qik_literal, qik_address];
 end;
 
 function nc_quick_input_command(const text: string): string;
@@ -62,6 +63,8 @@ function nc_quick_input_kind(const text: string; const scheme: TncPinyinInputSch
 var key: string; idx: Integer;
 begin
     Result := qik_none;
+    // In every scheme: the keys that begin an address read as no syllable.
+    if nc_is_address_input(text) then Exit(qik_address);
     if (text = '') or ((scheme <> pis_full_pinyin) and not explicit_mode) then Exit;
     case text[1] of
         'u', 'U':
@@ -199,6 +202,13 @@ var
 
 begin
     Result := nil;
+    // The address as typed, then its completions.
+    if nc_is_address_input(text) then
+    begin
+        add(text);
+        for body in nc_address_input_completions(text) do add(body);
+        Exit;
+    end;
     if (text = '') or (Length(text) > c_quick_input_max_length) then Exit;
     key := nc_quick_input_command(text);
     if key = '' then

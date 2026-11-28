@@ -82,7 +82,10 @@ type
         okcs_custom_phrase,
         // A word of the Wubi table whose code goes on from the keys typed
         // (the Wubi/pinyin mixed scheme). Appended last.
-        okcs_wubi
+        okcs_wubi,
+        // An address being typed completed with a common mail domain or host
+        // suffix (nc_address_input). Appended last.
+        okcs_address
     );
 
     TncOneKeyCompletion = record
