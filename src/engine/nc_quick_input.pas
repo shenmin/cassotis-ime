@@ -22,6 +22,9 @@ type
         // The address began at a dot after letters that read as no pinyin,
         // right after an @ of the document (@ gmail .).
         address_after_at: Boolean;
+        // English letters and the period kept after them (dot. before
+        // tang@gmail.com): typed on as an address until committed.
+        address_after_word: Boolean;
         procedure clear;
         function exclusive: Boolean;
     end;
@@ -33,9 +36,9 @@ function nc_quick_input_kind(const text: string; const scheme: TncPinyinInputSch
     const explicit_mode: Boolean = False): TncQuickInputKind;
 function nc_quick_input_candidates(const text: string; const traditional: Boolean;
     const timestamp: TDateTime): TncCandidateList;
-// The address as typed, then its completions; after an address of the
-// document (before), those of the text that goes on with it.
-function nc_quick_address_candidates(const text, before: string): TncCandidateList;
+// The address as typed, then its completions.
+function nc_quick_address_candidates(const text: string;
+    const completions: TArray<string>): TncCandidateList;
 function nc_quick_number_key(const key_code: Word; const state: TncKeyState;
     out ch: Char): Boolean;
 function nc_quick_input_command(const text: string): string;
@@ -212,7 +215,7 @@ var
 begin
     Result := nil;
     if nc_is_address_input(text) then
-        Exit(nc_quick_address_candidates(text, ''));
+        Exit(nc_quick_address_candidates(text, nc_address_input_completions(text)));
     if (text = '') or (Length(text) > c_quick_input_max_length) then Exit;
     key := nc_quick_input_command(text);
     if key = '' then
@@ -357,7 +360,8 @@ begin
     end;
 end;
 
-function nc_quick_address_candidates(const text, before: string): TncCandidateList;
+function nc_quick_address_candidates(const text: string;
+    const completions: TArray<string>): TncCandidateList;
 var
     values: TArray<string>;
     value: string;
@@ -365,11 +369,7 @@ var
     seen: Boolean;
 begin
     Result := nil;
-    if before = '' then
-        values := nc_address_input_completions(text)
-    else
-        values := nc_address_completions_after(before, text);
-    values := [text] + values;
+    values := [text] + completions;
     for value in values do
     begin
         if value = '' then Continue;

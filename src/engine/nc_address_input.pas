@@ -41,6 +41,10 @@ function nc_is_address_continuation(const text: string): Boolean;
 // Completions of the text typed after such an address, as the text the input
 // commits (gmail.com for gm after 123456@).
 function nc_address_completions_after(const before, text: string): TArray<string>;
+// Completions of English letters and the period kept after them (gmail.c to
+// gmail.com, dot.tang@g to dot.tang@gmail.com): host suffixes once a label
+// follows the last dot, mail domains after an @.
+function nc_word_address_completions(const text: string): TArray<string>;
 
 implementation
 
@@ -95,6 +99,23 @@ begin
     end;
 end;
 
+function is_local_part_char(const ch: Char): Boolean; forward;
+
+// Characters of a local part, with a letter among them.
+function is_local_part(const text: string): Boolean;
+var
+    ch: Char;
+begin
+    Result := False;
+    for ch in text do
+    begin
+        if not is_local_part_char(ch) then
+            Exit(False);
+        if is_ascii_letter(ch) then
+            Result := True;
+    end;
+end;
+
 function nc_is_address_input(const text: string): Boolean;
 var
     ch: Char;
@@ -107,8 +128,9 @@ begin
     for ch in text do
         if not nc_is_address_char(ch) then
             Exit;
-    // Letters, then @: what nc_address_input_begins starts.
-    if (Pos('@', text) > 1) and letters_only(Copy(text, 1, Pos('@', text) - 1)) then
+    // A local part, then @: what nc_address_input_begins starts (letters), or
+    // letters and the period kept after them (dot.tang@).
+    if (Pos('@', text) > 1) and is_local_part(Copy(text, 1, Pos('@', text) - 1)) then
         Exit(True);
     lower_text := LowerCase(text);
     for head in c_address_heads do
@@ -241,6 +263,25 @@ begin
     for ch in text do
         if (ch = '@') or not nc_is_address_char(ch) then
             Exit(False);
+end;
+
+function nc_word_address_completions(const text: string): TArray<string>;
+var
+    dot: Integer;
+begin
+    Result := nil;
+    if Pos('@', text) > 0 then
+        Exit(nc_address_input_completions(text));
+    if (text = '') or (Length(text) > c_address_input_max_length) or
+        (LastDelimiter('/?#:=&%+~', text) > 0) then
+        Exit;
+    dot := LastDelimiter('.', text);
+    // Right after the dot nothing is a host's yet (dot. before tang).
+    if (dot <= 1) or (dot = Length(text)) then
+        Exit;
+    add_host_suffixes(text, 1, Result);
+    if Length(Result) > c_address_input_max_completions then
+        SetLength(Result, c_address_input_max_completions);
 end;
 
 function nc_address_completions_after(const before, text: string): TArray<string>;

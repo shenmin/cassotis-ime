@@ -1270,6 +1270,8 @@ type
             out ch: Char): Boolean;
         function try_refresh_address_completion: Boolean;
         function continues_document_address: Boolean;
+        function address_completions: TArray<string>;
+        function keep_english_period(const text: string; const punct_char: Char): Boolean;
         function address_begins_after_at(const ch: Char): Boolean;
         function period_after_english(const text: string; const punct_char: Char;
             const punct_text: string): string;
@@ -9727,6 +9729,7 @@ begin
     begin
         m_quick_input.explicit_entry := False;
         m_quick_input.address_after_at := False;
+        m_quick_input.address_after_word := False;
     end;
     kind := qik_none;
     m_quick_input.address_before := '';
@@ -9735,7 +9738,10 @@ begin
     if (m_config.input_mode = im_chinese) and (m_confirmed_text = '') then
     begin
         if nc_is_address_input(m_composition_display_text) or
-            continues_document_address then
+            continues_document_address or
+            (m_quick_input.address_after_word and
+            (Pos('.', m_composition_display_text) > 0) and
+            nc_is_address_continuation(m_composition_display_text)) then
             kind := qik_address
         else if m_quick_input.explicit_entry or not wubi_active then
             kind := nc_quick_input_kind(m_composition_display_text,
@@ -9771,7 +9777,7 @@ begin
     m_quick_input.generated := nil;
     if kind = qik_address then
         m_quick_input.generated := nc_quick_address_candidates(
-            m_composition_display_text, m_quick_input.address_before)
+            m_composition_display_text, address_completions)
     else if kind <> qik_none then
         m_quick_input.generated := nc_quick_input_candidates(m_composition_display_text,
             m_config.dictionary_variant = dv_traditional, Now);
@@ -10330,11 +10336,7 @@ var
     completions: TArray<string>;
 begin
     Result := False;
-    if m_quick_input.address_before <> '' then
-        completions := nc_address_completions_after(m_quick_input.address_before,
-            m_composition_display_text)
-    else
-        completions := nc_address_input_completions(m_composition_display_text);
+    completions := address_completions;
     if Length(completions) = 0 then
     begin
         if m_one_key_completion.source = okcs_address then
@@ -10378,6 +10380,38 @@ begin
         Exit;
     m_quick_input.address_before := before;
     Result := True;
+end;
+
+// The completions of the address being typed, as the input commits them.
+function TncEngine.address_completions: TArray<string>;
+begin
+    if m_quick_input.address_before <> '' then
+        Result := nc_address_completions_after(m_quick_input.address_before,
+            m_composition_display_text)
+    else if nc_is_address_input(m_composition_display_text) then
+        Result := nc_address_input_completions(m_composition_display_text)
+    else if m_quick_input.address_after_word then
+        Result := nc_word_address_completions(m_composition_display_text)
+    else
+        Result := nil;
+end;
+
+// A period after English typed in the composition stays in it (the user,
+// 2026-11-28): dot. goes on to dot.tang@gmail.com in one composition, which
+// Space, Enter or another mark commits as typed and Backspace past the period
+// gives back as letters.
+function TncEngine.keep_english_period(const text: string; const punct_char: Char): Boolean;
+begin
+    Result := (period_after_english(text, punct_char, '') = '.') and
+        (Length(text) < c_address_input_max_length);
+    if not Result then
+        Exit;
+    clear_pending_commit;
+    set_raw_input_selected_by_user(False);
+    m_composition_display_text := text + '.';
+    m_composition_text := m_composition_display_text;
+    m_quick_input.address_after_word := True;
+    build_candidates;
 end;
 
 // A dot after letters that read as no pinyin begins an address where the
@@ -158254,6 +158288,8 @@ begin
                     begin
                         note_raw_input_choice;
                         commit_text := get_raw_composition_commit_text;
+                        if keep_english_period(commit_text, punct_char) then
+                            Exit(True);
                         set_pending_commit(commit_text + period_after_english(
                             commit_text, punct_char, punct_text),
                             '', False, '', False, '', False, False, '', True);
@@ -158299,6 +158335,8 @@ begin
                     end
                     else
                     begin
+                        if keep_english_period(candidate.text, punct_char) then
+                            Exit(True);
                         commit_text := candidate.text + period_after_english(
                             candidate.text, punct_char, punct_text);
                         set_pending_commit(commit_text, '',
