@@ -706,6 +706,11 @@ type
         m_visible_candidates_cache_page_index: Integer;
         m_visible_candidates_cache_page_size: Integer;
         m_visible_candidates_cache_valid: Boolean;
+        // The first page's first whole candidate, for the Tab area
+        // (completion_repeats_first_candidate).
+        m_first_page_top_text: string;
+        m_first_page_top_composition_text: string;
+        m_first_page_top_lookup_key: string;
         m_long_visible_candidate_pool_cache: TncCandidateList;
         m_long_visible_candidate_pool_source_indices_cache: TArray<Integer>;
         m_long_visible_candidate_pool_cache_key: string;
@@ -1089,6 +1094,8 @@ type
         function project_validated_prefix_completion(
             const completion: TncOneKeyCompletion): TncOneKeyCompletion;
         function get_one_key_completion_for_commit: TncOneKeyCompletion;
+        function completion_repeats_first_candidate(
+            const completion: TncOneKeyCompletion): Boolean;
         procedure refresh_validated_prefix_completion;
         procedure refresh_visible_prefix_completion;
 {$IFDEF CASSOTIS_TAB_HANDOFF_DIAGNOSTICS}
@@ -9549,6 +9556,31 @@ begin
         (m_tab_projection_shown.source = m_one_key_completion.source) then
         Exit(m_tab_projection_shown);
     Result := project_validated_prefix_completion(m_one_key_completion);
+end;
+
+// A Tab hint that is the first candidate of the page adds nothing Space does
+// not do: "jiude" showed 就得 on the page and in the Tab area, where the
+// ranker kept the exact word over 就得到, and a word being typed ("zuixih")
+// showed 最喜欢 twice. Such a hint is not shown. The completion itself stays,
+// so Tab still commits it (a key typed by habit neither does nothing nor
+// leaves for the application) and the next key continues from it as before.
+// Not while the letters of the English slot are selected, which Space would
+// commit instead.
+function TncEngine.completion_repeats_first_candidate(
+    const completion: TncOneKeyCompletion): Boolean;
+var text: string;
+begin
+    Result := False;
+    if (completion.text = '') or m_raw_input_selected or
+        (completion.source in [okcs_custom_phrase, okcs_wubi, okcs_address]) or
+        (m_first_page_top_text = '') or (m_confirmed_text <> '') or
+        not SameText(m_first_page_top_composition_text, m_composition_text) or
+        not SameText(m_first_page_top_lookup_key, m_last_lookup_key) then
+        Exit;
+    text := Trim(completion.text);
+    if m_config.dictionary_variant = dv_traditional then
+        text := nc_simplified_to_traditional(text);
+    Result := text = m_first_page_top_text;
 end;
 
 function TncEngine.accept_one_key_completion: Boolean;
@@ -139018,6 +139050,14 @@ begin
     m_visible_candidates_cache_page_size := page_size;
     m_visible_candidates_cache_valid := True;
     m_exact_tail_completion_checked := False;
+    if m_page_index = 0 then
+    begin
+        m_first_page_top_text := '';
+        if (Length(candidates) > 0) and (Trim(candidates[0].comment) = '') then
+            m_first_page_top_text := Trim(candidates[0].text);
+        m_first_page_top_composition_text := m_composition_text;
+        m_first_page_top_lookup_key := m_last_lookup_key;
+    end;
     if (Length(candidates) = 0) or (m_selected_index < 0) then
         m_selected_index := 0
     else if m_selected_index >= Length(candidates) then
@@ -189504,6 +189544,8 @@ begin
     end
     else if m_tab_projection_shown.text <> '' then
         m_tab_projection_shown := Default(TncOneKeyCompletion);
+    if completion_repeats_first_candidate(Result) then
+        Result := Default(TncOneKeyCompletion);
 end;
 
 function TncEngine.get_long_neural_completion_request(
